@@ -1,0 +1,64 @@
+{
+  "name": "@pbpeterson/typed-fetch",
+  "version": "0.4.0",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "fetch",
+    "typescript",
+    "http",
+    "client",
+    "typed",
+    "error-handling",
+    "go-style",
+    "no-throw",
+    "type-safe",
+    "rest",
+    "api",
+    "json"
+  ],
+  "author": {
+    "name": "Peterson Pereira Bozza",
+    "email": "petersonbozza7@gmail.com"
+  },
+  "license": "MIT",
+  "description": "A type-safe HTTP client that never throws. Inspired by Go's error handling pattern.",
+  "homepage": "https://typedfetch.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pbpeterson/typed-fetch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pbpeterson/typed-fetch/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.13",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "is-network-error": "^1.1.0"
+  }
+}
