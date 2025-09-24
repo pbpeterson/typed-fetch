@@ -69,3 +69,6 @@ pids
 # temporary folders
 tmp/
 temp/
+
+#docs
+generate-docs-html.js
