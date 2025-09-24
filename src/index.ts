@@ -8,6 +8,7 @@ import {
 import { statusCodeErrorMap } from "./http-status-codes";
 import { NetworkError } from "./errors/network-error";
 import { TypedHeaders } from "./headers";
+import { HttpMethods } from "./methods";
 
 export function isHttpError<ErrorType extends InstanceType<HttpErrors>>(
   error: unknown,
@@ -37,6 +38,7 @@ type FetchParams = Parameters<typeof fetch>;
 type URL = FetchParams[0];
 type Options = FetchParams[1] & {
   headers?: TypedHeaders;
+  method?: HttpMethods;
 };
 
 export async function typedFetch<
