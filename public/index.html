@@ -31,10 +31,16 @@
 - Case-insensitive header support
 - Covers Content-Type, Authorization, CORS, Security headers, etc.
 
-### 5. Tree-Shaking Friendly
+### 5. Type-Safe HTTP Methods
+- `HttpMethods` type for all standard HTTP methods
+- Full TypeScript autocomplete for method values
+- Compile-time method validation
+- Supports GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS, CONNECT, TRACE
+
+### 6. Tree-Shaking Friendly
 - Individual error class exports for optimal bundle size
-- Import only what you need
-- Built for modern bundlers
+- **Always import only the specific errors you handle**
+- Built for modern bundlers to eliminate unused code
 
 ## Installation
 
@@ -302,6 +308,50 @@ const { response, error } = await typedFetch&lt;Data&gt;('/api/endpoint', {
 4. **Case-Insensitive**: Canonical type mapping supports different case variations
 5. **Extensible**: Index signature allows custom headers while maintaining type safety
 
+## HttpMethods Type
+
+### Type-Safe HTTP Methods
+
+The `HttpMethods` type provides TypeScript support for all standard HTTP methods:
+
+```typescript
+import { typedFetch, HttpMethods } from '@pbpeterson/typed-fetch';
+
+// Type-safe method specification
+const method: HttpMethods = 'POST'; // ✅ Valid
+const invalidMethod: HttpMethods = 'INVALID'; // ❌ TypeScript error
+
+const { response, error } = await typedFetch&lt;User&gt;('/api/users', {
+  method: 'POST', // TypeScript autocomplete available
+  headers: {
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify(userData),
+});
+```
+
+### Supported HTTP Methods
+
+```typescript
+export type HttpMethods =
+  | "GET"
+  | "POST"
+  | "PUT"
+  | "PATCH"
+  | "DELETE"
+  | "HEAD"
+  | "OPTIONS"
+  | "CONNECT"
+  | "TRACE";
+```
+
+### Method Type Features
+
+1. **Standard Compliance**: Covers all HTTP/1.1 standard methods
+2. **TypeScript Integration**: Full autocomplete and type checking
+3. **Case Sensitive**: Methods must be uppercase (following HTTP specification)
+4. **IDE Support**: IntelliSense suggestions for all valid methods
+
 ## Advanced Usage Patterns
 
 ### Response Body Parsing
@@ -403,7 +453,7 @@ if (error) {
 
 **Parameters:**
 - `url: string` - Request URL
-- `options: RequestInit & { headers?: TypedHeaders }` - Fetch options (optional)
+- `options: RequestInit & { headers?: TypedHeaders; method?: HttpMethods }` - Fetch options (optional)
 
 **Returns:**
 ```typescript
@@ -428,22 +478,23 @@ interface TypedResponse&lt;T&gt; extends Response {
 }
 ```
 
-### Error Exports
+### Exports
 
-All error classes are individually exported for tree-shaking:
+All types and error classes are individually exported for tree-shaking:
 
 ```typescript
-// Import only needed errors
+// Recommended: Import function, types, and only needed errors
 import {
   typedFetch,
+  HttpMethods,
+  TypedHeaders,
   BadRequestError,
   NotFoundError,
   InternalServerError,
   NetworkError
 } from '@pbpeterson/typed-fetch';
 
-// Or import all errors
-import * as TypedFetchErrors from '@pbpeterson/typed-fetch';
+// This approach optimizes bundle size by only including the errors you handle
 ```
 
 ## Best Practices
@@ -697,17 +748,13 @@ describe('API Service', () =&gt; {
 
 ## Bundle Size Optimization
 
-typed-fetch is designed for optimal tree-shaking:
+typed-fetch is designed for optimal tree-shaking. **Always import only the specific errors you handle:**
 
 ```typescript
-// ✅ Good - only imports what you need
+// ✅ RECOMMENDED - only imports what you need
 import { typedFetch, BadRequestError, NotFoundError } from '@pbpeterson/typed-fetch';
 
-// ✅ Also good - import specific errors
-import { typedFetch } from '@pbpeterson/typed-fetch';
-import { BadRequestError } from '@pbpeterson/typed-fetch';
-
-// ❌ Avoid - imports everything
+// ❌ AVOID - imports everything, increases bundle size
 import * as TypedFetch from '@pbpeterson/typed-fetch';
 ```
 
