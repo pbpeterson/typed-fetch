@@ -7,9 +7,10 @@ import {
 } from "./errors/helpers";
 import { statusCodeErrorMap } from "./http-status-codes";
 import { NetworkError } from "./errors/network-error";
+import { TypedHeaders } from "./headers";
 
 export function isHttpError<ErrorType extends InstanceType<HttpErrors>>(
-  error: unknown
+  error: unknown,
 ): error is ErrorType {
   return httpErrors.some((HttpError) => error instanceof HttpError);
 }
@@ -20,7 +21,7 @@ interface TypedResponse<JsonReturnType> extends Response {
 
 type TypedFetchReturnType<
   JsonReturnType,
-  ErrorType extends ClientErrors = ClientErrors
+  ErrorType extends ClientErrors = ClientErrors,
 > =
   | {
       response: TypedResponse<JsonReturnType>;
@@ -33,12 +34,17 @@ type TypedFetchReturnType<
 
 type FetchParams = Parameters<typeof fetch>;
 
+type URL = FetchParams[0];
+type Options = FetchParams[1] & {
+  headers?: TypedHeaders;
+};
+
 export async function typedFetch<
   JsonReturnType,
-  ErrorType extends ClientErrors = ClientErrors
+  ErrorType extends ClientErrors = ClientErrors,
 >(
-  url: FetchParams[0],
-  options: FetchParams[1] = {}
+  url: URL,
+  options: Options = {},
 ): Promise<TypedFetchReturnType<JsonReturnType, ErrorType>> {
   let response: TypedFetchReturnType<JsonReturnType, ErrorType>["response"] =
     null;
@@ -59,11 +65,11 @@ export async function typedFetch<
       error = err;
     } else if (isNetworkError(err)) {
       error = new NetworkError(
-        err instanceof Error ? err.message : "Network error"
+        err instanceof Error ? err.message : "Network error",
       );
     } else {
       error = new NetworkError(
-        err instanceof Error ? err.message : "Unknown error"
+        err instanceof Error ? err.message : "Unknown error",
       );
     }
 
