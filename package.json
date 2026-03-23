@@ -48,6 +48,7 @@
   "bugs": {
     "url": "https://github.com/pbpeterson/typed-fetch/issues"
   },
+  "sideEffects": false,
   "publishConfig": {
     "access": "public"
   },
