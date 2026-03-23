@@ -1,19 +1,17 @@
-import isNetworkError from "is-network-error";
-import {
-  ClientErrors,
-  HttpErrors,
-  httpErrors,
-  ServerErrors,
-} from "./errors/helpers";
+import isNetworkErr from "is-network-error";
+import { ClientErrors, ServerErrors } from "./errors/helpers";
+import { BaseHttpError } from "./errors/base-http-error";
 import { statusCodeErrorMap } from "./http-status-codes";
 import { NetworkError } from "./errors/network-error";
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
 
-export function isHttpError<ErrorType extends InstanceType<HttpErrors>>(
-  error: unknown,
-): error is ErrorType {
-  return httpErrors.some((HttpError) => error instanceof HttpError);
+export function isHttpError(error: unknown): error is BaseHttpError {
+  return error instanceof BaseHttpError;
+}
+
+export function isNetworkError(error: unknown): error is NetworkError {
+  return error instanceof NetworkError;
 }
 
 interface TypedResponse<JsonReturnType> extends Response {
@@ -63,9 +61,9 @@ export async function typedFetch<
 
     response = res as TypedResponse<JsonReturnType>;
   } catch (err) {
-    if (isHttpError<ErrorType>(err) || err instanceof NetworkError) {
+    if (isHttpError(err) || err instanceof NetworkError) {
       error = err;
-    } else if (isNetworkError(err)) {
+    } else if (isNetworkErr(err)) {
       error = new NetworkError(
         err instanceof Error ? err.message : "Network error",
       );

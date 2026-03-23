@@ -39,3 +39,10 @@ export { InsufficientStorageError } from "./insufficient-storage-error";
 export { LoopDetectedError } from "./loop-detected-error";
 export { NotExtendedError } from "./not-extended-error";
 export { NetworkAuthenticationRequiredError } from "./network-authentication-required-error";
+export { BaseHttpError } from "./base-http-error";
+export type {
+  ClientErrors,
+  ServerErrors,
+  HttpErrors,
+  TypedFetchError,
+} from "./helpers";
