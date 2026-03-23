@@ -5,10 +5,11 @@ export abstract class BaseHttpError extends Error {
 
   constructor(protected readonly response: Response) {
     super();
+    this.name = this.constructor.name;
     this.headers = response.headers;
   }
 
-  async json(): Promise<any> {
+  async json<T = unknown>(): Promise<T> {
     return this.response.json();
   }
 
