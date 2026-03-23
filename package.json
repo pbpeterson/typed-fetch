@@ -1,6 +1,6 @@
 {
   "name": "@pbpeterson/typed-fetch",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
@@ -14,11 +14,6 @@
       "types": "./dist/errors/index.d.ts",
       "import": "./dist/errors/index.mjs",
       "require": "./dist/errors/index.js"
-    },
-    "./errors/*": {
-      "types": "./dist/errors/*.d.ts",
-      "import": "./dist/errors/*.mjs",
-      "require": "./dist/errors/*.js"
     }
   },
   "files": [
