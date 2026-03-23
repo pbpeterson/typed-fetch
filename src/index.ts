@@ -91,10 +91,6 @@ export async function typedFetch<
   url: URL,
   options: Options = {},
 ): Promise<TypedFetchReturnType<JsonReturnType, ErrorType>> {
-  let response: TypedFetchReturnType<JsonReturnType, ErrorType>["response"] =
-    null;
-  let error: TypedFetchReturnType<JsonReturnType, ErrorType>["error"] = null;
-
   try {
     const res = await fetch(url, options);
     if (!res.ok) {
@@ -104,28 +100,29 @@ export async function typedFetch<
       }
     }
 
-    response = res as TypedResponse<JsonReturnType>;
+    return {
+      response: res as TypedResponse<JsonReturnType>,
+      error: null,
+    };
   } catch (err) {
-    if (isHttpError(err) || err instanceof NetworkError) {
-      error = err;
+    const networkError = (msg: string) =>
+      ({ response: null, error: new NetworkError(msg) }) as const;
+
+    if (isHttpError(err)) {
+      return {
+        response: null,
+        error: err as ErrorType | ServerErrors,
+      };
+    } else if (err instanceof NetworkError) {
+      return { response: null, error: err };
     } else if (isNetworkErr(err)) {
-      error = new NetworkError(
+      return networkError(
         err instanceof Error ? err.message : "Network error",
       );
     } else {
-      error = new NetworkError(
+      return networkError(
         err instanceof Error ? err.message : "Unknown error",
       );
     }
-
-    return {
-      response: null,
-      error,
-    };
   }
-
-  return {
-    response,
-    error,
-  };
 }
