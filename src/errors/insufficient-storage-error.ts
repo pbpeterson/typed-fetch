@@ -5,10 +5,10 @@ const ERROR_STATUS_TEXT = "Insufficient Storage";
 //https://developer.mozilla.org/en-us/docs/web/http/status/507
 
 export class InsufficientStorageError extends BaseHttpError {
-  public readonly status: number = INSUFFICIENT_STORAGE_ERROR_STATUS;
-  public readonly statusText: string = ERROR_STATUS_TEXT;
-  static readonly status: number = INSUFFICIENT_STORAGE_ERROR_STATUS;
-  static readonly statusText: string = ERROR_STATUS_TEXT;
+  public readonly status: 507 = INSUFFICIENT_STORAGE_ERROR_STATUS;
+  public readonly statusText: "Insufficient Storage" = ERROR_STATUS_TEXT;
+  static readonly status: 507 = INSUFFICIENT_STORAGE_ERROR_STATUS;
+  static readonly statusText: "Insufficient Storage" = ERROR_STATUS_TEXT;
 
   constructor(response: Response) {
     super(response);

@@ -5,10 +5,10 @@ const ERROR_STATUS_TEXT = "Too Many Requests";
 //https://developer.mozilla.org/en-us/docs/web/http/status/429
 
 export class TooManyRequestsError extends BaseHttpError {
-  public readonly status: number = TOO_MANY_REQUESTS_ERROR_STATUS;
-  public readonly statusText: string = ERROR_STATUS_TEXT;
-  static readonly status: number = TOO_MANY_REQUESTS_ERROR_STATUS;
-  static readonly statusText: string = ERROR_STATUS_TEXT;
+  public readonly status: 429 = TOO_MANY_REQUESTS_ERROR_STATUS;
+  public readonly statusText: "Too Many Requests" = ERROR_STATUS_TEXT;
+  static readonly status: 429 = TOO_MANY_REQUESTS_ERROR_STATUS;
+  static readonly statusText: "Too Many Requests" = ERROR_STATUS_TEXT;
 
   constructor(response: Response) {
     super(response);

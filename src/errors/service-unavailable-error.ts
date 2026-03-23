@@ -5,10 +5,10 @@ const ERROR_STATUS_TEXT = "Service Unavailable";
 //https://developer.mozilla.org/en-us/docs/web/http/status/503
 
 export class ServiceUnavailableError extends BaseHttpError {
-  public readonly status: number = SERVICE_UNAVAILABLE_ERROR_STATUS;
-  public readonly statusText: string = ERROR_STATUS_TEXT;
-  static readonly status: number = SERVICE_UNAVAILABLE_ERROR_STATUS;
-  static readonly statusText: string = ERROR_STATUS_TEXT;
+  public readonly status: 503 = SERVICE_UNAVAILABLE_ERROR_STATUS;
+  public readonly statusText: "Service Unavailable" = ERROR_STATUS_TEXT;
+  static readonly status: 503 = SERVICE_UNAVAILABLE_ERROR_STATUS;
+  static readonly statusText: "Service Unavailable" = ERROR_STATUS_TEXT;
 
   constructor(response: Response) {
     super(response);

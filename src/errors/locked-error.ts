@@ -5,10 +5,10 @@ const ERROR_STATUS_TEXT = "Locked";
 //https://developer.mozilla.org/en-us/docs/web/http/status/423
 
 export class LockedError extends BaseHttpError {
-  public readonly status: number = LOCKED_ERROR_STATUS;
-  public readonly statusText: string = ERROR_STATUS_TEXT;
-  static readonly status: number = LOCKED_ERROR_STATUS;
-  static readonly statusText: string = ERROR_STATUS_TEXT;
+  public readonly status: 423 = LOCKED_ERROR_STATUS;
+  public readonly statusText: "Locked" = ERROR_STATUS_TEXT;
+  static readonly status: 423 = LOCKED_ERROR_STATUS;
+  static readonly statusText: "Locked" = ERROR_STATUS_TEXT;
 
   constructor(response: Response) {
     super(response);

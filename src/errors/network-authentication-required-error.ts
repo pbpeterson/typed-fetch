@@ -5,10 +5,10 @@ const ERROR_STATUS_TEXT = "Network Authentication Required";
 //https://developer.mozilla.org/en-us/docs/web/http/status/511
 
 export class NetworkAuthenticationRequiredError extends BaseHttpError {
-  public readonly status: number = NETWORK_AUTHENTICATION_REQUIRED_ERROR_STATUS;
-  public readonly statusText: string = ERROR_STATUS_TEXT;
-  static readonly status: number = NETWORK_AUTHENTICATION_REQUIRED_ERROR_STATUS;
-  static readonly statusText: string = ERROR_STATUS_TEXT;
+  public readonly status: 511 = NETWORK_AUTHENTICATION_REQUIRED_ERROR_STATUS;
+  public readonly statusText: "Network Authentication Required" = ERROR_STATUS_TEXT;
+  static readonly status: 511 = NETWORK_AUTHENTICATION_REQUIRED_ERROR_STATUS;
+  static readonly statusText: "Network Authentication Required" = ERROR_STATUS_TEXT;
 
   constructor(response: Response) {
     super(response);

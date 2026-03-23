@@ -5,10 +5,10 @@ const ERROR_STATUS_TEXT = "Length Required";
 //https://developer.mozilla.org/en-us/docs/web/http/status/411
 
 export class LengthRequiredError extends BaseHttpError {
-  public readonly status: number = LENGTH_REQUIRED_ERROR_STATUS;
-  public readonly statusText: string = ERROR_STATUS_TEXT;
-  static readonly status: number = LENGTH_REQUIRED_ERROR_STATUS;
-  static readonly statusText: string = ERROR_STATUS_TEXT;
+  public readonly status: 411 = LENGTH_REQUIRED_ERROR_STATUS;
+  public readonly statusText: "Length Required" = ERROR_STATUS_TEXT;
+  static readonly status: 411 = LENGTH_REQUIRED_ERROR_STATUS;
+  static readonly statusText: "Length Required" = ERROR_STATUS_TEXT;
 
   constructor(response: Response) {
     super(response);

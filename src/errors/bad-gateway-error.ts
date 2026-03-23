@@ -5,10 +5,10 @@ const ERROR_STATUS_TEXT = "Bad Gateway";
 //https://developer.mozilla.org/en-us/docs/web/http/status/502
 
 export class BadGatewayError extends BaseHttpError {
-  public readonly status: number = BAD_GATEWAY_ERROR_STATUS;
-  public readonly statusText: string = ERROR_STATUS_TEXT;
-  static readonly status: number = BAD_GATEWAY_ERROR_STATUS;
-  static readonly statusText: string = ERROR_STATUS_TEXT;
+  public readonly status: 502 = BAD_GATEWAY_ERROR_STATUS;
+  public readonly statusText: "Bad Gateway" = ERROR_STATUS_TEXT;
+  static readonly status: 502 = BAD_GATEWAY_ERROR_STATUS;
+  static readonly statusText: "Bad Gateway" = ERROR_STATUS_TEXT;
 
   constructor(response: Response) {
     super(response);

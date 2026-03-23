@@ -5,10 +5,10 @@ const ERROR_STATUS_TEXT = "Expectation Failed";
 //https://developer.mozilla.org/en-us/docs/web/http/status/417
 
 export class ExpectationFailedError extends BaseHttpError {
-  public readonly status: number = EXPECTATION_FAILED_ERROR_STATUS;
-  public readonly statusText: string = ERROR_STATUS_TEXT;
-  static readonly status: number = EXPECTATION_FAILED_ERROR_STATUS;
-  static readonly statusText: string = ERROR_STATUS_TEXT;
+  public readonly status: 417 = EXPECTATION_FAILED_ERROR_STATUS;
+  public readonly statusText: "Expectation Failed" = ERROR_STATUS_TEXT;
+  static readonly status: 417 = EXPECTATION_FAILED_ERROR_STATUS;
+  static readonly statusText: "Expectation Failed" = ERROR_STATUS_TEXT;
 
   constructor(response: Response) {
     super(response);

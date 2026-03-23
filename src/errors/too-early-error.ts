@@ -5,10 +5,10 @@ const ERROR_STATUS_TEXT = "Too Early";
 //https://developer.mozilla.org/en-us/docs/web/http/status/425
 
 export class TooEarlyError extends BaseHttpError {
-  public readonly status: number = TOO_EARLY_ERROR_STATUS;
-  public readonly statusText: string = ERROR_STATUS_TEXT;
-  static readonly status: number = TOO_EARLY_ERROR_STATUS;
-  static readonly statusText: string = ERROR_STATUS_TEXT;
+  public readonly status: 425 = TOO_EARLY_ERROR_STATUS;
+  public readonly statusText: "Too Early" = ERROR_STATUS_TEXT;
+  static readonly status: 425 = TOO_EARLY_ERROR_STATUS;
+  static readonly statusText: "Too Early" = ERROR_STATUS_TEXT;
 
   constructor(response: Response) {
     super(response);

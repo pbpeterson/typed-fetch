@@ -5,10 +5,10 @@ const ERROR_STATUS_TEXT = "Forbidden";
 //https://developer.mozilla.org/en-us/docs/web/http/status/403
 
 export class ForbiddenError extends BaseHttpError {
-  public readonly status: number = FORBIDDEN_ERROR_STATUS;
-  public readonly statusText: string = ERROR_STATUS_TEXT;
-  static readonly status: number = FORBIDDEN_ERROR_STATUS;
-  static readonly statusText: string = ERROR_STATUS_TEXT;
+  public readonly status: 403 = FORBIDDEN_ERROR_STATUS;
+  public readonly statusText: "Forbidden" = ERROR_STATUS_TEXT;
+  static readonly status: 403 = FORBIDDEN_ERROR_STATUS;
+  static readonly statusText: "Forbidden" = ERROR_STATUS_TEXT;
 
   constructor(response: Response) {
     super(response);
