@@ -29,23 +29,20 @@ if (error) {
 
 ## Features
 
-- 🚫 **Never throws** - All errors are returned as values
-- 🎯 **Fully typed** - Complete TypeScript support for responses and errors
-- 🔧 **Built on Fetch** - Thin wrapper around the native Fetch API
-- 📝 **Comprehensive HTTP Error Classes** - 40+ specific error types covering all standard HTTP status codes
-- 🌐 **Network Error Handling** - Separate handling for network vs HTTP errors
-- 🎨 **Customizable Error Types** - Bring your own error interfaces
-- 📦 **Minimal Dependencies** - Only uses is-network-error for reliable network error detection
-- 🔍 **Static Properties** - Access status codes without instantiation via TypedFetchErrors.NotFound.status
+- **Never throws** - All errors are returned as values
+- **Fully typed** - Complete TypeScript support with literal status types
+- **Built on Fetch** - Thin wrapper around the native Fetch API, same signature
+- **40 HTTP error classes** - Covering all standard HTTP status codes (400-511)
+- **Network error handling** - Separate `NetworkError` class for connection issues
+- **Type guards** - `isHttpError()` and `isNetworkError()` for runtime checks
+- **Generic error bodies** - `error.json<T>()` for typed error response parsing
+- **Tree-shakeable** - Import only what you need via `@pbpeterson/typed-fetch/errors`
+- **Minimal dependencies** - Only `is-network-error` for reliable network error detection
 
 ## Installation
 
 ```bash
 npm install @pbpeterson/typed-fetch
-# or
-pnpm add @pbpeterson/typed-fetch
-# or
-yarn add @pbpeterson/typed-fetch
 ```
 
 ## Basic Usage
@@ -67,7 +64,6 @@ if (error) {
   console.error('Failed to fetch users:', error.statusText);
 } else {
   const users = await response.json(); // Type: User[]
-  console.log('Users:', users);
 }
 ```
 
@@ -76,27 +72,17 @@ if (error) {
 ```typescript
 import { typedFetch, BadRequestError } from '@pbpeterson/typed-fetch';
 
-const newUser = { name: 'John Doe', email: 'john@example.com' };
-
 const { response, error } = await typedFetch<User>('/api/users', {
   method: 'POST',
-  headers: {
-    'Content-Type': 'application/json',
-  },
-  body: JSON.stringify(newUser),
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ name: 'John', email: 'john@example.com' }),
 });
 
 if (error) {
-  // Handle different error types
   if (error instanceof BadRequestError) {
-    const validationErrors = await error.json();
-    console.error('Validation failed:', validationErrors);
-  } else {
-    console.error('Request failed:', error.statusText);
+    const details = await error.json<{ field: string; message: string }>();
+    console.error('Validation failed:', details);
   }
-} else {
-  const user = await response.json(); // Type: User
-  console.log('Created user:', user);
 }
 ```
 
@@ -104,10 +90,13 @@ if (error) {
 
 ### HTTP Status Errors
 
-typed-fetch provides specific error classes as individual exports for optimal tree-shaking:
-
 ```typescript
-import { typedFetch, NotFoundError, UnauthorizedError, BadRequestError, NetworkError } from '@pbpeterson/typed-fetch';
+import {
+  typedFetch,
+  NotFoundError,
+  UnauthorizedError,
+  NetworkError,
+} from '@pbpeterson/typed-fetch';
 
 const { response, error } = await typedFetch<User>('/api/users/123');
 
@@ -116,270 +105,241 @@ if (error) {
     console.log('User not found');
   } else if (error instanceof UnauthorizedError) {
     console.log('Please log in');
-  } else if (error instanceof BadRequestError) {
-    const details = await error.json();
-    console.log('Invalid request:', details);
   } else if (error instanceof NetworkError) {
     console.log('Network error:', error.message);
-  } else {
-    console.log('Server error:', error.statusText);
   }
 }
 ```
 
-### Available Error Classes
+### Type Guards
 
-All errors are available as individual exports for optimal tree-shaking:
-
-- **4xx Client Errors:**
-  - `BadRequestError` (400)
-  - `UnauthorizedError` (401)
-  - `PaymentRequiredError` (402)
-  - `ForbiddenError` (403)
-  - `NotFoundError` (404)
-  - `MethodNotAllowedError` (405)
-  - `NotAcceptableError` (406)
-  - `ProxyAuthenticationRequiredError` (407)
-  - `RequestTimeoutError` (408)
-  - `ConflictError` (409)
-  - `GoneError` (410)
-  - `LengthRequiredError` (411)
-  - `PreconditionFailedError` (412)
-  - `RequestTooLongError` (413)
-  - `RequestUriTooLongError` (414)
-  - `UnsupportedMediaTypeError` (415)
-  - `RequestedRangeNotSatisfiableError` (416)
-  - `ExpectationFailedError` (417)
-  - `ImATeapotError` (418)
-  - `MisdirectedRequestError` (421)
-  - `UnprocessableEntityError` (422)
-  - `LockedError` (423)
-  - `FailedDependencyError` (424)
-  - `TooEarlyError` (425)
-  - `UpgradeRequiredError` (426)
-  - `PreconditionRequiredError` (428)
-  - `TooManyRequestsError` (429)
-  - `RequestHeaderFieldsTooLargeError` (431)
-  - `UnavailableForLegalReasonsError` (451)
-
-- **5xx Server Errors:**
-  - `InternalServerError` (500)
-  - `NotImplementedError` (501)
-  - `BadGatewayError` (502)
-  - `ServiceUnavailableError` (503)
-  - `GatewayTimeoutError` (504)
-  - `HttpVersionNotSupportedError` (505)
-  - `VariantAlsoNegotiatesError` (506)
-  - `InsufficientStorageError` (507)
-  - `LoopDetectedError` (508)
-  - `NotExtendedError` (510)
-  - `NetworkAuthenticationRequiredError` (511)
-
-- **Network Errors:**
-  - `NetworkError` - For connection issues, timeouts, etc.
-
-### Specific Client Error Types
-
-You can constrain the expected client errors (4xx) as a second generic parameter. Server errors (5xx) are always included since they can happen regardless of your input:
+Use `isHttpError()` and `isNetworkError()` instead of `instanceof` for reliable checks across package boundaries:
 
 ```typescript
-import { typedFetch, BadRequestError } from '@pbpeterson/typed-fetch';
+import { typedFetch, isHttpError, isNetworkError } from '@pbpeterson/typed-fetch';
 
-// Specify expected client errors - server errors are automatically included
-const { response, error } = await typedFetch<User, BadRequestError>('/api/users');
+const { response, error } = await typedFetch<User>('/api/users/123');
 
 if (error) {
-  // error is typed as: BadRequestError | ServerErrors | NetworkError
-  // Server errors (5xx) are always included since you can't control them
-  if (error instanceof BadRequestError) {
-    const validationErrors = await error.json();
-    console.log('Validation failed:', validationErrors);
-  } else if (error.status >= 500) {
-    console.log('Server error occurred:', error.statusText);
+  if (isHttpError(error)) {
+    console.log(`HTTP ${error.status}: ${error.statusText}`);
+  } else if (isNetworkError(error)) {
+    console.log('Connection failed:', error.message);
   }
 }
-
-// You can combine multiple client error types:
-import { NotFoundError } from '@pbpeterson/typed-fetch';
-type ExpectedErrors = NotFoundError | BadRequestError;
-const { response, error } = await typedFetch<User, ExpectedErrors>('/api/users/123');
-// error: NotFoundError | BadRequestError | ServerErrors | NetworkError
 ```
 
-## Advanced Usage
+### Typed Error Response Bodies
+
+The `json()` method accepts a generic type parameter:
+
+```typescript
+interface ApiError {
+  message: string;
+  code: string;
+  fields?: Record<string, string>;
+}
+
+if (error instanceof BadRequestError) {
+  const details = await error.json<ApiError>();
+  console.log(details.message); // fully typed
+}
+```
+
+### Narrowing with Specific Client Errors
+
+Constrain expected client errors (4xx) as a second generic parameter. Server errors (5xx) are always included since they can happen regardless:
+
+```typescript
+import { typedFetch, BadRequestError, NotFoundError } from '@pbpeterson/typed-fetch';
+
+type ExpectedErrors = BadRequestError | NotFoundError;
+
+const { response, error } = await typedFetch<User, ExpectedErrors>('/api/users/123');
+// error: BadRequestError | NotFoundError | ServerErrors | NetworkError | null
+```
 
 ### Error Response Bodies
 
-All HTTP error classes provide access to the response body in multiple formats:
+All HTTP error classes provide access to the response body:
 
 ```typescript
-const { response, error } = await typedFetch<User>('/api/users', {
-  method: 'POST',
-  body: JSON.stringify(invalidData)
-});
+if (error && isHttpError(error)) {
+  const json = await error.json();
+  const text = await error.clone().text();
+  const blob = await error.clone().blob();
+  const buffer = await error.clone().arrayBuffer();
 
-if (error) {
-  // Access the error response body in different formats
-  const errorJson = await error.json();        // Parse as JSON
-  const errorText = await error.clone().text(); // Parse as text
-  const errorBlob = await error.clone().blob(); // Parse as blob
-  const errorBuffer = await error.clone().arrayBuffer(); // Parse as ArrayBuffer
-  
-  console.log('Server error details:', errorJson);
-  
   // Access response headers
-  const contentType = error.headers.get('content-type');
-  
-  // Access status information
-  console.log(`Error ${error.status}: ${error.statusText}`);
+  const retryAfter = error.headers.get('Retry-After');
+
+  // Status info with literal types
+  error.status;     // 404 (literal, not number)
+  error.statusText; // "Not Found" (literal, not string)
 }
 ```
 
 ### Static Properties
 
-Access status codes and text without creating instances:
+Access status codes without creating instances:
 
 ```typescript
-import { NotFoundError, BadRequestError, InternalServerError } from '@pbpeterson/typed-fetch';
+import { NotFoundError, BadRequestError } from '@pbpeterson/typed-fetch';
 
-// Check status codes statically
-if (response.status === NotFoundError.status) {
-  console.log('Resource not found');
-}
-
-// All error classes have static properties
-console.log(BadRequestError.status);     // 400
-console.log(BadRequestError.statusText); // "Bad Request"
-console.log(InternalServerError.status); // 500
-console.log(InternalServerError.statusText); // "Internal Server Error"
+console.log(NotFoundError.status);          // 404
+console.log(NotFoundError.statusText);      // "Not Found"
+console.log(BadRequestError.status);        // 400
+console.log(BadRequestError.statusText);    // "Bad Request"
 ```
 
-### Network vs HTTP Errors
+## Tree-Shaking
+
+For consumers who only need error classes (not `typedFetch`), import from the `./errors` subpath for optimal tree-shaking:
 
 ```typescript
-import { typedFetch, NetworkError } from '@pbpeterson/typed-fetch';
+// Tree-shakeable - only pulls NotFoundError + BaseHttpError (~1KB)
+import { NotFoundError } from '@pbpeterson/typed-fetch/errors';
 
-const { response, error } = await typedFetch<User>('/api/users');
-
-if (error) {
-  if (error instanceof NetworkError) {
-    console.log('Network issue - check connection');
-  } else {
-    // All other errors are HTTP errors with status property
-    console.log(`HTTP error: ${error.status}`);
-  }
-}
+// Or import a specific error file directly
+import { NotFoundError } from '@pbpeterson/typed-fetch/errors/not-found-error';
 ```
 
-### Optional RequestInit
+The main entry (`@pbpeterson/typed-fetch`) includes all error classes because `typedFetch` must handle any status code at runtime.
 
-The second parameter is optional and defaults to an empty object:
+## Available Error Classes
 
-```typescript
-// These are equivalent
-await typedFetch<User[]>('/api/users');
-await typedFetch<User[]>('/api/users', {});
-```
+### 4xx Client Errors
+
+| Class | Status | Status Text |
+|-------|--------|-------------|
+| `BadRequestError` | 400 | Bad Request |
+| `UnauthorizedError` | 401 | Unauthorized |
+| `PaymentRequiredError` | 402 | Payment Required |
+| `ForbiddenError` | 403 | Forbidden |
+| `NotFoundError` | 404 | Not Found |
+| `MethodNotAllowedError` | 405 | Method Not Allowed |
+| `NotAcceptableError` | 406 | Not Acceptable |
+| `ProxyAuthenticationRequiredError` | 407 | Proxy Authentication Required |
+| `RequestTimeoutError` | 408 | Request Timeout |
+| `ConflictError` | 409 | Conflict |
+| `GoneError` | 410 | Gone |
+| `LengthRequiredError` | 411 | Length Required |
+| `PreconditionFailedError` | 412 | Precondition Failed |
+| `RequestTooLongError` | 413 | Payload Too Large |
+| `RequestUriTooLongError` | 414 | URI Too Long |
+| `UnsupportedMediaTypeError` | 415 | Unsupported Media Type |
+| `RequestedRangeNotSatisfiableError` | 416 | Range Not Satisfiable |
+| `ExpectationFailedError` | 417 | Expectation Failed |
+| `ImATeapotError` | 418 | I'm a teapot |
+| `MisdirectedRequestError` | 421 | Misdirected Request |
+| `UnprocessableEntityError` | 422 | Unprocessable Entity |
+| `LockedError` | 423 | Locked |
+| `FailedDependencyError` | 424 | Failed Dependency |
+| `TooEarlyError` | 425 | Too Early |
+| `UpgradeRequiredError` | 426 | Upgrade Required |
+| `PreconditionRequiredError` | 428 | Precondition Required |
+| `TooManyRequestsError` | 429 | Too Many Requests |
+| `RequestHeaderFieldsTooLargeError` | 431 | Request Header Fields Too Large |
+| `UnavailableForLegalReasonsError` | 451 | Unavailable For Legal Reasons |
+
+### 5xx Server Errors
+
+| Class | Status | Status Text |
+|-------|--------|-------------|
+| `InternalServerError` | 500 | Internal Server Error |
+| `NotImplementedError` | 501 | Not Implemented |
+| `BadGatewayError` | 502 | Bad Gateway |
+| `ServiceUnavailableError` | 503 | Service Unavailable |
+| `GatewayTimeoutError` | 504 | Gateway Timeout |
+| `HttpVersionNotSupportedError` | 505 | HTTP Version Not Supported |
+| `VariantAlsoNegotiatesError` | 506 | Variant Also Negotiates |
+| `InsufficientStorageError` | 507 | Insufficient Storage |
+| `LoopDetectedError` | 508 | Loop Detected |
+| `NotExtendedError` | 510 | Not Extended |
+| `NetworkAuthenticationRequiredError` | 511 | Network Authentication Required |
+
+### Other
+
+| Class | Description |
+|-------|-------------|
+| `NetworkError` | Connection issues, DNS failures, timeouts |
+| `BaseHttpError` | Abstract base class for all HTTP errors |
 
 ## API Reference
-
-### Exports
-
-This library exports the main fetch function and individual error classes for optimal tree-shaking:
-
-- `typedFetch` - The main fetch function
-- Individual error classes: `BadRequestError`, `NotFoundError`, `InternalServerError`, etc.
-
-```typescript
-// Import only what you need for optimal bundle size
-import { typedFetch, NotFoundError, BadRequestError } from '@pbpeterson/typed-fetch';
-
-// Or import all errors if needed
-import * as Errors from '@pbpeterson/typed-fetch';
-```
 
 ### `typedFetch<T, E>(url, options?)`
 
 **Type Parameters:**
 - `T` - The expected response body type
-- `E extends ClientErrors` - Specific client error class(es) to expect (optional, defaults to all client errors)
+- `E extends ClientErrors` - Specific client error type(s) (defaults to all)
 
 **Parameters:**
-- `url: string` - The URL to fetch
-- `options: RequestInit` - Fetch options (optional, defaults to `{}`)
+- `url` - The URL to fetch (same as `fetch()`)
+- `options` - Fetch options with typed `headers` and `method` (optional)
 
 **Returns:**
 ```typescript
-Promise<{
-  response: TypedResponse<T>;
-  error: null;
-} | {
-  response: null;
-  error: E | ServerErrors | NetworkError;
-}>
+Promise<
+  | { response: TypedResponse<T>; error: null }
+  | { response: null; error: E | ServerErrors | NetworkError }
+>
 ```
 
-**Example with specific error types:**
-```typescript
-import { BadRequestError, NotFoundError } from '@pbpeterson/typed-fetch';
+### `isHttpError(error): error is BaseHttpError`
 
-// Expect specific client errors - server errors always included
-type ExpectedErrors = BadRequestError | NotFoundError;
-const { response, error } = await typedFetch<User, ExpectedErrors>('/api/users/123');
+Type guard that checks if an error is an HTTP error (any status code).
 
-// error will be: BadRequestError | NotFoundError | ServerErrors | NetworkError | null
-```
+### `isNetworkError(error): error is NetworkError`
 
-**Note:** Server errors (5xx) are always included in the error union because they can occur regardless of your input validation or client-side logic.
+Type guard that checks if an error is a network-level error.
 
-### Error Classes
+### `statusCodeErrorMap`
 
-All HTTP error classes extend `BaseHttpError` and include:
+A `Map<number, ErrorClass>` mapping HTTP status codes to their error classes. Useful for custom error handling logic.
+
+### `httpErrors`
+
+Array of all 40 HTTP error classes. Useful for iteration and custom registries.
+
+### Error Class API
+
+All HTTP error classes extend `BaseHttpError`:
 
 **Instance Properties:**
-- `status: number` - HTTP status code
-- `statusText: string` - HTTP status text  
-- `headers: Headers` - Response headers
+- `status` - HTTP status code (literal type, e.g. `404`)
+- `statusText` - HTTP status text (literal type, e.g. `"Not Found"`)
+- `headers` - Response `Headers` object
+- `name` - Error class name (e.g. `"NotFoundError"`)
 
 **Instance Methods:**
-- `json(): Promise<any>` - Parse error response body as JSON
-- `text(): Promise<string>` - Parse error response body as text
-- `blob(): Promise<Blob>` - Parse error response body as blob
-- `arrayBuffer(): Promise<ArrayBuffer>` - Parse error response body as ArrayBuffer
-- `clone(): ErrorClass` - Clone the error for multiple response body reads
+- `json<T = unknown>()` - Parse error response body as JSON
+- `text()` - Parse as text
+- `blob()` - Parse as Blob
+- `arrayBuffer()` - Parse as ArrayBuffer
+- `clone()` - Clone the error for multiple body reads
 
 **Static Properties:**
-- `static status: number` - HTTP status code (accessible without instantiation)
-- `static statusText: string` - HTTP status text (accessible without instantiation)
+- `status` - HTTP status code
+- `statusText` - HTTP status text
 
 ## Inspiration
 
-This library is inspired by Go's error handling philosophy where "errors are values." Instead of using exceptions for control flow, typed-fetch returns errors as regular values that you can inspect, handle, and pass around like any other data.
+Inspired by Go's error handling philosophy where errors are values:
 
 ```go
-// Go pattern that inspired this library
 result, err := http.Get("https://api.example.com/users")
 if err != nil {
-    // handle error
     return err
 }
-// use result
 ```
 
 ```typescript
-// typed-fetch equivalent
 const { response, error } = await typedFetch<User[]>('/api/users');
 if (error) {
-    // handle error
     return error;
 }
-// use response
 ```
 
 ## License
 
 MIT
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
