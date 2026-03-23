@@ -9,6 +9,16 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.js"
+    },
+    "./errors": {
+      "types": "./dist/errors/index.d.ts",
+      "import": "./dist/errors/index.mjs",
+      "require": "./dist/errors/index.js"
+    },
+    "./errors/*": {
+      "types": "./dist/errors/*.d.ts",
+      "import": "./dist/errors/*.mjs",
+      "require": "./dist/errors/*.js"
     }
   },
   "files": [
