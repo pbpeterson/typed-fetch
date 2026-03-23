@@ -2,8 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 const REQUEST_TOO_LONG_ERROR_STATUS = 413;
 const ERROR_STATUS_TEXT = "Payload Too Large";
-//https://developer.mozilla.org/en-us/docs/web/http/status/413
-
+/** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/413 */
 export class RequestTooLongError extends BaseHttpError {
   public readonly status: 413 = REQUEST_TOO_LONG_ERROR_STATUS;
   public readonly statusText: "Payload Too Large" = ERROR_STATUS_TEXT;

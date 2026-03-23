@@ -2,8 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 const BAD_REQUEST_ERROR_STATUS = 400;
 const ERROR_STATUS_TEXT = "Bad Request";
-//https://developer.mozilla.org/en-us/docs/web/http/status/400
-
+/** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400 */
 export class BadRequestError extends BaseHttpError {
   public readonly status: 400 = BAD_REQUEST_ERROR_STATUS;
   public readonly statusText: "Bad Request" = ERROR_STATUS_TEXT;

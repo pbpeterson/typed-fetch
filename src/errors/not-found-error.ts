@@ -2,8 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 const NOT_FOUND_ERROR_STATUS = 404;
 const ERROR_STATUS_TEXT = "Not Found";
-//https://developer.mozilla.org/en-us/docs/web/http/status/404
-
+/** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404 */
 export class NotFoundError extends BaseHttpError {
   public readonly status: 404 = NOT_FOUND_ERROR_STATUS;
   public readonly statusText: "Not Found" = ERROR_STATUS_TEXT;

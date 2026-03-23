@@ -2,8 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 const VARIANT_ALSO_NEGOTIATES_ERROR_STATUS = 506;
 const ERROR_STATUS_TEXT = "Variant Also Negotiates";
-//https://developer.mozilla.org/en-us/docs/web/http/status/506
-
+/** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/506 */
 export class VariantAlsoNegotiatesError extends BaseHttpError {
   public readonly status: 506 = VARIANT_ALSO_NEGOTIATES_ERROR_STATUS;
   public readonly statusText: "Variant Also Negotiates" = ERROR_STATUS_TEXT;

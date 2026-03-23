@@ -2,8 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 const INSUFFICIENT_STORAGE_ERROR_STATUS = 507;
 const ERROR_STATUS_TEXT = "Insufficient Storage";
-//https://developer.mozilla.org/en-us/docs/web/http/status/507
-
+/** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/507 */
 export class InsufficientStorageError extends BaseHttpError {
   public readonly status: 507 = INSUFFICIENT_STORAGE_ERROR_STATUS;
   public readonly statusText: "Insufficient Storage" = ERROR_STATUS_TEXT;

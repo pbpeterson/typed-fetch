@@ -2,8 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 const UNAVAILABLE_FOR_LEGAL_REASONS_ERROR_STATUS = 451;
 const ERROR_STATUS_TEXT = "Unavailable For Legal Reasons";
-//https://developer.mozilla.org/en-us/docs/web/http/status/451
-
+/** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/451 */
 export class UnavailableForLegalReasonsError extends BaseHttpError {
   public readonly status: 451 = UNAVAILABLE_FOR_LEGAL_REASONS_ERROR_STATUS;
   public readonly statusText: "Unavailable For Legal Reasons" = ERROR_STATUS_TEXT;

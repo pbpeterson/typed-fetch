@@ -40,8 +40,10 @@ import { LoopDetectedError } from "./loop-detected-error";
 import { NotExtendedError } from "./not-extended-error";
 import { NetworkAuthenticationRequiredError } from "./network-authentication-required-error";
 
+/** Constructor type for any HTTP error class in the library. */
 export type HttpErrors = (typeof httpErrors)[number];
 
+/** Union of all 4xx client error instances. */
 export type ClientErrors =
   | BadRequestError
   | ConflictError
@@ -73,6 +75,7 @@ export type ClientErrors =
   | UnsupportedMediaTypeError
   | UpgradeRequiredError;
 
+/** Union of all 5xx server error instances. */
 export type ServerErrors =
   | BadGatewayError
   | GatewayTimeoutError
@@ -86,8 +89,10 @@ export type ServerErrors =
   | ServiceUnavailableError
   | VariantAlsoNegotiatesError;
 
+/** Union of all possible error types returned by `typedFetch`. */
 export type TypedFetchError = HttpErrors | NetworkError;
 
+/** Array of all 40 HTTP error class constructors. */
 export const httpErrors = [
   BadGatewayError,
   BadRequestError,

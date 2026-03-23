@@ -2,8 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 const UNAUTHORIZED_ERROR_STATUS = 401;
 const ERROR_STATUS_TEXT = "Unauthorized";
-//https://developer.mozilla.org/en-us/docs/web/http/status/401
-
+/** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401 */
 export class UnauthorizedError extends BaseHttpError {
   public readonly status: 401 = UNAUTHORIZED_ERROR_STATUS;
   public readonly statusText: "Unauthorized" = ERROR_STATUS_TEXT;

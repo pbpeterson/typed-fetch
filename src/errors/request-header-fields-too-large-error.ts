@@ -2,8 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 const REQUEST_HEADER_FIELDS_TOO_LARGE_ERROR_STATUS = 431;
 const ERROR_STATUS_TEXT = "Request Header Fields Too Large";
-//https://developer.mozilla.org/en-us/docs/web/http/status/431
-
+/** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/431 */
 export class RequestHeaderFieldsTooLargeError extends BaseHttpError {
   public readonly status: 431 = REQUEST_HEADER_FIELDS_TOO_LARGE_ERROR_STATUS;
   public readonly statusText: "Request Header Fields Too Large" = ERROR_STATUS_TEXT;

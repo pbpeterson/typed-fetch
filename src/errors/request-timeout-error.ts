@@ -2,8 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 const REQUEST_TIMEOUT_ERROR_STATUS = 408;
 const ERROR_STATUS_TEXT = "Request Timeout";
-//https://developer.mozilla.org/en-us/docs/web/http/status/408
-
+/** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/408 */
 export class RequestTimeoutError extends BaseHttpError {
   public readonly status: 408 = REQUEST_TIMEOUT_ERROR_STATUS;
   public readonly statusText: "Request Timeout" = ERROR_STATUS_TEXT;

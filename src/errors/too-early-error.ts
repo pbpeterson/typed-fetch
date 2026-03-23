@@ -2,8 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 const TOO_EARLY_ERROR_STATUS = 425;
 const ERROR_STATUS_TEXT = "Too Early";
-//https://developer.mozilla.org/en-us/docs/web/http/status/425
-
+/** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/425 */
 export class TooEarlyError extends BaseHttpError {
   public readonly status: 425 = TOO_EARLY_ERROR_STATUS;
   public readonly statusText: "Too Early" = ERROR_STATUS_TEXT;

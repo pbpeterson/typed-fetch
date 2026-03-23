@@ -2,8 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 const NOT_EXTENDED_ERROR_STATUS = 510;
 const ERROR_STATUS_TEXT = "Not Extended";
-//https://developer.mozilla.org/en-us/docs/web/http/status/510
-
+/** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/510 */
 export class NotExtendedError extends BaseHttpError {
   public readonly status: 510 = NOT_EXTENDED_ERROR_STATUS;
   public readonly statusText: "Not Extended" = ERROR_STATUS_TEXT;

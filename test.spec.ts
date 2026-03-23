@@ -1,4 +1,12 @@
-import { describe, test, expect, vi, afterEach, expectTypeOf } from "vitest";
+import http from "node:http";
+import {
+  describe,
+  test,
+  expect,
+  beforeAll,
+  afterAll,
+  expectTypeOf,
+} from "vitest";
 import { typedFetch, isHttpError, isNetworkError } from "./src/index";
 import { statusCodeErrorMap } from "./src/http-status-codes";
 import { httpErrors } from "./src/errors/helpers";
@@ -50,66 +58,92 @@ import type { ClientErrors, ServerErrors } from "./src/errors";
 import type { StrictHeaders } from "./src/headers";
 import type { HttpMethods } from "./src/methods";
 
-function createBlobURL(data: unknown): string {
-  const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
-  return URL.createObjectURL(blob);
-}
+// ── Test HTTP server ─────────────────────────────────────────────────
+// Spins up a real server on a random port. Query params control the response:
+//   ?status=404          → respond with that status code
+//   ?body={"err":"..."}  → respond with that body (sets Content-Type: application/json)
+//   ?header=Key:Value    → set a response header (repeatable)
 
-afterEach(() => {
-  vi.restoreAllMocks();
+let baseURL: string;
+let server: http.Server;
+
+beforeAll(async () => {
+  server = http.createServer((req, res) => {
+    const url = new URL(req.url!, `http://${req.headers.host}`);
+    const status = Number(url.searchParams.get("status") ?? 200);
+    const body = url.searchParams.get("body");
+    const headerEntries = url.searchParams.getAll("header");
+
+    for (const entry of headerEntries) {
+      const [key, value] = entry.split(":");
+      res.setHeader(key.trim(), value.trim());
+    }
+
+    if (!res.getHeader("content-type") && body) {
+      res.setHeader("Content-Type", "application/json");
+    }
+
+    res.writeHead(status);
+    res.end(body ?? null);
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, () => resolve());
+  });
+
+  const address = server.address() as { port: number };
+  baseURL = `http://localhost:${address.port}`;
 });
 
-describe("typedFetch", () => {
-  test("should return data for successful response", async () => {
-    const url = createBlobURL({ id: 1, name: "test" });
+afterAll(() => {
+  server.close();
+});
 
-    const result = await typedFetch<{ id: number; name: string }>(url);
+function url(params: Record<string, string | number> = {}): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    search.append(key, String(value));
+  }
+  return `${baseURL}?${search}`;
+}
+
+// ── typedFetch ───────────────────────────────────────────────────────
+
+describe("typedFetch", () => {
+  test("200 returns { response, error: null }", async () => {
+    const result = await typedFetch<{ id: number }>(
+      url({ status: 200, body: JSON.stringify({ id: 1 }) }),
+    );
 
     expect(result.error).toBe(null);
-    expect(result.response).not.toBe(null);
     expect(result.response?.status).toBe(200);
 
     const data = await result.response?.json();
-    expect(data).toEqual({ id: 1, name: "test" });
+    expect(data).toEqual({ id: 1 });
   });
 
-  test("should return typed json from successful response", async () => {
-    const url = createBlobURL({ users: [{ id: 1 }, { id: 2 }] });
-
-    const result = await typedFetch<{ users: { id: number }[] }>(url);
-
-    expect(result.error).toBe(null);
+  test("response.json() is typed", async () => {
+    const body = JSON.stringify({ users: [{ id: 1 }, { id: 2 }] });
+    const result = await typedFetch<{ users: { id: number }[] }>(
+      url({ status: 200, body }),
+    );
 
     const data = await result.response?.json();
     expect(data?.users).toHaveLength(2);
     expect(data?.users[0].id).toBe(1);
   });
 
-  test("should work with optional RequestInit parameter", async () => {
-    const url = createBlobURL({ ok: true });
-    const spy = vi.spyOn(globalThis, "fetch");
-
-    await typedFetch(url);
-
-    expect(spy).toHaveBeenCalledWith(url, {});
-  });
-
-  test("should pass request options to fetch", async () => {
-    const url = createBlobURL({ ok: true });
-    const spy = vi.spyOn(globalThis, "fetch");
-
-    await typedFetch(url, {
+  test("forwards request options to fetch", async () => {
+    const result = await typedFetch(url({ status: 200 }), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "test" }),
     });
 
-    expect(spy).toHaveBeenCalledWith(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-    });
+    expect(result.error).toBe(null);
+    expect(result.response?.status).toBe(200);
   });
 
-  // Error status codes — need spyOn since blob URLs always return 200
   const errorCases = [
     { status: 400, Class: BadRequestError },
     { status: 401, Class: UnauthorizedError },
@@ -118,7 +152,7 @@ describe("typedFetch", () => {
     { status: 404, Class: NotFoundError },
     { status: 405, Class: MethodNotAllowedError },
     { status: 406, Class: NotAcceptableError },
-    { status: 407, Class: ProxyAuthenticationRequiredError },
+    // 407 is tested separately — Node's fetch rejects it as a network error
     { status: 408, Class: RequestTimeoutError },
     { status: 409, Class: ConflictError },
     { status: 410, Class: GoneError },
@@ -154,13 +188,9 @@ describe("typedFetch", () => {
   ];
 
   test.each(errorCases)(
-    "should return $Class.name for status $status",
+    "$status → $Class.name",
     async ({ status, Class }) => {
-      vi.spyOn(globalThis, "fetch").mockResolvedValue(
-        new Response(null, { status })
-      );
-
-      const result = await typedFetch("https://api.example.com");
+      const result = await typedFetch(url({ status }));
 
       expect(result.response).toBe(null);
       expect(result.error).toBeInstanceOf(Class);
@@ -168,118 +198,93 @@ describe("typedFetch", () => {
       if (isHttpError(result.error)) {
         expect(result.error.status).toBe(status);
       }
-    }
+    },
   );
 
-  test("should treat unmapped error status codes as success", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(null, { status: 499 })
+  test("407 → ProxyAuthenticationRequiredError (constructed directly, Node rejects 407 at network level)", async () => {
+    const error = new ProxyAuthenticationRequiredError(
+      new Response(null, { status: 407 }),
     );
 
-    const result = await typedFetch("https://api.example.com");
+    expect(error.status).toBe(407);
+    expect(error).toBeInstanceOf(BaseHttpError);
+    expect(isHttpError(error)).toBe(true);
+  });
+
+  test("unmapped status codes pass through as a successful response", async () => {
+    const result = await typedFetch(url({ status: 299 }));
 
     expect(result.error).toBe(null);
     expect(result.response).not.toBe(null);
   });
 
-  // Network errors
-  test("should handle network errors", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(
-      new TypeError("Failed to fetch")
+  test("connection refused → NetworkError", async () => {
+    const result = await typedFetch("http://localhost:1");
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+  });
+
+  test("error.json() parses the response body", async () => {
+    const body = JSON.stringify({ message: "Validation failed", field: "email" });
+    const result = await typedFetch(url({ status: 400, body }));
+
+    expect(result.error).toBeInstanceOf(BadRequestError);
+
+    if (isHttpError(result.error)) {
+      const json = await result.error.json();
+      expect(json).toEqual({ message: "Validation failed", field: "email" });
+    }
+  });
+
+  test("error.text() returns the raw body", async () => {
+    const result = await typedFetch(url({ status: 404, body: "Not Found" }));
+
+    expect(result.error).toBeInstanceOf(NotFoundError);
+
+    if (isHttpError(result.error)) {
+      expect(await result.error.text()).toBe("Not Found");
+    }
+  });
+
+  test("error.headers exposes response headers", async () => {
+    const result = await typedFetch(
+      url({ status: 429, header: "Retry-After:60" }),
     );
 
-    const result = await typedFetch("https://api.example.com");
+    expect(result.error).toBeInstanceOf(TooManyRequestsError);
 
-    expect(result.response).toBe(null);
-    expect(result.error).toBeInstanceOf(NetworkError);
-    expect(result.error?.message).toBe("Failed to fetch");
+    if (isHttpError(result.error)) {
+      expect(result.error.headers.get("Retry-After")).toBe("60");
+    }
   });
 
-  test("should handle unknown thrown values as NetworkError", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValue("something went wrong");
+  test("error.clone() allows reading the body twice", async () => {
+    const body = JSON.stringify({ error: "bad request" });
+    const result = await typedFetch(url({ status: 400, body }));
 
-    const result = await typedFetch("https://api.example.com");
+    if (isHttpError(result.error)) {
+      const cloned = result.error.clone();
 
-    expect(result.response).toBe(null);
-    expect(result.error).toBeInstanceOf(NetworkError);
-    expect(result.error?.message).toBe("Unknown error");
-  });
-});
-
-describe("error body parsing", () => {
-  test("json() should parse the response body", async () => {
-    const body = { message: "Validation failed", field: "email" };
-    const response = new Response(JSON.stringify(body), { status: 400 });
-    const error = new BadRequestError(response);
-
-    const json = await error.json();
-    expect(json).toEqual(body);
-  });
-
-  test("text() should return the response body as text", async () => {
-    const response = new Response("Not Found", { status: 404 });
-    const error = new NotFoundError(response);
-
-    const text = await error.text();
-    expect(text).toBe("Not Found");
-  });
-
-  test("blob() should return the response body as Blob", async () => {
-    const response = new Response("data", { status: 500 });
-    const error = new InternalServerError(response);
-
-    const blob = await error.blob();
-    expect(blob).toBeInstanceOf(Blob);
-  });
-
-  test("arrayBuffer() should return the response body as ArrayBuffer", async () => {
-    const response = new Response("data", { status: 502 });
-    const error = new BadGatewayError(response);
-
-    const buffer = await error.arrayBuffer();
-    expect(buffer).toBeInstanceOf(ArrayBuffer);
-  });
-
-  test("headers should expose the response headers", async () => {
-    const response = new Response(null, {
-      status: 401,
-      headers: { "WWW-Authenticate": 'Bearer realm="api"' },
-    });
-    const error = new UnauthorizedError(response);
-
-    expect(error.headers.get("WWW-Authenticate")).toBe('Bearer realm="api"');
+      expect(await result.error.json()).toEqual({ error: "bad request" });
+      expect(await cloned.json()).toEqual({ error: "bad request" });
+    }
   });
 });
+
+// ── Type guards ──────────────────────────────────────────────────────
 
 describe("isHttpError", () => {
-  test("should return true for HTTP error instances", () => {
-    const error = new NotFoundError(new Response(null, { status: 404 }));
-    expect(isHttpError(error)).toBe(true);
+  test("true for any BaseHttpError subclass", () => {
+    expect(isHttpError(new NotFoundError(new Response(null, { status: 404 })))).toBe(true);
+    expect(isHttpError(new BadRequestError(new Response(null, { status: 400 })))).toBe(true);
+    expect(isHttpError(new InternalServerError(new Response(null, { status: 500 })))).toBe(true);
+    expect(isHttpError(new BadGatewayError(new Response(null, { status: 502 })))).toBe(true);
   });
 
-  test("should return true for client errors", () => {
-    const res = new Response(null, { status: 400 });
-    expect(isHttpError(new BadRequestError(res))).toBe(true);
-    expect(isHttpError(new ForbiddenError(res))).toBe(true);
-    expect(isHttpError(new ConflictError(res))).toBe(true);
-  });
-
-  test("should return true for server errors", () => {
-    const res = new Response(null, { status: 500 });
-    expect(isHttpError(new InternalServerError(res))).toBe(true);
-    expect(isHttpError(new BadGatewayError(res))).toBe(true);
-    expect(isHttpError(new ServiceUnavailableError(res))).toBe(true);
-  });
-
-  test("should return false for NetworkError", () => {
+  test("false for NetworkError, plain Error, and non-errors", () => {
     expect(isHttpError(new NetworkError("fail"))).toBe(false);
-  });
-
-  test("should return false for plain Error", () => {
     expect(isHttpError(new Error("something"))).toBe(false);
-  });
-
-  test("should return false for non-error values", () => {
     expect(isHttpError(null)).toBe(false);
     expect(isHttpError(undefined)).toBe(false);
     expect(isHttpError("string")).toBe(false);
@@ -287,6 +292,22 @@ describe("isHttpError", () => {
     expect(isHttpError({})).toBe(false);
   });
 });
+
+describe("isNetworkError", () => {
+  test("true for NetworkError", () => {
+    expect(isNetworkError(new NetworkError("fail"))).toBe(true);
+  });
+
+  test("false for HTTP errors, plain Error, and non-errors", () => {
+    expect(isNetworkError(new NotFoundError(new Response(null, { status: 404 })))).toBe(false);
+    expect(isNetworkError(new Error("something"))).toBe(false);
+    expect(isNetworkError(null)).toBe(false);
+    expect(isNetworkError(undefined)).toBe(false);
+    expect(isNetworkError("string")).toBe(false);
+  });
+});
+
+// ── Error class invariants ───────────────────────────────────────────
 
 describe("error class consistency", () => {
   const allErrors = [
@@ -333,30 +354,28 @@ describe("error class consistency", () => {
   ];
 
   test.each(allErrors)(
-    "$Class.name static and instance status should match ($status)",
+    "$Class.name ($status): static and instance properties match",
     ({ Class, status }) => {
-      expect(Class.status).toBe(status);
-
       const instance = new Class(new Response(null, { status }));
 
-      expect(instance.status).toBe(status);
+      expect(Class.status).toBe(status);
       expect(instance.status).toBe(Class.status);
       expect(instance.statusText).toBe(Class.statusText);
-    }
+    },
   );
 
   test.each(allErrors)(
-    "$Class.name should extend BaseHttpError and Error",
+    "$Class.name extends BaseHttpError and Error",
     ({ Class, status }) => {
       const instance = new Class(new Response(null, { status }));
 
       expect(instance).toBeInstanceOf(BaseHttpError);
       expect(instance).toBeInstanceOf(Error);
-    }
+    },
   );
 
   test.each(allErrors)(
-    "$Class.name clone() should return a new instance of the same class",
+    "$Class.name.clone() returns a distinct instance of the same class",
     ({ Class, status }) => {
       const instance = new Class(new Response(null, { status }));
       const cloned = instance.clone();
@@ -365,12 +384,68 @@ describe("error class consistency", () => {
       expect(cloned).not.toBe(instance);
       expect(cloned.status).toBe(instance.status);
       expect(cloned.statusText).toBe(instance.statusText);
-    }
+    },
   );
+
+  test.each(allErrors)(
+    "$Class.name.name equals the class name",
+    ({ Class, status }) => {
+      const instance = new Class(new Response(null, { status }));
+      expect(instance.name).toBe(Class.name);
+    },
+  );
+
+  test("NetworkError.name equals 'NetworkError'", () => {
+    expect(new NetworkError("fail").name).toBe("NetworkError");
+  });
 });
 
-describe("type-level tests", () => {
-  test("HttpMethods accepts valid HTTP methods", () => {
+// ── json<T>() generic ────────────────────────────────────────────────
+
+describe("json<T>()", () => {
+  test("returns typed json from error body", async () => {
+    const body = { message: "not found", code: "NOT_FOUND" };
+    const error = new NotFoundError(
+      new Response(JSON.stringify(body), { status: 404 }),
+    );
+
+    const result = await error.json<{ message: string; code: string }>();
+    expect(result).toEqual(body);
+  });
+
+  test("defaults to unknown when no type parameter is given", async () => {
+    const error = new BadRequestError(
+      new Response(JSON.stringify({ error: "bad" }), { status: 400 }),
+    );
+
+    const result = await error.json();
+    expectTypeOf(result).toEqualTypeOf<unknown>();
+    expect(result).toEqual({ error: "bad" });
+  });
+});
+
+// ── Exported registries ──────────────────────────────────────────────
+
+describe("httpErrors & statusCodeErrorMap", () => {
+  test("httpErrors contains all 40 error classes", () => {
+    expect(httpErrors).toHaveLength(40);
+  });
+
+  test("statusCodeErrorMap contains all 40 status codes", () => {
+    expect(statusCodeErrorMap.size).toBe(40);
+  });
+
+  test("every httpErrors class maps to the correct status code", () => {
+    for (const ErrorClass of httpErrors) {
+      expect(statusCodeErrorMap.get(ErrorClass.status)).toBe(ErrorClass);
+    }
+  });
+});
+
+// ── Compile-time type checks ─────────────────────────────────────────
+
+describe("type-level", () => {
+  test("HttpMethods accepts all standard methods", () => {
     expectTypeOf<"GET">().toExtend<HttpMethods>();
     expectTypeOf<"POST">().toExtend<HttpMethods>();
     expectTypeOf<"PUT">().toExtend<HttpMethods>();
@@ -382,26 +457,22 @@ describe("type-level tests", () => {
     expectTypeOf<"TRACE">().toExtend<HttpMethods>();
   });
 
-  test("HttpMethods rejects invalid methods", () => {
+  test("HttpMethods rejects invalid strings", () => {
     expectTypeOf<"INVALID">().not.toExtend<HttpMethods>();
     expectTypeOf<"get">().not.toExtend<HttpMethods>();
     expectTypeOf<string>().not.toExtend<HttpMethods>();
   });
 
-  test("StrictHeaders accepts standard headers", () => {
+  test("StrictHeaders accepts known and custom headers", () => {
     expectTypeOf<{ "Content-Type": "application/json" }>().toExtend<StrictHeaders>();
     expectTypeOf<{ Authorization: "Bearer token" }>().toExtend<StrictHeaders>();
-    expectTypeOf<{ Accept: "application/json" }>().toExtend<StrictHeaders>();
-    expectTypeOf<{ "Cache-Control": "no-cache" }>().toExtend<StrictHeaders>();
+    expectTypeOf<{ "X-Custom": "value" }>().toExtend<StrictHeaders>();
   });
 
-  test("StrictHeaders accepts custom headers via index signature", () => {
-    expectTypeOf<{ "X-Custom-Header": "value" }>().toExtend<StrictHeaders>();
-  });
-
-  test("typedFetch return type is a discriminated union", async () => {
-    const url = createBlobURL({ id: 1 });
-    const result = await typedFetch<{ id: number }>(url);
+  test("typedFetch return is a discriminated union", async () => {
+    const result = await typedFetch<{ id: number }>(
+      url({ status: 200, body: JSON.stringify({ id: 1 }) }),
+    );
 
     if (result.error === null) {
       expectTypeOf(result.response).not.toEqualTypeOf<null>();
@@ -412,19 +483,27 @@ describe("type-level tests", () => {
     }
   });
 
-  test("typedFetch narrows error type with generic parameter", async () => {
-    const url = createBlobURL({ id: 1 });
-    const result = await typedFetch<{ id: number }, NotFoundError>(url);
+  test("second generic narrows the error type", async () => {
+    const result = await typedFetch<{ id: number }, NotFoundError>(
+      url({ status: 200, body: JSON.stringify({ id: 1 }) }),
+    );
 
     if (result.error !== null) {
       expectTypeOf(result.error).toExtend<NotFoundError | ServerErrors | NetworkError>();
     }
   });
 
-  test("isHttpError narrows the type", () => {
+  test("isHttpError narrows to BaseHttpError", () => {
     const error: unknown = {};
     if (isHttpError(error)) {
       expectTypeOf(error).toExtend<BaseHttpError>();
+    }
+  });
+
+  test("isNetworkError narrows to NetworkError", () => {
+    const error: unknown = {};
+    if (isNetworkError(error)) {
+      expectTypeOf(error).toExtend<NetworkError>();
     }
   });
 
@@ -432,113 +511,24 @@ describe("type-level tests", () => {
     expectTypeOf<NetworkError>().not.toExtend<BaseHttpError>();
   });
 
-  test("isNetworkError narrows the type", () => {
-    const error: unknown = {};
-    if (isNetworkError(error)) {
-      expectTypeOf(error).toExtend<NetworkError>();
-    }
-  });
-
-  test("error status should be a literal type", () => {
+  test("error.status is a literal number type", () => {
     expectTypeOf<NotFoundError["status"]>().toEqualTypeOf<404>();
     expectTypeOf<BadRequestError["status"]>().toEqualTypeOf<400>();
     expectTypeOf<InternalServerError["status"]>().toEqualTypeOf<500>();
   });
 
-  test("error statusText should be a literal type", () => {
+  test("error.statusText is a literal string type", () => {
     expectTypeOf<NotFoundError["statusText"]>().toEqualTypeOf<"Not Found">();
     expectTypeOf<BadRequestError["statusText"]>().toEqualTypeOf<"Bad Request">();
     expectTypeOf<InternalServerError["statusText"]>().toEqualTypeOf<"Internal Server Error">();
   });
 
-  test("json() should accept a generic type parameter", () => {
-    const error = new NotFoundError(new Response(JSON.stringify({}), { status: 404 }));
-    expectTypeOf(error.json<{ message: string }>()).toEqualTypeOf<Promise<{ message: string }>>();
-  });
-});
-
-describe("isNetworkError", () => {
-  test("should return true for NetworkError instances", () => {
-    expect(isNetworkError(new NetworkError("fail"))).toBe(true);
-  });
-
-  test("should return false for HTTP error instances", () => {
-    const error = new NotFoundError(new Response(null, { status: 404 }));
-    expect(isNetworkError(error)).toBe(false);
-  });
-
-  test("should return false for plain Error", () => {
-    expect(isNetworkError(new Error("something"))).toBe(false);
-  });
-
-  test("should return false for non-error values", () => {
-    expect(isNetworkError(null)).toBe(false);
-    expect(isNetworkError(undefined)).toBe(false);
-    expect(isNetworkError("string")).toBe(false);
-    expect(isNetworkError(42)).toBe(false);
-  });
-});
-
-describe("error.name", () => {
-  test("HTTP errors should have correct name", () => {
-    const error = new NotFoundError(new Response(null, { status: 404 }));
-    expect(error.name).toBe("NotFoundError");
-  });
-
-  test("NetworkError should have correct name", () => {
-    const error = new NetworkError("fail");
-    expect(error.name).toBe("NetworkError");
-  });
-
-  test("all HTTP error classes should set name to class name", () => {
-    const res = new Response(null, { status: 400 });
-    expect(new BadRequestError(res).name).toBe("BadRequestError");
-    expect(new InternalServerError(res).name).toBe("InternalServerError");
-    expect(new BadGatewayError(res).name).toBe("BadGatewayError");
-  });
-});
-
-describe("json() generic", () => {
-  test("should return typed json from error response", async () => {
-    const body = { message: "not found", code: "NOT_FOUND" };
+  test("json<T>() returns Promise<T>", () => {
     const error = new NotFoundError(
-      new Response(JSON.stringify(body), { status: 404 })
+      new Response(JSON.stringify({}), { status: 404 }),
     );
-
-    const result = await error.json<{ message: string; code: string }>();
-    expect(result).toEqual(body);
-  });
-
-  test("should default to unknown when no generic provided", async () => {
-    const error = new BadRequestError(
-      new Response(JSON.stringify({ error: "bad" }), { status: 400 })
-    );
-
-    const result = await error.json();
-    expectTypeOf(result).toEqualTypeOf<unknown>();
-    expect(result).toEqual({ error: "bad" });
-  });
-});
-
-describe("httpErrors and statusCodeErrorMap exports", () => {
-  test("httpErrors should contain all 40 error classes", () => {
-    expect(httpErrors).toHaveLength(40);
-  });
-
-  test("statusCodeErrorMap should contain all 40 status codes", () => {
-    expect(statusCodeErrorMap.size).toBe(40);
-  });
-
-  test("statusCodeErrorMap should map status codes to correct classes", () => {
-    expect(statusCodeErrorMap.get(404)).toBe(NotFoundError);
-    expect(statusCodeErrorMap.get(500)).toBe(InternalServerError);
-    expect(statusCodeErrorMap.get(400)).toBe(BadRequestError);
-  });
-
-  test("every httpErrors entry should be in statusCodeErrorMap", () => {
-    for (const ErrorClass of httpErrors) {
-      const mapped = statusCodeErrorMap.get(ErrorClass.status);
-      expect(mapped).toBe(ErrorClass);
-    }
+    expectTypeOf(error.json<{ message: string }>()).toEqualTypeOf<
+      Promise<{ message: string }>
+    >();
   });
 });

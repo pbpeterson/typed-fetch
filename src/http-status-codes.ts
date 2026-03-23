@@ -40,6 +40,7 @@ import { LoopDetectedError } from "./errors/loop-detected-error";
 import { NotExtendedError } from "./errors/not-extended-error";
 import { NetworkAuthenticationRequiredError } from "./errors/network-authentication-required-error";
 
+/** Maps HTTP status codes (400-511) to their corresponding error class constructors. */
 export const statusCodeErrorMap = new Map<number, HttpErrors>([
   [400, BadRequestError],
   [401, UnauthorizedError],

@@ -24,6 +24,7 @@ type CacheControlDirective =
   | "private"
   | "must-revalidate";
 
+/** HTTP headers with IntelliSense for common header names and typed values. */
 export type StrictHeaders = {
   "Content-Type"?: ContentType;
   Authorization?: `${string} ${string}`;
@@ -95,6 +96,7 @@ export type StrictHeaders = {
   [key: string]: string | undefined;
 };
 
+/** Headers type that accepts both {@link StrictHeaders} (with IntelliSense) and raw `HeadersInit`. */
 export type TypedHeaders =
   | {
       [K in keyof StrictHeaders as Canonical<K & string>]?: StrictHeaders[K];
