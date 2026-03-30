@@ -36,7 +36,6 @@ if (error) {
 - **Network error handling** - Separate `NetworkError` class for connection issues
 - **Type guards** - `isHttpError()` and `isNetworkError()` for runtime checks
 - **Generic error bodies** - `error.json<T>()` for typed error response parsing
-- **Tree-shakeable** - Import only what you need via `@pbpeterson/typed-fetch/errors`
 - **Minimal dependencies** - Only `is-network-error` for reliable network error detection
 
 ## Installation
@@ -191,20 +190,6 @@ console.log(NotFoundError.statusText);      // "Not Found"
 console.log(BadRequestError.status);        // 400
 console.log(BadRequestError.statusText);    // "Bad Request"
 ```
-
-## Tree-Shaking
-
-For consumers who only need error classes (not `typedFetch`), import from the `./errors` subpath for optimal tree-shaking:
-
-```typescript
-// Tree-shakeable - only pulls NotFoundError + BaseHttpError (~1KB)
-import { NotFoundError } from '@pbpeterson/typed-fetch/errors';
-
-// Or import a specific error file directly
-import { NotFoundError } from '@pbpeterson/typed-fetch/errors/not-found-error';
-```
-
-The main entry (`@pbpeterson/typed-fetch`) includes all error classes because `typedFetch` must handle any status code at runtime.
 
 ## Available Error Classes
 
