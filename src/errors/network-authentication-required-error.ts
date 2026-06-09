@@ -8,12 +8,4 @@ export class NetworkAuthenticationRequiredError extends BaseHttpError {
   public readonly statusText: "Network Authentication Required" = ERROR_STATUS_TEXT;
   static readonly status: 511 = NETWORK_AUTHENTICATION_REQUIRED_ERROR_STATUS;
   static readonly statusText: "Network Authentication Required" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): NetworkAuthenticationRequiredError {
-    return new NetworkAuthenticationRequiredError(this.response.clone());
-  }
 }

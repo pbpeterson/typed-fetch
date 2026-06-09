@@ -8,12 +8,4 @@ export class LockedError extends BaseHttpError {
   public readonly statusText: "Locked" = ERROR_STATUS_TEXT;
   static readonly status: 423 = LOCKED_ERROR_STATUS;
   static readonly statusText: "Locked" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): LockedError {
-    return new LockedError(this.response.clone());
-  }
 }

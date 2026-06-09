@@ -8,12 +8,4 @@ export class TooEarlyError extends BaseHttpError {
   public readonly statusText: "Too Early" = ERROR_STATUS_TEXT;
   static readonly status: 425 = TOO_EARLY_ERROR_STATUS;
   static readonly statusText: "Too Early" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): TooEarlyError {
-    return new TooEarlyError(this.response.clone());
-  }
 }

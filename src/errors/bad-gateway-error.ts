@@ -8,12 +8,4 @@ export class BadGatewayError extends BaseHttpError {
   public readonly statusText: "Bad Gateway" = ERROR_STATUS_TEXT;
   static readonly status: 502 = BAD_GATEWAY_ERROR_STATUS;
   static readonly statusText: "Bad Gateway" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): BadGatewayError {
-    return new BadGatewayError(this.response.clone());
-  }
 }

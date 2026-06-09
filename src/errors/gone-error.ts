@@ -8,12 +8,4 @@ export class GoneError extends BaseHttpError {
   public readonly statusText: "Gone" = ERROR_STATUS_TEXT;
   static readonly status: 410 = GONE_ERROR_STATUS;
   static readonly statusText: "Gone" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): GoneError {
-    return new GoneError(this.response.clone());
-  }
 }

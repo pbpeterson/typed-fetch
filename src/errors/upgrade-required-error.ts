@@ -8,12 +8,4 @@ export class UpgradeRequiredError extends BaseHttpError {
   public readonly statusText: "Upgrade Required" = ERROR_STATUS_TEXT;
   static readonly status: 426 = UPGRADE_REQUIRED_ERROR_STATUS;
   static readonly statusText: "Upgrade Required" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): UpgradeRequiredError {
-    return new UpgradeRequiredError(this.response.clone());
-  }
 }

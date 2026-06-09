@@ -8,12 +8,4 @@ export class RequestUriTooLongError extends BaseHttpError {
   public readonly statusText: "URI Too Long" = ERROR_STATUS_TEXT;
   static readonly status: 414 = REQUEST_URI_TOO_LONG_ERROR_STATUS;
   static readonly statusText: "URI Too Long" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): RequestUriTooLongError {
-    return new RequestUriTooLongError(this.response.clone());
-  }
 }

@@ -8,12 +8,4 @@ export class RequestTooLongError extends BaseHttpError {
   public readonly statusText: "Payload Too Large" = ERROR_STATUS_TEXT;
   static readonly status: 413 = REQUEST_TOO_LONG_ERROR_STATUS;
   static readonly statusText: "Payload Too Large" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): RequestTooLongError {
-    return new RequestTooLongError(this.response.clone());
-  }
 }

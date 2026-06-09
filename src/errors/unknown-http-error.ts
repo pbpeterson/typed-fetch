@@ -16,8 +16,4 @@ export class UnknownHttpError extends BaseHttpError {
     this.status = response.status;
     this.statusText = response.statusText;
   }
-
-  clone(): UnknownHttpError {
-    return new UnknownHttpError(this.response.clone());
-  }
 }

@@ -8,12 +8,4 @@ export class ProxyAuthenticationRequiredError extends BaseHttpError {
   public readonly statusText: "Proxy Authentication Required" = ERROR_STATUS_TEXT;
   static readonly status: 407 = PROXY_AUTHENTICATION_REQUIRED_ERROR_STATUS;
   static readonly statusText: "Proxy Authentication Required" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): ProxyAuthenticationRequiredError {
-    return new ProxyAuthenticationRequiredError(this.response.clone());
-  }
 }

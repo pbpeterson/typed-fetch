@@ -10,6 +10,6 @@ export default defineConfig({
   sourcemap: false,
   outDir: "dist",
   clean: true,
-  target: "es2020",
+  target: "es2022",
   splitting: false,
 });

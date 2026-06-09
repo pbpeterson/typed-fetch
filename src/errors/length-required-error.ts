@@ -8,12 +8,4 @@ export class LengthRequiredError extends BaseHttpError {
   public readonly statusText: "Length Required" = ERROR_STATUS_TEXT;
   static readonly status: 411 = LENGTH_REQUIRED_ERROR_STATUS;
   static readonly statusText: "Length Required" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): LengthRequiredError {
-    return new LengthRequiredError(this.response.clone());
-  }
 }

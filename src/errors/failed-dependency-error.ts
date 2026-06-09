@@ -8,12 +8,5 @@ export class FailedDependencyError extends BaseHttpError {
   public readonly statusText: "Failed Dependency" = ERROR_STATUS_TEXT;
   static readonly status: 424 = FAILED_DEPENDENCY_ERROR_STATUS;
   static readonly statusText: "Failed Dependency" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): FailedDependencyError {
-    return new FailedDependencyError(this.response.clone());
-  }
 }
+

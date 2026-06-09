@@ -8,12 +8,4 @@ export class ImATeapotError extends BaseHttpError {
   public readonly statusText: "I'm a teapot" = ERROR_STATUS_TEXT;
   static readonly status: 418 = IM_A_TEAPOT_ERROR_STATUS;
   static readonly statusText: "I'm a teapot" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): ImATeapotError {
-    return new ImATeapotError(this.response.clone());
-  }
 }

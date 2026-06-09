@@ -8,12 +8,4 @@ export class MethodNotAllowedError extends BaseHttpError {
   public readonly statusText: "Method Not Allowed" = ERROR_STATUS_TEXT;
   static readonly status: 405 = METHOD_NOT_ALLOWED_ERROR_STATUS;
   static readonly statusText: "Method Not Allowed" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): MethodNotAllowedError {
-    return new MethodNotAllowedError(this.response.clone());
-  }
 }

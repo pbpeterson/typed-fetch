@@ -8,12 +8,4 @@ export class PreconditionFailedError extends BaseHttpError {
   public readonly statusText: "Precondition Failed" = ERROR_STATUS_TEXT;
   static readonly status: 412 = PRECONDITION_FAILED_ERROR_STATUS;
   static readonly statusText: "Precondition Failed" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): PreconditionFailedError {
-    return new PreconditionFailedError(this.response.clone());
-  }
 }

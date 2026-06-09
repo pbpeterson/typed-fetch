@@ -8,12 +8,4 @@ export class TooManyRequestsError extends BaseHttpError {
   public readonly statusText: "Too Many Requests" = ERROR_STATUS_TEXT;
   static readonly status: 429 = TOO_MANY_REQUESTS_ERROR_STATUS;
   static readonly statusText: "Too Many Requests" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): TooManyRequestsError {
-    return new TooManyRequestsError(this.response.clone());
-  }
 }

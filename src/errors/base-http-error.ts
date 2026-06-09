@@ -47,5 +47,8 @@ export abstract class BaseHttpError extends Error {
   }
 
   /** Clone the error so the response body can be read multiple times. */
-  abstract clone(): BaseHttpError;
+  clone(): this {
+    const Ctor = this.constructor as new (response: Response) => this;
+    return new Ctor(this.response.clone());
+  }
 }

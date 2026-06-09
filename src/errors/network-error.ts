@@ -10,7 +10,7 @@ export class NetworkError extends Error {
   override readonly name = "NetworkError";
 
   /** The original error thrown by `fetch`, if any. */
-  public readonly cause?: unknown;
+  public override readonly cause?: unknown;
 
   constructor(message: string = "Network error", options?: { cause?: unknown }) {
     super(message);

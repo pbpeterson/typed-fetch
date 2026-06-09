@@ -40,8 +40,16 @@ import { LoopDetectedError } from "./errors/loop-detected-error";
 import { NotExtendedError } from "./errors/not-extended-error";
 import { NetworkAuthenticationRequiredError } from "./errors/network-authentication-required-error";
 
-/** Maps HTTP status codes (400-511) to their corresponding error class constructors. */
-export const statusCodeErrorMap = new Map<number, HttpErrors>([
+/**
+ * Maps HTTP status codes (400-511) to their corresponding error class constructors.
+ *
+ * Exposed as a `ReadonlyMap` — the mapping is part of the library contract
+ * and must not be mutated at runtime.
+ */
+export const statusCodeErrorMap: ReadonlyMap<number, HttpErrors> = new Map<
+  number,
+  HttpErrors
+>([
   [400, BadRequestError],
   [401, UnauthorizedError],
   [402, PaymentRequiredError],

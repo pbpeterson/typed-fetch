@@ -8,12 +8,4 @@ export class UnauthorizedError extends BaseHttpError {
   public readonly statusText: "Unauthorized" = ERROR_STATUS_TEXT;
   static readonly status: 401 = UNAUTHORIZED_ERROR_STATUS;
   static readonly statusText: "Unauthorized" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): UnauthorizedError {
-    return new UnauthorizedError(this.response.clone());
-  }
 }

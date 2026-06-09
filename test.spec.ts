@@ -76,7 +76,7 @@ beforeAll(async () => {
     const headerEntries = url.searchParams.getAll("header");
 
     for (const entry of headerEntries) {
-      const [key, value] = entry.split(":");
+      const [key = "", value = ""] = entry.split(":");
       res.setHeader(key.trim(), value.trim());
     }
 
@@ -131,7 +131,23 @@ describe("typedFetch", () => {
 
     const data = await result.response?.json();
     expect(data?.users).toHaveLength(2);
-    expect(data?.users[0].id).toBe(1);
+    expect(data?.users[0]?.id).toBe(1);
+  });
+
+  test("accepts a URL instance like fetch", async () => {
+    const result = await typedFetch<{ id: number }>(
+      new URL(url({ status: 200, body: JSON.stringify({ id: 7 }) })),
+    );
+
+    expect(result.error).toBe(null);
+    expect(await result.response?.json()).toEqual({ id: 7 });
+  });
+
+  test("accepts a Request object like fetch", async () => {
+    const result = await typedFetch(new Request(url({ status: 404 })));
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NotFoundError);
   });
 
   test("forwards request options to fetch", async () => {

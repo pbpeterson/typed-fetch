@@ -8,12 +8,4 @@ export class ConflictError extends BaseHttpError {
   public readonly statusText: "Conflict" = ERROR_STATUS_TEXT;
   static readonly status: 409 = CONFLICT_ERROR_STATUS;
   static readonly statusText: "Conflict" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): ConflictError {
-    return new ConflictError(this.response.clone());
-  }
 }

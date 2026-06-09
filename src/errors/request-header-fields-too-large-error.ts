@@ -8,12 +8,4 @@ export class RequestHeaderFieldsTooLargeError extends BaseHttpError {
   public readonly statusText: "Request Header Fields Too Large" = ERROR_STATUS_TEXT;
   static readonly status: 431 = REQUEST_HEADER_FIELDS_TOO_LARGE_ERROR_STATUS;
   static readonly statusText: "Request Header Fields Too Large" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): RequestHeaderFieldsTooLargeError {
-    return new RequestHeaderFieldsTooLargeError(this.response.clone());
-  }
 }

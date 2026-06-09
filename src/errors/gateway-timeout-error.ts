@@ -8,12 +8,4 @@ export class GatewayTimeoutError extends BaseHttpError {
   public readonly statusText: "Gateway Timeout" = ERROR_STATUS_TEXT;
   static readonly status: 504 = GATEWAY_TIMEOUT_ERROR_STATUS;
   static readonly statusText: "Gateway Timeout" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): GatewayTimeoutError {
-    return new GatewayTimeoutError(this.response.clone());
-  }
 }

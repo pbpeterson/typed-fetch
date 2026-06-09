@@ -8,12 +8,4 @@ export class HttpVersionNotSupportedError extends BaseHttpError {
   public readonly statusText: "HTTP Version Not Supported" = ERROR_STATUS_TEXT;
   static readonly status: 505 = HTTP_VERSION_NOT_SUPPORTED_ERROR_STATUS;
   static readonly statusText: "HTTP Version Not Supported" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): HttpVersionNotSupportedError {
-    return new HttpVersionNotSupportedError(this.response.clone());
-  }
 }

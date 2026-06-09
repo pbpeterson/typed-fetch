@@ -8,12 +8,4 @@ export class UnsupportedMediaTypeError extends BaseHttpError {
   public readonly statusText: "Unsupported Media Type" = ERROR_STATUS_TEXT;
   static readonly status: 415 = UNSUPPORTED_MEDIA_TYPE_ERROR_STATUS;
   static readonly statusText: "Unsupported Media Type" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): UnsupportedMediaTypeError {
-    return new UnsupportedMediaTypeError(this.response.clone());
-  }
 }

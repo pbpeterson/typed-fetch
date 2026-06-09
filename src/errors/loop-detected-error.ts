@@ -8,12 +8,4 @@ export class LoopDetectedError extends BaseHttpError {
   public readonly statusText: "Loop Detected" = ERROR_STATUS_TEXT;
   static readonly status: 508 = LOOP_DETECTED_ERROR_STATUS;
   static readonly statusText: "Loop Detected" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): LoopDetectedError {
-    return new LoopDetectedError(this.response.clone());
-  }
 }

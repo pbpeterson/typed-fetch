@@ -8,12 +8,4 @@ export class UnavailableForLegalReasonsError extends BaseHttpError {
   public readonly statusText: "Unavailable For Legal Reasons" = ERROR_STATUS_TEXT;
   static readonly status: 451 = UNAVAILABLE_FOR_LEGAL_REASONS_ERROR_STATUS;
   static readonly statusText: "Unavailable For Legal Reasons" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): UnavailableForLegalReasonsError {
-    return new UnavailableForLegalReasonsError(this.response.clone());
-  }
 }

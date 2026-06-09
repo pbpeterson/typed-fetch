@@ -8,12 +8,4 @@ export class ExpectationFailedError extends BaseHttpError {
   public readonly statusText: "Expectation Failed" = ERROR_STATUS_TEXT;
   static readonly status: 417 = EXPECTATION_FAILED_ERROR_STATUS;
   static readonly statusText: "Expectation Failed" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): ExpectationFailedError {
-    return new ExpectationFailedError(this.response.clone());
-  }
 }

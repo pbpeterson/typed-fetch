@@ -8,12 +8,4 @@ export class NotExtendedError extends BaseHttpError {
   public readonly statusText: "Not Extended" = ERROR_STATUS_TEXT;
   static readonly status: 510 = NOT_EXTENDED_ERROR_STATUS;
   static readonly statusText: "Not Extended" = ERROR_STATUS_TEXT;
-
-  constructor(response: Response) {
-    super(response);
-  }
-
-  clone(): NotExtendedError {
-    return new NotExtendedError(this.response.clone());
-  }
 }
