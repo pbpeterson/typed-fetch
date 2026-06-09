@@ -38,12 +38,10 @@ export function isNetworkError(error: unknown): error is NetworkError {
 
 interface TypedResponse<JsonReturnType> extends Response {
   json(): Promise<JsonReturnType>;
+  clone(): TypedResponse<JsonReturnType>;
 }
 
-type TypedFetchReturnType<
-  JsonReturnType,
-  ErrorType extends ClientErrors = ClientErrors,
-> =
+type TypedFetchReturnType<JsonReturnType, ErrorType extends ClientErrors = ClientErrors> =
   | {
       response: TypedResponse<JsonReturnType>;
       error: null;
@@ -87,10 +85,7 @@ type Options = FetchParams[1] & {
  * }
  * ```
  */
-export async function typedFetch<
-  JsonReturnType,
-  ErrorType extends ClientErrors = ClientErrors,
->(
+export async function typedFetch<JsonReturnType, ErrorType extends ClientErrors = ClientErrors>(
   url: FetchInput,
   options: Options = {},
 ): Promise<TypedFetchReturnType<JsonReturnType, ErrorType>> {
@@ -98,8 +93,7 @@ export async function typedFetch<
   try {
     res = await fetch(url, options);
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message || err.name : "Network error";
+    const message = err instanceof Error ? err.message || err.name : "Network error";
     return {
       response: null,
       error: new NetworkError(message, { cause: err }),

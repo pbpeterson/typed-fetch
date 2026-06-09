@@ -1,12 +1,5 @@
 import http from "node:http";
-import {
-  describe,
-  test,
-  expect,
-  beforeAll,
-  afterAll,
-  expectTypeOf,
-} from "vitest";
+import { describe, test, expect, beforeAll, afterAll, expectTypeOf } from "vitest";
 import { typedFetch, isHttpError, isNetworkError } from "./src/index";
 import { statusCodeErrorMap } from "./src/http-status-codes";
 import { httpErrors } from "./src/errors/helpers";
@@ -70,10 +63,10 @@ let server: http.Server;
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
-    const url = new URL(req.url!, `http://${req.headers.host}`);
-    const status = Number(url.searchParams.get("status") ?? 200);
-    const body = url.searchParams.get("body");
-    const headerEntries = url.searchParams.getAll("header");
+    const requestUrl = new URL(req.url!, `http://${req.headers.host}`);
+    const status = Number(requestUrl.searchParams.get("status") ?? 200);
+    const body = requestUrl.searchParams.get("body");
+    const headerEntries = requestUrl.searchParams.getAll("header");
 
     for (const entry of headerEntries) {
       const [key = "", value = ""] = entry.split(":");
@@ -125,9 +118,7 @@ describe("typedFetch", () => {
 
   test("response.json() is typed", async () => {
     const body = JSON.stringify({ users: [{ id: 1 }, { id: 2 }] });
-    const result = await typedFetch<{ users: { id: number }[] }>(
-      url({ status: 200, body }),
-    );
+    const result = await typedFetch<{ users: { id: number }[] }>(url({ status: 200, body }));
 
     const data = await result.response?.json();
     expect(data?.users).toHaveLength(2);
@@ -204,24 +195,19 @@ describe("typedFetch", () => {
     { status: 511, Class: NetworkAuthenticationRequiredError },
   ];
 
-  test.each(errorCases)(
-    "$status → $Class.name",
-    async ({ status, Class }) => {
-      const result = await typedFetch(url({ status }));
+  test.each(errorCases)("$status → $Class.name", async ({ status, Class }) => {
+    const result = await typedFetch(url({ status }));
 
-      expect(result.response).toBe(null);
-      expect(result.error).toBeInstanceOf(Class);
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(Class);
 
-      if (isHttpError(result.error)) {
-        expect(result.error.status).toBe(status);
-      }
-    },
-  );
+    if (isHttpError(result.error)) {
+      expect(result.error.status).toBe(status);
+    }
+  });
 
   test("407 → ProxyAuthenticationRequiredError (constructed directly, Node rejects 407 at network level)", async () => {
-    const error = new ProxyAuthenticationRequiredError(
-      new Response(null, { status: 407 }),
-    );
+    const error = new ProxyAuthenticationRequiredError(new Response(null, { status: 407 }));
 
     expect(error.status).toBe(407);
     expect(error).toBeInstanceOf(BaseHttpError);
@@ -260,10 +246,9 @@ describe("typedFetch", () => {
   });
 
   test("3xx with redirect: 'manual' is not an error", async () => {
-    const result = await typedFetch(
-      url({ status: 302, header: "Location:/elsewhere" }),
-      { redirect: "manual" },
-    );
+    const result = await typedFetch(url({ status: 302, header: "Location:/elsewhere" }), {
+      redirect: "manual",
+    });
 
     expect(result.error).toBe(null);
     expect(result.response?.status).toBe(302);
@@ -327,9 +312,7 @@ describe("typedFetch", () => {
   });
 
   test("error.headers exposes response headers", async () => {
-    const result = await typedFetch(
-      url({ status: 429, header: "Retry-After:60" }),
-    );
+    const result = await typedFetch(url({ status: 429, header: "Retry-After:60" }));
 
     expect(result.error).toBeInstanceOf(TooManyRequestsError);
 
@@ -443,15 +426,12 @@ describe("error class consistency", () => {
     },
   );
 
-  test.each(allErrors)(
-    "$Class.name extends BaseHttpError and Error",
-    ({ Class, status }) => {
-      const instance = new Class(new Response(null, { status }));
+  test.each(allErrors)("$Class.name extends BaseHttpError and Error", ({ Class, status }) => {
+    const instance = new Class(new Response(null, { status }));
 
-      expect(instance).toBeInstanceOf(BaseHttpError);
-      expect(instance).toBeInstanceOf(Error);
-    },
-  );
+    expect(instance).toBeInstanceOf(BaseHttpError);
+    expect(instance).toBeInstanceOf(Error);
+  });
 
   test.each(allErrors)(
     "$Class.name.clone() returns a distinct instance of the same class",
@@ -466,13 +446,10 @@ describe("error class consistency", () => {
     },
   );
 
-  test.each(allErrors)(
-    "$Class.name.name equals the class name",
-    ({ Class, status }) => {
-      const instance = new Class(new Response(null, { status }));
-      expect(instance.name).toBe(Class.name);
-    },
-  );
+  test.each(allErrors)("$Class.name.name equals the class name", ({ Class, status }) => {
+    const instance = new Class(new Response(null, { status }));
+    expect(instance.name).toBe(Class.name);
+  });
 
   test("NetworkError.name equals 'NetworkError'", () => {
     expect(new NetworkError("fail").name).toBe("NetworkError");
@@ -506,9 +483,7 @@ describe("error class consistency", () => {
 describe("json<T>()", () => {
   test("returns typed json from error body", async () => {
     const body = { message: "not found", code: "NOT_FOUND" };
-    const error = new NotFoundError(
-      new Response(JSON.stringify(body), { status: 404 }),
-    );
+    const error = new NotFoundError(new Response(JSON.stringify(body), { status: 404 }));
 
     const result = await error.json<{ message: string; code: string }>();
     expect(result).toEqual(body);
@@ -598,6 +573,18 @@ describe("type-level", () => {
     }
   });
 
+  test("response.clone() keeps the typed json()", async () => {
+    const result = await typedFetch<{ id: number }>(
+      url({ status: 200, body: JSON.stringify({ id: 1 }) }),
+    );
+
+    if (result.error === null) {
+      const cloned = result.response.clone();
+      expectTypeOf(cloned.json).returns.toEqualTypeOf<Promise<{ id: number }>>();
+      expect(await cloned.json()).toEqual({ id: 1 });
+    }
+  });
+
   test("isHttpError narrows to BaseHttpError", () => {
     const error: unknown = {};
     if (isHttpError(error)) {
@@ -629,11 +616,7 @@ describe("type-level", () => {
   });
 
   test("json<T>() returns Promise<T>", () => {
-    const error = new NotFoundError(
-      new Response(JSON.stringify({}), { status: 404 }),
-    );
-    expectTypeOf(error.json<{ message: string }>()).toEqualTypeOf<
-      Promise<{ message: string }>
-    >();
+    const error = new NotFoundError(new Response(JSON.stringify({}), { status: 404 }));
+    expectTypeOf(error.json<{ message: string }>()).toEqualTypeOf<Promise<{ message: string }>>();
   });
 });

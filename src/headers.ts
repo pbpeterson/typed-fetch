@@ -29,22 +29,8 @@ export type StrictHeaders = {
   "Content-Type"?: ContentType;
   Authorization?: `${string} ${string}`;
   Accept?: ContentType | "*/*";
-  "Accept-Encoding"?:
-    | "gzip"
-    | "deflate"
-    | "br"
-    | "identity"
-    | "*"
-    | (string & {});
-  "Accept-Language"?:
-    | "en"
-    | "en-US"
-    | "en-GB"
-    | "fr"
-    | "de"
-    | "es"
-    | "*"
-    | (string & {});
+  "Accept-Encoding"?: "gzip" | "deflate" | "br" | "identity" | "*" | (string & {});
+  "Accept-Language"?: "en" | "en-US" | "en-GB" | "fr" | "de" | "es" | "*" | (string & {});
   "Cache-Control"?:
     | CacheControlDirective
     | `${CacheControlDirective}, ${CacheControlDirective}`
@@ -64,10 +50,7 @@ export type StrictHeaders = {
   Range?: `bytes=${string}` | (string & {});
   Referer?: string;
   "User-Agent"?: string;
-  "WWW-Authenticate"?:
-    | `Bearer realm="${string}"`
-    | `Basic realm="${string}"`
-    | (string & {});
+  "WWW-Authenticate"?: `Bearer realm="${string}"` | `Basic realm="${string}"` | (string & {});
   "X-Requested-With"?: "XMLHttpRequest";
   "Access-Control-Allow-Origin"?: "*" | (string & {});
   "Access-Control-Allow-Methods"?:

@@ -6,7 +6,13 @@ export default defineConfig({
     "errors/index": "src/errors/index.ts",
   },
   format: ["cjs", "esm"],
-  dts: true,
+  dts: {
+    compilerOptions: {
+      // tsup injects baseUrl into the DTS build; TS 6 hard-errors on the
+      // deprecation without this. Remove once tsup stops setting baseUrl.
+      ignoreDeprecations: "6.0",
+    },
+  },
   sourcemap: false,
   outDir: "dist",
   clean: true,

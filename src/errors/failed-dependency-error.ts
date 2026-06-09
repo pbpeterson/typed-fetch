@@ -9,4 +9,3 @@ export class FailedDependencyError extends BaseHttpError {
   static readonly status: 424 = FAILED_DEPENDENCY_ERROR_STATUS;
   static readonly statusText: "Failed Dependency" = ERROR_STATUS_TEXT;
 }
-

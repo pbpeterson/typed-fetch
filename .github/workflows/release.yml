@@ -1,12 +1,15 @@
 name: Release
 
+# Publishes via npm trusted publishing (OIDC) — no NPM_TOKEN secret needed.
+# One-time setup on npmjs.com: package Settings → Trusted Publisher →
+# GitHub Actions, repository pbpeterson/typed-fetch, workflow release.yml.
 on:
   push:
     tags: ["v*"]
 
 permissions:
   contents: read
-  id-token: write # required for npm provenance
+  id-token: write # required for OIDC trusted publishing + provenance
 
 jobs:
   publish:
@@ -19,9 +22,10 @@ jobs:
           node-version: 22
           cache: pnpm
           registry-url: https://registry.npmjs.org
+      # Trusted publishing requires npm >= 11.5
+      - run: npm install -g npm@latest
       - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
       - run: npx tsc --noEmit
       - run: pnpm test
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

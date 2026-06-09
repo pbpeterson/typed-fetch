@@ -91,11 +91,7 @@ export type ServerErrors =
   | VariantAlsoNegotiatesError;
 
 /** Union of all possible error types returned by `typedFetch`. */
-export type TypedFetchError =
-  | ClientErrors
-  | ServerErrors
-  | UnknownHttpError
-  | NetworkError;
+export type TypedFetchError = ClientErrors | ServerErrors | UnknownHttpError | NetworkError;
 
 /** Array of all 40 HTTP error class constructors. */
 export const httpErrors = [

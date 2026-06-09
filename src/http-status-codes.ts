@@ -46,10 +46,7 @@ import { NetworkAuthenticationRequiredError } from "./errors/network-authenticat
  * Exposed as a `ReadonlyMap` — the mapping is part of the library contract
  * and must not be mutated at runtime.
  */
-export const statusCodeErrorMap: ReadonlyMap<number, HttpErrors> = new Map<
-  number,
-  HttpErrors
->([
+export const statusCodeErrorMap: ReadonlyMap<number, HttpErrors> = new Map<number, HttpErrors>([
   [400, BadRequestError],
   [401, UnauthorizedError],
   [402, PaymentRequiredError],
