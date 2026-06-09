@@ -36,12 +36,14 @@ export function isNetworkError(error: unknown): error is NetworkError {
   return error instanceof NetworkError;
 }
 
-interface TypedResponse<JsonReturnType> extends Response {
+/** A `Response` whose `json()` (and `clone()`) carry the expected body type. */
+export interface TypedResponse<JsonReturnType> extends Response {
   json(): Promise<JsonReturnType>;
   clone(): TypedResponse<JsonReturnType>;
 }
 
-type TypedFetchReturnType<JsonReturnType, ErrorType extends ClientErrors = ClientErrors> =
+/** The discriminated union returned by {@link typedFetch}. */
+export type TypedFetchReturnType<JsonReturnType, ErrorType extends ClientErrors = ClientErrors> =
   | {
       response: TypedResponse<JsonReturnType>;
       error: null;
@@ -54,7 +56,9 @@ type TypedFetchReturnType<JsonReturnType, ErrorType extends ClientErrors = Clien
 type FetchParams = Parameters<typeof fetch>;
 
 type FetchInput = FetchParams[0];
-type Options = FetchParams[1] & {
+
+/** Request options accepted by {@link typedFetch} — `RequestInit` with typed `headers` and `method`. */
+export type TypedFetchOptions = FetchParams[1] & {
   headers?: TypedHeaders;
   // fetch accepts any method string (and normalizes case); the union only
   // drives IntelliSense.
@@ -87,7 +91,7 @@ type Options = FetchParams[1] & {
  */
 export async function typedFetch<JsonReturnType, ErrorType extends ClientErrors = ClientErrors>(
   url: FetchInput,
-  options: Options = {},
+  options: TypedFetchOptions = {},
 ): Promise<TypedFetchReturnType<JsonReturnType, ErrorType>> {
   let res: Response;
   try {

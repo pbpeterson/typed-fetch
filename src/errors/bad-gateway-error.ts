@@ -1,11 +1,9 @@
 import { BaseHttpError } from "./base-http-error";
 
-const BAD_GATEWAY_ERROR_STATUS = 502;
-const ERROR_STATUS_TEXT = "Bad Gateway";
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/502 */
 export class BadGatewayError extends BaseHttpError {
-  public readonly status: 502 = BAD_GATEWAY_ERROR_STATUS;
-  public readonly statusText: "Bad Gateway" = ERROR_STATUS_TEXT;
-  static readonly status: 502 = BAD_GATEWAY_ERROR_STATUS;
-  static readonly statusText: "Bad Gateway" = ERROR_STATUS_TEXT;
+  public readonly status = 502 as const;
+  public readonly statusText = "Bad Gateway" as const;
+  static readonly status = 502 as const;
+  static readonly statusText = "Bad Gateway" as const;
 }

@@ -1,11 +1,9 @@
 import { BaseHttpError } from "./base-http-error";
 
-const NETWORK_AUTHENTICATION_REQUIRED_ERROR_STATUS = 511;
-const ERROR_STATUS_TEXT = "Network Authentication Required";
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/511 */
 export class NetworkAuthenticationRequiredError extends BaseHttpError {
-  public readonly status: 511 = NETWORK_AUTHENTICATION_REQUIRED_ERROR_STATUS;
-  public readonly statusText: "Network Authentication Required" = ERROR_STATUS_TEXT;
-  static readonly status: 511 = NETWORK_AUTHENTICATION_REQUIRED_ERROR_STATUS;
-  static readonly statusText: "Network Authentication Required" = ERROR_STATUS_TEXT;
+  public readonly status = 511 as const;
+  public readonly statusText = "Network Authentication Required" as const;
+  static readonly status = 511 as const;
+  static readonly statusText = "Network Authentication Required" as const;
 }

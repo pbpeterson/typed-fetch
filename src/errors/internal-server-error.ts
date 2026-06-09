@@ -1,11 +1,9 @@
 import { BaseHttpError } from "./base-http-error";
 
-const INTERNAL_SERVER_ERROR_STATUS = 500;
-const ERROR_STATUS_TEXT = "Internal Server Error";
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/500 */
 export class InternalServerError extends BaseHttpError {
-  public readonly status: 500 = INTERNAL_SERVER_ERROR_STATUS;
-  public readonly statusText: "Internal Server Error" = ERROR_STATUS_TEXT;
-  static readonly status: 500 = INTERNAL_SERVER_ERROR_STATUS;
-  static readonly statusText: "Internal Server Error" = ERROR_STATUS_TEXT;
+  public readonly status = 500 as const;
+  public readonly statusText = "Internal Server Error" as const;
+  static readonly status = 500 as const;
+  static readonly statusText = "Internal Server Error" as const;
 }

@@ -1,11 +1,9 @@
 import { BaseHttpError } from "./base-http-error";
 
-const LOCKED_ERROR_STATUS = 423;
-const ERROR_STATUS_TEXT = "Locked";
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/423 */
 export class LockedError extends BaseHttpError {
-  public readonly status: 423 = LOCKED_ERROR_STATUS;
-  public readonly statusText: "Locked" = ERROR_STATUS_TEXT;
-  static readonly status: 423 = LOCKED_ERROR_STATUS;
-  static readonly statusText: "Locked" = ERROR_STATUS_TEXT;
+  public readonly status = 423 as const;
+  public readonly statusText = "Locked" as const;
+  static readonly status = 423 as const;
+  static readonly statusText = "Locked" as const;
 }

@@ -1,11 +1,9 @@
 import { BaseHttpError } from "./base-http-error";
 
-const MISDIRECTED_REQUEST_ERROR_STATUS = 421;
-const ERROR_STATUS_TEXT = "Misdirected Request";
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/421 */
 export class MisdirectedRequestError extends BaseHttpError {
-  public readonly status: 421 = MISDIRECTED_REQUEST_ERROR_STATUS;
-  public readonly statusText: "Misdirected Request" = ERROR_STATUS_TEXT;
-  static readonly status: 421 = MISDIRECTED_REQUEST_ERROR_STATUS;
-  static readonly statusText: "Misdirected Request" = ERROR_STATUS_TEXT;
+  public readonly status = 421 as const;
+  public readonly statusText = "Misdirected Request" as const;
+  static readonly status = 421 as const;
+  static readonly statusText = "Misdirected Request" as const;
 }

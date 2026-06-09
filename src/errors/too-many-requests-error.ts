@@ -1,11 +1,9 @@
 import { BaseHttpError } from "./base-http-error";
 
-const TOO_MANY_REQUESTS_ERROR_STATUS = 429;
-const ERROR_STATUS_TEXT = "Too Many Requests";
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429 */
 export class TooManyRequestsError extends BaseHttpError {
-  public readonly status: 429 = TOO_MANY_REQUESTS_ERROR_STATUS;
-  public readonly statusText: "Too Many Requests" = ERROR_STATUS_TEXT;
-  static readonly status: 429 = TOO_MANY_REQUESTS_ERROR_STATUS;
-  static readonly statusText: "Too Many Requests" = ERROR_STATUS_TEXT;
+  public readonly status = 429 as const;
+  public readonly statusText = "Too Many Requests" as const;
+  static readonly status = 429 as const;
+  static readonly statusText = "Too Many Requests" as const;
 }

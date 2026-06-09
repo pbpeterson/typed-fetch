@@ -1,11 +1,9 @@
 import { BaseHttpError } from "./base-http-error";
 
-const NOT_FOUND_ERROR_STATUS = 404;
-const ERROR_STATUS_TEXT = "Not Found";
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404 */
 export class NotFoundError extends BaseHttpError {
-  public readonly status: 404 = NOT_FOUND_ERROR_STATUS;
-  public readonly statusText: "Not Found" = ERROR_STATUS_TEXT;
-  static readonly status: 404 = NOT_FOUND_ERROR_STATUS;
-  static readonly statusText: "Not Found" = ERROR_STATUS_TEXT;
+  public readonly status = 404 as const;
+  public readonly statusText = "Not Found" as const;
+  static readonly status = 404 as const;
+  static readonly statusText = "Not Found" as const;
 }

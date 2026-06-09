@@ -51,6 +51,7 @@ import {
 import type { ClientErrors, ServerErrors } from "./src/errors";
 import type { StrictHeaders } from "./src/headers";
 import type { HttpMethods } from "./src/methods";
+import type { TypedFetchOptions, TypedFetchReturnType, TypedResponse } from "./index";
 
 // ── Test HTTP server ─────────────────────────────────────────────────
 // Spins up a real server on a random port. Query params control the response:
@@ -529,14 +530,15 @@ describe("type-level", () => {
     expectTypeOf<"DELETE">().toExtend<HttpMethods>();
     expectTypeOf<"HEAD">().toExtend<HttpMethods>();
     expectTypeOf<"OPTIONS">().toExtend<HttpMethods>();
-    expectTypeOf<"CONNECT">().toExtend<HttpMethods>();
-    expectTypeOf<"TRACE">().toExtend<HttpMethods>();
   });
 
-  test("HttpMethods rejects invalid strings", () => {
+  test("HttpMethods rejects invalid and fetch-forbidden methods", () => {
     expectTypeOf<"INVALID">().not.toExtend<HttpMethods>();
     expectTypeOf<"get">().not.toExtend<HttpMethods>();
     expectTypeOf<string>().not.toExtend<HttpMethods>();
+    // the Fetch spec forbids these — fetch() throws TypeError on them
+    expectTypeOf<"CONNECT">().not.toExtend<HttpMethods>();
+    expectTypeOf<"TRACE">().not.toExtend<HttpMethods>();
   });
 
   test("StrictHeaders accepts known and custom headers", () => {
@@ -583,6 +585,14 @@ describe("type-level", () => {
       expectTypeOf(cloned.json).returns.toEqualTypeOf<Promise<{ id: number }>>();
       expect(await cloned.json()).toEqual({ id: 1 });
     }
+  });
+
+  test("public types are exported from the main entry", () => {
+    expectTypeOf<TypedFetchOptions>().toExtend<RequestInit>();
+    expectTypeOf<TypedResponse<{ a: 1 }>["json"]>().returns.toEqualTypeOf<Promise<{ a: 1 }>>();
+    expectTypeOf<TypedFetchReturnType<{ a: 1 }>>().toExtend<{
+      response: TypedResponse<{ a: 1 }> | null;
+    }>();
   });
 
   test("isHttpError narrows to BaseHttpError", () => {

@@ -6,6 +6,9 @@
 
 - Responses with unmapped status codes >= 400 (e.g. 420, 599) now return an
   `UnknownHttpError` instead of being passed through as a successful response.
+- Requires Node.js >= 20 (Node 18 is end-of-life).
+- `HttpMethods` no longer includes `CONNECT` and `TRACE` — the Fetch spec
+  forbids them and `fetch` throws a `TypeError` if they are used.
 
 ### Added
 
@@ -17,6 +20,9 @@
 - HTTP errors now have a useful `message` (e.g. `"HTTP 404 Not Found"`);
   previously it was empty.
 - `TypedResponse.clone()` keeps the typed `json()` method.
+- The main entry now exports the `TypedResponse`, `TypedFetchReturnType`,
+  `TypedFetchOptions`, `TypedHeaders`, `StrictHeaders`, and `HttpMethods`
+  types for building typed wrappers around `typedFetch`.
 - `method` option accepts any string (fetch parity) while keeping
   IntelliSense for standard verbs.
 

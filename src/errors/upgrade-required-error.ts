@@ -1,11 +1,9 @@
 import { BaseHttpError } from "./base-http-error";
 
-const UPGRADE_REQUIRED_ERROR_STATUS = 426;
-const ERROR_STATUS_TEXT = "Upgrade Required";
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/426 */
 export class UpgradeRequiredError extends BaseHttpError {
-  public readonly status: 426 = UPGRADE_REQUIRED_ERROR_STATUS;
-  public readonly statusText: "Upgrade Required" = ERROR_STATUS_TEXT;
-  static readonly status: 426 = UPGRADE_REQUIRED_ERROR_STATUS;
-  static readonly statusText: "Upgrade Required" = ERROR_STATUS_TEXT;
+  public readonly status = 426 as const;
+  public readonly statusText = "Upgrade Required" as const;
+  static readonly status = 426 as const;
+  static readonly statusText = "Upgrade Required" as const;
 }

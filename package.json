@@ -58,6 +58,7 @@
     "lint": "oxlint",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
@@ -70,7 +71,7 @@
     "vitest": "^3.2.4"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "packageManager": "pnpm@10.33.0"
 }

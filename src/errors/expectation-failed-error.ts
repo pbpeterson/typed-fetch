@@ -1,11 +1,9 @@
 import { BaseHttpError } from "./base-http-error";
 
-const EXPECTATION_FAILED_ERROR_STATUS = 417;
-const ERROR_STATUS_TEXT = "Expectation Failed";
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/417 */
 export class ExpectationFailedError extends BaseHttpError {
-  public readonly status: 417 = EXPECTATION_FAILED_ERROR_STATUS;
-  public readonly statusText: "Expectation Failed" = ERROR_STATUS_TEXT;
-  static readonly status: 417 = EXPECTATION_FAILED_ERROR_STATUS;
-  static readonly statusText: "Expectation Failed" = ERROR_STATUS_TEXT;
+  public readonly status = 417 as const;
+  public readonly statusText = "Expectation Failed" as const;
+  static readonly status = 417 as const;
+  static readonly statusText = "Expectation Failed" as const;
 }

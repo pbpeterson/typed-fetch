@@ -1,11 +1,9 @@
 import { BaseHttpError } from "./base-http-error";
 
-const CONFLICT_ERROR_STATUS = 409;
-const ERROR_STATUS_TEXT = "Conflict";
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/409 */
 export class ConflictError extends BaseHttpError {
-  public readonly status: 409 = CONFLICT_ERROR_STATUS;
-  public readonly statusText: "Conflict" = ERROR_STATUS_TEXT;
-  static readonly status: 409 = CONFLICT_ERROR_STATUS;
-  static readonly statusText: "Conflict" = ERROR_STATUS_TEXT;
+  public readonly status = 409 as const;
+  public readonly statusText = "Conflict" as const;
+  static readonly status = 409 as const;
+  static readonly statusText = "Conflict" as const;
 }

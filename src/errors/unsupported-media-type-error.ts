@@ -1,11 +1,9 @@
 import { BaseHttpError } from "./base-http-error";
 
-const UNSUPPORTED_MEDIA_TYPE_ERROR_STATUS = 415;
-const ERROR_STATUS_TEXT = "Unsupported Media Type";
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/415 */
 export class UnsupportedMediaTypeError extends BaseHttpError {
-  public readonly status: 415 = UNSUPPORTED_MEDIA_TYPE_ERROR_STATUS;
-  public readonly statusText: "Unsupported Media Type" = ERROR_STATUS_TEXT;
-  static readonly status: 415 = UNSUPPORTED_MEDIA_TYPE_ERROR_STATUS;
-  static readonly statusText: "Unsupported Media Type" = ERROR_STATUS_TEXT;
+  public readonly status = 415 as const;
+  public readonly statusText = "Unsupported Media Type" as const;
+  static readonly status = 415 as const;
+  static readonly statusText = "Unsupported Media Type" as const;
 }
