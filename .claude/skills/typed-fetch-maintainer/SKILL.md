@@ -1,5 +1,5 @@
 ---
-name: typed-fetch
+name: typed-fetch-maintainer
 description: Maintainer guide for @pbpeterson/typed-fetch — a zero-dependency, type-safe fetch wrapper with Go-style errors-as-values. Use when working in this repository — adding HTTP error classes, changing typedFetch behavior, editing TypedHeaders/HttpMethods, writing tests, or cutting a release. Triggers on typedFetch, BaseHttpError, UnknownHttpError, NetworkError, statusCodeErrorMap, ClientErrors/ServerErrors.
 ---
 

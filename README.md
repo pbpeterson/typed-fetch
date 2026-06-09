@@ -51,6 +51,14 @@ npm install @pbpeterson/typed-fetch
 
 Requires Node.js >= 20 (or any runtime with the native Fetch API: browsers, Deno, Bun, edge runtimes).
 
+### Agent Skill
+
+Using Claude Code or another agent? Install the typed-fetch skill so your agent knows the API and error-handling patterns:
+
+```bash
+npx skills add pbpeterson/typed-fetch --skill typed-fetch
+```
+
 ## Basic Usage
 
 ### Simple GET Request
