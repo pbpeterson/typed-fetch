@@ -17,7 +17,11 @@ export abstract class BaseHttpError extends Error {
   public abstract readonly statusText: string;
 
   constructor(protected readonly response: Response) {
-    super();
+    super(
+      response.statusText
+        ? `HTTP ${response.status} ${response.statusText}`
+        : `HTTP ${response.status}`,
+    );
     this.name = this.constructor.name;
     this.headers = response.headers;
   }

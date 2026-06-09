@@ -1,8 +1,8 @@
-import isNetworkErr from "is-network-error";
 import { ClientErrors, ServerErrors } from "./errors/helpers";
 import { BaseHttpError } from "./errors/base-http-error";
 import { statusCodeErrorMap } from "./http-status-codes";
 import { NetworkError } from "./errors/network-error";
+import { UnknownHttpError } from "./errors/unknown-http-error";
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
 
@@ -50,15 +50,17 @@ type TypedFetchReturnType<
     }
   | {
       response: null;
-      error: ErrorType | ServerErrors | NetworkError;
+      error: ErrorType | ServerErrors | UnknownHttpError | NetworkError;
     };
 
 type FetchParams = Parameters<typeof fetch>;
 
-type URL = FetchParams[0];
+type FetchInput = FetchParams[0];
 type Options = FetchParams[1] & {
   headers?: TypedHeaders;
-  method?: HttpMethods;
+  // fetch accepts any method string (and normalizes case); the union only
+  // drives IntelliSense.
+  method?: HttpMethods | (string & {});
 };
 
 /**
@@ -67,7 +69,8 @@ type Options = FetchParams[1] & {
  *
  * @typeParam JsonReturnType - Expected response body type on success.
  * @typeParam ErrorType - Specific client error types to expect (defaults to all 4xx).
- *   Server errors (5xx) and {@link NetworkError} are always included.
+ *   Server errors (5xx), {@link UnknownHttpError} (unmapped status codes >= 400),
+ *   and {@link NetworkError} are always included.
  *
  * @param url - The resource URL, same as `fetch()`.
  * @param options - Request options with typed `headers` and `method`.
@@ -88,41 +91,33 @@ export async function typedFetch<
   JsonReturnType,
   ErrorType extends ClientErrors = ClientErrors,
 >(
-  url: URL,
+  url: FetchInput,
   options: Options = {},
 ): Promise<TypedFetchReturnType<JsonReturnType, ErrorType>> {
+  let res: Response;
   try {
-    const res = await fetch(url, options);
-    if (!res.ok) {
-      const ErrorClass = statusCodeErrorMap.get(res.status);
-      if (ErrorClass) {
-        throw new ErrorClass(res);
-      }
-    }
-
-    return {
-      response: res as TypedResponse<JsonReturnType>,
-      error: null,
-    };
+    res = await fetch(url, options);
   } catch (err) {
-    const networkError = (msg: string) =>
-      ({ response: null, error: new NetworkError(msg) }) as const;
-
-    if (isHttpError(err)) {
-      return {
-        response: null,
-        error: err as ErrorType | ServerErrors,
-      };
-    } else if (err instanceof NetworkError) {
-      return { response: null, error: err };
-    } else if (isNetworkErr(err)) {
-      return networkError(
-        err instanceof Error ? err.message : "Network error",
-      );
-    } else {
-      return networkError(
-        err instanceof Error ? err.message : "Unknown error",
-      );
-    }
+    const message =
+      err instanceof Error ? err.message || err.name : "Network error";
+    return {
+      response: null,
+      error: new NetworkError(message, { cause: err }),
+    };
   }
+
+  if (res.status >= 400) {
+    const ErrorClass = statusCodeErrorMap.get(res.status);
+    return {
+      response: null,
+      error: ErrorClass
+        ? (new ErrorClass(res) as ErrorType | ServerErrors)
+        : new UnknownHttpError(res),
+    };
+  }
+
+  return {
+    response: res as TypedResponse<JsonReturnType>,
+    error: null,
+  };
 }

@@ -33,10 +33,11 @@ if (error) {
 - **Fully typed** - Complete TypeScript support with literal status types
 - **Built on Fetch** - Thin wrapper around the native Fetch API, same signature
 - **40 HTTP error classes** - Covering all standard HTTP status codes (400-511)
-- **Network error handling** - Separate `NetworkError` class for connection issues
+- **No status code left behind** - Non-standard error codes (e.g. 420, 599) become `UnknownHttpError`
+- **Network error handling** - Separate `NetworkError` class for connection issues, with the original error preserved on `cause`
 - **Type guards** - `isHttpError()` and `isNetworkError()` for runtime checks
 - **Generic error bodies** - `error.json<T>()` for typed error response parsing
-- **Minimal dependencies** - Only `is-network-error` for reliable network error detection
+- **Zero dependencies**
 
 ## Installation
 
@@ -155,7 +156,7 @@ import { typedFetch, BadRequestError, NotFoundError } from '@pbpeterson/typed-fe
 type ExpectedErrors = BadRequestError | NotFoundError;
 
 const { response, error } = await typedFetch<User, ExpectedErrors>('/api/users/123');
-// error: BadRequestError | NotFoundError | ServerErrors | NetworkError | null
+// error: BadRequestError | NotFoundError | ServerErrors | UnknownHttpError | NetworkError | null
 ```
 
 ### Error Response Bodies
@@ -247,7 +248,8 @@ console.log(BadRequestError.statusText);    // "Bad Request"
 
 | Class | Description |
 |-------|-------------|
-| `NetworkError` | Connection issues, DNS failures, timeouts |
+| `UnknownHttpError` | Any status code >= 400 without a dedicated class (e.g. 420, 599) |
+| `NetworkError` | Connection issues, DNS failures, timeouts, aborted requests |
 | `BaseHttpError` | Abstract base class for all HTTP errors |
 
 ## API Reference
@@ -266,7 +268,7 @@ console.log(BadRequestError.statusText);    // "Bad Request"
 ```typescript
 Promise<
   | { response: TypedResponse<T>; error: null }
-  | { response: null; error: E | ServerErrors | NetworkError }
+  | { response: null; error: E | ServerErrors | UnknownHttpError | NetworkError }
 >
 ```
 

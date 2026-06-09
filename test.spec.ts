@@ -49,6 +49,7 @@ import {
   TooManyRequestsError,
   UnauthorizedError,
   UnavailableForLegalReasonsError,
+  UnknownHttpError,
   UnprocessableEntityError,
   UnsupportedMediaTypeError,
   UpgradeRequiredError,
@@ -211,18 +212,80 @@ describe("typedFetch", () => {
     expect(isHttpError(error)).toBe(true);
   });
 
-  test("unmapped status codes pass through as a successful response", async () => {
+  test("unmapped 2xx status codes pass through as a successful response", async () => {
     const result = await typedFetch(url({ status: 299 }));
 
     expect(result.error).toBe(null);
     expect(result.response).not.toBe(null);
   });
 
-  test("connection refused → NetworkError", async () => {
+  test("unmapped 4xx status → UnknownHttpError", async () => {
+    const result = await typedFetch(url({ status: 420 }));
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(UnknownHttpError);
+
+    if (isHttpError(result.error)) {
+      expect(result.error.status).toBe(420);
+    }
+  });
+
+  test("unmapped 5xx status → UnknownHttpError with body access", async () => {
+    const body = JSON.stringify({ reason: "custom failure" });
+    const result = await typedFetch(url({ status: 599, body }));
+
+    expect(result.error).toBeInstanceOf(UnknownHttpError);
+    expect(result.error).toBeInstanceOf(BaseHttpError);
+
+    if (isHttpError(result.error)) {
+      expect(result.error.status).toBe(599);
+      expect(await result.error.json()).toEqual({ reason: "custom failure" });
+    }
+  });
+
+  test("3xx with redirect: 'manual' is not an error", async () => {
+    const result = await typedFetch(
+      url({ status: 302, header: "Location:/elsewhere" }),
+      { redirect: "manual" },
+    );
+
+    expect(result.error).toBe(null);
+    expect(result.response?.status).toBe(302);
+  });
+
+  test("connection refused → NetworkError with original error as cause", async () => {
     const result = await typedFetch("http://localhost:1");
 
     expect(result.response).toBe(null);
     expect(result.error).toBeInstanceOf(NetworkError);
+
+    if (isNetworkError(result.error)) {
+      expect(result.error.cause).toBeDefined();
+    }
+  });
+
+  test("aborted request → NetworkError with AbortError as cause", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await typedFetch(url({ status: 200 }), {
+      signal: controller.signal,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+
+    if (isNetworkError(result.error)) {
+      expect((result.error.cause as Error).name).toBe("AbortError");
+    }
+  });
+
+  test("HTTP errors have a useful message", async () => {
+    const result = await typedFetch(url({ status: 404 }));
+
+    if (isHttpError(result.error)) {
+      expect(result.error.message).toContain("404");
+    }
   });
 
   test("error.json() parses the response body", async () => {
@@ -398,6 +461,28 @@ describe("error class consistency", () => {
   test("NetworkError.name equals 'NetworkError'", () => {
     expect(new NetworkError("fail").name).toBe("NetworkError");
   });
+
+  test("NetworkError preserves cause", () => {
+    const original = new TypeError("fetch failed");
+    const error = new NetworkError("fetch failed", { cause: original });
+    expect(error.cause).toBe(original);
+  });
+
+  test("UnknownHttpError reflects the actual response status and clones", () => {
+    const instance = new UnknownHttpError(
+      new Response(null, { status: 599, statusText: "Custom" }),
+    );
+
+    expect(instance.status).toBe(599);
+    expect(instance.statusText).toBe("Custom");
+    expect(instance.name).toBe("UnknownHttpError");
+    expect(instance).toBeInstanceOf(BaseHttpError);
+
+    const cloned = instance.clone();
+    expect(cloned).toBeInstanceOf(UnknownHttpError);
+    expect(cloned).not.toBe(instance);
+    expect(cloned.status).toBe(599);
+  });
 });
 
 // ── json<T>() generic ────────────────────────────────────────────────
@@ -479,7 +564,9 @@ describe("type-level", () => {
       expectTypeOf(result.response.status).toBeNumber();
     } else {
       expectTypeOf(result.response).toEqualTypeOf<null>();
-      expectTypeOf(result.error).toExtend<ClientErrors | ServerErrors | NetworkError>();
+      expectTypeOf(result.error).toExtend<
+        ClientErrors | ServerErrors | UnknownHttpError | NetworkError
+      >();
     }
   });
 
@@ -489,7 +576,9 @@ describe("type-level", () => {
     );
 
     if (result.error !== null) {
-      expectTypeOf(result.error).toExtend<NotFoundError | ServerErrors | NetworkError>();
+      expectTypeOf(result.error).toExtend<
+        NotFoundError | ServerErrors | UnknownHttpError | NetworkError
+      >();
     }
   });
 
