@@ -49,6 +49,8 @@ if (error) {
 npm install @pbpeterson/typed-fetch
 ```
 
+Requires Node.js >= 20 (or any runtime with the native Fetch API: browsers, Deno, Bun, edge runtimes).
+
 ## Basic Usage
 
 ### Simple GET Request
@@ -331,11 +333,36 @@ Type guard that checks if an error is a network-level error.
 
 ### `statusCodeErrorMap`
 
-A `Map<number, ErrorClass>` mapping HTTP status codes to their error classes. Useful for custom error handling logic.
+A `ReadonlyMap<number, ErrorClass>` mapping HTTP status codes to their error classes. Useful for custom error handling logic.
 
 ### `httpErrors`
 
 Array of all 40 HTTP error classes. Useful for iteration and custom registries.
+
+### Exported Types
+
+All public types are exported for building typed wrappers around `typedFetch`:
+
+```typescript
+import type {
+  TypedResponse, // Response with typed json() and clone()
+  TypedFetchReturnType, // the discriminated union typedFetch resolves to
+  TypedFetchOptions, // RequestInit with typed headers and method
+  TypedHeaders, // headers with IntelliSense for common names
+  StrictHeaders, // the strict header name/value map
+  HttpMethods, // "GET" | "POST" | ... (fetch-forbidden methods excluded)
+  ClientErrors, // union of all 4xx error instances
+  ServerErrors, // union of all 5xx error instances
+  TypedFetchError, // every error typedFetch can return
+} from "@pbpeterson/typed-fetch";
+
+// Example: a typed wrapper with shared options
+async function api<T>(path: string, options?: TypedFetchOptions): Promise<TypedFetchReturnType<T>> {
+  return typedFetch<T>(`https://api.example.com${path}`, options);
+}
+```
+
+Error classes are also available from the `@pbpeterson/typed-fetch/errors` subpath if you only need the classes without `typedFetch`.
 
 ### Error Class API
 
