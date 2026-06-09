@@ -32,7 +32,13 @@ Rules the generated code must follow:
 Every HTTP status 400–511 has a class with literal-typed `status`/`statusText`. Unmapped codes (420, 599, Cloudflare 5xx variants…) become `UnknownHttpError`. Pre-response failures (DNS, refused, abort, timeout) become `NetworkError`.
 
 ```typescript
-import { typedFetch, isHttpError, isNetworkError, NotFoundError, TooManyRequestsError } from "@pbpeterson/typed-fetch";
+import {
+  typedFetch,
+  isHttpError,
+  isNetworkError,
+  NotFoundError,
+  TooManyRequestsError,
+} from "@pbpeterson/typed-fetch";
 
 const { response, error } = await typedFetch<User>("/api/users/1");
 
