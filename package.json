@@ -1,6 +1,6 @@
 {
   "name": "@pbpeterson/typed-fetch",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "A type-safe HTTP client that never throws. Inspired by Go's error handling pattern.",
   "keywords": [
     "api",
@@ -16,7 +16,6 @@
     "typed",
     "typescript"
   ],
-  "homepage": "https://typedfetch.com",
   "bugs": {
     "url": "https://github.com/pbpeterson/typed-fetch/issues"
   },
