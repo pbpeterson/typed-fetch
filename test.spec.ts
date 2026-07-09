@@ -60,6 +60,9 @@ import type { TypedFetchOptions, TypedFetchReturnType, TypedResponse } from "./i
 //   ?status=404          → respond with that status code
 //   ?body={"err":"..."}  → respond with that body (sets Content-Type: application/json)
 //   ?header=Key:Value    → set a response header (repeatable)
+// The server also always echoes the received request method back via an
+// X-Echo-Method response header, so tests can assert an arbitrary method
+// (e.g. "REPORT") actually reached the server unchanged.
 
 let baseURL: string;
 let server: http.Server;
@@ -75,6 +78,8 @@ beforeAll(async () => {
       const [key = "", value = ""] = entry.split(":");
       res.setHeader(key.trim(), value.trim());
     }
+
+    res.setHeader("X-Echo-Method", req.method ?? "");
 
     if (!res.getHeader("content-type") && body) {
       res.setHeader("Content-Type", "application/json");
@@ -381,6 +386,154 @@ describe("typedFetch", () => {
       expect(await result.error.json()).toEqual({ error: "bad request" });
       expect(await cloned.json()).toEqual({ error: "bad request" });
     }
+  });
+
+  // ── P1-07: enumerated coverage gaps ──────────────────────────────────
+
+  test("network-error catch: non-Error rejection falls back to 'Network error'", async () => {
+    const stubFetch = vi.fn(async () => Promise.reject("boom")) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/non-error-rejection", {
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+
+    if (isNetworkError(result.error)) {
+      expect(result.error.message).toBe("Network error");
+      expect(result.error.cause).toBe("boom");
+    }
+  });
+
+  test("network-error catch: empty Error.message falls back to Error.name", async () => {
+    const abortLike = new Error("");
+    abortLike.name = "AbortError";
+    const stubFetch = vi.fn(async () => Promise.reject(abortLike)) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/empty-message-rejection", {
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+
+    if (isNetworkError(result.error)) {
+      expect(result.error.message).toBe("AbortError");
+      expect(result.error.cause).toBe(abortLike);
+    }
+  });
+
+  test("error.clone().blob() and error.clone().arrayBuffer() resolve for a 400 with a body", async () => {
+    const result = await typedFetch(url({ status: 400, body: JSON.stringify({ a: 1 }) }));
+
+    expect(result.error).toBeInstanceOf(BadRequestError);
+
+    if (isHttpError(result.error)) {
+      const clonedForBlob = result.error.clone();
+      const clonedForArrayBuffer = result.error.clone();
+
+      const blob = await clonedForBlob.blob();
+      expect(blob).toBeInstanceOf(Blob);
+      expect(blob.size).toBeGreaterThan(0);
+
+      const arrayBuffer = await clonedForArrayBuffer.arrayBuffer();
+      expect(arrayBuffer).toBeInstanceOf(ArrayBuffer);
+      expect(arrayBuffer.byteLength).toBeGreaterThan(0);
+    }
+  });
+
+  test("BaseHttpError message is exactly 'HTTP <code>' with no trailing reason phrase when statusText is empty", () => {
+    // A real node:http server does carry an empty reason phrase over the
+    // wire (verified: `res.writeHead(404, "")` + undici fetch yields
+    // `response.statusText === ""`), so this path IS reachable end-to-end.
+    // We construct the Response directly here instead, per the plan's
+    // documented fallback, because it also isolates the second half of the
+    // assertion: a directly-constructed Response has `url === ""`, so
+    // BaseHttpError's `response.url ? ... (url) : line` branch (in
+    // src/errors/base-http-error.ts) takes the no-URL path and the message
+    // stays exactly "HTTP 404" with nothing appended.
+    const error = new NotFoundError(new Response(null, { status: 404, statusText: "" }));
+
+    expect(error.url).toBe("");
+    expect(error.message).toBe("HTTP 404");
+  });
+
+  test("redirect: 'error' mode surfaces as NetworkError", async () => {
+    const result = await typedFetch(url({ status: 302, header: "Location:/elsewhere" }), {
+      redirect: "error",
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+
+    if (isNetworkError(result.error)) {
+      expect(result.error.cause).toBeDefined();
+    }
+  });
+
+  test("arbitrary method string round-trips to the server", async () => {
+    const requestUrl = url({ status: 200 });
+    const result = await typedFetch(requestUrl, { method: "REPORT" });
+
+    expect(result.error).toBe(null);
+    expect(result.response?.headers.get("X-Echo-Method")).toBe("REPORT");
+  });
+
+  test("arbitrary method string round-trips through an injected fetch stub", async () => {
+    const stubFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+
+    await typedFetch("https://example.invalid/method-stub", {
+      method: "REPORT",
+      fetch: stubFetch as unknown as typeof fetch,
+    });
+
+    expect(stubFetch).toHaveBeenCalledTimes(1);
+    const [, init] = stubFetch.mock.calls[0] ?? [];
+    expect(init).toMatchObject({ method: "REPORT" });
+  });
+
+  test("TypedHeaders accepts a Headers instance and sends it", async () => {
+    const headers = new Headers();
+    headers.set("X-Custom-Header", "headers-instance");
+
+    const result = await typedFetch(url({ status: 200 }), { headers });
+
+    expect(result.error).toBe(null);
+    expectTypeOf(headers).toExtend<TypedFetchOptions["headers"]>();
+  });
+
+  test("TypedHeaders accepts tuple pairs and sends them", async () => {
+    const headers: [string, string][] = [["X-Custom-Header", "tuple-pairs"]];
+
+    const result = await typedFetch(url({ status: 200 }), { headers });
+
+    expect(result.error).toBe(null);
+    expectTypeOf(headers).toExtend<TypedFetchOptions["headers"]>();
+  });
+
+  test("TypedHeaders (Headers instance and tuple pairs) actually reach the server", async () => {
+    const stubFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+
+    const headersInstance = new Headers({ "X-Custom-Header": "from-headers-instance" });
+    await typedFetch("https://example.invalid/headers-instance", {
+      headers: headersInstance,
+      fetch: stubFetch as unknown as typeof fetch,
+    });
+
+    const tuplePairs: [string, string][] = [["X-Custom-Header", "from-tuple-pairs"]];
+    await typedFetch("https://example.invalid/headers-tuples", {
+      headers: tuplePairs,
+      fetch: stubFetch as unknown as typeof fetch,
+    });
+
+    expect(stubFetch).toHaveBeenCalledTimes(2);
+
+    const [, initFromHeadersInstance] = stubFetch.mock.calls[0] ?? [];
+    expect(initFromHeadersInstance?.headers).toBe(headersInstance);
+
+    const [, initFromTuples] = stubFetch.mock.calls[1] ?? [];
+    expect(initFromTuples?.headers).toBe(tuplePairs);
   });
 });
 
