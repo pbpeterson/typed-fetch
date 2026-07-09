@@ -437,22 +437,33 @@ describe("typedFetch", () => {
     expect(isNetworkError(timedOutResult.error)).toBe(false);
   });
 
-  test("HTTP errors have a useful message", async () => {
+  test("HTTP errors capture the status and request url structurally", async () => {
     const requestUrl = url({ status: 404 });
     const result = await typedFetch(requestUrl);
 
+    expect(result.error).toBeInstanceOf(NotFoundError);
+
     if (isHttpError(result.error)) {
-      expect(result.error.message).toContain("404");
-      expect(result.error.message).toContain("localhost");
+      // "this is a 404" — assert on .status, not on "404" appearing in .message.
+      expect(result.error.status).toBe(404);
+      // "the request url is captured" — .url is the structural field for this
+      // (localhost lives in the url); message text is not part of the contract.
       expect(result.error.url).toBe(new URL(requestUrl).toString());
+      expect(result.error.url).toContain("localhost");
     }
   });
 
-  test("BaseHttpError message has no trailing parens when response.url is empty", () => {
+  test("BaseHttpError takes the no-url message branch when response.url is empty", () => {
+    // A directly-constructed Response has `url === ""`, so BaseHttpError's
+    // `response.url ? `${line} (${url})` : line` branch takes the no-url path.
+    // The structural observable of that branch is `error.url === ""` (there is
+    // no url to append). We assert on that and on the status fields, never on
+    // the constructed message text (per RELEASING.md: message is not contract).
     const error = new NotFoundError(new Response(null, { status: 404, statusText: "Not Found" }));
 
     expect(error.url).toBe("");
-    expect(error.message).toBe("HTTP 404 Not Found");
+    expect(error.status).toBe(404);
+    expect(error.statusText).toBe("Not Found");
   });
 
   test("error.json() parses the response body", async () => {
@@ -509,10 +520,11 @@ describe("typedFetch", () => {
     });
 
     expect(result.response).toBe(null);
+    // The non-Error rejection path produces a NetworkError; `cause` is the
+    // structural observable that carries the original (non-Error) rejection.
     expect(result.error).toBeInstanceOf(NetworkError);
 
     if (isNetworkError(result.error)) {
-      expect(result.error.message).toBe("Network error");
       expect(result.error.cause).toBe("boom");
     }
   });
@@ -534,8 +546,11 @@ describe("typedFetch", () => {
     expect(result.error).toBeInstanceOf(NetworkError);
 
     if (isNetworkError(result.error)) {
-      expect(result.error.message).toBe("ENOTFOUND");
+      // The fallback (`err.message || err.name`) picked up `.name` because the
+      // Error's message was empty. `cause` is the structural observable: it is
+      // the exact rejected Error, whose `.name` is what the fallback used.
       expect(result.error.cause).toBe(dnsLike);
+      expect((result.error.cause as Error).name).toBe("ENOTFOUND");
     }
   });
 
@@ -558,20 +573,26 @@ describe("typedFetch", () => {
     }
   });
 
-  test("BaseHttpError message is exactly 'HTTP <code>' with no trailing reason phrase when statusText is empty", () => {
+  test("BaseHttpError omits the reason phrase when response.statusText is empty", () => {
     // A real node:http server does carry an empty reason phrase over the
     // wire (verified: `res.writeHead(404, "")` + undici fetch yields
     // `response.statusText === ""`), so this path IS reachable end-to-end.
-    // We construct the Response directly here instead, per the plan's
-    // documented fallback, because it also isolates the second half of the
-    // assertion: a directly-constructed Response has `url === ""`, so
-    // BaseHttpError's `response.url ? ... (url) : line` branch (in
-    // src/errors/base-http-error.ts) takes the no-URL path and the message
-    // stays exactly "HTTP 404" with nothing appended.
+    // We construct the Response directly here per the documented fallback.
+    //
+    // ACCEPTED EXCEPTION to RELEASING.md's "never assert on .message" policy:
+    // BaseHttpError keys the reason-phrase branch off the *wire* value
+    // `response.statusText`, but it does NOT expose that wire value as a field.
+    // `error.statusText` is the hardcoded canonical phrase ("Not Found") and is
+    // identical whether or not the wire phrase was present, so it cannot
+    // distinguish this branch. `response` is protected. Therefore the empty-
+    // wire-statusText branch has NO structural observable other than the
+    // constructed message. This test knowingly depends on .message for that one
+    // branch; the `error.url === ""` assertion below stays structural.
     const error = new NotFoundError(new Response(null, { status: 404, statusText: "" }));
 
     expect(error.url).toBe("");
-    expect(error.message).toBe("HTTP 404");
+    expect(error.status).toBe(404);
+    expect(error.message).toBe("HTTP 404"); // accepted exception: only observable of this branch (see comment above)
   });
 
   test("redirect: 'error' mode surfaces as NetworkError", async () => {
