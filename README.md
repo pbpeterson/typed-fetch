@@ -31,6 +31,12 @@ if (error) {
 }
 ```
 
+### What never-throws means
+
+`typedFetch` never throws for network failures or HTTP status codes — those come back as `error`. Reading a body (`response.json()`, `error.json()`, `.text()`, …) can still throw, exactly like native fetch: malformed JSON throws `SyntaxError`, and reading an already-consumed body throws. Wrap body reads in try/catch (or `.clone()` first) when the payload is untrusted.
+
+Opaque responses (`mode: "no-cors"`, `status: 0`) come back as `response`, per the fetch spec; their body is unreadable and `json()`/`text()` will reject.
+
 ## Features
 
 - **Never throws** - All errors are returned as values
