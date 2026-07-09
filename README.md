@@ -11,6 +11,10 @@ A type-safe HTTP client for TypeScript that never throws. Inspired by Go's error
 Traditional fetch libraries throw exceptions on HTTP errors, making error handling cumbersome and error-prone. **typed-fetch** follows Go's philosophy of explicit error handling - errors are values, not exceptions.
 
 ```typescript
+import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
+
+type User = { id: number; name: string };
+
 // ❌ Traditional approach - can throw unexpectedly
 try {
   const response = await fetch("/api/users");
@@ -23,8 +27,12 @@ try {
 const { response, error } = await typedFetch<User[]>("/api/users");
 if (error) {
   // Handle error with full type information
-  console.log(`HTTP ${error.status}: ${error.statusText}`);
-  const errorDetails = await error.json(); // Access error response body
+  if (isHttpError(error)) {
+    console.log(`HTTP ${error.status}: ${error.statusText}`);
+    const errorDetails = await error.json(); // Access error response body
+  } else {
+    console.log(`Request failed: ${error.message}`); // network, abort, timeout
+  }
 } else {
   // TypeScript knows response is not null
   const users = await response.json(); // Type: User[]
@@ -70,7 +78,7 @@ npx skills add pbpeterson/typed-fetch --skill typed-fetch
 ### Simple GET Request
 
 ```typescript
-import { typedFetch } from "@pbpeterson/typed-fetch";
+import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
 
 interface User {
   id: number;
@@ -81,7 +89,11 @@ interface User {
 const { response, error } = await typedFetch<User[]>("/api/users");
 
 if (error) {
-  console.error("Failed to fetch users:", error.statusText);
+  if (isHttpError(error)) {
+    console.error(`Failed to fetch users: HTTP ${error.status} ${error.statusText}`);
+  } else {
+    console.error("Failed to fetch users:", error.message);
+  }
 } else {
   const users = await response.json(); // Type: User[]
 }
@@ -91,6 +103,8 @@ if (error) {
 
 ```typescript
 import { typedFetch, BadRequestError } from "@pbpeterson/typed-fetch";
+
+type User = { id: number; name: string; email: string };
 
 const { response, error } = await typedFetch<User>("/api/users", {
   method: "POST",
