@@ -54,44 +54,84 @@ re-check.
 
 ## Adding a new HTTP status code
 
-The 40 concrete error classes (`src/errors/*-error.ts`), the `helpers.ts`
-unions/array, and `src/http-status-codes.ts` map are all **code-generated** —
-do not hand-edit any of them. They're produced by `scripts/generate-errors.ts`
-from a single source-of-truth table, `ERROR_TABLE`, defined at the top of
-that script. Each row has the shape:
+The 40 concrete error classes are plain, hand-written source. There is no
+code generator — adding a status code is a mechanical edit across a fixed set
+of files. It's a chore, but the **roster tests in `test.spec.ts` are the
+safety net**: miss a step and one of them goes red (see the end of this
+section for exactly which). Follow the existing 404 (`NotFoundError`) as a
+template.
 
-```typescript
-interface ErrorRow {
-  code: number; // e.g. 404
-  statusText: string; // canonical IANA reason phrase, e.g. "Not Found"
-  className: string; // e.g. "NotFoundError"
-  kind: "client" | "server"; // 4xx vs 5xx
-}
-```
+To add a new status code — say `NNN <Status Text>` as an `XxxError` client
+error — do all of the following:
 
-To add a new status code:
+1. **Create the error class file** `src/errors/<kebab>-error.ts` (e.g.
+   `not-found-error.ts`). Copy an existing sibling and change the class name,
+   `status`, and `statusText`. Both the instance fields and the `static`
+   fields must be `as const` literals:
 
-1. Add a new row to `ERROR_TABLE` in `scripts/generate-errors.ts`, in status
-   code order.
-2. Regenerate everything from the table:
-   ```bash
-   pnpm generate
+   ```typescript
+   import { BaseHttpError } from "./base-http-error";
+
+   /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/NNN */
+   export class XxxError extends BaseHttpError {
+     override readonly name = "XxxError" as const;
+     public readonly status = NNN as const;
+     public readonly statusText = "<Status Text>" as const;
+     static readonly status = NNN as const;
+     static readonly statusText = "<Status Text>" as const;
+   }
    ```
-   This rewrites the per-code file under `src/errors/`, `src/errors/helpers.ts`
-   (the `httpErrors` array and the `ClientErrors`/`ServerErrors` unions),
-   `src/http-status-codes.ts` (the `statusCodeErrorMap`), and
-   `src/errors/index.ts` (the barrel export).
-3. Format the generated output:
-   ```bash
-   pnpm format
-   ```
-4. Run the gates (above) before opening a PR.
 
-`pnpm generate:check` (`pnpm generate && git diff --exit-code src/`) is the
-guard against drift — it fails if the generated tree doesn't match what's
-committed, which catches both a stale generator run and a hand-edit to a
-generated file. Run it yourself if you're unsure whether `src/` is in sync
-with `ERROR_TABLE`.
+2. **Barrel-export it** from `src/errors/index.ts` — add
+   `export { XxxError } from "./<kebab>-error";` alongside the others.
+
+3. **Register it in `src/errors/helpers.ts`** in THREE places:
+   - add the `import { XxxError } from "./<kebab>-error";` line;
+   - add `XxxError` to the `httpErrors` array (keep it alphabetically sorted,
+     as the array is);
+   - add `| XxxError` to the correct union — `ClientErrors` for a 4xx,
+     `ServerErrors` for a 5xx (both unions are alphabetically sorted).
+
+4. **Map the status code in `src/http-status-codes.ts`** — add the
+   `import { XxxError } from "./errors/<kebab>-error";` line and a
+   `[NNN, XxxError],` entry to `statusCodeErrorMap` (entries are in
+   ascending status-code order).
+
+5. **Update `test.spec.ts`**:
+   - add `{ Class: XxxError, status: NNN },` to the `allErrors` table (in
+     status-code order);
+   - bump the cardinality counts from `40` to `41` in the "roster cardinality
+     is exactly 40" test, the "httpErrors contains all 40 error classes" test,
+     and the "statusCodeErrorMap contains all 40 status codes" test;
+   - add an explicit per-class assertion pair inside the "every class's status
+     and statusText are their own literal type" test:
+     ```typescript
+     expectTypeOf<XxxError["status"]>().toEqualTypeOf<NNN>();
+     expectTypeOf<XxxError["statusText"]>().toEqualTypeOf<"<Status Text>">();
+     ```
+
+6. Run `pnpm format` to normalise the new files, then run the gates (above).
+
+### The safety net
+
+If you miss a step, the `test.spec.ts` roster tests fail — that is the whole
+point of them:
+
+- Forgetting to add the class to a `ClientErrors`/`ServerErrors` union (but
+  leaving it in `httpErrors`) fails **typecheck** via the
+  `"HttpErrors instance union matches ClientErrors | ServerErrors"` test.
+- Dropping the class from the `httpErrors` array, or a mismatched
+  status-code map entry, fails the **runtime**
+  `"roster cardinality is exactly 40 and map <-> array agree"` test (and the
+  cardinality assertions in the `"httpErrors & statusCodeErrorMap"` block).
+- Widening a class's `status`/`statusText` off its literal type fails
+  **typecheck** via the per-class assertions in
+  `"every class's status and statusText are their own literal type, not
+number/string"`.
+
+So the invariant that the roster is complete and every class carries its exact
+literal `status`/`statusText` is enforced by the test suite, not by a
+generator.
 
 Adding a new error class this way is a `minor` release — see the semver
 policy below.

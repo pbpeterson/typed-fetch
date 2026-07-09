@@ -684,9 +684,9 @@ describe("isKnownHttpError", () => {
 // ── Error class invariants ───────────────────────────────────────────
 
 // Shared by "error class consistency" and "roster sync" — one row per
-// concrete HTTP error class, mirroring scripts/generate-errors.ts's
-// ERROR_TABLE (independently hand-authored, not imported from it, so it
-// acts as a second source of truth to diff against).
+// concrete HTTP error class. This table is authored independently of the
+// hand-written error classes and their registries in src/, so it acts as a
+// second source of truth to diff the roster against.
 const allErrors = [
   { Class: BadRequestError, status: 400 },
   { Class: UnauthorizedError, status: 401 },
@@ -861,14 +861,15 @@ describe("httpErrors & statusCodeErrorMap", () => {
 });
 
 // ── Roster sync guardrail ────────────────────────────────────────────
-// The error roster is code-generated (scripts/generate-errors.ts) from a
-// single source-of-truth table, but the generator itself is not a
-// type-level guarantee: a hand-edit to a generated file, or a bug in the
-// generator, can still widen a literal or drop a class from a union
-// without the generator noticing. These tests are the independent,
-// generator-agnostic check that the derived artifacts (per-class files,
-// the httpErrors array, the ClientErrors/ServerErrors unions, and
-// statusCodeErrorMap) still agree with each other.
+// The error roster is hand-maintained across several files (per-class
+// files under src/errors/, the httpErrors array, the ClientErrors/
+// ServerErrors unions, and statusCodeErrorMap). Nothing at the language
+// level forces those files to stay in agreement: a hand-edit can widen a
+// literal or drop a class from a union in one place without the others
+// noticing. These tests ARE that enforcement — the independent check that
+// every one of those artifacts still agrees with the others. They are the
+// safety net that makes adding a status code by hand safe (see
+// CONTRIBUTING.md, "Adding a new HTTP status code").
 //
 // IMPORTANT — what each check actually proves (verified by deliberately
 // widening NotFoundError's instance `status` field to `number` and

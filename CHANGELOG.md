@@ -47,10 +47,6 @@
   `this.constructor.name`, so it survives consumer minification
   (`.name` used to collapse to a mangled identifier like `"a"` under
   production minifiers).
-- The 40 status-code error classes, their roster array, and the status →
-  class map are now code-generated from `scripts/generate-errors.ts` off a
-  single source-of-truth table, instead of being hand-maintained in five
-  separate places.
 
 ### Fixed
 

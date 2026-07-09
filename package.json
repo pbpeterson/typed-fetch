@@ -58,8 +58,6 @@
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
-    "generate": "tsx scripts/generate-errors.ts",
-    "generate:check": "pnpm generate && git diff --exit-code src/",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
@@ -67,7 +65,6 @@
     "oxfmt": "^0.54.0",
     "oxlint": "^1.69.0",
     "tsup": "^8.5.1",
-    "tsx": "^4.20.3",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },
