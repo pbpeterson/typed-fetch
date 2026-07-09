@@ -433,6 +433,26 @@ All HTTP error classes extend `BaseHttpError`:
 - `status` - HTTP status code
 - `statusText` - The canonical IANA reason phrase for `status` - not the server's wire value
 
+## Non-goals
+
+Things this library deliberately does not do, and won't:
+
+- **Retries** — belongs to a policy layer; a thin fetch wrapper shouldn't own backoff.
+- **Interceptors / hooks / middleware** — the moment we add them we're a worse `ky`; compose `typedFetch` in your own function instead.
+- **Base-URL / instance configuration (`create()`)** — wrap `typedFetch` yourself; see the typed-wrapper example above.
+- **Query-string builder** — use `URL`/`URLSearchParams`; that's what they're for.
+- **Request-body serialization** — pass `body`/`headers` exactly like native fetch.
+- **Response caching** — out of a request library's remit.
+- **Runtime response-body validation as a hard dependency** — a Standard Schema hook may come later as an _additive, zero-dependency_ feature, not as a required dependency.
+- **`rawStatusText` field** — the wire reason phrase is already on `error.message`; a second field is only added if there's real demand.
+- **Making body reads never-throw (eager buffering)** — it would break streaming semantics; the never-throws guarantee is documented to end at the response envelope.
+
+## Contributing
+
+Bug reports and PRs are welcome — see [`CONTRIBUTING.md`](./CONTRIBUTING.md) for
+setup, the gates to run before opening a PR, and how to add a new HTTP status
+code. Releases follow [`RELEASING.md`](./RELEASING.md).
+
 ## Inspiration
 
 Inspired by Go's error handling philosophy where errors are values:
