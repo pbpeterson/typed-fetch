@@ -67,6 +67,11 @@
   false-positive on any unrelated rejection that merely happened to be named
   `"AbortError"`. The signal is now the sole authority: a request is treated
   as aborted only when its own signal reports `aborted`.
+- **`statusCodeErrorMap` and `httpErrors` are no longer public exports.** They
+  were internal registries (the status-code → error-class map and the array of
+  all 40 error classes) with no demonstrated consumer use case, and every
+  public export is a semver liability. They remain available internally but are
+  no longer part of the published API surface.
 
 ### Added
 

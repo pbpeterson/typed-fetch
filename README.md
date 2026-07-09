@@ -545,14 +545,6 @@ Type guard that checks if an error is an `AbortedError` (request cancelled via
 Type guard that checks if an error is a `TimeoutError` (request exceeded a timeout,
 e.g. via `AbortSignal.timeout()`).
 
-### `statusCodeErrorMap`
-
-A `ReadonlyMap<number, ErrorClass>` mapping HTTP status codes to their error classes. Useful for custom error handling logic.
-
-### `httpErrors`
-
-Array of all 40 HTTP error classes. Useful for iteration and custom registries.
-
 ### Exported Types
 
 All public types are exported for building typed wrappers around `typedFetch`:
@@ -563,8 +555,8 @@ import type {
   TypedResponse, // Response with typed json() and clone()
   TypedFetchReturnType, // the discriminated union typedFetch resolves to
   TypedFetchOptions, // RequestInit with typed headers, method, and an optional fetch override
-  TypedHeaders, // headers with IntelliSense for common names
-  StrictHeaders, // the strict header name/value map
+  TypedHeaders, // header-name autocomplete only — does NOT validate values
+  StrictHeaders, // the header name/value suggestion map (autocomplete only)
   HttpMethods, // "GET" | "POST" | ... (fetch-forbidden methods excluded)
   ClientErrors, // union of all 4xx error instances
   ServerErrors, // union of all 5xx error instances
@@ -578,6 +570,12 @@ async function api<T>(path: string, options?: TypedFetchOptions): Promise<TypedF
 ```
 
 Error classes are also available from the `@pbpeterson/typed-fetch/errors` subpath if you only need the classes without `typedFetch`.
+
+> **`TypedHeaders` / `StrictHeaders` are autocomplete-only.** They suggest common
+> header names (and some values) in your editor, but they do **not** validate the
+> values you pass. `{ "Content-Type": "not/a/real/type" }` type-checks, because
+> `StrictHeaders`' string index signature and the `| HeadersInit` union arm both
+> accept any string record. Treat them as an editor convenience, not a guarantee.
 
 ### Error Class API
 

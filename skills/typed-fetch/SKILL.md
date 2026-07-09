@@ -169,4 +169,4 @@ function api<T>(path: string, options?: TypedFetchOptions): Promise<TypedFetchRe
 }
 ```
 
-Other exports: `TypedResponse`, `TypedHeaders`/`StrictHeaders` (header IntelliSense), `HttpMethods`, `ClientErrors`/`ServerErrors`/`TypedFetchError`, `BaseHttpError`, `statusCodeErrorMap` (ReadonlyMap), `httpErrors` array. Error classes alone: `@pbpeterson/typed-fetch/errors`.
+Other exports: `TypedResponse`, `TypedHeaders`/`StrictHeaders` (header-name autocomplete only — they suggest names but do NOT validate values), `HttpMethods`, `ClientErrors`/`ServerErrors`/`TypedFetchError`, `BaseHttpError`. Error classes alone: `@pbpeterson/typed-fetch/errors`.
