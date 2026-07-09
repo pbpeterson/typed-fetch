@@ -55,6 +55,41 @@ Run them all locally; CI runs the same checks and will fail the PR otherwise.
 If `pnpm format:check` fails, run `pnpm format` to fix it in place, then
 re-check.
 
+### The public surface is frozen — both axes (`pnpm test`)
+
+`test.spec.ts` snapshots the exact public export surface of the **built**
+package so any addition or removal is a red test and a reviewable snapshot
+diff, never a silent minor/major. It freezes **two independent axes**, because
+one snapshot cannot see the other:
+
+- **Value surface** (`public API surface is frozen`): the runtime named
+  exports, read via `Object.keys(await import("dist/index.mjs"))`. This sees
+  only bindings that exist at runtime — functions, classes, values.
+- **Type surface** (`public TYPE surface is frozen`): the type-only exports,
+  read from the built `dist/*.d.mts` with the **TypeScript compiler API**
+  (`getExportsOfModule`, keeping symbols that carry a type meaning but no value
+  meaning). Type-only exports (`export type { … }`, re-exported interfaces and
+  type aliases) never exist at runtime, so `Object.keys()` is structurally
+  blind to them. Deleting `export type { HttpMethods }` from the barrel once
+  passed **all eight gates** — this axis exists to close that hole. Both entry
+  points (`.` and `./errors`) are covered.
+
+Both blocks read from `dist/`, so run them **after `pnpm build`** (e.g.
+`pnpm build && pnpm test`); on a clean checkout with no `dist/` they skip with
+a printed warning (CI runs `pnpm test` after `pnpm build`, so they run there).
+
+**Changing the surface on purpose.** Adding or removing a public export — value
+_or_ type — is a deliberate, reviewed act. After you change the code, rebuild
+and update the snapshots:
+
+```bash
+pnpm build && pnpm test -u   # rewrites __snapshots__/test.spec.ts.snap
+```
+
+Commit the snapshot diff alongside the code change so the reviewer sees exactly
+which names entered or left the public API. Never hand-edit the `.snap` file to
+make a test pass — regenerate it from a real build.
+
 ### Documentation examples are typechecked (`pnpm check-docs`)
 
 `scripts/check-docs.mjs` extracts every fenced ` ```ts ` / ` ```typescript `

@@ -1,6 +1,8 @@
 import http from "node:http";
 import { readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { describe, test, expect, beforeAll, afterAll, expectTypeOf, vi } from "vitest";
 import {
   typedFetch,
@@ -1598,9 +1600,26 @@ test("error .name is a hardcoded string literal, not this.constructor.name", () 
   expect(src).not.toMatch(/this\.name\s*=\s*this\.constructor\.name/);
 });
 
-// P3-03: freeze the public API surface. Snapshots the exact set of named
-// exports from the BUILT package so an accidental addition/removal is a red
-// test (and a reviewable snapshot diff), not a silent minor/major.
+// P3-03: freeze the public API surface. This machinery owns TWO axes of
+// "the public surface changed", each with its own snapshot pair:
+//
+//   Axis A — the VALUE surface (the block just below): the set of runtime
+//   named exports, read via `Object.keys(await import("dist/index.mjs"))`.
+//   Object.keys() sees only bindings that exist at runtime.
+//
+//   Axis B — the TYPE surface (the block after that): the set of type-only
+//   exports, read via the TypeScript compiler API against the built
+//   `.d.mts`. Type-only exports (`export type { … }`, re-exported interfaces
+//   and type aliases) NEVER exist at runtime, so `Object.keys()` is
+//   STRUCTURALLY BLIND to them — deleting `export type { HttpMethods }` from
+//   the barrel left all runtime tests, check-consumer, check-docs and
+//   verify-pack green. Axis B closes that hole.
+//
+// Both snapshot the exact set of names from the BUILT package so an accidental
+// addition/removal is a red test (and a reviewable snapshot diff), not a
+// silent minor/major. To change the surface on purpose, update the code and
+// re-run with `-u` (see CONTRIBUTING.md → "Updating the public-surface
+// snapshots").
 //
 // dist/-ordering: this reads from `dist/`, which only exists after
 // `pnpm build`. `dist/` is gitignored, and .github/workflows/ci.yml runs
@@ -1639,6 +1658,65 @@ describe.skipIf(!distExists)("public API surface is frozen", () => {
     const mod = await importDist("./dist/errors/index.mjs");
     // Same as above: sorting the fresh Object.keys() array in place is fine.
     expect(Object.keys(mod).sort()).toMatchSnapshot();
+  });
+});
+
+// Axis B — freeze the TYPE-ONLY surface (see the header comment above for why
+// the value snapshot cannot). `Object.keys()` of the runtime module is blind
+// to `export type { … }` and re-exported interfaces/type aliases, so this
+// block reads the shipped `.d.mts` with the TypeScript compiler API — the
+// honest tool. `getExportsOfModule` returns EVERY exported symbol; we keep the
+// ones that carry a type meaning but NO value meaning (following aliases to
+// their target), i.e. the names that ship purely as types. That set is
+// snapshotted per entry point, so:
+//   • removing a type export (e.g. `HttpMethods`)     → snapshot diff → RED
+//   • adding an unreviewed type export                 → snapshot diff → RED
+//   • re-adding a deliberately-cut type (TypedHeaders) → snapshot diff → RED
+// It runs against `dist/*.d.mts` (the artifact that ships), never `src/` —
+// this whole class of bug came from a guard that read `src/` instead of dist/.
+function typeOnlyExportsOf(dtsRelPath: string): string[] {
+  const abs = fileURLToPath(new URL(dtsRelPath, import.meta.url));
+  const program = ts.createProgram([abs], {
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    target: ts.ScriptTarget.ES2022,
+    skipLibCheck: true,
+    noEmit: true,
+  });
+  const checker = program.getTypeChecker();
+  const source = program.getSourceFile(abs);
+  if (!source) throw new Error(`could not load ${abs} into the TS program`);
+  const moduleSymbol = checker.getSymbolAtLocation(source);
+  if (!moduleSymbol) throw new Error(`no module symbol for ${abs}`);
+
+  const F = ts.SymbolFlags;
+  const TYPE_MEANING = F.Type | F.Interface | F.TypeAlias | F.Class | F.Enum;
+
+  return checker
+    .getExportsOfModule(moduleSymbol)
+    .map((sym) => {
+      // Follow re-export aliases to the symbol they actually point at, so a
+      // barrel `export type { ClientErrors } from "./helpers"` is classified
+      // by the target's meaning, not the alias's.
+      const flags = sym.flags & F.Alias ? checker.getAliasedSymbol(sym).flags : sym.flags;
+      const hasValue = (flags & F.Value) !== 0;
+      const hasType = (flags & TYPE_MEANING) !== 0;
+      // A CLASS carries both a value and a type meaning; it ships as a runtime
+      // binding and is already frozen by the value snapshot. Keep only names
+      // with a type meaning and NO value meaning — the ones invisible at
+      // runtime and therefore only guardable here.
+      return hasType && !hasValue ? sym.getName() : null;
+    })
+    .filter((name): name is string => name !== null)
+    .sort();
+}
+
+describe.skipIf(!distExists)("public TYPE surface is frozen", () => {
+  test("main entry type-only exports", () => {
+    expect(typeOnlyExportsOf("./dist/index.d.mts")).toMatchSnapshot();
+  });
+
+  test("./errors subpath type-only exports", () => {
+    expect(typeOnlyExportsOf("./dist/errors/index.d.mts")).toMatchSnapshot();
   });
 });
 
