@@ -27,6 +27,11 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test
+      # Typecheck every fenced TS block in the docs against the BUILT package
+      # (dist/). Must run AFTER build — dist/ is the compile target, and the
+      # guard fails loudly if it is absent. Catches doc examples that no longer
+      # compile against the shipped types (e.g. `error.status` on the raw union).
+      - run: pnpm check-docs
       # Catch a broken `files`/build-output contract on PRs, long before it can
       # reach the release workflow and publish a code-less tarball.
       - run: pnpm verify-pack

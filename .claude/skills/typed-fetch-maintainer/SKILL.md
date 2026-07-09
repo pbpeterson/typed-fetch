@@ -53,7 +53,7 @@ Exported from the main entry: `isHttpError` (any `BaseHttpError`), `isKnownHttpE
 
 ## Error class pattern
 
-```typescript
+```typescript no-check
 import { BaseHttpError } from "./base-http-error";
 
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404 */

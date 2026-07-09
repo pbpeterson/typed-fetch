@@ -134,6 +134,8 @@ import {
   TimeoutError,
 } from "@pbpeterson/typed-fetch";
 
+type User = { id: number; name: string };
+
 const { response, error } = await typedFetch<User>("/api/users/123");
 
 if (error) {
@@ -210,7 +212,7 @@ if (isNetworkError(error)) {
 
 The Web platform lets you attach a cancellation _reason_:
 
-```typescript
+```typescript no-check
 const controller = new AbortController();
 
 const promise = typedFetch<User[]>("/api/users", { signal: controller.signal });
@@ -237,6 +239,8 @@ No custom timeout API needed — use the standard `AbortSignal.timeout()`, exact
 ```typescript
 import { typedFetch, isTimeoutError } from "@pbpeterson/typed-fetch";
 
+type User = { id: number; name: string };
+
 const { response, error } = await typedFetch<User[]>("/api/users", {
   signal: AbortSignal.timeout(5000),
 });
@@ -258,6 +262,8 @@ import {
   isAbortError,
   isTimeoutError,
 } from "@pbpeterson/typed-fetch";
+
+type User = { id: number; name: string };
 
 const { response, error } = await typedFetch<User>("/api/users/123");
 
@@ -287,6 +293,8 @@ to narrow to exactly one dedicated error class per case:
 ```typescript
 import { typedFetch, isKnownHttpError } from "@pbpeterson/typed-fetch";
 
+type User = { id: number; name: string };
+
 const { response, error } = await typedFetch<User>("/api/users/123");
 
 if (error && isKnownHttpError(error)) {
@@ -310,7 +318,7 @@ if (error && isKnownHttpError(error)) {
 
 The `json()` method accepts a generic type parameter:
 
-```typescript
+```typescript no-check
 interface ApiError {
   message: string;
   code: string;
@@ -337,6 +345,8 @@ Narrow the real, sound way — `isKnownHttpError()` + `switch (error.status)`
 ```typescript
 import { typedFetch, NotFoundError } from "@pbpeterson/typed-fetch";
 
+type User = { id: number; name: string };
+
 const { response, error } = await typedFetch<User>("/api/users/123");
 
 if (error instanceof NotFoundError) {
@@ -348,7 +358,7 @@ if (error instanceof NotFoundError) {
 
 All HTTP error classes provide access to the response body:
 
-```typescript
+```typescript no-check
 if (error && isHttpError(error)) {
   // Clone BEFORE reading if you need the body more than once.
   const forJson = error.clone();
@@ -462,7 +472,7 @@ console.log(BadRequestError.statusText); // "Bad Request"
 
 **Returns:**
 
-```typescript
+```typescript no-check
 Promise<{ response: TypedResponse<T>; error: null } | { response: null; error: TypedFetchError }>;
 ```
 
@@ -508,6 +518,7 @@ Array of all 40 HTTP error classes. Useful for iteration and custom registries.
 All public types are exported for building typed wrappers around `typedFetch`:
 
 ```typescript
+import { typedFetch } from "@pbpeterson/typed-fetch";
 import type {
   TypedResponse, // Response with typed json() and clone()
   TypedFetchReturnType, // the discriminated union typedFetch resolves to
@@ -603,7 +614,7 @@ if err != nil {
 }
 ```
 
-```typescript
+```typescript no-check
 const { response, error } = await typedFetch<User[]>("/api/users");
 if (error) {
   return error;

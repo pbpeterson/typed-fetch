@@ -45,12 +45,55 @@ pnpm format:check  # oxfmt --check
 pnpm typecheck     # tsc --noEmit -p tsconfig.test.json
 pnpm test          # vitest run
 pnpm build         # tsup — confirm the package actually builds
+pnpm check-docs    # typecheck every fenced TS block in the docs (run AFTER build)
 ```
 
 Run them all locally; CI runs the same checks and will fail the PR otherwise.
 
 If `pnpm format:check` fails, run `pnpm format` to fix it in place, then
 re-check.
+
+### Documentation examples are typechecked (`pnpm check-docs`)
+
+`scripts/check-docs.mjs` extracts every fenced ` ```ts ` / ` ```typescript `
+block from `README.md`, `CONTRIBUTING.md`, and both `SKILL.md` files, rewrites
+the `@pbpeterson/typed-fetch` import to point at the **built `dist/`**, and
+typechecks each block with the project's `tsc`. This is why it must run **after
+`pnpm build`** — `dist/` is the compile target. If `dist/` is missing the guard
+**fails loudly** rather than skipping. It exists because the README's headline
+example once shipped broken (`error.status` read on the raw `TypedFetchError`
+union, which includes `NetworkError` — a class with no `.status`) and three
+rounds of "verify the examples" review never actually ran `tsc`.
+
+**Skipping a block.** Some blocks legitimately cannot compile on their own — an
+isolated body fragment that assumes `error` from a previous snippet, a bare type
+expression, or a maintainer template full of placeholders (`NNN`, `XxxError`)
+that imports a relative `./base-http-error` path. Mark the fence with the
+`no-check` marker and the guard skips it:
+
+````markdown
+```ts no-check
+// a fragment that intentionally does not compile standalone
+if (error instanceof BadRequestError) {
+  /* ... */
+}
+```
+````
+
+Every skip is **counted and printed** in the CI log, and the guard **fails if
+more than half of all TS blocks are skipped** — a marker that everyone reaches
+for is a marker that rots. Prefer making a block self-contained (add the missing
+`type User` / import) over skipping it. Do not use `no-check` to silence a real
+error; a newly-skipped headline block is glaringly visible in the printed skip
+list.
+
+**Limitation — compilation is necessary, not sufficient.** A block can typecheck
+and still be wrong, so a green `check-docs` is not proof the docs are correct.
+The clearest example lives in this repo: the maintainer skill's error-class
+template omits `override readonly name = "..."`. That compiles fine, but under
+minification the class name is mangled and the error's `.name` becomes garbage —
+a real runtime bug this guard will **never** catch. When you edit an error-class
+example, verify `override readonly name` is present by eye; `check-docs` won't.
 
 ## Adding a new HTTP status code
 
@@ -69,7 +112,7 @@ error — do all of the following:
    `status`, and `statusText`. Both the instance fields and the `static`
    fields must be `as const` literals:
 
-   ```typescript
+   ```typescript no-check
    import { BaseHttpError } from "./base-http-error";
 
    /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/NNN */
@@ -105,7 +148,7 @@ error — do all of the following:
      and the "statusCodeErrorMap contains all 40 status codes" test;
    - add an explicit per-class assertion pair inside the "every class's status
      and statusText are their own literal type" test:
-     ```typescript
+     ```typescript no-check
      expectTypeOf<XxxError["status"]>().toEqualTypeOf<NNN>();
      expectTypeOf<XxxError["statusText"]>().toEqualTypeOf<"<Status Text>">();
      ```
