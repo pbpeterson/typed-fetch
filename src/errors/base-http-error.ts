@@ -13,7 +13,11 @@ export abstract class BaseHttpError extends Error {
   /** HTTP status code (literal type, e.g. `404`). */
   public abstract readonly status: number;
 
-  /** HTTP status text (literal type, e.g. `"Not Found"`). */
+  /**
+   * The canonical IANA reason phrase for {@link status} (literal type, e.g.
+   * `"Not Found"`) - not the server's wire value. The server's wire phrase,
+   * when present, is in {@link Error.message | message}.
+   */
   public abstract readonly statusText: string;
 
   constructor(protected readonly response: Response) {

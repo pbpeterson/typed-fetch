@@ -382,7 +382,7 @@ All HTTP error classes extend `BaseHttpError`:
 **Instance Properties:**
 
 - `status` - HTTP status code (literal type, e.g. `404`)
-- `statusText` - HTTP status text (literal type, e.g. `"Not Found"`)
+- `statusText` - The canonical IANA reason phrase for `status` (literal type, e.g. `"Not Found"`) - not the server's wire value. The server's wire phrase, when present, is in `error.message`.
 - `headers` - Response `Headers` object
 - `name` - Error class name (e.g. `"NotFoundError"`)
 
@@ -397,7 +397,7 @@ All HTTP error classes extend `BaseHttpError`:
 **Static Properties:**
 
 - `status` - HTTP status code
-- `statusText` - HTTP status text
+- `statusText` - The canonical IANA reason phrase for `status` - not the server's wire value
 
 ## Inspiration
 
