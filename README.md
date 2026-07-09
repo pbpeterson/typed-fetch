@@ -418,6 +418,13 @@ if (isTimeoutError(error)) {
 }
 ```
 
+A request is classified as a `TimeoutError` only when the signal's reason is a `DOMException`
+named `"TimeoutError"` — precisely the value `AbortSignal.timeout()` produces. This is
+deliberately robust against a forged name: `controller.abort(Object.assign(new Error("x"), {
+name: "TimeoutError" }))` yields an `AbortedError` (with your `Error` preserved on
+`error.reason`), not a timeout. Every pre-response error also carries `error.url`, so timed-out
+and aborted requests are as easy to correlate in logs as HTTP errors.
+
 ## Available Error Classes
 
 <details>

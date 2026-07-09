@@ -98,6 +98,21 @@
 
 ### Fixed
 
+- **Timeout classification now requires a `DOMException`, not a forgeable
+  `reason.name`.** Detection previously matched a `reason` that was any `Error`
+  whose `.name` was `"TimeoutError"`, so a caller doing
+  `controller.abort(Object.assign(new Error("cancelled"), { name: "TimeoutError" }))`
+  was misclassified as a `TimeoutError` — and, worse, the caller's meaningful
+  reason was demoted to `cause` and lost from `error.reason`. This is the
+  mirror of the `err.name === "AbortError"` bug already fixed above, on the
+  `reason.name` axis. Classification now requires the exact shape
+  `AbortSignal.timeout()` produces — a `DOMException` named `"TimeoutError"`
+  (guarded by `typeof DOMException !== "undefined"` for polyfilled runtimes) —
+  which a plain `Error` cannot forge. The `name` check stays load-bearing (a
+  bare `controller.abort()` also produces a `DOMException`, named
+  `"AbortError"`). A caller who hand-builds a `DOMException` named
+  `"TimeoutError"` is still treated as a timeout — that shape is
+  indistinguishable from a real one, by design.
 - **`instanceof` across the package's own entry points.** The build previously
   shipped `splitting: false`, so the `.` and `./errors` entry points each
   bundled their _own_ copy of every error class. A `NotFoundError` created by

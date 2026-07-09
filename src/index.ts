@@ -211,8 +211,26 @@ export async function typedFetch<JsonReturnType>(
     // happens to be named "AbortError" must NOT be treated as a cancellation.
     if (signal?.aborted) {
       const reason = signal.reason;
-      // `AbortSignal.timeout()` aborts with a DOMException named "TimeoutError".
-      if (reason instanceof Error && reason.name === "TimeoutError") {
+      // Classify a timeout by the *shape the platform produces*, not by a name
+      // a caller can forge. `AbortSignal.timeout()` aborts with a real
+      // `DOMException` named "TimeoutError"; a caller's
+      // `controller.abort(reason)` can set any `reason.name` — including
+      // "TimeoutError" — on a plain `Error`, but cannot make it a
+      // `DOMException`. Requiring BOTH conditions keeps a forged name from
+      // hijacking timeout classification (and from losing `error.reason`).
+      //
+      // The `name` check stays load-bearing: a bare `controller.abort()` also
+      // produces a `DOMException`, but named "AbortError" — it must remain an
+      // AbortedError. `DOMException` is a global on every fetch-capable runtime
+      // (Node 20+, Bun, Deno, browsers, edge), but `signal?.aborted` above
+      // gates an unconditional `instanceof`, so we `typeof`-guard it to degrade
+      // gracefully (→ AbortedError, reason preserved) instead of throwing a
+      // `ReferenceError` in a polyfilled/exotic environment that lacks it.
+      if (
+        typeof DOMException !== "undefined" &&
+        reason instanceof DOMException &&
+        reason.name === "TimeoutError"
+      ) {
         return {
           response: null,
           error: new TimeoutError("Request timed out", { cause: reason }),

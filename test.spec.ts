@@ -460,6 +460,91 @@ describe("typedFetch", () => {
     expect(isNetworkError(timedOutResult.error)).toBe(false);
   });
 
+  // AXIS 1 (the bug this fix closes): a caller forges a plain `Error` with
+  // `name === "TimeoutError"` as the abort reason. Timeout classification must
+  // NOT key on that forgeable name — it must be an AbortedError, and the
+  // caller's meaningful reason must survive on `error.reason` (not be demoted
+  // to `cause`). Mirror of the already-fixed `err.name === "AbortError"` bug,
+  // on the `reason.name` axis instead of the `err.name` axis.
+  test("abort(Error named 'TimeoutError') → AbortedError, reason preserved, NOT a timeout", async () => {
+    const controller = new AbortController();
+    const forged = Object.assign(new Error("user cancelled checkout"), {
+      name: "TimeoutError",
+    });
+    controller.abort(forged);
+
+    const result = await typedFetch(url({ status: 200 }), {
+      signal: controller.signal,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(AbortedError);
+    expect(isAbortError(result.error)).toBe(true);
+    expect(isTimeoutError(result.error)).toBe(false);
+
+    if (isAbortError(result.error)) {
+      // The caller's reason is the authority and MUST be preserved verbatim.
+      expect(result.error.reason).toBe(forged);
+    }
+  });
+
+  // AXIS 2: a *forged DOMException* named "TimeoutError". A DOMException named
+  // "TimeoutError" is EXACTLY what a real `AbortSignal.timeout()` produces —
+  // there is no in-band signal that distinguishes a hand-built one from the
+  // platform's. We accept it as a TimeoutError and document that honestly: the
+  // classification is "the shape the platform produces", and a caller who
+  // hand-builds that exact shape is opting into that classification. (Contrast
+  // AXIS 1: a plain Error with the name is trivially forgeable and common —
+  // a DOMException with a specific name is neither.)
+  test("abort(DOMException named 'TimeoutError') → TimeoutError (documented: indistinguishable from a real timeout)", async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException("forged", "TimeoutError"));
+
+    const result = await typedFetch(url({ status: 200 }), {
+      signal: controller.signal,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(TimeoutError);
+    expect(isTimeoutError(result.error)).toBe(true);
+    expect(isAbortError(result.error)).toBe(false);
+  });
+
+  // AXIS 7: AbortSignal.any() composing a user signal and a timeout signal —
+  // whichever fires first wins, and classification must follow the actual
+  // winner's reason (a DOMException "TimeoutError" vs the user's reason).
+  test("AbortSignal.any(): timeout wins → TimeoutError", async () => {
+    const userController = new AbortController();
+    const combined = AbortSignal.any([userController.signal, AbortSignal.timeout(1)]);
+
+    const result = await typedFetch(url({ status: 200, delay: 200 }), {
+      signal: combined,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(TimeoutError);
+    expect(isTimeoutError(result.error)).toBe(true);
+  });
+
+  test("AbortSignal.any(): user abort wins → AbortedError with the user's reason", async () => {
+    const userController = new AbortController();
+    const reason = new Error("user navigated away");
+    const combined = AbortSignal.any([userController.signal, AbortSignal.timeout(10_000)]);
+    userController.abort(reason);
+
+    const result = await typedFetch(url({ status: 200, delay: 200 }), {
+      signal: combined,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(AbortedError);
+    expect(isAbortError(result.error)).toBe(true);
+    expect(isTimeoutError(result.error)).toBe(false);
+    if (isAbortError(result.error)) {
+      expect(result.error.reason).toBe(reason);
+    }
+  });
+
   test("HTTP errors capture the status and request url structurally", async () => {
     const requestUrl = url({ status: 404 });
     const result = await typedFetch(requestUrl);
