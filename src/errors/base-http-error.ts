@@ -20,12 +20,15 @@ export abstract class BaseHttpError extends Error {
    */
   public abstract readonly statusText: string;
 
+  /** The URL of the failed request (from `response.url`). */
+  public readonly url: string;
+
   constructor(protected readonly response: Response) {
-    super(
-      response.statusText
-        ? `HTTP ${response.status} ${response.statusText}`
-        : `HTTP ${response.status}`,
-    );
+    const line = response.statusText
+      ? `HTTP ${response.status} ${response.statusText}`
+      : `HTTP ${response.status}`;
+    super(response.url ? `${line} (${response.url})` : line);
+    this.url = response.url;
     this.headers = response.headers;
   }
 

@@ -284,11 +284,21 @@ describe("typedFetch", () => {
   });
 
   test("HTTP errors have a useful message", async () => {
-    const result = await typedFetch(url({ status: 404 }));
+    const requestUrl = url({ status: 404 });
+    const result = await typedFetch(requestUrl);
 
     if (isHttpError(result.error)) {
       expect(result.error.message).toContain("404");
+      expect(result.error.message).toContain("localhost");
+      expect(result.error.url).toBe(new URL(requestUrl).toString());
     }
+  });
+
+  test("BaseHttpError message has no trailing parens when response.url is empty", () => {
+    const error = new NotFoundError(new Response(null, { status: 404, statusText: "Not Found" }));
+
+    expect(error.url).toBe("");
+    expect(error.message).toBe("HTTP 404 Not Found");
   });
 
   test("error.json() parses the response body", async () => {
