@@ -35,7 +35,18 @@ jobs:
       # test (gated on dist existence) is exercised instead of skipped.
       - run: pnpm build
       - run: pnpm test
-      # Defense in depth: assert the tarball that WOULD be published actually
-      # contains the compiled entry points before we publish it.
+      # Defense in depth: assert the tarball's file manifest (required entry
+      # points present, no source/test leaks) before we publish it. Contents
+      # are covered by the API-surface snapshot test above, which runs first.
       - run: pnpm verify-pack
-      - run: npm publish --provenance --access public
+      # Derive the npm dist-tag from the git ref. A prerelease tag (semver
+      # build/prerelease, i.e. one containing `-`, e.g. v1.0.0-rc.1) must NOT
+      # move `latest`; it publishes under `next`. A normal tag gets `latest`.
+      - id: disttag
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            echo "tag=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+      - run: npm publish --provenance --access public --tag ${{ steps.disttag.outputs.tag }}
