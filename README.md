@@ -15,13 +15,12 @@ import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
 
 type User = { id: number; name: string };
 
-// ❌ Traditional approach - can throw unexpectedly
-try {
-  const response = await fetch("/api/users");
-  const users = await response.json(); // What if response is 404?
-} catch (error) {
-  // Handle network errors, parsing errors, HTTP errors... all mixed together
-}
+// ❌ Traditional approach - the 404 sails through as success
+const raw = await fetch("/api/users");
+// fetch does NOT throw on a 404 — raw.ok is false, but you have to remember
+// to check it. Skip that check and the error page (often HTML) reaches
+// json(), which throws a SyntaxError far from the real cause.
+const usersRaw = await raw.json();
 
 // ✅ typed-fetch approach - explicit and type-safe
 const { response, error } = await typedFetch<User[]>("/api/users");
@@ -343,8 +342,8 @@ if (error && isKnownHttpError(error)) {
       break;
     default:
       // Keep a `default` even though this switch looks exhaustive: adding a new
-      // error class to the library is a minor version bump (see semver policy),
-      // so new cases can appear without a major release.
+      // error class to the library ships in a minor release, so new cases can
+      // appear without a major bump. (See RELEASING.md#semver-policy.)
       console.log(`HTTP ${error.status}`);
   }
 }
@@ -370,7 +369,7 @@ if (error instanceof BadRequestError) {
 ### Narrowing to Specific Errors
 
 `typedFetch` has a single type parameter — the response body type. `error` is always
-the full {@link TypedFetchError} union (every class the request could actually produce
+the full `TypedFetchError` union (every class the request could actually produce
 at runtime). There is no second type parameter to "expect" a narrower set of errors:
 that would only be a type-level assertion with no runtime check behind it, so a 403
 response could be reported as a `NotFoundError` if you asked for one.
@@ -403,8 +402,18 @@ if (error && isHttpError(error)) {
   const text = await forJson.text();
 
   const retryAfter = error.headers.get("Retry-After");
-  error.status; // 404 (literal, not number)
-  error.statusText; // "Not Found" (literal, not string)
+  error.status; // number — the union's UnknownHttpError.status widens it
+  error.statusText; // string
+}
+
+// For literal `status`/`statusText`, narrow to a known class first:
+if (error && isKnownHttpError(error)) {
+  switch (error.status) {
+    case 404:
+      error.status; // 404 (literal)
+      error.statusText; // "Not Found" (literal)
+      break;
+  }
 }
 ```
 
