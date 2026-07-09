@@ -221,15 +221,12 @@ All HTTP error classes provide access to the response body:
 
 ```typescript
 if (error && isHttpError(error)) {
+  // Clone BEFORE reading if you need the body more than once.
+  const forJson = error.clone();
   const json = await error.json();
-  const text = await error.clone().text();
-  const blob = await error.clone().blob();
-  const buffer = await error.clone().arrayBuffer();
+  const text = await forJson.text();
 
-  // Access response headers
   const retryAfter = error.headers.get("Retry-After");
-
-  // Status info with literal types
   error.status; // 404 (literal, not number)
   error.statusText; // "Not Found" (literal, not string)
 }
