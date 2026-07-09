@@ -27,5 +27,15 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      # Build explicitly BEFORE test and publish. Do NOT rely on the
+      # `prepublishOnly` lifecycle hook — if it is renamed, removed, or a
+      # package-manager version stops honoring it under OIDC trusted publishing,
+      # the release would publish a tarball with no compiled code. Building here
+      # also means `dist/` exists when tests run, so the API-surface snapshot
+      # test (gated on dist existence) is exercised instead of skipped.
+      - run: pnpm build
       - run: pnpm test
+      # Defense in depth: assert the tarball that WOULD be published actually
+      # contains the compiled entry points before we publish it.
+      - run: pnpm verify-pack
       - run: npm publish --provenance --access public

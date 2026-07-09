@@ -58,6 +58,7 @@
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "verify-pack": "node scripts/verify-pack.mjs",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
