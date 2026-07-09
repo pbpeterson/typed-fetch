@@ -1,5 +1,5 @@
 import http from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { describe, test, expect, beforeAll, afterAll, expectTypeOf, vi } from "vitest";
 import {
   typedFetch,
@@ -1187,4 +1187,48 @@ describe("type-level", () => {
 test("error .name is a hardcoded string literal, not this.constructor.name", () => {
   const src = readFileSync("src/errors/base-http-error.ts", "utf8");
   expect(src).not.toMatch(/this\.name\s*=\s*this\.constructor\.name/);
+});
+
+// P3-03: freeze the public API surface. Snapshots the exact set of named
+// exports from the BUILT package so an accidental addition/removal is a red
+// test (and a reviewable snapshot diff), not a silent minor/major.
+//
+// dist/-ordering: this reads from `dist/`, which only exists after
+// `pnpm build`. `dist/` is gitignored, and .github/workflows/ci.yml runs
+// `pnpm test` BEFORE `pnpm build` in the same job — so on a clean checkout,
+// including in CI, `dist/` is absent when this file runs. We cannot add a
+// `pretest` hook (package.json is off-limits for this change), and a hard
+// failure here would break `pnpm test` on every clean checkout and in CI.
+// So: skip gracefully (with an explicit console message, so it's visible in
+// the run rather than silently vanishing) when dist/ is missing, and run for
+// real whenever it's present — e.g. the documented verification flow
+// `pnpm build && pnpm lint && pnpm format:check && pnpm typecheck && pnpm test`.
+const distExists = existsSync(new URL("./dist/index.mjs", import.meta.url));
+
+if (!distExists) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "\n[api-surface] dist/ not found — skipping the public API surface snapshot tests. " +
+      "Run `pnpm build` first (e.g. `pnpm build && pnpm test`) to exercise them.\n",
+  );
+}
+
+// The specifier is built at runtime so `tsc` does not try to resolve dist/,
+// which does not exist until `pnpm build` has run.
+const importDist = (path: string): Promise<Record<string, unknown>> =>
+  import(/* @vite-ignore */ new URL(path, import.meta.url).href);
+
+describe.skipIf(!distExists)("public API surface is frozen", () => {
+  test("main entry named exports", async () => {
+    const mod = await importDist("./dist/index.mjs");
+    // Object.keys() returns a fresh array each call, so sorting it in place
+    // (oxlint's unicorn/no-array-sort warning, not an error) is harmless.
+    expect(Object.keys(mod).sort()).toMatchSnapshot();
+  });
+
+  test("./errors subpath named exports", async () => {
+    const mod = await importDist("./dist/errors/index.mjs");
+    // Same as above: sorting the fresh Object.keys() array in place is fine.
+    expect(Object.keys(mod).sort()).toMatchSnapshot();
+  });
 });
