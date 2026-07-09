@@ -1,8 +1,16 @@
+import { brand, httpErrorBrand } from "./brand";
+
 /**
  * Abstract base class for all HTTP error classes (4xx and 5xx).
  *
  * Provides access to the response body via {@link json}, {@link text},
  * {@link blob}, and {@link arrayBuffer}, as well as response {@link headers}.
+ *
+ * Carries a cross-copy brand (see `./brand`) so `isHttpError` recognizes
+ * instances even when they were created by a different copy of this class
+ * (different entry point or module format). Raw `instanceof BaseHttpError`
+ * still uses the normal prototype chain and is only reliable within a single
+ * copy — prefer `isHttpError` across package boundaries.
  *
  * @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status
  */
@@ -58,3 +66,8 @@ export abstract class BaseHttpError extends Error {
     return new Ctor(this.response.clone());
   }
 }
+
+// Stamp the cross-copy brand on the prototype so every subclass (all 40 status
+// classes + UnknownHttpError) inherits it. Keyed by a `Symbol.for`, it is
+// identical across module copies, which is what makes the guards copy-proof.
+brand(BaseHttpError.prototype, httpErrorBrand);

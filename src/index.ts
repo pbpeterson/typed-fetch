@@ -5,13 +5,25 @@ import { NetworkError } from "./errors/network-error";
 import { AbortedError } from "./errors/aborted-error";
 import { TimeoutError } from "./errors/timeout-error";
 import { UnknownHttpError } from "./errors/unknown-http-error";
+import {
+  abortedErrorBrand,
+  hasBrand,
+  httpErrorBrand,
+  networkErrorBrand,
+  timeoutErrorBrand,
+  unknownHttpErrorBrand,
+} from "./errors/brand";
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
 
 /**
  * Type guard that checks whether a value is an HTTP error (any {@link BaseHttpError} subclass).
  *
- * Prefer this over `instanceof` when the error may cross package boundaries.
+ * Keyed on a cross-copy brand rather than `instanceof`, so it returns `true`
+ * even when the error was created by a *different copy* of the library — a
+ * different entry point (`.` vs `./errors`) or a different module format
+ * (ESM vs CJS). Always prefer this over `error instanceof BaseHttpError`,
+ * which only holds within a single copy.
  *
  * @example
  * ```ts
@@ -21,11 +33,13 @@ import { HttpMethods } from "./methods";
  * ```
  */
 export function isHttpError(error: unknown): error is BaseHttpError {
-  return error instanceof BaseHttpError;
+  return hasBrand(error, httpErrorBrand);
 }
 
 /**
  * Type guard that checks whether a value is a {@link NetworkError}.
+ *
+ * Keyed on a cross-copy brand — works across entry points and module formats.
  *
  * @example
  * ```ts
@@ -35,11 +49,13 @@ export function isHttpError(error: unknown): error is BaseHttpError {
  * ```
  */
 export function isNetworkError(error: unknown): error is NetworkError {
-  return error instanceof NetworkError;
+  return hasBrand(error, networkErrorBrand);
 }
 
 /**
  * Type guard that checks whether a value is an {@link AbortedError}.
+ *
+ * Keyed on a cross-copy brand — works across entry points and module formats.
  *
  * Note: `AbortedError` does NOT extend `NetworkError` — {@link isNetworkError}
  * returns `false` for aborted requests. Use this guard instead.
@@ -52,11 +68,13 @@ export function isNetworkError(error: unknown): error is NetworkError {
  * ```
  */
 export function isAbortError(error: unknown): error is AbortedError {
-  return error instanceof AbortedError;
+  return hasBrand(error, abortedErrorBrand);
 }
 
 /**
  * Type guard that checks whether a value is a {@link TimeoutError}.
+ *
+ * Keyed on a cross-copy brand — works across entry points and module formats.
  *
  * Note: `TimeoutError` does NOT extend `NetworkError` — {@link isNetworkError}
  * returns `false` for timed-out requests. Use this guard instead.
@@ -69,13 +87,16 @@ export function isAbortError(error: unknown): error is AbortedError {
  * ```
  */
 export function isTimeoutError(error: unknown): error is TimeoutError {
-  return error instanceof TimeoutError;
+  return hasBrand(error, timeoutErrorBrand);
 }
 
 /**
  * Type guard for a *known*, dedicated HTTP error class (excludes {@link UnknownHttpError}).
  *
- * Narrowing on `error.status` after this guard is exhaustive over the mapped codes.
+ * Keyed on cross-copy brands — works across entry points and module formats.
+ * Narrowing on `error.status` after this guard is exhaustive over the mapped
+ * codes, and is the copy-proof way to reach a specific subclass (a raw
+ * `error instanceof NotFoundError` is NOT reliable across copies).
  *
  * @example
  * ```ts
@@ -89,7 +110,7 @@ export function isTimeoutError(error: unknown): error is TimeoutError {
  * ```
  */
 export function isKnownHttpError(error: unknown): error is ClientErrors | ServerErrors {
-  return error instanceof BaseHttpError && !(error instanceof UnknownHttpError);
+  return hasBrand(error, httpErrorBrand) && !hasBrand(error, unknownHttpErrorBrand);
 }
 
 /** A `Response` whose `json()` (and `clone()`) carry the expected body type. */

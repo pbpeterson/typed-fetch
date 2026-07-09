@@ -1,3 +1,5 @@
+import { brand, networkErrorBrand } from "./brand";
+
 /**
  * Represents a network-level failure (DNS, connection refused, timeout,
  * aborted request, etc.).
@@ -5,6 +7,9 @@
  * Unlike HTTP errors, a `NetworkError` has no status code or response body
  * because the request never reached the server. The original error thrown
  * by `fetch` is preserved on {@link cause}.
+ *
+ * Carries a cross-copy brand so `isNetworkError` works across module copies —
+ * prefer it over raw `instanceof` at package boundaries.
  */
 export class NetworkError extends Error {
   override readonly name = "NetworkError";
@@ -19,3 +24,5 @@ export class NetworkError extends Error {
     }
   }
 }
+
+brand(NetworkError.prototype, networkErrorBrand);

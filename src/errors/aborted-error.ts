@@ -1,3 +1,5 @@
+import { brand, abortedErrorBrand } from "./brand";
+
 /**
  * Represents a request that was cancelled via `AbortSignal` (e.g.
  * `controller.abort()` or `controller.abort(reason)`).
@@ -6,6 +8,9 @@
  * because the request never completed. The original error thrown by `fetch`
  * is preserved on {@link cause}, and the signal's cancellation reason on
  * {@link reason}.
+ *
+ * Carries a cross-copy brand so `isAbortError` works across module copies —
+ * prefer it over raw `instanceof` at package boundaries.
  */
 export class AbortedError extends Error {
   override readonly name = "AbortedError";
@@ -36,3 +41,5 @@ export class AbortedError extends Error {
     }
   }
 }
+
+brand(AbortedError.prototype, abortedErrorBrand);

@@ -1,4 +1,5 @@
 import { BaseHttpError } from "./base-http-error";
+import { brand, unknownHttpErrorBrand } from "./brand";
 
 /**
  * HTTP error for status codes >= 400 that have no dedicated error class
@@ -18,3 +19,7 @@ export class UnknownHttpError extends BaseHttpError {
     this.statusText = response.statusText;
   }
 }
+
+// A second brand marking the catch-all subclass, so `isKnownHttpError` can
+// exclude it across copies (it also carries the inherited `httpErrorBrand`).
+brand(UnknownHttpError.prototype, unknownHttpErrorBrand);

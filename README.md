@@ -259,7 +259,7 @@ if (isTimeoutError(error)) {
 
 ### Type Guards
 
-Use `isHttpError()`, `isNetworkError()`, `isAbortError()`, and `isTimeoutError()` instead of `instanceof` for reliable checks across package boundaries:
+Use `isHttpError()`, `isNetworkError()`, `isAbortError()`, and `isTimeoutError()` instead of `instanceof` for reliable checks across package boundaries (see [`instanceof` vs. type guards](#instanceof-vs-type-guards) for why this matters):
 
 ```typescript
 import {
@@ -289,6 +289,35 @@ if (error) {
 
 > **Note:** `isNetworkError()` does NOT match `AbortedError` or `TimeoutError` — they are
 > separate classes, not `NetworkError` subclasses. Check for them with their own guards.
+
+### `instanceof` vs. type guards
+
+A process can end up with **more than one copy** of this package's classes — for
+example when one part of the app `import`s it (ESM) and another `require`s it (CJS,
+the "dual-package hazard"), or when a bundler duplicates a class across the `.` and
+`./errors` entry points. Each copy is a distinct class object, so `error instanceof
+BaseHttpError` can be `false` even when the value genuinely is one.
+
+The type guards (`isHttpError`, `isKnownHttpError`, `isNetworkError`, `isAbortError`,
+`isTimeoutError`) are **immune** to this. They identify errors by a cross-realm brand
+(a `Symbol.for`-keyed marker) rather than by class identity, so they return the right
+answer regardless of which copy created the error or which module format you call them
+from.
+
+| Check                                                                                     | Same copy | Across copies (ESM ↔ CJS, `.` ↔ `./errors`)                                                                                                            |
+| ----------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `isHttpError` / `isNetworkError` / `isAbortError` / `isTimeoutError` / `isKnownHttpError` | ✅        | ✅                                                                                                                                                     |
+| `error instanceof BaseHttpError` (base class)                                             | ✅        | ⚠️ only if your bundler shares the class (this package ships with code-splitting, so a single ESM **or** a single CJS graph is fine; ESM ↔ CJS is not) |
+| `error instanceof NotFoundError` (specific subclass)                                      | ✅        | ⚠️ same caveat as above                                                                                                                                |
+
+**Recommendation:** use the type guards for kind checks (HTTP vs. network vs. abort vs.
+timeout), and reach a specific status with `isKnownHttpError()` + `switch (error.status)`
+— that path is copy-proof end to end. Plain `instanceof` still works and reads well within
+a single module graph; the examples below use it for brevity.
+
+> The brand is a correctness aid, not a security boundary: a value that hand-forges the
+> brand symbol will pass the guard, exactly as a value with a doctored prototype passes
+> `instanceof`. Guards answer "did this library make this?", not "is this trusted?".
 
 ### Exhaustive Status Narrowing with `isKnownHttpError`
 
@@ -347,7 +376,8 @@ that would only be a type-level assertion with no runtime check behind it, so a 
 response could be reported as a `NotFoundError` if you asked for one.
 
 Narrow the real, sound way — `isKnownHttpError()` + `switch (error.status)`
-(see above), or `instanceof` for one specific class:
+(see above; this path is copy-proof), or `instanceof` for one specific class (reliable
+within a single module graph — see [`instanceof` vs. type guards](#instanceof-vs-type-guards)):
 
 ```typescript
 import { typedFetch, NotFoundError } from "@pbpeterson/typed-fetch";
@@ -488,7 +518,10 @@ Narrow it with `isKnownHttpError()` + `switch (error.status)`, or `instanceof`.
 
 ### `isHttpError(error): error is BaseHttpError`
 
-Type guard that checks if an error is an HTTP error (any status code).
+Type guard that checks if an error is an HTTP error (any status code). Brand-based, so
+it is reliable across module copies and formats — unlike raw `instanceof`
+(see [`instanceof` vs. type guards](#instanceof-vs-type-guards)). The same holds for
+every guard below.
 
 ### `isKnownHttpError(error): error is ClientErrors | ServerErrors`
 

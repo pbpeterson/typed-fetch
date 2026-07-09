@@ -1,5 +1,6 @@
 import http from "node:http";
 import { readFileSync, existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { describe, test, expect, beforeAll, afterAll, expectTypeOf, vi } from "vitest";
 import {
   typedFetch,
@@ -979,6 +980,104 @@ describe("isKnownHttpError", () => {
   });
 });
 
+describe("cross-copy brands", () => {
+  // The guards must key off a `Symbol.for`-brand, not `instanceof`, so they
+  // survive multiple copies of the classes in one process. These tests forge a
+  // "foreign copy" of each root error: a class carrying the SAME well-known
+  // brand symbol but NO prototype link to this module's classes. If a guard
+  // still used `instanceof`, every case below would fail.
+  const httpBrand = Symbol.for("@pbpeterson/typed-fetch.BaseHttpError");
+  const unknownBrand = Symbol.for("@pbpeterson/typed-fetch.UnknownHttpError");
+  const networkBrand = Symbol.for("@pbpeterson/typed-fetch.NetworkError");
+  const abortBrand = Symbol.for("@pbpeterson/typed-fetch.AbortedError");
+  const timeoutBrand = Symbol.for("@pbpeterson/typed-fetch.TimeoutError");
+
+  const foreign = (...brands: symbol[]): Error => {
+    const e = new Error("foreign copy");
+    for (const b of brands) Object.defineProperty(e, b, { value: true });
+    return e;
+  };
+
+  test("isHttpError matches a foreign-copy HTTP error (no instanceof link)", () => {
+    const e = foreign(httpBrand);
+    expect(e instanceof BaseHttpError).toBe(false); // proves it is NOT the same copy
+    expect(isHttpError(e)).toBe(true);
+  });
+
+  test("isKnownHttpError matches a foreign known error but not a foreign UnknownHttpError", () => {
+    expect(isKnownHttpError(foreign(httpBrand))).toBe(true);
+    expect(isKnownHttpError(foreign(httpBrand, unknownBrand))).toBe(false);
+  });
+
+  test("isNetworkError / isAbortError / isTimeoutError match their foreign copies", () => {
+    expect(isNetworkError(foreign(networkBrand))).toBe(true);
+    expect(isAbortError(foreign(abortBrand))).toBe(true);
+    expect(isTimeoutError(foreign(timeoutBrand))).toBe(true);
+  });
+
+  test("guard exclusivity holds across foreign copies (no cross-family overlap)", () => {
+    const samples = {
+      http: foreign(httpBrand),
+      unknown: foreign(httpBrand, unknownBrand),
+      network: foreign(networkBrand),
+      abort: foreign(abortBrand),
+      timeout: foreign(timeoutBrand),
+    };
+    // Each row: [isHttpError, isKnownHttpError, isNetworkError, isAbortError, isTimeoutError]
+    expect([
+      isHttpError(samples.http),
+      isKnownHttpError(samples.http),
+      isNetworkError(samples.http),
+      isAbortError(samples.http),
+      isTimeoutError(samples.http),
+    ]).toEqual([true, true, false, false, false]);
+    expect([
+      isHttpError(samples.unknown),
+      isKnownHttpError(samples.unknown),
+      isNetworkError(samples.unknown),
+      isAbortError(samples.unknown),
+      isTimeoutError(samples.unknown),
+    ]).toEqual([true, false, false, false, false]);
+    expect([
+      isNetworkError(samples.network),
+      isHttpError(samples.network),
+      isAbortError(samples.network),
+      isTimeoutError(samples.network),
+    ]).toEqual([true, false, false, false]);
+    expect([
+      isAbortError(samples.abort),
+      isHttpError(samples.abort),
+      isNetworkError(samples.abort),
+      isTimeoutError(samples.abort),
+    ]).toEqual([true, false, false, false]);
+    expect([
+      isTimeoutError(samples.timeout),
+      isHttpError(samples.timeout),
+      isNetworkError(samples.timeout),
+      isAbortError(samples.timeout),
+    ]).toEqual([true, false, false, false]);
+  });
+
+  test("brands are non-enumerable (never leak into JSON / spread / keys)", () => {
+    const e = new NotFoundError(new Response(null, { status: 404 }));
+    expect(Object.keys(e)).not.toContain(httpBrand.toString());
+    expect(Object.getOwnPropertySymbols({ ...e })).not.toContain(httpBrand);
+    // The brand lives on the prototype, not the instance.
+    expect(Object.prototype.hasOwnProperty.call(e, httpBrand)).toBe(false);
+    expect((e as unknown as Record<symbol, unknown>)[httpBrand]).toBe(true);
+  });
+
+  test("guards reject values with no brand", () => {
+    for (const v of [null, undefined, {}, new Error("x"), 42, "s"]) {
+      expect(isHttpError(v)).toBe(false);
+      expect(isNetworkError(v)).toBe(false);
+      expect(isAbortError(v)).toBe(false);
+      expect(isTimeoutError(v)).toBe(false);
+      expect(isKnownHttpError(v)).toBe(false);
+    }
+  });
+});
+
 // ── Error class invariants ───────────────────────────────────────────
 
 // Shared by "error class consistency" and "roster sync" — one row per
@@ -1540,5 +1639,145 @@ describe.skipIf(!distExists)("public API surface is frozen", () => {
     const mod = await importDist("./dist/errors/index.mjs");
     // Same as above: sorting the fresh Object.keys() array in place is fine.
     expect(Object.keys(mod).sort()).toMatchSnapshot();
+  });
+});
+
+// ── Cross-copy / cross-format guards against the BUILT artifacts ─────
+//
+// The whole reason branding exists: exercise the guards against errors created
+// by a DIFFERENT copy of the classes than the one that owns the guard. The
+// src/ tests above cannot catch a regression to `instanceof` because every
+// import there resolves to the same module object. These tests import the two
+// ESM entry points (`.` and `./errors`) and the two CJS entry points via
+// createRequire, then cross the wires. On a clean checkout dist/ is absent and
+// this block skips (see distExists rationale above).
+describe.skipIf(!distExists)("guards work across module copies (dist)", () => {
+  const require = createRequire(import.meta.url);
+  const mkResp = (status: number) => new Response(null, { status });
+
+  test("axis 1 — ESM cross-entry: typedFetch from `.`, NotFoundError from `./errors`", async () => {
+    const main = (await importDist("./dist/index.mjs")) as {
+      typedFetch: typeof typedFetch;
+      isHttpError: typeof isHttpError;
+      isKnownHttpError: typeof isKnownHttpError;
+    };
+    const errors = (await importDist("./dist/errors/index.mjs")) as {
+      NotFoundError: typeof NotFoundError;
+    };
+    const { error } = await main.typedFetch("http://x/y", {
+      fetch: async () => mkResp(404),
+    });
+    expect(main.isHttpError(error)).toBe(true);
+    expect(main.isKnownHttpError(error)).toBe(true);
+    // With code-splitting the two entries share a chunk, so raw instanceof
+    // holds too within a single ESM graph.
+    expect(error instanceof errors.NotFoundError).toBe(true);
+  });
+
+  test("axis 2 — CJS cross-entry: typedFetch and NotFoundError via require()", async () => {
+    const main = require("./dist/index.js") as {
+      typedFetch: typeof typedFetch;
+      isHttpError: typeof isHttpError;
+      isKnownHttpError: typeof isKnownHttpError;
+    };
+    const errors = require("./dist/errors/index.js") as {
+      NotFoundError: typeof NotFoundError;
+    };
+    const { error } = await main.typedFetch("http://x/y", {
+      fetch: async () => mkResp(404),
+    });
+    expect(main.isHttpError(error)).toBe(true);
+    expect(main.isKnownHttpError(error)).toBe(true);
+    expect(error instanceof errors.NotFoundError).toBe(true);
+  });
+
+  test("axis 3 — cross-format: CJS isHttpError on an ESM-created HTTP error", async () => {
+    const esm = (await importDist("./dist/index.mjs")) as { typedFetch: typeof typedFetch };
+    const cjs = require("./dist/index.js") as {
+      isHttpError: typeof isHttpError;
+      isKnownHttpError: typeof isKnownHttpError;
+    };
+    const { error } = await esm.typedFetch("http://x/y", {
+      fetch: async () => mkResp(404),
+    });
+    expect(cjs.isHttpError(error)).toBe(true); // was false before the brand
+    expect(cjs.isKnownHttpError(error)).toBe(true);
+  });
+
+  test("axis 4 — cross-format reverse: ESM isNetworkError on a CJS-built NetworkError", async () => {
+    const cjsErrors = require("./dist/errors/index.js") as {
+      NetworkError: typeof NetworkError;
+    };
+    const esm = (await importDist("./dist/index.mjs")) as {
+      isNetworkError: typeof isNetworkError;
+      isHttpError: typeof isHttpError;
+    };
+    const err = new cjsErrors.NetworkError("boom");
+    expect(esm.isNetworkError(err)).toBe(true);
+    expect(esm.isHttpError(err)).toBe(false);
+  });
+
+  test("axis 5/6 — full exclusivity matrix (instances CJS, guards ESM)", async () => {
+    const cjs = require("./dist/errors/index.js") as {
+      NotFoundError: typeof NotFoundError;
+      InternalServerError: typeof InternalServerError;
+      UnknownHttpError: typeof UnknownHttpError;
+      NetworkError: typeof NetworkError;
+      AbortedError: typeof AbortedError;
+      TimeoutError: typeof TimeoutError;
+    };
+    const g = (await importDist("./dist/index.mjs")) as {
+      isHttpError: typeof isHttpError;
+      isKnownHttpError: typeof isKnownHttpError;
+      isNetworkError: typeof isNetworkError;
+      isAbortError: typeof isAbortError;
+      isTimeoutError: typeof isTimeoutError;
+    };
+    const row = (v: unknown) => [
+      g.isHttpError(v),
+      g.isKnownHttpError(v),
+      g.isNetworkError(v),
+      g.isAbortError(v),
+      g.isTimeoutError(v),
+    ];
+    expect(row(new cjs.NotFoundError(mkResp(404)))).toEqual([true, true, false, false, false]);
+    expect(row(new cjs.InternalServerError(mkResp(500)))).toEqual([
+      true,
+      true,
+      false,
+      false,
+      false,
+    ]);
+    // axis 6: UnknownHttpError is http but NOT known, across copies.
+    expect(row(new cjs.UnknownHttpError(mkResp(499)))).toEqual([true, false, false, false, false]);
+    expect(row(new cjs.NetworkError("x"))).toEqual([false, false, true, false, false]);
+    expect(row(new cjs.AbortedError("x"))).toEqual([false, false, false, true, false]);
+    expect(row(new cjs.TimeoutError("x"))).toEqual([false, false, false, false, true]);
+  });
+
+  test("axis 8 — clone() returns the right subclass across copies; switch narrows", async () => {
+    const main = (await importDist("./dist/index.mjs")) as {
+      typedFetch: typeof typedFetch;
+      isKnownHttpError: typeof isKnownHttpError;
+    };
+    const errors = (await importDist("./dist/errors/index.mjs")) as {
+      NotFoundError: typeof NotFoundError;
+    };
+    const { error } = await main.typedFetch("http://x/y", {
+      fetch: async () => new Response(JSON.stringify({ a: 1 }), { status: 404 }),
+    });
+    const cloned = (error as NotFoundError).clone();
+    expect(cloned instanceof errors.NotFoundError).toBe(true);
+    expect(cloned.status).toBe(404);
+    expect(await cloned.json()).toEqual({ a: 1 });
+    let label = "other";
+    if (main.isKnownHttpError(error)) {
+      switch (error.status) {
+        case 404:
+          label = "nf";
+          break;
+      }
+    }
+    expect(label).toBe("nf");
   });
 });

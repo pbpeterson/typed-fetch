@@ -1,5 +1,45 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking
+
+- **The type guards (`isHttpError`, `isKnownHttpError`, `isNetworkError`,
+  `isAbortError`, `isTimeoutError`) now identify errors by a cross-realm brand
+  (`Symbol.for`) instead of `instanceof`.** This fixes them across multiple
+  copies of the package's classes in one process — the dual-package hazard
+  (`require()` ↔ `import()`) and cross-entry-point duplication (`.` vs
+  `./errors`), where a raw `instanceof` returned `false` for a value that
+  genuinely was one. The guards' _behavior_ is unchanged for the common
+  single-copy case; the break is that a value which forges the brand symbol now
+  passes a guard (a guard answers "did this library make this?", not "is this
+  trusted?"), and that guards no longer depend on prototype identity. If you
+  relied on the guards returning `false` for a same-shape object that lacked
+  the brand, that still holds.
+
+### Fixed
+
+- **`instanceof` across the package's own entry points.** The build previously
+  shipped `splitting: false`, so the `.` and `./errors` entry points each
+  bundled their _own_ copy of every error class. A `NotFoundError` created by
+  `typedFetch` (from `.`) was therefore not `instanceof` the `NotFoundError`
+  imported from `./errors` — the exact pattern the README teaches. Enabling
+  code-splitting makes both entry points share one copy of each class per
+  module format, so raw `instanceof` now works across entry points within a
+  single ESM (or single CJS) graph. Across the ESM/CJS boundary, use the
+  brand-based type guards (see below) — no bundler can merge those two module
+  graphs.
+- The guards now work regardless of which copy or module format created the
+  error (see Breaking above). Bundle size drops ~9% as a side effect of
+  splitting removing the duplicated classes.
+
+### Added
+
+- `dist/`-level cross-copy / cross-format regression tests that exercise the
+  _built_ artifacts (both entry points, both ESM and CJS), so a regression to
+  `instanceof`-based guards is caught — the previous suite only imported
+  `src/`, which masked the bug.
+
 ## [1.0.0] - 2026-07-09
 
 ### Breaking
