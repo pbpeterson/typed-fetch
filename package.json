@@ -35,16 +35,33 @@
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "errors": [
+        "dist/errors/index.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
     },
     "./errors": {
-      "types": "./dist/errors/index.d.ts",
-      "import": "./dist/errors/index.mjs",
-      "require": "./dist/errors/index.js"
+      "import": {
+        "types": "./dist/errors/index.d.mts",
+        "default": "./dist/errors/index.mjs"
+      },
+      "require": {
+        "types": "./dist/errors/index.d.ts",
+        "default": "./dist/errors/index.js"
+      }
     }
   },
   "publishConfig": {
