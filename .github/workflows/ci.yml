@@ -35,6 +35,13 @@ jobs:
       # Catch a broken `files`/build-output contract on PRs, long before it can
       # reach the release workflow and publish a code-less tarball.
       - run: pnpm verify-pack
+      # Pack the tarball and consume it as a real downstream user would: install
+      # it into a scratch project and exercise the INSTALLED package across the
+      # `exports` map (`.` vs `./errors`), across formats (ESM vs CJS), and under
+      # a consumer's own tsc (bundler + nodenext). Every other test runs against
+      # `src/` or a single built entry — none installs the artifact. Must run
+      # AFTER build (it packs dist/).
+      - run: pnpm check-consumer
 
   bun-smoke:
     runs-on: ubuntu-latest

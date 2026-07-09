@@ -44,8 +44,10 @@ pnpm lint          # oxlint
 pnpm format:check  # oxfmt --check
 pnpm typecheck     # tsc --noEmit -p tsconfig.test.json
 pnpm test          # vitest run
-pnpm build         # tsup — confirm the package actually builds
-pnpm check-docs    # typecheck every fenced TS block in the docs (run AFTER build)
+pnpm build          # tsup — confirm the package actually builds
+pnpm check-docs     # typecheck every fenced TS block in the docs (run AFTER build)
+pnpm verify-pack    # assert the published tarball's file manifest (run AFTER build)
+pnpm check-consumer # pack + install the tarball, exercise it as a real consumer (run AFTER build)
 ```
 
 Run them all locally; CI runs the same checks and will fail the PR otherwise.
@@ -94,6 +96,48 @@ template omits `override readonly name = "..."`. That compiles fine, but under
 minification the class name is mangled and the error's `.name` becomes garbage —
 a real runtime bug this guard will **never** catch. When you edit an error-class
 example, verify `override readonly name` is present by eye; `check-docs` won't.
+
+### The packed tarball is consumed as a real user (`pnpm check-consumer`)
+
+`scripts/check-consumer.mjs` closes a hole that no other test covers: **every
+other test runs against `src/` or a single built entry point.** `test.spec.ts`
+imports `./src/index`; the bun/deno smokes import `dist/index.mjs` (the main
+entry only); the API-surface snapshot checks export _names_; `verify-pack`
+checks file _paths_. None of them ever installs the artifact and runs it the
+way a downstream user does. A whole class of packaging bugs is therefore
+invisible to the 300+ test suite.
+
+This gate (zero deps, plain Node, runs **after `pnpm build`**):
+
+1. `npm pack`s the tarball into a temp dir.
+2. Installs it into a throwaway consumer project (`npm install ./<tarball>`).
+3. Exercises the **installed** package: ESM `import`, CJS `require`, the
+   `./errors` subpath, cross-entry and cross-format `instanceof`/`isHttpError`,
+   plus abort/timeout/injected-`fetch`/`Request`-first-arg behaviour.
+4. Typechecks a consumer `.ts` against the install under **both**
+   `moduleResolution: "bundler"` and `"nodenext"` (the nodenext pass doubles as
+   an `attw`-style types-wiring check), using the repo's own `tsc`.
+
+It cleans up all temp dirs and exits non-zero with a per-assertion report.
+
+**`KNOWN_FAILING` (currently empty).** The script keeps a `KNOWN_FAILING` set at
+the top for staging a fix: when an assertion encodes a contract the artifact
+does not yet satisfy (e.g. cross-entry `instanceof` under a dual-bundle build),
+put its id there and it is reported but does not fail CI, so the gate can land
+green while the fix is in flight. The set is **self-policing** — if a
+`KNOWN_FAILING` assertion starts **passing**, the gate fails with "KNOWN_FAILING
+is stale", forcing you to delete the id. It is currently empty: every assertion
+is enforced strictly. Never add an id to paper over a real regression, and never
+leave a fixed bug's id behind.
+
+**Contracts vs. limitations.** A handful of checks are _informational_ (`note`,
+printed with `·`) rather than assertions — they document a limitation the
+library deliberately does not promise to fix. The clearest is cross-**format**
+`instanceof` (an ESM-minted error is never `instanceof` the CJS class copy):
+that is an inherent property of the dual-package boundary, which is exactly why
+the library brands its root error kinds and tells consumers to prefer
+`isHttpError(...)` (and the other `is*` guards) over `instanceof`. Those guards
+_are_ asserted to work across entries and formats.
 
 ## Adding a new HTTP status code
 

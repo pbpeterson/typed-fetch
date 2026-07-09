@@ -60,6 +60,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "verify-pack": "node scripts/verify-pack.mjs",
     "check-docs": "node scripts/check-docs.mjs",
+    "check-consumer": "node scripts/check-consumer.mjs",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
