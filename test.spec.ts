@@ -1,6 +1,6 @@
 import http from "node:http";
 import { readFileSync } from "node:fs";
-import { describe, test, expect, beforeAll, afterAll, expectTypeOf } from "vitest";
+import { describe, test, expect, beforeAll, afterAll, expectTypeOf, vi } from "vitest";
 import { typedFetch, isHttpError, isNetworkError, isKnownHttpError } from "./src/index";
 import { statusCodeErrorMap } from "./src/http-status-codes";
 import { httpErrors } from "./src/errors/helpers";
@@ -149,6 +149,43 @@ describe("typedFetch", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: "test" }),
     });
+
+    expect(result.error).toBe(null);
+    expect(result.response?.status).toBe(200);
+  });
+
+  test("accepts a custom fetch implementation, bypassing the global fetch", async () => {
+    const stubFetch = vi.fn(
+      async () => new Response(null, { status: 404, statusText: "Not Found" }),
+    );
+
+    const result = await typedFetch("https://example.invalid/should-not-be-hit", {
+      fetch: stubFetch as unknown as typeof fetch,
+    });
+
+    expect(stubFetch).toHaveBeenCalledTimes(1);
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NotFoundError);
+  });
+
+  test("does not forward the fetch override key into the injected fetch's init", async () => {
+    const stubFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+
+    await typedFetch("https://example.invalid/no-leak", {
+      fetch: stubFetch as unknown as typeof fetch,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+
+    expect(stubFetch).toHaveBeenCalledTimes(1);
+    const [, init] = stubFetch.mock.calls[0] ?? [];
+    expect(init).toBeDefined();
+    expect(init && "fetch" in init).toBe(false);
+    expect(init).toMatchObject({ method: "POST" });
+  });
+
+  test("omitting fetch still uses the global fetch (test server)", async () => {
+    const result = await typedFetch(url({ status: 200, body: JSON.stringify({ id: 1 }) }));
 
     expect(result.error).toBe(null);
     expect(result.response?.status).toBe(200);

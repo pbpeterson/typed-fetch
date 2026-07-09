@@ -352,7 +352,11 @@ console.log(BadRequestError.statusText); // "Bad Request"
 **Parameters:**
 
 - `url` - The URL to fetch (same as `fetch()`)
-- `options` - Fetch options with typed `headers` and `method` (optional)
+- `options` - Fetch options with typed `headers` and `method` (optional). Accepts an
+  optional `fetch` property to override the fetch implementation used for the
+  request (useful for testing, dependency injection, or custom agents); it is
+  stripped before the request options are forwarded, so it never leaks into the
+  underlying `fetch()` call.
 
 **Returns:**
 
@@ -387,7 +391,7 @@ All public types are exported for building typed wrappers around `typedFetch`:
 import type {
   TypedResponse, // Response with typed json() and clone()
   TypedFetchReturnType, // the discriminated union typedFetch resolves to
-  TypedFetchOptions, // RequestInit with typed headers and method
+  TypedFetchOptions, // RequestInit with typed headers, method, and an optional fetch override
   TypedHeaders, // headers with IntelliSense for common names
   StrictHeaders, // the strict header name/value map
   HttpMethods, // "GET" | "POST" | ... (fetch-forbidden methods excluded)

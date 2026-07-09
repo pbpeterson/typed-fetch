@@ -83,6 +83,8 @@ export type TypedFetchOptions = FetchParams[1] & {
   // fetch accepts any method string (and normalizes case); the union only
   // drives IntelliSense.
   method?: HttpMethods | (string & {});
+  /** Override the fetch implementation (testing, DI, custom agents). */
+  fetch?: typeof fetch;
 };
 
 /**
@@ -113,9 +115,11 @@ export async function typedFetch<JsonReturnType, ErrorType extends ClientErrors 
   url: FetchInput,
   options: TypedFetchOptions = {},
 ): Promise<TypedFetchReturnType<JsonReturnType, ErrorType>> {
+  const { fetch: fetchImpl = fetch, ...init } = options;
+
   let res: Response;
   try {
-    res = await fetch(url, options);
+    res = await fetchImpl(url, init);
   } catch (err) {
     const message = err instanceof Error ? err.message || err.name : "Network error";
     return {
