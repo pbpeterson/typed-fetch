@@ -330,7 +330,31 @@ describe("typedFetch", () => {
     }
   });
 
-  test("aborted request → AbortedError with the original AbortError as cause", async () => {
+  // Detection keys on `signal.aborted`, not the rejection's `.name`. A caller
+  // may pass ANY reason to `controller.abort(reason)` — a documented Web API
+  // pattern — and fetch then rejects with that reason (whose `.name` is
+  // usually NOT "AbortError"). The signal is the authority; `error.reason`
+  // carries whatever the caller passed so the consumer decides what it means.
+  test("abort(reason) with an Error reason → AbortedError; reason is that exact Error", async () => {
+    const controller = new AbortController();
+    const reason = new Error("route change");
+    controller.abort(reason);
+
+    const result = await typedFetch(url({ status: 200 }), {
+      signal: controller.signal,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(AbortedError);
+    expect(isAbortError(result.error)).toBe(true);
+    expect(isNetworkError(result.error)).toBe(false);
+
+    if (isAbortError(result.error)) {
+      expect(result.error.reason).toBe(reason);
+    }
+  });
+
+  test("bare abort() → AbortedError; reason is a DOMException named 'AbortError'", async () => {
     const controller = new AbortController();
     controller.abort();
 
@@ -342,20 +366,62 @@ describe("typedFetch", () => {
     expect(result.error).toBeInstanceOf(AbortedError);
 
     if (isAbortError(result.error)) {
-      expect((result.error.cause as Error).name).toBe("AbortError");
+      expect(result.error.reason).toBeInstanceOf(DOMException);
+      expect((result.error.reason as DOMException).name).toBe("AbortError");
     }
   });
 
-  test("timed-out request → TimeoutError with the original TimeoutError as cause", async () => {
+  test("abort('just a string') → AbortedError; reason is that string (non-Error reason)", async () => {
+    const controller = new AbortController();
+    controller.abort("just a string");
+
+    const result = await typedFetch(url({ status: 200 }), {
+      signal: controller.signal,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(AbortedError);
+
+    if (isAbortError(result.error)) {
+      expect(result.error.reason).toBe("just a string");
+    }
+  });
+
+  test("AbortSignal.timeout() against a slow route → TimeoutError, not NetworkError", async () => {
     const result = await typedFetch(url({ status: 200, delay: 200 }), {
       signal: AbortSignal.timeout(1),
     });
 
     expect(result.response).toBe(null);
     expect(result.error).toBeInstanceOf(TimeoutError);
+    expect(isTimeoutError(result.error)).toBe(true);
+    expect(isNetworkError(result.error)).toBe(false);
 
     if (isTimeoutError(result.error)) {
+      // cause is the signal's reason: a DOMException named "TimeoutError".
       expect((result.error.cause as Error).name).toBe("TimeoutError");
+    }
+  });
+
+  // False-positive guard: detection must NOT key on the rejected error's
+  // `.name`. An injected fetch that throws something merely *named*
+  // "AbortError", with NO AbortSignal anywhere, is a plain network failure —
+  // it must classify as NetworkError, never AbortedError.
+  test("error named 'AbortError' with no signal → NetworkError, not AbortedError", async () => {
+    const fakeAbort = Object.assign(new Error("x"), { name: "AbortError" });
+    const stubFetch = vi.fn(async () => Promise.reject(fakeAbort)) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/fake-abort", {
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isNetworkError(result.error)).toBe(true);
+    expect(isAbortError(result.error)).toBe(false);
+
+    if (isNetworkError(result.error)) {
+      expect(result.error.cause).toBe(fakeAbort);
     }
   });
 
@@ -781,13 +847,20 @@ describe("error class consistency", () => {
     expect(new AbortedError("aborted").name).toBe("AbortedError");
   });
 
-  test("AbortedError preserves cause and does not extend NetworkError", () => {
+  test("AbortedError preserves cause and reason and does not extend NetworkError", () => {
     const original = new DOMException("This operation was aborted", "AbortError");
-    const error = new AbortedError("aborted", { cause: original });
+    const reason = { code: "ROUTE_CHANGE" };
+    const error = new AbortedError("aborted", { cause: original, reason });
     expect(error.cause).toBe(original);
+    expect(error.reason).toBe(reason);
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(NetworkError);
     expect(error).not.toBeInstanceOf(BaseHttpError);
+  });
+
+  test("AbortedError.reason is undefined when no reason is supplied", () => {
+    const error = new AbortedError("aborted");
+    expect(error.reason).toBeUndefined();
   });
 
   test("TimeoutError.name equals 'TimeoutError'", () => {
@@ -1143,6 +1216,10 @@ describe("type-level", () => {
 
   test("NetworkError does not extend BaseHttpError", () => {
     expectTypeOf<NetworkError>().not.toExtend<BaseHttpError>();
+  });
+
+  test("AbortedError.reason is typed unknown (the consumer must narrow it)", () => {
+    expectTypeOf<AbortedError["reason"]>().toEqualTypeOf<unknown>();
   });
 
   test("AbortedError and TimeoutError do not extend NetworkError or BaseHttpError", () => {

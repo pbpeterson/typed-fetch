@@ -156,11 +156,24 @@ export async function typedFetch<JsonReturnType>(
   try {
     res = await fetchImpl(url, init);
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
-      return { response: null, error: new AbortedError("Request aborted", { cause: err }) };
-    }
-    if (err instanceof Error && err.name === "TimeoutError") {
-      return { response: null, error: new TimeoutError("Request timed out", { cause: err }) };
+    // The AbortSignal is the authority on cancellation — NOT the rejected
+    // error's `.name`. A caller can pass any reason to `controller.abort(reason)`
+    // (a documented Web API pattern), and fetch rejects with THAT reason, whose
+    // `.name` is rarely "AbortError". Conversely, an unrelated error that merely
+    // happens to be named "AbortError" must NOT be treated as a cancellation.
+    if (init.signal?.aborted) {
+      const reason = init.signal.reason;
+      // `AbortSignal.timeout()` aborts with a DOMException named "TimeoutError".
+      if (reason instanceof Error && reason.name === "TimeoutError") {
+        return {
+          response: null,
+          error: new TimeoutError("Request timed out", { cause: reason }),
+        };
+      }
+      return {
+        response: null,
+        error: new AbortedError("Request aborted", { cause: err, reason }),
+      };
     }
     const message = err instanceof Error ? err.message || err.name : "Network error";
     return {

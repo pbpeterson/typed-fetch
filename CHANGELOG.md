@@ -18,6 +18,15 @@
   network failures, and collapsing all three into `NetworkError` forced an
   untyped `error.cause` cast to tell them apart. See
   [Migrating from 0.x](#migrating-from-0x) below.
+- **Abort/timeout detection now keys on the request's `AbortSignal`
+  (`signal.aborted`), not on the rejected error's `.name`.** The previous
+  implementation matched `err.name === "AbortError"` / `"TimeoutError"`, which
+  (a) missed the mainstream `controller.abort(reason)` pattern — passing a
+  reason makes `fetch` reject with _that_ value, whose `.name` is usually not
+  `"AbortError"`, so it was misclassified as a `NetworkError` — and (b) could
+  false-positive on any unrelated rejection that merely happened to be named
+  `"AbortError"`. The signal is now the sole authority: a request is treated
+  as aborted only when its own signal reports `aborted`.
 
 ### Added
 
@@ -30,6 +39,10 @@
 - `isAbortError(error): error is AbortedError` and
   `isTimeoutError(error): error is TimeoutError` guards, alongside the new
   `AbortedError` and `TimeoutError` classes.
+- `AbortedError.reason` (`unknown`) — the `AbortSignal`'s cancellation reason,
+  i.e. whatever the caller passed to `controller.abort(reason)`. Typed
+  `unknown` so the consumer narrows it. When `abort()` is called with no
+  argument, the platform supplies a `DOMException` named `"AbortError"`.
 - `error.url` on all HTTP error classes — the URL of the failed request
   (from `response.url`), so concurrent requests produce distinguishable
   errors in logs.

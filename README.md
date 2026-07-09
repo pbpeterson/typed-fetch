@@ -169,6 +169,13 @@ aborted or timed-out requests. This is intentional: cancellation and timeouts ar
 network failures, and conflating them made the taxonomy lie. Use `isAbortError()` /
 `isTimeoutError()` to check for them explicitly.
 
+Cancellation is detected from the request's `AbortSignal` (`signal.aborted`), **not** from
+the rejected error's `.name`. That's what makes the mainstream pattern work: when you pass a
+reason — `controller.abort(reason)` — `fetch` rejects with _that reason_, whose `.name` is
+usually not `"AbortError"`. `typedFetch` still classifies it as an `AbortedError` and hands
+you the reason on `error.reason` (see [`AbortedError`](#abortederror-abort-and-the-signal-reason)),
+so you decide what it means.
+
 ```typescript
 import { typedFetch, isNetworkError, isAbortError, isTimeoutError } from "@pbpeterson/typed-fetch";
 
@@ -179,10 +186,35 @@ if (isNetworkError(error)) {
   console.log(error.cause); // the original TypeError, etc.
 } else if (isAbortError(error)) {
   console.log("Request was cancelled");
+  console.log(error.reason); // whatever you passed to controller.abort(reason)
 } else if (isTimeoutError(error)) {
   console.log("Request timed out");
 }
 ```
+
+#### `AbortedError`, abort, and the signal reason
+
+The Web platform lets you attach a cancellation _reason_:
+
+```typescript
+const controller = new AbortController();
+
+const promise = typedFetch<User[]>("/api/users", { signal: controller.signal });
+
+// e.g. the user navigated away — cancel with a reason that says why
+controller.abort(new Error("route change"));
+
+const { error } = await promise;
+if (isAbortError(error)) {
+  // error.reason is the exact value you passed to abort() — narrow it yourself.
+  if (error.reason instanceof Error) console.log(error.reason.message); // "route change"
+}
+```
+
+`error.reason` is **whatever the caller passed to `controller.abort(reason)`** — an `Error`,
+a string, an object, anything — so it is typed `unknown` and you must narrow it. When you
+call `controller.abort()` with **no** reason, the platform supplies a `DOMException` named
+`"AbortError"` as the reason.
 
 ### Timeouts
 
@@ -499,6 +531,25 @@ All HTTP error classes extend `BaseHttpError`:
 
 - `status` - HTTP status code
 - `statusText` - The canonical IANA reason phrase for `status` - not the server's wire value
+
+### `NetworkError`, `AbortedError`, `TimeoutError`
+
+These three are **not** HTTP errors — they represent a request that never got an HTTP
+response, so they do not extend `BaseHttpError` and have no `status`/`headers`/body methods.
+All three carry the original error thrown by `fetch` on `cause`.
+
+- **`NetworkError`** — `message` (`string`), `cause` (`unknown`).
+- **`TimeoutError`** — `cause` (`unknown`). Emitted when the request's signal was aborted
+  by an `AbortSignal.timeout()` (its reason is a `DOMException` named `"TimeoutError"`).
+- **`AbortedError`** — `cause` (`unknown`) and `reason` (`unknown`). `reason` is whatever
+  the caller passed to `controller.abort(reason)`. It is typed `unknown` on purpose — the
+  reason can be an `Error`, a string, an object, or anything else, so **you must narrow it**.
+  When `controller.abort()` is called with no argument, the platform supplies a
+  `DOMException` named `"AbortError"` as the reason.
+
+Cancellation is determined by the request's `AbortSignal` (`signal.aborted`), not by the
+rejected error's `.name`, so `controller.abort(reason)` is classified as an `AbortedError`
+regardless of what `reason` is.
 
 ## Non-goals
 
