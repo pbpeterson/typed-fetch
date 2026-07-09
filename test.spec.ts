@@ -1,11 +1,19 @@
 import http from "node:http";
 import { readFileSync } from "node:fs";
 import { describe, test, expect, beforeAll, afterAll, expectTypeOf, vi } from "vitest";
-import { typedFetch, isHttpError, isNetworkError, isKnownHttpError } from "./src/index";
+import {
+  typedFetch,
+  isHttpError,
+  isNetworkError,
+  isKnownHttpError,
+  isAbortError,
+  isTimeoutError,
+} from "./src/index";
 import { statusCodeErrorMap } from "./src/http-status-codes";
 import { httpErrors } from "./src/errors/helpers";
 import type { HttpErrors } from "./src/errors/helpers";
 import {
+  AbortedError,
   BadGatewayError,
   BadRequestError,
   BaseHttpError,
@@ -40,6 +48,7 @@ import {
   RequestTooLongError,
   RequestUriTooLongError,
   ServiceUnavailableError,
+  TimeoutError,
   TooEarlyError,
   TooManyRequestsError,
   UnauthorizedError,
@@ -63,6 +72,8 @@ import type { TypedFetchOptions, TypedFetchReturnType, TypedResponse } from "./i
 // The server also always echoes the received request method back via an
 // X-Echo-Method response header, so tests can assert an arbitrary method
 // (e.g. "REPORT") actually reached the server unchanged.
+//   ?delay=<ms>          → wait this many milliseconds before responding
+//                           (used to reliably trigger AbortSignal.timeout())
 
 let baseURL: string;
 let server: http.Server;
@@ -73,6 +84,7 @@ beforeAll(async () => {
     const status = Number(requestUrl.searchParams.get("status") ?? 200);
     const body = requestUrl.searchParams.get("body");
     const headerEntries = requestUrl.searchParams.getAll("header");
+    const delay = Number(requestUrl.searchParams.get("delay") ?? 0);
 
     for (const entry of headerEntries) {
       const [key = "", value = ""] = entry.split(":");
@@ -85,8 +97,16 @@ beforeAll(async () => {
       res.setHeader("Content-Type", "application/json");
     }
 
-    res.writeHead(status);
-    res.end(body ?? null);
+    const respond = () => {
+      res.writeHead(status);
+      res.end(body ?? null);
+    };
+
+    if (delay > 0) {
+      setTimeout(respond, delay);
+    } else {
+      respond();
+    }
   });
 
   await new Promise<void>((resolve) => {
@@ -310,7 +330,7 @@ describe("typedFetch", () => {
     }
   });
 
-  test("aborted request → NetworkError with AbortError as cause", async () => {
+  test("aborted request → AbortedError with the original AbortError as cause", async () => {
     const controller = new AbortController();
     controller.abort();
 
@@ -319,11 +339,36 @@ describe("typedFetch", () => {
     });
 
     expect(result.response).toBe(null);
-    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error).toBeInstanceOf(AbortedError);
 
-    if (isNetworkError(result.error)) {
+    if (isAbortError(result.error)) {
       expect((result.error.cause as Error).name).toBe("AbortError");
     }
+  });
+
+  test("timed-out request → TimeoutError with the original TimeoutError as cause", async () => {
+    const result = await typedFetch(url({ status: 200, delay: 200 }), {
+      signal: AbortSignal.timeout(1),
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(TimeoutError);
+
+    if (isTimeoutError(result.error)) {
+      expect((result.error.cause as Error).name).toBe("TimeoutError");
+    }
+  });
+
+  test("isNetworkError returns false for aborted and timed-out requests (intended 1.0 break)", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const abortedResult = await typedFetch(url({ status: 200 }), { signal: controller.signal });
+    expect(isNetworkError(abortedResult.error)).toBe(false);
+
+    const timedOutResult = await typedFetch(url({ status: 200, delay: 200 }), {
+      signal: AbortSignal.timeout(1),
+    });
+    expect(isNetworkError(timedOutResult.error)).toBe(false);
   });
 
   test("HTTP errors have a useful message", async () => {
@@ -407,9 +452,13 @@ describe("typedFetch", () => {
   });
 
   test("network-error catch: empty Error.message falls back to Error.name", async () => {
-    const abortLike = new Error("");
-    abortLike.name = "AbortError";
-    const stubFetch = vi.fn(async () => Promise.reject(abortLike)) as unknown as typeof fetch;
+    // Deliberately NOT named "AbortError" or "TimeoutError" — those names are
+    // now intercepted earlier in the catch block and classified as
+    // AbortedError/TimeoutError (see the dedicated tests for that). This
+    // test exercises the remaining NetworkError fallback branch.
+    const dnsLike = new Error("");
+    dnsLike.name = "ENOTFOUND";
+    const stubFetch = vi.fn(async () => Promise.reject(dnsLike)) as unknown as typeof fetch;
 
     const result = await typedFetch("https://example.invalid/empty-message-rejection", {
       fetch: stubFetch,
@@ -419,8 +468,8 @@ describe("typedFetch", () => {
     expect(result.error).toBeInstanceOf(NetworkError);
 
     if (isNetworkError(result.error)) {
-      expect(result.error.message).toBe("AbortError");
-      expect(result.error.cause).toBe(abortLike);
+      expect(result.error.message).toBe("ENOTFOUND");
+      expect(result.error.cause).toBe(dnsLike);
     }
   });
 
@@ -572,6 +621,38 @@ describe("isNetworkError", () => {
   });
 });
 
+describe("isAbortError", () => {
+  test("true for AbortedError", () => {
+    expect(isAbortError(new AbortedError("aborted"))).toBe(true);
+  });
+
+  test("false for TimeoutError, NetworkError, HTTP errors, plain Error, and non-errors", () => {
+    expect(isAbortError(new TimeoutError("timed out"))).toBe(false);
+    expect(isAbortError(new NetworkError("fail"))).toBe(false);
+    expect(isAbortError(new NotFoundError(new Response(null, { status: 404 })))).toBe(false);
+    expect(isAbortError(new Error("something"))).toBe(false);
+    expect(isAbortError(null)).toBe(false);
+    expect(isAbortError(undefined)).toBe(false);
+    expect(isAbortError("string")).toBe(false);
+  });
+});
+
+describe("isTimeoutError", () => {
+  test("true for TimeoutError", () => {
+    expect(isTimeoutError(new TimeoutError("timed out"))).toBe(true);
+  });
+
+  test("false for AbortedError, NetworkError, HTTP errors, plain Error, and non-errors", () => {
+    expect(isTimeoutError(new AbortedError("aborted"))).toBe(false);
+    expect(isTimeoutError(new NetworkError("fail"))).toBe(false);
+    expect(isTimeoutError(new NotFoundError(new Response(null, { status: 404 })))).toBe(false);
+    expect(isTimeoutError(new Error("something"))).toBe(false);
+    expect(isTimeoutError(null)).toBe(false);
+    expect(isTimeoutError(undefined)).toBe(false);
+    expect(isTimeoutError("string")).toBe(false);
+  });
+});
+
 describe("isKnownHttpError", () => {
   test("true for a dedicated HTTP error class instance", () => {
     expect(isKnownHttpError(new NotFoundError(new Response(null, { status: 404 })))).toBe(true);
@@ -694,6 +775,32 @@ describe("error class consistency", () => {
     const original = new TypeError("fetch failed");
     const error = new NetworkError("fetch failed", { cause: original });
     expect(error.cause).toBe(original);
+  });
+
+  test("AbortedError.name equals 'AbortedError'", () => {
+    expect(new AbortedError("aborted").name).toBe("AbortedError");
+  });
+
+  test("AbortedError preserves cause and does not extend NetworkError", () => {
+    const original = new DOMException("This operation was aborted", "AbortError");
+    const error = new AbortedError("aborted", { cause: original });
+    expect(error.cause).toBe(original);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(NetworkError);
+    expect(error).not.toBeInstanceOf(BaseHttpError);
+  });
+
+  test("TimeoutError.name equals 'TimeoutError'", () => {
+    expect(new TimeoutError("timed out").name).toBe("TimeoutError");
+  });
+
+  test("TimeoutError preserves cause and does not extend NetworkError", () => {
+    const original = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    const error = new TimeoutError("timed out", { cause: original });
+    expect(error.cause).toBe(original);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(NetworkError);
+    expect(error).not.toBeInstanceOf(BaseHttpError);
   });
 
   test("UnknownHttpError reflects the actual response status and clones", () => {
@@ -981,7 +1088,7 @@ describe("type-level", () => {
     } else {
       expectTypeOf(result.response).toEqualTypeOf<null>();
       expectTypeOf(result.error).toExtend<
-        ClientErrors | ServerErrors | UnknownHttpError | NetworkError
+        ClientErrors | ServerErrors | UnknownHttpError | NetworkError | AbortedError | TimeoutError
       >();
     }
   });
@@ -1035,6 +1142,36 @@ describe("type-level", () => {
 
   test("NetworkError does not extend BaseHttpError", () => {
     expectTypeOf<NetworkError>().not.toExtend<BaseHttpError>();
+  });
+
+  test("AbortedError and TimeoutError do not extend NetworkError or BaseHttpError", () => {
+    expectTypeOf<AbortedError>().not.toExtend<NetworkError>();
+    expectTypeOf<AbortedError>().not.toExtend<BaseHttpError>();
+    expectTypeOf<TimeoutError>().not.toExtend<NetworkError>();
+    expectTypeOf<TimeoutError>().not.toExtend<BaseHttpError>();
+  });
+
+  test("TypedFetchError includes AbortedError and TimeoutError", () => {
+    expectTypeOf<AbortedError>().toExtend<
+      ClientErrors | ServerErrors | UnknownHttpError | NetworkError | AbortedError | TimeoutError
+    >();
+    expectTypeOf<TimeoutError>().toExtend<
+      ClientErrors | ServerErrors | UnknownHttpError | NetworkError | AbortedError | TimeoutError
+    >();
+  });
+
+  test("isAbortError narrows to AbortedError", () => {
+    const error: unknown = {};
+    if (isAbortError(error)) {
+      expectTypeOf(error).toExtend<AbortedError>();
+    }
+  });
+
+  test("isTimeoutError narrows to TimeoutError", () => {
+    const error: unknown = {};
+    if (isTimeoutError(error)) {
+      expectTypeOf(error).toExtend<TimeoutError>();
+    }
   });
 
   // NOTE: the per-class status/statusText literal coverage that used to

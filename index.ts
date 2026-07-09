@@ -1,4 +1,11 @@
-export { typedFetch, isHttpError, isNetworkError, isKnownHttpError } from "./src/index";
+export {
+  typedFetch,
+  isHttpError,
+  isNetworkError,
+  isKnownHttpError,
+  isAbortError,
+  isTimeoutError,
+} from "./src/index";
 export type { TypedResponse, TypedFetchReturnType, TypedFetchOptions } from "./src/index";
 export type { TypedHeaders, StrictHeaders } from "./src/headers";
 export type { HttpMethods } from "./src/methods";

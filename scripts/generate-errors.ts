@@ -216,6 +216,8 @@ function generateHelpersFile(rows: ErrorRow[]): string {
   const importOrder = [
     "InternalServerError",
     "NetworkError",
+    "AbortedError",
+    "TimeoutError",
     "UnknownHttpError",
     "BadRequestError",
     "PaymentRequiredError",
@@ -265,6 +267,8 @@ function generateHelpersFile(rows: ErrorRow[]): string {
       if (name === "InternalServerError")
         return `import { InternalServerError } from "./internal-server-error";`;
       if (name === "NetworkError") return `import { NetworkError } from "./network-error";`;
+      if (name === "AbortedError") return `import { AbortedError } from "./aborted-error";`;
+      if (name === "TimeoutError") return `import { TimeoutError } from "./timeout-error";`;
       if (name === "UnknownHttpError")
         return `import { UnknownHttpError } from "./unknown-http-error";`;
       const row = byName.get(name);
@@ -298,7 +302,13 @@ export type ServerErrors =
 ${serverErrors.map((name) => `  | ${name}`).join("\n")};
 
 /** Union of all possible error types returned by \`typedFetch\`. */
-export type TypedFetchError = ClientErrors | ServerErrors | UnknownHttpError | NetworkError;
+export type TypedFetchError =
+  | ClientErrors
+  | ServerErrors
+  | UnknownHttpError
+  | NetworkError
+  | AbortedError
+  | TimeoutError;
 
 /** Array of all ${rows.length} HTTP error class constructors. */
 export const httpErrors = [
@@ -340,6 +350,8 @@ function generateErrorsIndexFile(rows: ErrorRow[]): string {
   const exportOrder = [
     "InternalServerError",
     "NetworkError",
+    "AbortedError",
+    "TimeoutError",
     "BadRequestError",
     "PaymentRequiredError",
     "UnauthorizedError",
@@ -388,6 +400,8 @@ function generateErrorsIndexFile(rows: ErrorRow[]): string {
       if (name === "InternalServerError")
         return `export { InternalServerError } from "./internal-server-error";`;
       if (name === "NetworkError") return `export { NetworkError } from "./network-error";`;
+      if (name === "AbortedError") return `export { AbortedError } from "./aborted-error";`;
+      if (name === "TimeoutError") return `export { TimeoutError } from "./timeout-error";`;
       const row = byName.get(name);
       if (!row) throw new Error(`Unknown class in export order: ${name}`);
       return `export { ${row.className} } from "${classNameToImportSpecifier(row.className)}";`;

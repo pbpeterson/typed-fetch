@@ -1,5 +1,7 @@
 export { InternalServerError } from "./internal-server-error";
 export { NetworkError } from "./network-error";
+export { AbortedError } from "./aborted-error";
+export { TimeoutError } from "./timeout-error";
 export { BadRequestError } from "./bad-request-error";
 export { PaymentRequiredError } from "./payment-required-error";
 export { UnauthorizedError } from "./unauthorized-error";

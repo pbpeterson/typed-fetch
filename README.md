@@ -44,8 +44,8 @@ Opaque responses (`mode: "no-cors"`, `status: 0`) come back as `response`, per t
 - **Built on Fetch** - Thin wrapper around the native Fetch API, same signature
 - **40 HTTP error classes** - Covering all standard HTTP status codes (400-511)
 - **No status code left behind** - Non-standard error codes (e.g. 420, 599) become `UnknownHttpError`
-- **Network error handling** - Separate `NetworkError` class for connection issues, with the original error preserved on `cause`
-- **Type guards** - `isHttpError()` and `isNetworkError()` for runtime checks
+- **Network error handling** - Separate `NetworkError`, `AbortedError`, and `TimeoutError` classes for connection issues, cancellation, and timeouts, with the original error preserved on `cause`
+- **Type guards** - `isHttpError()`, `isNetworkError()`, `isAbortError()`, and `isTimeoutError()` for runtime checks
 - **Generic error bodies** - `error.json<T>()` for typed error response parsing
 - **Zero dependencies**
 
@@ -116,6 +116,8 @@ import {
   NotFoundError,
   UnauthorizedError,
   NetworkError,
+  AbortedError,
+  TimeoutError,
 } from "@pbpeterson/typed-fetch";
 
 const { response, error } = await typedFetch<User>("/api/users/123");
@@ -127,6 +129,10 @@ if (error) {
     console.log("Please log in");
   } else if (error instanceof NetworkError) {
     console.log("Network error:", error.message);
+  } else if (error instanceof AbortedError) {
+    console.log("Request was cancelled");
+  } else if (error instanceof TimeoutError) {
+    console.log("Request timed out");
   }
 }
 ```
@@ -146,39 +152,66 @@ if (error instanceof UnknownHttpError) {
 }
 ```
 
-### Network Errors and `cause`
+### Network Errors, Aborts, and Timeouts
 
-`NetworkError` preserves the original error thrown by `fetch` on `cause`, so you can distinguish connection failures from aborted requests:
+`typedFetch` distinguishes three different ways a request can fail before it gets an HTTP
+response, each with its own error class and type guard:
+
+| Class          | Cause                                                      | Guard              |
+| -------------- | ---------------------------------------------------------- | ------------------ |
+| `NetworkError` | DNS failure, connection refused, `redirect: "error"`, etc. | `isNetworkError()` |
+| `AbortedError` | The request was cancelled via `AbortController.abort()`    | `isAbortError()`   |
+| `TimeoutError` | The request exceeded a timeout (`AbortSignal.timeout()`)   | `isTimeoutError()` |
+
+All three preserve the original error thrown by `fetch` on `cause`. **`AbortedError` and
+`TimeoutError` do NOT extend `NetworkError`** — `isNetworkError()` returns `false` for
+aborted or timed-out requests. This is intentional: cancellation and timeouts are not
+network failures, and conflating them made the taxonomy lie. Use `isAbortError()` /
+`isTimeoutError()` to check for them explicitly.
 
 ```typescript
+import { typedFetch, isNetworkError, isAbortError, isTimeoutError } from "@pbpeterson/typed-fetch";
+
 const { response, error } = await typedFetch("https://unreachable.example");
 
 if (isNetworkError(error)) {
-  console.log(error.message); // "fetch failed"
-  console.log(error.cause); // the original TypeError, AbortError, etc.
-
-  if ((error.cause as Error)?.name === "AbortError") {
-    // request was cancelled, not a real network failure
-  }
+  console.log("Connection failed:", error.message);
+  console.log(error.cause); // the original TypeError, etc.
+} else if (isAbortError(error)) {
+  console.log("Request was cancelled");
+} else if (isTimeoutError(error)) {
+  console.log("Request timed out");
 }
 ```
 
 ### Timeouts
 
-No custom timeout API needed — use the standard `AbortSignal.timeout()`, exactly like with native fetch:
+No custom timeout API needed — use the standard `AbortSignal.timeout()`, exactly like with native fetch. It now produces a typed `TimeoutError`, not a generic `NetworkError`:
 
 ```typescript
+import { typedFetch, isTimeoutError } from "@pbpeterson/typed-fetch";
+
 const { response, error } = await typedFetch<User[]>("/api/users", {
-  signal: AbortSignal.timeout(5000), // NetworkError after 5s
+  signal: AbortSignal.timeout(5000),
 });
+
+if (isTimeoutError(error)) {
+  console.log("Request timed out after 5s");
+}
 ```
 
 ### Type Guards
 
-Use `isHttpError()` and `isNetworkError()` instead of `instanceof` for reliable checks across package boundaries:
+Use `isHttpError()`, `isNetworkError()`, `isAbortError()`, and `isTimeoutError()` instead of `instanceof` for reliable checks across package boundaries:
 
 ```typescript
-import { typedFetch, isHttpError, isNetworkError } from "@pbpeterson/typed-fetch";
+import {
+  typedFetch,
+  isHttpError,
+  isNetworkError,
+  isAbortError,
+  isTimeoutError,
+} from "@pbpeterson/typed-fetch";
 
 const { response, error } = await typedFetch<User>("/api/users/123");
 
@@ -187,9 +220,16 @@ if (error) {
     console.log(`HTTP ${error.status}: ${error.statusText}`);
   } else if (isNetworkError(error)) {
     console.log("Connection failed:", error.message);
+  } else if (isAbortError(error)) {
+    console.log("Request was cancelled");
+  } else if (isTimeoutError(error)) {
+    console.log("Request timed out");
   }
 }
 ```
+
+> **Note:** `isNetworkError()` does NOT match `AbortedError` or `TimeoutError` — they are
+> separate classes, not `NetworkError` subclasses. Check for them with their own guards.
 
 ### Exhaustive Status Narrowing with `isKnownHttpError`
 
@@ -342,11 +382,13 @@ console.log(BadRequestError.statusText); // "Bad Request"
 
 ### Other
 
-| Class              | Description                                                      |
-| ------------------ | ---------------------------------------------------------------- |
-| `UnknownHttpError` | Any status code >= 400 without a dedicated class (e.g. 420, 599) |
-| `NetworkError`     | Connection issues, DNS failures, timeouts, aborted requests      |
-| `BaseHttpError`    | Abstract base class for all HTTP errors                          |
+| Class              | Description                                                       |
+| ------------------ | ----------------------------------------------------------------- |
+| `UnknownHttpError` | Any status code >= 400 without a dedicated class (e.g. 420, 599)  |
+| `NetworkError`     | Connection issues, DNS failures, and other network-level failures |
+| `AbortedError`     | Request was cancelled via `AbortController.abort()`               |
+| `TimeoutError`     | Request exceeded a timeout (e.g. `AbortSignal.timeout()`)         |
+| `BaseHttpError`    | Abstract base class for all HTTP errors                           |
 
 ## API Reference
 
@@ -371,7 +413,7 @@ console.log(BadRequestError.statusText); // "Bad Request"
 Promise<{ response: TypedResponse<T>; error: null } | { response: null; error: TypedFetchError }>;
 ```
 
-`error` is always the full union — `ClientErrors | ServerErrors | UnknownHttpError | NetworkError`.
+`error` is always the full union — `ClientErrors | ServerErrors | UnknownHttpError | NetworkError | AbortedError | TimeoutError`.
 Narrow it with `isKnownHttpError()` + `switch (error.status)`, or `instanceof`.
 
 ### `isHttpError(error): error is BaseHttpError`
@@ -386,7 +428,19 @@ see [Exhaustive Status Narrowing](#exhaustive-status-narrowing-with-isknownhttpe
 
 ### `isNetworkError(error): error is NetworkError`
 
-Type guard that checks if an error is a network-level error.
+Type guard that checks if an error is a network-level error (DNS failure, connection
+refused, etc.). Returns `false` for `AbortedError` and `TimeoutError` — those are
+separate classes; use `isAbortError()` / `isTimeoutError()` for them.
+
+### `isAbortError(error): error is AbortedError`
+
+Type guard that checks if an error is an `AbortedError` (request cancelled via
+`AbortController.abort()`).
+
+### `isTimeoutError(error): error is TimeoutError`
+
+Type guard that checks if an error is a `TimeoutError` (request exceeded a timeout,
+e.g. via `AbortSignal.timeout()`).
 
 ### `statusCodeErrorMap`
 

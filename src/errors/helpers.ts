@@ -1,5 +1,7 @@
 import { InternalServerError } from "./internal-server-error";
 import { NetworkError } from "./network-error";
+import { AbortedError } from "./aborted-error";
+import { TimeoutError } from "./timeout-error";
 import { UnknownHttpError } from "./unknown-http-error";
 import { BadRequestError } from "./bad-request-error";
 import { PaymentRequiredError } from "./payment-required-error";
@@ -91,7 +93,13 @@ export type ServerErrors =
   | VariantAlsoNegotiatesError;
 
 /** Union of all possible error types returned by `typedFetch`. */
-export type TypedFetchError = ClientErrors | ServerErrors | UnknownHttpError | NetworkError;
+export type TypedFetchError =
+  | ClientErrors
+  | ServerErrors
+  | UnknownHttpError
+  | NetworkError
+  | AbortedError
+  | TimeoutError;
 
 /** Array of all 40 HTTP error class constructors. */
 export const httpErrors = [

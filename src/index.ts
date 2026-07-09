@@ -2,6 +2,8 @@ import { ClientErrors, ServerErrors, TypedFetchError } from "./errors/helpers";
 import { BaseHttpError } from "./errors/base-http-error";
 import { statusCodeErrorMap } from "./http-status-codes";
 import { NetworkError } from "./errors/network-error";
+import { AbortedError } from "./errors/aborted-error";
+import { TimeoutError } from "./errors/timeout-error";
 import { UnknownHttpError } from "./errors/unknown-http-error";
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
@@ -34,6 +36,40 @@ export function isHttpError(error: unknown): error is BaseHttpError {
  */
 export function isNetworkError(error: unknown): error is NetworkError {
   return error instanceof NetworkError;
+}
+
+/**
+ * Type guard that checks whether a value is an {@link AbortedError}.
+ *
+ * Note: `AbortedError` does NOT extend `NetworkError` — {@link isNetworkError}
+ * returns `false` for aborted requests. Use this guard instead.
+ *
+ * @example
+ * ```ts
+ * if (isAbortError(error)) {
+ *   console.log("Request was cancelled");
+ * }
+ * ```
+ */
+export function isAbortError(error: unknown): error is AbortedError {
+  return error instanceof AbortedError;
+}
+
+/**
+ * Type guard that checks whether a value is a {@link TimeoutError}.
+ *
+ * Note: `TimeoutError` does NOT extend `NetworkError` — {@link isNetworkError}
+ * returns `false` for timed-out requests. Use this guard instead.
+ *
+ * @example
+ * ```ts
+ * if (isTimeoutError(error)) {
+ *   console.log("Request timed out");
+ * }
+ * ```
+ */
+export function isTimeoutError(error: unknown): error is TimeoutError {
+  return error instanceof TimeoutError;
 }
 
 /**
@@ -120,6 +156,12 @@ export async function typedFetch<JsonReturnType>(
   try {
     res = await fetchImpl(url, init);
   } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      return { response: null, error: new AbortedError("Request aborted", { cause: err }) };
+    }
+    if (err instanceof Error && err.name === "TimeoutError") {
+      return { response: null, error: new TimeoutError("Request timed out", { cause: err }) };
+    }
     const message = err instanceof Error ? err.message || err.name : "Network error";
     return {
       response: null,
