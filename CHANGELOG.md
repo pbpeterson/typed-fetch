@@ -78,9 +78,16 @@
   i.e. whatever the caller passed to `controller.abort(reason)`. Typed
   `unknown` so the consumer narrows it. When `abort()` is called with no
   argument, the platform supplies a `DOMException` named `"AbortError"`.
-- `error.url` on all HTTP error classes — the URL of the failed request
-  (from `response.url`), so concurrent requests produce distinguishable
-  errors in logs.
+- `error.url` (`string`) on **every** error class — the URL of the failed
+  request, so concurrent requests produce distinguishable errors in logs.
+  It was already on HTTP errors (from `response.url`); it is now also on
+  `NetworkError`, `AbortedError`, and `TimeoutError` — the pre-response
+  failures that dominate flaky-network logs, where a bare
+  `NetworkError: fetch failed` previously gave nothing to correlate. For a
+  `Request` input the resolved `request.url` is used; for a `URL` its `href`;
+  for a `string` the string itself. Because all six families now carry
+  `readonly url: string`, code written against the full `TypedFetchError`
+  union can read `error.url` unconditionally, with no narrowing.
 - `options.fetch` — override the underlying `fetch` implementation
   (testing, DI, custom agents, polyfills) without patching `globalThis`.
 

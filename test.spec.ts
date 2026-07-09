@@ -62,7 +62,7 @@ import {
   UpgradeRequiredError,
   VariantAlsoNegotiatesError,
 } from "./src/errors";
-import type { ClientErrors, ServerErrors } from "./src/errors";
+import type { ClientErrors, ServerErrors, TypedFetchError } from "./src/errors";
 import type { StrictHeaders } from "./src/headers";
 import type { HttpMethods } from "./src/methods";
 import type { TypedFetchOptions, TypedFetchReturnType, TypedResponse } from "./index";
@@ -542,6 +542,78 @@ describe("typedFetch", () => {
     expect(isTimeoutError(result.error)).toBe(false);
     if (isAbortError(result.error)) {
       expect(result.error.reason).toBe(reason);
+    }
+  });
+
+  // ── Fix 2: error.url on pre-response errors ────────────────────────────
+  // AXIS 8 + 9: url is populated on NetworkError / AbortedError / TimeoutError,
+  // and is correct whether the request input was a string, a URL, or a Request.
+
+  test("AXIS 8: NetworkError carries the request url (connection refused)", async () => {
+    const target = "http://localhost:1/some/path";
+    const result = await typedFetch(target);
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    if (isNetworkError(result.error)) {
+      expect(result.error.url).toBe(target);
+    }
+  });
+
+  test("AXIS 8: AbortedError carries the request url", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const target = url({ status: 200 });
+
+    const result = await typedFetch(target, { signal: controller.signal });
+
+    expect(result.error).toBeInstanceOf(AbortedError);
+    if (isAbortError(result.error)) {
+      expect(result.error.url).toBe(target);
+    }
+  });
+
+  test("AXIS 8: TimeoutError carries the request url", async () => {
+    const target = url({ status: 200, delay: 200 });
+
+    const result = await typedFetch(target, { signal: AbortSignal.timeout(1) });
+
+    expect(result.error).toBeInstanceOf(TimeoutError);
+    if (isTimeoutError(result.error)) {
+      expect(result.error.url).toBe(target);
+    }
+  });
+
+  test("AXIS 9: url is correct for a string input (NetworkError)", async () => {
+    const target = "http://localhost:1/string-input";
+    const result = await typedFetch(target);
+    if (isNetworkError(result.error)) {
+      expect(result.error.url).toBe(target);
+    } else {
+      throw new Error("expected NetworkError");
+    }
+  });
+
+  test("AXIS 9: url is correct for a URL-object input (NetworkError)", async () => {
+    const target = new URL("http://localhost:1/url-input");
+    const result = await typedFetch(target);
+    if (isNetworkError(result.error)) {
+      // String(URL) is its href (absolute, trailing-normalized).
+      expect(result.error.url).toBe(target.href);
+    } else {
+      throw new Error("expected NetworkError");
+    }
+  });
+
+  test("AXIS 9: url is correct for a Request input (NetworkError)", async () => {
+    const target = "http://localhost:1/request-input";
+    const request = new Request(target);
+    const result = await typedFetch(request);
+    if (isNetworkError(result.error)) {
+      // Request.url is the resolved absolute URL.
+      expect(result.error.url).toBe(request.url);
+      expect(result.error.url).toBe(target);
+    } else {
+      throw new Error("expected NetworkError");
     }
   });
 
@@ -1654,6 +1726,21 @@ describe("type-level", () => {
     expectTypeOf<TimeoutError>().toExtend<
       ClientErrors | ServerErrors | UnknownHttpError | NetworkError | AbortedError | TimeoutError
     >();
+  });
+
+  test("error.url is string on every TypedFetchError family, readable unconditionally", () => {
+    // Previously impossible: `url` lived only on BaseHttpError, so code written
+    // against the full union could not read `error.url` without narrowing. Now
+    // all six families carry `readonly url: string`, so the union's `url` is a
+    // plain `string` and this compiles with no guard — a real DX win.
+    expectTypeOf<TypedFetchError["url"]>().toEqualTypeOf<string>();
+    expectTypeOf<NetworkError["url"]>().toEqualTypeOf<string>();
+    expectTypeOf<AbortedError["url"]>().toEqualTypeOf<string>();
+    expectTypeOf<TimeoutError["url"]>().toEqualTypeOf<string>();
+    expectTypeOf<BaseHttpError["url"]>().toEqualTypeOf<string>();
+    // Reading `.url` off the bare union — no narrowing — must type as string.
+    const anyError = {} as TypedFetchError;
+    expectTypeOf(anyError.url).toEqualTypeOf<string>();
   });
 
   test("isAbortError narrows to AbortedError", () => {

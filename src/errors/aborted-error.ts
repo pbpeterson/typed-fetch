@@ -6,8 +6,8 @@ import { brand, abortedErrorBrand } from "./brand";
  *
  * Unlike HTTP errors, an `AbortedError` has no status code or response body
  * because the request never completed. The original error thrown by `fetch`
- * is preserved on {@link cause}, and the signal's cancellation reason on
- * {@link reason}.
+ * is preserved on {@link cause}, the signal's cancellation reason on
+ * {@link reason}, and the requested URL on {@link url}.
  *
  * Carries a cross-copy brand so `isAbortError` works across module copies —
  * prefer it over raw `instanceof` at package boundaries.
@@ -17,6 +17,12 @@ export class AbortedError extends Error {
 
   /** The original error thrown by `fetch`, if any. */
   public override readonly cause?: unknown;
+
+  /**
+   * The requested URL, so concurrent aborts are distinguishable in logs.
+   * Empty string only if no URL could be resolved from the request input.
+   */
+  public readonly url: string = "";
 
   /**
    * The `AbortSignal`'s `reason` — whatever the caller passed to
@@ -30,7 +36,7 @@ export class AbortedError extends Error {
 
   constructor(
     message: string = "Request aborted",
-    options?: { cause?: unknown; reason?: unknown },
+    options?: { cause?: unknown; reason?: unknown; url?: string },
   ) {
     super(message);
     if (options && "cause" in options) {
@@ -38,6 +44,9 @@ export class AbortedError extends Error {
     }
     if (options && "reason" in options) {
       this.reason = options.reason;
+    }
+    if (options && "url" in options && options.url !== undefined) {
+      this.url = options.url;
     }
   }
 }

@@ -622,13 +622,22 @@ All HTTP error classes extend `BaseHttpError`:
 
 These three are **not** HTTP errors — they represent a request that never got an HTTP
 response, so they do not extend `BaseHttpError` and have no `status`/`headers`/body methods.
-All three carry the original error thrown by `fetch` on `cause`.
+All three carry the original error thrown by `fetch` on `cause`, and the requested URL on
+`url` (a `string`) — so concurrent pre-response failures are still distinguishable in logs,
+the same way `BaseHttpError.url` distinguishes HTTP errors. Because every error family now
+carries `readonly url: string`, code written against the full `TypedFetchError` union can
+read `error.url` unconditionally, with no narrowing.
 
-- **`NetworkError`** — `message` (`string`), `cause` (`unknown`).
-- **`TimeoutError`** — `cause` (`unknown`). Emitted when the request's signal was aborted
-  by an `AbortSignal.timeout()` (its reason is a `DOMException` named `"TimeoutError"`).
-- **`AbortedError`** — `cause` (`unknown`) and `reason` (`unknown`). `reason` is whatever
-  the caller passed to `controller.abort(reason)`, typed `unknown` — you must narrow it.
+- **`NetworkError`** — `message` (`string`), `cause` (`unknown`), `url` (`string`).
+- **`TimeoutError`** — `cause` (`unknown`), `url` (`string`). Emitted when the request's
+  signal was aborted with a `DOMException` named `"TimeoutError"` — exactly what
+  `AbortSignal.timeout()` produces. Classification requires that specific `DOMException`
+  shape, **not** merely a `reason.name` of `"TimeoutError"`: a caller who forges that name
+  on a plain `Error` via `controller.abort()` gets an `AbortedError` (with the reason
+  preserved), never a spurious timeout.
+- **`AbortedError`** — `cause` (`unknown`), `reason` (`unknown`), `url` (`string`). `reason`
+  is whatever the caller passed to `controller.abort(reason)`, typed `unknown` — you must
+  narrow it.
 
 For the full abort/timeout story — how cancellation is detected, signal precedence, and the
 reason value — see [Network Errors, Aborts, and Timeouts](#network-errors-aborts-and-timeouts).

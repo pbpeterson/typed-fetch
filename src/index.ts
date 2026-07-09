@@ -204,6 +204,12 @@ export async function typedFetch<JsonReturnType>(
   try {
     res = await fetchImpl(url, init);
   } catch (err) {
+    // The requested URL, so pre-response errors (which hold no `Response`) are
+    // still distinguishable in logs — the correlation `BaseHttpError.url`
+    // already gives HTTP errors. `FetchInput` is `string | URL | Request`; a
+    // `Request` exposes the resolved absolute URL on `.url`, and `String()`
+    // stringifies both a `string` (identity) and a `URL` (its `href`).
+    const requestUrl = url instanceof Request ? url.url : String(url);
     // The AbortSignal is the authority on cancellation — NOT the rejected
     // error's `.name`. A caller can pass any reason to `controller.abort(reason)`
     // (a documented Web API pattern), and fetch rejects with THAT reason, whose
@@ -233,18 +239,18 @@ export async function typedFetch<JsonReturnType>(
       ) {
         return {
           response: null,
-          error: new TimeoutError("Request timed out", { cause: reason }),
+          error: new TimeoutError("Request timed out", { cause: reason, url: requestUrl }),
         };
       }
       return {
         response: null,
-        error: new AbortedError("Request aborted", { cause: err, reason }),
+        error: new AbortedError("Request aborted", { cause: err, reason, url: requestUrl }),
       };
     }
     const message = err instanceof Error ? err.message || err.name : "Network error";
     return {
       response: null,
-      error: new NetworkError(message, { cause: err }),
+      error: new NetworkError(message, { cause: err, url: requestUrl }),
     };
   }
 
