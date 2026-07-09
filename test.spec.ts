@@ -1,7 +1,7 @@
 import http from "node:http";
 import { readFileSync } from "node:fs";
 import { describe, test, expect, beforeAll, afterAll, expectTypeOf } from "vitest";
-import { typedFetch, isHttpError, isNetworkError } from "./src/index";
+import { typedFetch, isHttpError, isNetworkError, isKnownHttpError } from "./src/index";
 import { statusCodeErrorMap } from "./src/http-status-codes";
 import { httpErrors } from "./src/errors/helpers";
 import {
@@ -378,6 +378,34 @@ describe("isNetworkError", () => {
     expect(isNetworkError(null)).toBe(false);
     expect(isNetworkError(undefined)).toBe(false);
     expect(isNetworkError("string")).toBe(false);
+  });
+});
+
+describe("isKnownHttpError", () => {
+  test("true for a dedicated HTTP error class instance", () => {
+    expect(isKnownHttpError(new NotFoundError(new Response(null, { status: 404 })))).toBe(true);
+  });
+
+  test("false for UnknownHttpError, NetworkError, plain Error, and non-errors", () => {
+    expect(isKnownHttpError(new UnknownHttpError(new Response(null, { status: 420 })))).toBe(false);
+    expect(isKnownHttpError(new NetworkError("fail"))).toBe(false);
+    expect(isKnownHttpError(new Error("something"))).toBe(false);
+    expect(isKnownHttpError(null)).toBe(false);
+    expect(isKnownHttpError(undefined)).toBe(false);
+    expect(isKnownHttpError({})).toBe(false);
+  });
+
+  test("narrows error.status exhaustively to a single dedicated class (type test)", () => {
+    const error = new NotFoundError(new Response(null, { status: 404 })) as
+      | ClientErrors
+      | ServerErrors
+      | UnknownHttpError
+      | NetworkError;
+    if (isKnownHttpError(error)) {
+      if (error.status === 404) {
+        expectTypeOf(error).toEqualTypeOf<NotFoundError>();
+      }
+    }
   });
 });
 

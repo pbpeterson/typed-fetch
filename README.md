@@ -191,6 +191,35 @@ if (error) {
 }
 ```
 
+### Exhaustive Status Narrowing with `isKnownHttpError`
+
+`isHttpError()` narrows to `BaseHttpError`, but `switch (error.status)` on that type
+still includes `UnknownHttpError` in every `case` (its `status` is typed `number`, so
+it matches everything). Use `isKnownHttpError()` instead when you want `error.status`
+to narrow to exactly one dedicated error class per case:
+
+```typescript
+import { typedFetch, isKnownHttpError } from "@pbpeterson/typed-fetch";
+
+const { response, error } = await typedFetch<User>("/api/users/123");
+
+if (error && isKnownHttpError(error)) {
+  switch (error.status) {
+    case 404:
+      console.log("User not found"); // error: NotFoundError
+      break;
+    case 401:
+      console.log("Please log in"); // error: UnauthorizedError
+      break;
+    default:
+      // Keep a `default` even though this switch looks exhaustive: adding a new
+      // error class to the library is a minor version bump (see semver policy),
+      // so new cases can appear without a major release.
+      console.log(`HTTP ${error.status}`);
+  }
+}
+```
+
 ### Typed Error Response Bodies
 
 The `json()` method accepts a generic type parameter:

@@ -36,6 +36,26 @@ export function isNetworkError(error: unknown): error is NetworkError {
   return error instanceof NetworkError;
 }
 
+/**
+ * Type guard for a *known*, dedicated HTTP error class (excludes {@link UnknownHttpError}).
+ *
+ * Narrowing on `error.status` after this guard is exhaustive over the mapped codes.
+ *
+ * @example
+ * ```ts
+ * if (isKnownHttpError(error)) {
+ *   switch (error.status) {
+ *     case 404:
+ *       // error: NotFoundError
+ *       break;
+ *   }
+ * }
+ * ```
+ */
+export function isKnownHttpError(error: unknown): error is ClientErrors | ServerErrors {
+  return error instanceof BaseHttpError && !(error instanceof UnknownHttpError);
+}
+
 /** A `Response` whose `json()` (and `clone()`) carry the expected body type. */
 export interface TypedResponse<JsonReturnType> extends Response {
   json(): Promise<JsonReturnType>;
