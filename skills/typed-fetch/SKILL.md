@@ -169,4 +169,4 @@ function api<T>(path: string, options?: TypedFetchOptions): Promise<TypedFetchRe
 }
 ```
 
-Other exports: `TypedResponse`, `TypedHeaders`/`StrictHeaders` (header-name autocomplete only — they suggest names but do NOT validate values), `HttpMethods`, `ClientErrors`/`ServerErrors`/`TypedFetchError`, `BaseHttpError`. Error classes alone: `@pbpeterson/typed-fetch/errors`.
+Other exports: `TypedResponse`, `HttpMethods`, `ClientErrors`/`ServerErrors`/`TypedFetchError`, `BaseHttpError`. Error classes alone: `@pbpeterson/typed-fetch/errors`. Note: `TypedFetchOptions["headers"]` gives header-name autocomplete (it suggests common names but does NOT validate values); the type is not itself a named export.

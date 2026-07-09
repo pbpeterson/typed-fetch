@@ -555,8 +555,6 @@ import type {
   TypedResponse, // Response with typed json() and clone()
   TypedFetchReturnType, // the discriminated union typedFetch resolves to
   TypedFetchOptions, // RequestInit with typed headers, method, and an optional fetch override
-  TypedHeaders, // header-name autocomplete only — does NOT validate values
-  StrictHeaders, // the header name/value suggestion map (autocomplete only)
   HttpMethods, // "GET" | "POST" | ... (fetch-forbidden methods excluded)
   ClientErrors, // union of all 4xx error instances
   ServerErrors, // union of all 5xx error instances
@@ -571,11 +569,11 @@ async function api<T>(path: string, options?: TypedFetchOptions): Promise<TypedF
 
 Error classes are also available from the `@pbpeterson/typed-fetch/errors` subpath if you only need the classes without `typedFetch`.
 
-> **`TypedHeaders` / `StrictHeaders` are autocomplete-only.** They suggest common
-> header names (and some values) in your editor, but they do **not** validate the
-> values you pass. `{ "Content-Type": "not/a/real/type" }` type-checks, because
-> `StrictHeaders`' string index signature and the `| HeadersInit` union arm both
-> accept any string record. Treat them as an editor convenience, not a guarantee.
+> **`headers` is autocomplete-only.** The type behind `TypedFetchOptions["headers"]`
+> suggests common header names (and some values) in your editor, but it does **not**
+> validate the values you pass. `{ "Content-Type": "not/a/real/type" }` type-checks,
+> because the underlying string index signature and the `| HeadersInit` union arm
+> both accept any string record. Treat it as an editor convenience, not a guarantee.
 
 ### Error Class API
 

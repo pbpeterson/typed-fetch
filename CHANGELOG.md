@@ -44,6 +44,14 @@
   all 40 error classes) with no demonstrated consumer use case, and every
   public export is a semver liability. They remain available internally but are
   no longer part of the published API surface.
+- **`TypedHeaders` and `StrictHeaders` are no longer public exports.** They were
+  autocomplete-only types — they suggest common header names but validate no
+  values — and every named export is a semver liability. The **behavior is
+  unchanged**: they still shape `TypedFetchOptions["headers"]`, so writing
+  `typedFetch(url, { headers: { "Content-Type": "..." } })` still gives header-name
+  IntelliSense (the suggestions are structural and need no import). Only the
+  named exports are gone; if you imported either type by name, inline the shape
+  or use `TypedFetchOptions["headers"]` instead.
 
 ### Added
 
