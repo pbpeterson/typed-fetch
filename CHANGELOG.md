@@ -44,6 +44,12 @@
   all 40 error classes) with no demonstrated consumer use case, and every
   public export is a semver liability. They remain available internally but are
   no longer part of the published API surface.
+- **The `HttpErrors` type is no longer a public export.** It was the union of
+  error class _constructors_ derived from the (now-private) `httpErrors` array —
+  the same internal registry privatized above, so the same reasoning applies: no
+  demonstrated consumer use case, and every public export is a semver liability.
+  For the type of an error _instance_, use `ClientErrors | ServerErrors`. It
+  remains available internally but is no longer part of the published API surface.
 - **`TypedHeaders` and `StrictHeaders` are no longer public exports.** They were
   autocomplete-only types — they suggest common header names but validate no
   values — and every named export is a semver liability. The **behavior is
