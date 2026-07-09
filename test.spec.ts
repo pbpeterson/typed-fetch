@@ -986,16 +986,17 @@ describe("type-level", () => {
     }
   });
 
-  test("second generic narrows the error type", async () => {
-    const result = await typedFetch<{ id: number }, NotFoundError>(
-      url({ status: 200, body: JSON.stringify({ id: 1 }) }),
-    );
-
-    if (result.error !== null) {
-      expectTypeOf(result.error).toExtend<
-        NotFoundError | ServerErrors | UnknownHttpError | NetworkError
-      >();
+  test("isKnownHttpError narrows error.status to a single class", async () => {
+    const { error } = await typedFetch<{ id: number }>(url());
+    if (error && isKnownHttpError(error)) {
+      if (error.status === 403) expectTypeOf(error).toEqualTypeOf<ForbiddenError>();
     }
+  });
+
+  test("the removed second type argument no longer compiles", async () => {
+    // @ts-expect-error — ErrorType generic was removed from typedFetch (P3-01);
+    // typedFetch<T, E> is no longer a valid instantiation.
+    await typedFetch<{ id: number }, NotFoundError>(url());
   });
 
   test("response.clone() keeps the typed json()", async () => {

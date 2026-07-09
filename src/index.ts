@@ -1,4 +1,4 @@
-import { ClientErrors, ServerErrors } from "./errors/helpers";
+import { ClientErrors, ServerErrors, TypedFetchError } from "./errors/helpers";
 import { BaseHttpError } from "./errors/base-http-error";
 import { statusCodeErrorMap } from "./http-status-codes";
 import { NetworkError } from "./errors/network-error";
@@ -63,14 +63,14 @@ export interface TypedResponse<JsonReturnType> extends Response {
 }
 
 /** The discriminated union returned by {@link typedFetch}. */
-export type TypedFetchReturnType<JsonReturnType, ErrorType extends ClientErrors = ClientErrors> =
+export type TypedFetchReturnType<JsonReturnType> =
   | {
       response: TypedResponse<JsonReturnType>;
       error: null;
     }
   | {
       response: null;
-      error: ErrorType | ServerErrors | UnknownHttpError | NetworkError;
+      error: TypedFetchError;
     };
 
 type FetchParams = Parameters<typeof fetch>;
@@ -92,14 +92,13 @@ export type TypedFetchOptions = FetchParams[1] & {
  * instead of throwing exceptions.
  *
  * @typeParam JsonReturnType - Expected response body type on success.
- * @typeParam ErrorType - Specific client error types to expect (defaults to all 4xx).
- *   Server errors (5xx), {@link UnknownHttpError} (unmapped status codes >= 400),
- *   and {@link NetworkError} are always included.
  *
  * @param url - The resource URL, same as `fetch()`.
  * @param options - Request options with typed `headers` and `method`.
  * @returns A discriminated union: `{ response, error: null }` on success,
- *   `{ response: null, error }` on failure.
+ *   `{ response: null, error }` on failure. `error` is the full
+ *   {@link TypedFetchError} union — narrow it with {@link isKnownHttpError}
+ *   and `switch (error.status)`, or with `instanceof`.
  *
  * @example
  * ```ts
@@ -111,10 +110,10 @@ export type TypedFetchOptions = FetchParams[1] & {
  * }
  * ```
  */
-export async function typedFetch<JsonReturnType, ErrorType extends ClientErrors = ClientErrors>(
+export async function typedFetch<JsonReturnType>(
   url: FetchInput,
   options: TypedFetchOptions = {},
-): Promise<TypedFetchReturnType<JsonReturnType, ErrorType>> {
+): Promise<TypedFetchReturnType<JsonReturnType>> {
   const { fetch: fetchImpl = fetch, ...init } = options;
 
   let res: Response;
@@ -132,9 +131,7 @@ export async function typedFetch<JsonReturnType, ErrorType extends ClientErrors 
     const ErrorClass = statusCodeErrorMap.get(res.status);
     return {
       response: null,
-      error: ErrorClass
-        ? (new ErrorClass(res) as ErrorType | ServerErrors)
-        : new UnknownHttpError(res),
+      error: ErrorClass ? new ErrorClass(res) : new UnknownHttpError(res),
     };
   }
 

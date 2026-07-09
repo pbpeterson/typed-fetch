@@ -237,17 +237,25 @@ if (error instanceof BadRequestError) {
 }
 ```
 
-### Narrowing with Specific Client Errors
+### Narrowing to Specific Errors
 
-Constrain expected client errors (4xx) as a second generic parameter. Server errors (5xx) are always included since they can happen regardless:
+`typedFetch` has a single type parameter — the response body type. `error` is always
+the full {@link TypedFetchError} union (every class the request could actually produce
+at runtime). There is no second type parameter to "expect" a narrower set of errors:
+that would only be a type-level assertion with no runtime check behind it, so a 403
+response could be reported as a `NotFoundError` if you asked for one.
+
+Narrow the real, sound way — `isKnownHttpError()` + `switch (error.status)`
+(see above), or `instanceof` for one specific class:
 
 ```typescript
-import { typedFetch, BadRequestError, NotFoundError } from "@pbpeterson/typed-fetch";
+import { typedFetch, NotFoundError } from "@pbpeterson/typed-fetch";
 
-type ExpectedErrors = BadRequestError | NotFoundError;
+const { response, error } = await typedFetch<User>("/api/users/123");
 
-const { response, error } = await typedFetch<User, ExpectedErrors>("/api/users/123");
-// error: BadRequestError | NotFoundError | ServerErrors | UnknownHttpError | NetworkError | null
+if (error instanceof NotFoundError) {
+  console.log("User not found");
+}
 ```
 
 ### Error Response Bodies
@@ -342,12 +350,11 @@ console.log(BadRequestError.statusText); // "Bad Request"
 
 ## API Reference
 
-### `typedFetch<T, E>(url, options?)`
+### `typedFetch<T>(url, options?)`
 
 **Type Parameters:**
 
 - `T` - The expected response body type
-- `E extends ClientErrors` - Specific client error type(s) (defaults to all)
 
 **Parameters:**
 
@@ -361,15 +368,21 @@ console.log(BadRequestError.statusText); // "Bad Request"
 **Returns:**
 
 ```typescript
-Promise<
-  | { response: TypedResponse<T>; error: null }
-  | { response: null; error: E | ServerErrors | UnknownHttpError | NetworkError }
->;
+Promise<{ response: TypedResponse<T>; error: null } | { response: null; error: TypedFetchError }>;
 ```
+
+`error` is always the full union — `ClientErrors | ServerErrors | UnknownHttpError | NetworkError`.
+Narrow it with `isKnownHttpError()` + `switch (error.status)`, or `instanceof`.
 
 ### `isHttpError(error): error is BaseHttpError`
 
 Type guard that checks if an error is an HTTP error (any status code).
+
+### `isKnownHttpError(error): error is ClientErrors | ServerErrors`
+
+Type guard for a _known_, dedicated HTTP error class (excludes `UnknownHttpError`).
+Narrowing on `error.status` after this guard is exhaustive over the mapped codes —
+see [Exhaustive Status Narrowing](#exhaustive-status-narrowing-with-isknownhttperror).
 
 ### `isNetworkError(error): error is NetworkError`
 
