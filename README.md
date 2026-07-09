@@ -192,6 +192,13 @@ usually not `"AbortError"`. `typedFetch` still classifies it as an `AbortedError
 you the reason on `error.reason` (see [`AbortedError`](#abortederror-abort-and-the-signal-reason)),
 so you decide what it means.
 
+The signal is honored **wherever it lives** — whether you pass it in the options slot
+(`typedFetch(url, { signal })`) or carry it on a `Request` in the url slot
+(`typedFetch(new Request(url, { signal }))`, the canonical fetch pattern used by service
+workers, middleware, and request factories). If a signal is present in **both** slots,
+precedence matches native `fetch(request, init)`: the options-slot `signal` **overrides** the
+`Request`'s own signal entirely, and the `Request`'s signal is then ignored.
+
 ```typescript
 import { typedFetch, isNetworkError, isAbortError, isTimeoutError } from "@pbpeterson/typed-fetch";
 

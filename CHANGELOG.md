@@ -63,6 +63,15 @@
 
 ### Fixed
 
+- **An `AbortSignal` carried by a `Request` in the url slot is now honored.**
+  `typedFetch(new Request(url, { signal }))` — the canonical fetch pattern used
+  by service workers, middleware, and request factories — put the signal on the
+  first argument, where it is a prototype getter (`url.signal`), not on `init`.
+  The catch block keyed abort/timeout classification solely off `init.signal`,
+  so every cancellation on this path misclassified as a `NetworkError` instead
+  of `AbortedError`/`TimeoutError`. The governing signal is now resolved from
+  either slot. Precedence matches native `fetch(request, init)`: an
+  options-slot `signal` overrides the `Request`'s own signal entirely.
 - **A `Request` object passed in the `options` slot is no longer corrupted.**
   A `Request` is a host exotic object: its `method`, `headers`, `body`, and
   `signal` are prototype getters, not own enumerable properties. The

@@ -163,6 +163,22 @@ export async function typedFetch<JsonReturnType>(
   // `options.fetch` is for the plain-object path.
   const init = options instanceof Request ? options : rest;
 
+  // The AbortSignal can arrive via EITHER slot: the `options`/`init` (its
+  // `.signal`), OR a `Request` passed as the first argument (`url.signal`) —
+  // the canonical fetch pattern used by service workers, middleware, and
+  // request factories. Resolve the signal that actually governs this call so
+  // the catch block can key abort/timeout classification off it.
+  //
+  // Precedence matches native `fetch(request, init)`: when `init.signal` is
+  // present it OVERRIDES `request.signal` entirely (the Request's own signal
+  // is then ignored, verified against native fetch). So `init.signal` wins;
+  // only when it is absent do we fall back to the Request's signal.
+  //
+  // `Request` is a global on every supported runtime (Node 20+, Bun, Deno,
+  // browsers, edge). `instanceof Request` also narrows `url` (typed
+  // `FetchInput`, which includes `Request`) so `url.signal` type-checks.
+  const signal = init.signal ?? (url instanceof Request ? url.signal : undefined);
+
   let res: Response;
   try {
     res = await fetchImpl(url, init);
@@ -172,8 +188,8 @@ export async function typedFetch<JsonReturnType>(
     // (a documented Web API pattern), and fetch rejects with THAT reason, whose
     // `.name` is rarely "AbortError". Conversely, an unrelated error that merely
     // happens to be named "AbortError" must NOT be treated as a cancellation.
-    if (init.signal?.aborted) {
-      const reason = init.signal.reason;
+    if (signal?.aborted) {
+      const reason = signal.reason;
       // `AbortSignal.timeout()` aborts with a DOMException named "TimeoutError".
       if (reason instanceof Error && reason.name === "TimeoutError") {
         return {

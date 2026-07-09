@@ -774,6 +774,114 @@ describe("typedFetch", () => {
       expect(isNetworkError(result.error)).toBe(false);
     });
   });
+
+  // ── AbortSignal carried by a Request in the URL slot ──────────────────
+  // The canonical fetch pattern — `fetch(new Request(url, { signal }))` — used
+  // by service workers, middleware, and request factories, puts the Request in
+  // the FIRST argument. Its `signal` is a prototype getter on `url`, not on
+  // `init`, so keying abort/timeout classification off `init.signal` alone
+  // misses it entirely and misclassifies every cancellation as a NetworkError.
+  // The signal must be resolved from wherever it actually lives.
+  describe("AbortSignal carried by a Request in the url slot is honored", () => {
+    test("pre-aborted signal via Request in url slot → AbortedError; reason is the abort reason", async () => {
+      const target = url({ status: 200 });
+      const controller = new AbortController();
+      const reason = new Error("cancel");
+      controller.abort(reason);
+
+      const result = await typedFetch(new Request(target, { signal: controller.signal }));
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(AbortedError);
+      expect(isNetworkError(result.error)).toBe(false);
+
+      if (isAbortError(result.error)) {
+        expect(result.error.reason).toBe(reason);
+      }
+    });
+
+    test("mid-flight abort via Request in url slot → AbortedError", async () => {
+      const target = url({ status: 200, delay: 200 });
+      const controller = new AbortController();
+      const promise = typedFetch(new Request(target, { signal: controller.signal }));
+      setTimeout(() => controller.abort(new Error("mid-flight")), 10);
+
+      const result = await promise;
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(AbortedError);
+      expect(isNetworkError(result.error)).toBe(false);
+    });
+
+    test("AbortSignal.timeout() via Request in url slot → TimeoutError", async () => {
+      const target = url({ status: 200, delay: 200 });
+
+      const result = await typedFetch(new Request(target, { signal: AbortSignal.timeout(1) }));
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(TimeoutError);
+      expect(isTimeoutError(result.error)).toBe(true);
+      expect(isNetworkError(result.error)).toBe(false);
+    });
+
+    // Precedence matches native `fetch(request, init)`: an `init.signal`
+    // OVERRIDES the Request's own signal entirely. Verified against native
+    // fetch — when both are present, only `init.signal` governs the request;
+    // the Request's signal is ignored even if it later aborts.
+    test("precedence: init.signal overrides the Request's signal (only init.signal aborts)", async () => {
+      const target = url({ status: 200, delay: 200 });
+      const requestSignalController = new AbortController(); // signalA — must be ignored
+      const initSignalController = new AbortController(); // signalB — the authority
+      const reason = new Error("init-signal-wins");
+
+      const promise = typedFetch(new Request(target, { signal: requestSignalController.signal }), {
+        signal: initSignalController.signal,
+      });
+      // Abort ONLY the init signal (B). The Request's signal (A) never fires.
+      setTimeout(() => initSignalController.abort(reason), 10);
+
+      const result = await promise;
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(AbortedError);
+      expect(isNetworkError(result.error)).toBe(false);
+
+      if (isAbortError(result.error)) {
+        expect(result.error.reason).toBe(reason);
+      }
+    });
+
+    // Precedence inverse: when `init.signal` is passed, the Request's own
+    // signal (A) is ignored even if IT aborts — native fetch drops it entirely
+    // (verified: aborting the Request's signal while init.signal is present and
+    // never fires lets the request complete normally). So this succeeds.
+    test("precedence inverse: aborting the Request's signal does nothing when init.signal is passed", async () => {
+      const target = url({ status: 200, delay: 50 });
+      const requestSignalController = new AbortController(); // signalA — the Request's, aborts
+      const initSignalController = new AbortController(); // signalB — passed, never fires
+
+      const promise = typedFetch(new Request(target, { signal: requestSignalController.signal }), {
+        signal: initSignalController.signal,
+      });
+      // Abort the Request's signal (A). Native fetch ignores it because
+      // init.signal (B) took over; the request completes normally.
+      setTimeout(() => requestSignalController.abort(new Error("ignored")), 10);
+
+      const result = await promise;
+
+      expect(result.error).toBe(null);
+      expect(result.response?.status).toBe(200);
+    });
+
+    test("Request in url slot with NO signal, connection refused → NetworkError", async () => {
+      const result = await typedFetch(new Request("http://localhost:1"));
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expect(isNetworkError(result.error)).toBe(true);
+      expect(isAbortError(result.error)).toBe(false);
+    });
+  });
 });
 
 // ── Type guards ──────────────────────────────────────────────────────
