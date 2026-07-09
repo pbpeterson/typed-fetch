@@ -63,6 +63,7 @@ cost almost nothing.
   whose headline is "never throws" documents a crash.
 - **Files:** `README.md:218-236` (the "Error Response Bodies" block).
 - **Change:** clone **before** the first read. Replace the body of the example with:
+
   ```typescript
   if (error && isHttpError(error)) {
     // Clone BEFORE reading if you need the body more than once.
@@ -71,10 +72,11 @@ cost almost nothing.
     const text = await forJson.text();
 
     const retryAfter = error.headers.get("Retry-After");
-    error.status;     // 404 (literal, not number)
+    error.status; // 404 (literal, not number)
     error.statusText; // "Not Found" (literal, not number)
   }
   ```
+
 - **Verify:** paste the snippet into a scratch file, build (`pnpm build`), run it
   against a 404 from the test server pattern, assert no throw. Also grep the README
   for any other `.json()` … `.clone()` ordering: `rg -n "clone\(\)" README.md`.
@@ -181,6 +183,7 @@ Phase 3** because they are the guardrails that make the breaking changes safe.
 - **Files:** `src/errors/base-http-error.ts:9-27`; README API section
   (`README.md:379-385`).
 - **Change:** add a public field and include it in the message:
+
   ```typescript
   /** The URL of the failed request (from `response.url`). */
   public readonly url: string;
@@ -194,7 +197,9 @@ Phase 3** because they are the guardrails that make the breaking changes safe.
     this.headers = response.headers;
   }
   ```
+
   Document `url` in the "Instance Properties" list in the README.
+
 - **Verify:** in `test.spec.ts`, in the 404 test, assert
   `expect(result.error.url).toBe(url({ status: 404 }))` and
   `expect(result.error.message).toContain("localhost")`. Run `pnpm test`.
@@ -495,6 +500,7 @@ must already be in place.
   `:112` (cast); `index.ts` exported-type list; `README.md:205-216` ("Narrowing with
   Specific Client Errors"), `README.md:313-332` (API reference).
 - **Change:** drop the second type parameter everywhere.
+
   ```typescript
   export type TypedFetchReturnType<JsonReturnType> =
     | { response: TypedResponse<JsonReturnType>; error: null }
@@ -505,8 +511,10 @@ must already be in place.
     options: TypedFetchOptions = {},
   ): Promise<TypedFetchReturnType<JsonReturnType>> { ... }
   ```
+
   Remove the `as ErrorType | ServerErrors` cast at `:112`; construct the mapped class
   directly. Rewrite the README section to teach `isKnownHttpError` + `switch`.
+
 - **Verify:** `pnpm typecheck` — replace the old narrowing type test with:
   ```typescript
   const { error } = await typedFetch<User>(url());
@@ -602,7 +610,7 @@ Paste-ready for the README ("Non-goals"):
 - **Request-body serialization** — pass `body`/`headers` exactly like native fetch.
 - **Response caching** — out of a request library's remit.
 - **Runtime response-body validation as a hard dependency** — a Standard Schema hook is
-  planned as an *additive, zero-dependency* feature for a later minor, not 1.0.
+  planned as an _additive, zero-dependency_ feature for a later minor, not 1.0.
 - **`rawStatusText` field** — the wire reason phrase is already on `error.message`;
   adding a second field is post-1.0 if demand appears.
 - **Making body reads never-throw (eager buffering)** — it would break streaming
@@ -613,7 +621,7 @@ Paste-ready for the README ("Non-goals"):
 ## Release / semver policy (must be written into CONTRIBUTING.md + README)
 
 1. **Adding a new HTTP error class to `ClientErrors`/`ServerErrors` is a `minor`.**
-   Rationale: it *widens* the returned error union. Consumers doing exhaustive
+   Rationale: it _widens_ the returned error union. Consumers doing exhaustive
    `switch (error.status)` with no `default` could in theory miss a case, but adding a
    member to a returned union is conventionally minor (the value was always reachable at
    runtime as `UnknownHttpError`; we're only giving it a name). Document that exhaustive
