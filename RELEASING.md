@@ -18,36 +18,64 @@ tag. No exceptions.
 - `.github/workflows/release.yml` triggers on `push: tags: ["v*"]` — nothing
   else publishes.
 - It runs on `ubuntu-latest`, checks out the repo, installs pnpm/Node 22,
-  installs deps, then runs `pnpm lint`, `pnpm typecheck`, `pnpm test`, and
-  finally `npm publish --provenance --access public`.
+  upgrades to the latest npm (trusted publishing needs npm >= 11.5), then runs
+  `pnpm install --frozen-lockfile`. The steps that follow run **in this exact
+  order**:
+  1. `pnpm lint`
+  2. `pnpm typecheck`
+  3. `pnpm build` — the workflow builds `dist/` **explicitly**, before test and
+     publish (see the note on `prepublishOnly` below).
+  4. `pnpm test` — runs after the build, so `dist/` exists and the
+     API-surface snapshot test (which imports `dist/index.mjs` and is skipped
+     when `dist/` is absent) is actually exercised, not silently skipped.
+  5. `pnpm verify-pack` — a release gate that runs `npm pack --dry-run` and
+     asserts the tarball's **file manifest** (see
+     [scripts/verify-pack.mjs](./scripts/verify-pack.mjs)). It checks that the
+     required `dist/` entry points and `LICENSE`/`README.md` are present and
+     that nothing from `src/`, `scripts/`, tests, or config leaks in. It does
+     **not** verify file contents — the API-surface snapshot test (step 4)
+     covers that, and runs first.
+  6. `npm publish --provenance --access public --tag <dist-tag>` — the dist-tag
+     is derived from the git ref: a prerelease tag (one containing `-`, e.g.
+     `v1.0.0-rc.1`) publishes under `next`; a normal tag publishes under
+     `latest`.
 - Publishing uses **npm trusted publishing (OIDC)** — the workflow has
   `id-token: write` permission and authenticates to npm via GitHub Actions'
   OIDC identity. There is **no `NPM_TOKEN` secret** to rotate or leak. Trusted
   publishing is configured once on npmjs.com (package Settings → Trusted
   Publisher → GitHub Actions → this repo → `release.yml`).
-- The release workflow does **not** call `pnpm build` itself. The package's
-  `prepublishOnly` script (`"prepublishOnly": "npm run build"` in
-  `package.json`) runs the build automatically as part of `npm publish`, so
-  the `dist/` that ships is always built fresh from the tagged commit.
+- The build is done by the **explicit `pnpm build` step above**, not by the
+  `prepublishOnly` lifecycle hook. `"prepublishOnly": "npm run build"` still
+  exists in `package.json`, but it is now a **redundant safety net**, not the
+  mechanism: if it were ever renamed, removed, or stopped firing under OIDC
+  trusted publishing, the explicit step still guarantees `dist/` is built from
+  the tagged commit. Do not rely on `prepublishOnly` to build the release.
 - `--provenance --access public` attaches npm provenance (a verifiable link
   from the published tarball back to this workflow run and commit) and
   ensures the scoped package publishes as public, not private.
 
-Because the workflow itself runs `pnpm lint` / `pnpm typecheck` / `pnpm test`
-before publishing, a red gate on the tagged commit will fail the release. But
-don't rely on CI to catch that for you — run the gates locally first (see
-below) so a failed release doesn't leave you with a pushed tag and no
-published package.
+Because the workflow itself runs `pnpm lint` / `pnpm typecheck` / `pnpm build` /
+`pnpm test` / `pnpm verify-pack` before publishing, a red gate on the tagged
+commit will fail the release. **Note:** the release workflow does **not** run
+`format:check` — only `ci.yml` (on PRs and pushes) does. So the release gate
+will not catch a formatting violation on the tagged commit; run `format:check`
+locally (see below) to keep formatting honest. And don't rely on CI to catch
+the other gates for you either — run them locally first so a failed release
+doesn't leave you with a pushed tag and no published package.
 
 ## Release checklist
 
 Run every step, in order, for every release:
 
-1. **Make sure `main` is green.** All four gates plus the build must pass
-   locally:
+1. **Make sure `main` is green.** Run the full gate locally — this is a
+   superset of what the release workflow runs (it adds `format:check`, which
+   the release workflow does not run; only `ci.yml` does):
    ```bash
-   pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build
+   pnpm lint && pnpm format:check && pnpm typecheck && pnpm build && pnpm test && pnpm verify-pack
    ```
+   Run `build` before `test` and `verify-pack`, exactly as the release
+   workflow does: the API-surface snapshot test and `verify-pack` both inspect
+   `dist/`, so it must exist first.
 2. **Decide the version bump** using the [semver policy](#semver-policy)
    below.
 3. **Bump the version in `package.json`.** Edit the `"version"` field
@@ -80,7 +108,8 @@ Run every step, in order, for every release:
    GitHub Actions run succeeded.
 
 There is no dry-run publish step in CI, but you can sanity-check the tarball
-contents locally at any time with `npm pack --dry-run`.
+manifest locally at any time with `npm pack --dry-run` (or `pnpm verify-pack`,
+which asserts that manifest and is the same gate the release workflow runs).
 
 ## Semver policy
 
