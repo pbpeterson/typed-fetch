@@ -72,8 +72,12 @@ import type { TypedFetchOptions, TypedFetchReturnType, TypedResponse } from "./i
 // The server also always echoes the received request method back via an
 // X-Echo-Method response header, so tests can assert an arbitrary method
 // (e.g. "REPORT") actually reached the server unchanged.
+//   ?echoHeader=Name     → echo request header `Name` back as X-Echo-Header
+//                           (proves an arbitrary request header reached the server)
 //   ?delay=<ms>          → wait this many milliseconds before responding
 //                           (used to reliably trigger AbortSignal.timeout())
+// The received request body is always echoed back via an X-Echo-Body
+// response header, so tests can assert the body actually reached the server.
 
 let baseURL: string;
 let server: http.Server;
@@ -85,6 +89,7 @@ beforeAll(async () => {
     const body = requestUrl.searchParams.get("body");
     const headerEntries = requestUrl.searchParams.getAll("header");
     const delay = Number(requestUrl.searchParams.get("delay") ?? 0);
+    const echoHeader = requestUrl.searchParams.get("echoHeader");
 
     for (const entry of headerEntries) {
       const [key = "", value = ""] = entry.split(":");
@@ -93,20 +98,35 @@ beforeAll(async () => {
 
     res.setHeader("X-Echo-Method", req.method ?? "");
 
+    if (echoHeader) {
+      const received = req.headers[echoHeader.toLowerCase()];
+      res.setHeader("X-Echo-Header", typeof received === "string" ? received : "");
+    }
+
     if (!res.getHeader("content-type") && body) {
       res.setHeader("Content-Type", "application/json");
     }
 
-    const respond = () => {
-      res.writeHead(status);
-      res.end(body ?? null);
-    };
+    // Buffer the request body so tests can assert it reached the server. The
+    // body is echoed back via a response header (URL-encoded to stay a valid
+    // header value regardless of the payload's bytes).
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => {
+      const received = Buffer.concat(chunks).toString("utf8");
+      res.setHeader("X-Echo-Body", encodeURIComponent(received));
 
-    if (delay > 0) {
-      setTimeout(respond, delay);
-    } else {
-      respond();
-    }
+      const respond = () => {
+        res.writeHead(status);
+        res.end(body ?? null);
+      };
+
+      if (delay > 0) {
+        setTimeout(respond, delay);
+      } else {
+        respond();
+      }
+    });
   });
 
   await new Promise<void>((resolve) => {
@@ -670,6 +690,89 @@ describe("typedFetch", () => {
 
     const [, initFromTuples] = stubFetch.mock.calls[1] ?? [];
     expect(initFromTuples?.headers).toBe(tuplePairs);
+  });
+
+  // ── Request objects passed as `options` (host-exotic-object passthrough) ──
+  // A `Request`'s `method`/`headers`/`body`/`signal` are prototype getters,
+  // not own enumerable properties. When a `Request` is passed in the `options`
+  // slot, object rest spread (`...init`) copies NONE of them, silently
+  // downgrading every request to a bodyless, header-less GET and dropping the
+  // abort signal. These tests pass the `Request` as the second argument — the
+  // exact slot the spread corrupts — and prove it now reaches fetch untouched.
+  // Each fails on the pre-fix (spread) implementation.
+  describe("Request passed as the options argument is preserved (not spread away)", () => {
+    test("Request method reaches the server", async () => {
+      const target = url({ status: 200 });
+      const result = await typedFetch(target, new Request(target, { method: "POST" }));
+
+      expect(result.error).toBe(null);
+      expect(result.response?.headers.get("X-Echo-Method")).toBe("POST");
+    });
+
+    test("Request headers reach the server", async () => {
+      const target = url({ status: 200, echoHeader: "X-Custom" });
+      const result = await typedFetch(
+        target,
+        new Request(target, { method: "POST", headers: { "X-Custom": "hi" } }),
+      );
+
+      expect(result.error).toBe(null);
+      expect(result.response?.headers.get("X-Echo-Header")).toBe("hi");
+    });
+
+    test("Request body reaches the server", async () => {
+      const target = url({ status: 200 });
+      const result = await typedFetch(
+        target,
+        new Request(target, { method: "POST", body: "payload" }),
+      );
+
+      expect(result.error).toBe(null);
+      const echoed = result.response?.headers.get("X-Echo-Body");
+      expect(echoed && decodeURIComponent(echoed)).toBe("payload");
+    });
+
+    test("pre-aborted signal via Request → AbortedError (init.signal?.aborted reads the Request getter)", async () => {
+      const target = url({ status: 200 });
+      const controller = new AbortController();
+      const reason = new Error("cancel");
+      controller.abort(reason);
+
+      const result = await typedFetch(target, new Request(target, { signal: controller.signal }));
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(AbortedError);
+      expect(isNetworkError(result.error)).toBe(false);
+
+      if (isAbortError(result.error)) {
+        expect(result.error.reason).toBe(reason);
+      }
+    });
+
+    test("live abort mid-flight via Request → AbortedError", async () => {
+      const target = url({ status: 200, delay: 200 });
+      const controller = new AbortController();
+      const promise = typedFetch(target, new Request(target, { signal: controller.signal }));
+      setTimeout(() => controller.abort(new Error("mid-flight")), 10);
+
+      const result = await promise;
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(AbortedError);
+      expect(isNetworkError(result.error)).toBe(false);
+    });
+
+    test("AbortSignal.timeout() via Request → TimeoutError", async () => {
+      const target = url({ status: 200, delay: 200 });
+      const result = await typedFetch(
+        target,
+        new Request(target, { signal: AbortSignal.timeout(1) }),
+      );
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(TimeoutError);
+      expect(isNetworkError(result.error)).toBe(false);
+    });
   });
 });
 

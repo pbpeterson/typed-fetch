@@ -150,7 +150,18 @@ export async function typedFetch<JsonReturnType>(
   url: FetchInput,
   options: TypedFetchOptions = {},
 ): Promise<TypedFetchReturnType<JsonReturnType>> {
-  const { fetch: fetchImpl = fetch, ...init } = options;
+  const { fetch: fetchImpl = fetch, ...rest } = options;
+  // A `Request` is a host exotic object: `method`, `headers`, `signal`, and
+  // `body` are prototype getters, NOT own enumerable properties, so object
+  // rest spread (`...rest`) copies NONE of them — it would silently downgrade
+  // every request to a bodyless, header-less GET. Native `fetch` reads those
+  // getters correctly, so a `Request` must be passed through untouched.
+  //
+  // Consequence: `options.fetch` injection and passing a `Request` are
+  // mutually exclusive — a `Request` has no `fetch` property, and the spread
+  // above only strips `fetch` on the plain-object path. That is intentional;
+  // `options.fetch` is for the plain-object path.
+  const init = options instanceof Request ? options : rest;
 
   let res: Response;
   try {

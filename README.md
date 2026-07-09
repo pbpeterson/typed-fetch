@@ -439,6 +439,13 @@ console.log(BadRequestError.statusText); // "Bad Request"
   stripped before the request options are forwarded, so it never leaks into the
   underlying `fetch()` call.
 
+  You can also pass a `Request` object here (the same shapes `fetch()` accepts). A
+  `Request` is forwarded to `fetch()` untouched — its `method`, `headers`, `body`,
+  and `signal` are preserved exactly (including abort/timeout handling). Note that
+  passing a `Request` and using the `fetch` override are mutually exclusive: a
+  `Request` has no `fetch` property, so the override only applies on the
+  plain-object options path.
+
 **Returns:**
 
 ```typescript

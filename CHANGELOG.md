@@ -63,6 +63,16 @@
 
 ### Fixed
 
+- **A `Request` object passed in the `options` slot is no longer corrupted.**
+  A `Request` is a host exotic object: its `method`, `headers`, `body`, and
+  `signal` are prototype getters, not own enumerable properties. The
+  `options.fetch` change (b00380e) introduced an object rest spread
+  (`const { fetch, ...init } = options`) that copied none of them, silently
+  downgrading `typedFetch(url, new Request(url, { method: "POST", ... }))` to a
+  bodyless, header-less `GET` and dropping the abort signal (so a pre-aborted
+  or timed-out `Request` produced no error at all). A `Request` is now passed
+  through to `fetch()` untouched; the spread only applies on the plain-object
+  options path.
 - The README no longer documents an "Error Response Bodies" pattern that
   reads the body with `error.json()` and then calls `error.clone()` — that
   order throws `TypeError: Response.clone: Body has already been consumed`.
