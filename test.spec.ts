@@ -1,4 +1,5 @@
 import http from "node:http";
+import { readFileSync } from "node:fs";
 import { describe, test, expect, beforeAll, afterAll, expectTypeOf } from "vitest";
 import { typedFetch, isHttpError, isNetworkError } from "./src/index";
 import { statusCodeErrorMap } from "./src/http-status-codes";
@@ -629,4 +630,9 @@ describe("type-level", () => {
     const error = new NotFoundError(new Response(JSON.stringify({}), { status: 404 }));
     expectTypeOf(error.json<{ message: string }>()).toEqualTypeOf<Promise<{ message: string }>>();
   });
+});
+
+test("error .name is a hardcoded string literal, not this.constructor.name", () => {
+  const src = readFileSync("src/errors/base-http-error.ts", "utf8");
+  expect(src).not.toMatch(/this\.name\s*=\s*this\.constructor\.name/);
 });

@@ -2,6 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/414 */
 export class RequestUriTooLongError extends BaseHttpError {
+  override readonly name = "RequestUriTooLongError" as const;
   public readonly status = 414 as const;
   public readonly statusText = "URI Too Long" as const;
   static readonly status = 414 as const;

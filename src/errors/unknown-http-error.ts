@@ -8,6 +8,7 @@ import { BaseHttpError } from "./base-http-error";
  * types — they reflect whatever the server actually sent.
  */
 export class UnknownHttpError extends BaseHttpError {
+  override readonly name = "UnknownHttpError" as const;
   public readonly status: number;
   public readonly statusText: string;
 

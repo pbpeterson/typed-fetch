@@ -2,6 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/412 */
 export class PreconditionFailedError extends BaseHttpError {
+  override readonly name = "PreconditionFailedError" as const;
   public readonly status = 412 as const;
   public readonly statusText = "Precondition Failed" as const;
   static readonly status = 412 as const;

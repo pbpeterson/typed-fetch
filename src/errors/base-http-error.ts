@@ -26,7 +26,6 @@ export abstract class BaseHttpError extends Error {
         ? `HTTP ${response.status} ${response.statusText}`
         : `HTTP ${response.status}`,
     );
-    this.name = this.constructor.name;
     this.headers = response.headers;
   }
 

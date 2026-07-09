@@ -2,6 +2,7 @@ import { BaseHttpError } from "./base-http-error";
 
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/416 */
 export class RequestedRangeNotSatisfiableError extends BaseHttpError {
+  override readonly name = "RequestedRangeNotSatisfiableError" as const;
   public readonly status = 416 as const;
   public readonly statusText = "Range Not Satisfiable" as const;
   static readonly status = 416 as const;
