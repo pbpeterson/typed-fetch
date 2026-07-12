@@ -26,6 +26,9 @@ jobs:
       - run: pnpm format:check
       - run: pnpm typecheck
       - run: pnpm build
+      # Must run AFTER build: test.spec.ts contains dist-gated suites (public
+      # API surface snapshots, cross-copy guard tests) that hard-fail in CI
+      # when dist/ is absent. Do not reorder build/test.
       - run: pnpm test
       # Typecheck every fenced TS block in the docs against the BUILT package
       # (dist/). Must run AFTER build — dist/ is the compile target, and the

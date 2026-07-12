@@ -85,8 +85,8 @@ if (!error) {
 ```
 
 - Guards, not message strings: prefer `isHttpError`/`isKnownHttpError`/`isNetworkError`/`isAbortError`/`isTimeoutError` over `instanceof` across package boundaries.
-- `error.url` (on HTTP errors) is the failed request URL, taken from `response.url`.
-- Error bodies (HTTP errors only): `error.json<T>()`, `.text()`, `.blob()`, `.arrayBuffer()`; `error.clone()` to read the body twice.
+- `error.url` is the failed request URL on **every** error family — HTTP errors take it from `response.url`; `NetworkError`/`AbortedError`/`TimeoutError` carry the requested URL (empty string when unavailable). Read it unconditionally, no narrowing needed.
+- Error bodies (HTTP errors only): `error.json<T>()`, `.text()`, `.blob()`, `.arrayBuffer()`; `error.clone()` to read the body twice — call `.clone()` before the first body read.
 - Statics need no instance: `NotFoundError.status === 404`.
 
 ### Exhaustive status switch

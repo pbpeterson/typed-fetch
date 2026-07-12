@@ -1,6 +1,6 @@
 {
   "extends": "./tsconfig.json",
-  "include": ["index.ts", "src/**/*", "test.spec.ts"],
+  "include": ["index.ts", "src/**/*", "*.spec.ts"],
   "exclude": ["node_modules", "dist"],
   "compilerOptions": {
     "noEmit": true,

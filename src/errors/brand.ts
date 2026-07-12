@@ -58,14 +58,19 @@ export const timeoutErrorBrand: unique symbol = Symbol.for("@pbpeterson/typed-fe
  * Reads a brand off a value without triggering prototype getters on hostile
  * inputs beyond a plain property access, and without throwing on `null`/
  * primitives. Returns `true` only when the branded symbol resolves to the
- * literal `true` placed by {@link brand}.
+ * literal `true` placed by {@link brand}. Property accesses that themselves
+ * throw (Proxy `get` traps, hostile symbol-keyed getters) are caught and
+ * return `false`.
  */
 export function hasBrand(value: unknown, brandSymbol: symbol): boolean {
-  return (
-    value != null &&
-    (typeof value === "object" || typeof value === "function") &&
-    (value as Record<symbol, unknown>)[brandSymbol] === true
-  );
+  if (value == null || (typeof value !== "object" && typeof value !== "function")) {
+    return false;
+  }
+  try {
+    return (value as Record<symbol, unknown>)[brandSymbol] === true;
+  } catch {
+    return false;
+  }
 }
 
 /**

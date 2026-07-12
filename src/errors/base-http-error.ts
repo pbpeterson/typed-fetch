@@ -60,8 +60,22 @@ export abstract class BaseHttpError extends Error {
     return this.response.arrayBuffer();
   }
 
-  /** Clone the error so the response body can be read multiple times. */
+  /**
+   * Clone the error so the response body can be read multiple times.
+   *
+   * Must be called BEFORE the body is read — cloning duplicates the response
+   * body stream, which is impossible once it has been consumed. Calling it
+   * after `json()`/`text()`/`blob()`/`arrayBuffer()` throws a `TypeError`
+   * with a clear message (instead of the platform's opaque "Body is
+   * unusable").
+   */
   clone(): this {
+    if (this.response.bodyUsed) {
+      throw new TypeError(
+        "Cannot clone this error: its response body has already been read. " +
+          "Call clone() before json()/text()/blob()/arrayBuffer().",
+      );
+    }
     const Ctor = this.constructor as new (response: Response) => this;
     return new Ctor(this.response.clone());
   }

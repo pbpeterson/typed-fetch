@@ -545,6 +545,120 @@ describe("typedFetch", () => {
     }
   });
 
+  // ── Fix 1b: aborted signal is necessary but NOT sufficient ─────────────
+  // A rejection that merely COINCIDES with an already-aborted signal but is not
+  // itself the abort (e.g. a TypeError from Request construction) must stay a
+  // NetworkError. Only a rejection that IS the abort — `err === signal.reason`
+  // — takes the abort path.
+
+  test("pre-aborted signal + unrelated TypeError rejection → NetworkError, not AbortedError", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    // fetch rejects with something OTHER than signal.reason (a TypeError, as if
+    // thrown during Request construction). The signal is aborted, but this
+    // rejection is not the abort, so it must NOT be classified as AbortedError.
+    const unrelated = new TypeError("bad header name");
+    const stubFetch = vi.fn(async () => Promise.reject(unrelated)) as unknown as typeof fetch;
+
+    const result = await typedFetch(url({ status: 200 }), {
+      signal: controller.signal,
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isNetworkError(result.error)).toBe(true);
+    expect(isAbortError(result.error)).toBe(false);
+    if (isNetworkError(result.error)) {
+      expect(result.error.cause).toBe(unrelated);
+    }
+  });
+
+  test("pre-aborted signal + method CONNECT (real fetch rejects with a TypeError) → NetworkError", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    // CONNECT is a forbidden method: real fetch throws a TypeError during
+    // Request construction, before the abort is ever consulted. The signal is
+    // aborted, but the rejection is not the abort → NetworkError.
+    const result = await typedFetch(url({ status: 200 }), {
+      method: "CONNECT",
+      signal: controller.signal,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isNetworkError(result.error)).toBe(true);
+    expect(isAbortError(result.error)).toBe(false);
+  });
+
+  // ── Fix 1c: `signal: null` detaches a url-slot Request's signal ────────
+
+  test("signal:null detaches a url-slot Request's aborted signal → NetworkError, not AbortedError", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    // The Request in the url slot carries an already-aborted signal, but the
+    // options pass `signal: null`, which per the fetch spec DETACHES it — no
+    // signal governs the call. With an injected fetch rejecting a TypeError and
+    // no governing signal, this is a plain NetworkError, never AbortedError.
+    const request = new Request(url({ status: 200 }), { signal: controller.signal });
+    const unrelated = new TypeError("kaboom");
+    const stubFetch = vi.fn(async () => Promise.reject(unrelated)) as unknown as typeof fetch;
+
+    const result = await typedFetch(request, {
+      signal: null,
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isNetworkError(result.error)).toBe(true);
+    expect(isAbortError(result.error)).toBe(false);
+  });
+
+  test("explicit signal:undefined falls back to the url-slot Request's pre-aborted signal → AbortedError", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    // WebIDL treats an explicit `undefined` dictionary member as absent, so
+    // `signal: undefined` is NOT a detach — it falls back to the Request's own
+    // signal, which is pre-aborted. Real fetch rejects with that signal's
+    // reason, so this is an AbortedError.
+    const request = new Request(url({ status: 200 }), { signal: controller.signal });
+
+    const result = await typedFetch(request, { signal: undefined });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(AbortedError);
+    expect(isAbortError(result.error)).toBe(true);
+    expect(isNetworkError(result.error)).toBe(false);
+  });
+
+  // ── Fix 1d: realm-safe DOMException detection for timeout classification ─
+  // A cross-realm DOMException fails `instanceof DOMException` (its constructor
+  // is bound to another realm), so timeout classification must key on the
+  // platform-set `Symbol.toStringTag` instead. A hand-built object carrying
+  // that tag and name === "TimeoutError" is indistinguishable from a real
+  // cross-realm timeout, so we accept it as a TimeoutError — the same
+  // documented forgeability tradeoff as `new DOMException("", "TimeoutError")`.
+  test("abort(cross-realm-shaped DOMException named 'TimeoutError') → TimeoutError", async () => {
+    const controller = new AbortController();
+    // Not a real DOMException instance: `instanceof DOMException` is false, but
+    // `Object.prototype.toString` reports "[object DOMException]" via the tag.
+    const forgedCrossRealm = {
+      name: "TimeoutError",
+      [Symbol.toStringTag]: "DOMException",
+    };
+    controller.abort(forgedCrossRealm);
+
+    const result = await typedFetch(url({ status: 200 }), {
+      signal: controller.signal,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(TimeoutError);
+    expect(isTimeoutError(result.error)).toBe(true);
+    expect(isAbortError(result.error)).toBe(false);
+  });
+
   // ── Fix 2: error.url on pre-response errors ────────────────────────────
   // AXIS 8 + 9: url is populated on NetworkError / AbortedError / TimeoutError,
   // and is correct whether the request input was a string, a URL, or a Request.
@@ -1794,18 +1908,25 @@ test("error .name is a hardcoded string literal, not this.constructor.name", () 
 // snapshots").
 //
 // dist/-ordering: this reads from `dist/`, which only exists after
-// `pnpm build`. `dist/` is gitignored, and .github/workflows/ci.yml runs
-// `pnpm test` BEFORE `pnpm build` in the same job — so on a clean checkout,
-// including in CI, `dist/` is absent when this file runs. We cannot add a
-// `pretest` hook (package.json is off-limits for this change), and a hard
-// failure here would break `pnpm test` on every clean checkout and in CI.
-// So: skip gracefully (with an explicit console message, so it's visible in
-// the run rather than silently vanishing) when dist/ is missing, and run for
-// real whenever it's present — e.g. the documented verification flow
+// `pnpm build`. `dist/` is gitignored, so on a fresh local checkout it is
+// absent until you build. In CI it is present: .github/workflows/ci.yml runs
+// `pnpm build` BEFORE `pnpm test` in the same job, so these suites run for
+// real there. The two cases are therefore handled differently below: locally,
+// a missing dist/ skips gracefully (with an explicit console message, so it's
+// visible rather than silently vanishing); in CI, a missing dist/ is a hard
+// error, because it would mean the workflow lost the `build`-before-`test`
+// ordering and the surface would silently stop being checked. Present dist/
+// runs for real everywhere — e.g. the documented verification flow
 // `pnpm build && pnpm lint && pnpm format:check && pnpm typecheck && pnpm test`.
 const distExists = existsSync(new URL("./dist/index.mjs", import.meta.url));
 
 if (!distExists) {
+  if (process.env.CI) {
+    throw new Error(
+      "[api-surface] dist/ not found in CI — .github/workflows/ci.yml must run " +
+        "`pnpm build` before `pnpm test` so the dist-gated suites run for real.",
+    );
+  }
   // eslint-disable-next-line no-console
   console.warn(
     "\n[api-surface] dist/ not found — skipping the public API surface snapshot tests. " +

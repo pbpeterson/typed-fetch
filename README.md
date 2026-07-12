@@ -354,7 +354,9 @@ The signal is honored **wherever it lives** — whether you pass it in the optio
 (`typedFetch(new Request(url, { signal }))`, the canonical fetch pattern used by service
 workers, middleware, and request factories). If a signal is present in **both** slots,
 precedence matches native `fetch(request, init)`: the options-slot `signal` **overrides** the
-`Request`'s own signal entirely, and the `Request`'s signal is then ignored.
+`Request`'s own signal entirely, and the `Request`'s signal is then ignored. An explicit
+`signal: null` in the options detaches the `Request`'s signal entirely (fetch-spec behavior);
+only an absent or `undefined` `signal` falls back to the `Request`'s own signal.
 
 ```typescript
 import { typedFetch, isNetworkError, isAbortError, isTimeoutError } from "@pbpeterson/typed-fetch";
@@ -517,9 +519,10 @@ and aborted requests are as easy to correlate in logs as HTTP errors.
   forwarded to `fetch()` untouched — its `method`, `headers`, `signal`, and (on Node)
   `body` are preserved. Note that a body-carrying `Request` passed in the **options** slot
   is rejected by browsers on this path (WebIDL requires `duplex` there), so keep bodies on
-  the plain-object options path. Passing a `Request` and using the `fetch` override are
-  mutually exclusive: a `Request` has no `fetch` property, so the override only applies on
-  the plain-object options path.
+  the plain-object options path. Passing a `Request` in the **options** slot and using the
+  `fetch` override are mutually exclusive: a `Request` has no `fetch` property, so the
+  override only applies on the plain-object options path. A `Request` in the **url** slot
+  combines freely with a plain options object carrying `fetch`.
 
 **Returns:**
 
@@ -611,7 +614,7 @@ All HTTP error classes extend `BaseHttpError`:
 - `text()` - Parse as text
 - `blob()` - Parse as Blob
 - `arrayBuffer()` - Parse as ArrayBuffer
-- `clone()` - Clone the error for multiple body reads
+- `clone()` - Clone the error for multiple body reads (call it **before** the first read; it throws a clear `TypeError` once the body has been consumed)
 
 **Static Properties** (access status codes without creating an instance):
 

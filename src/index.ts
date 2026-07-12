@@ -17,6 +17,23 @@ import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
 
 /**
+ * Realm-safe DOMException detection. `instanceof DOMException` is bound to the
+ * current realm's constructor, so a DOMException created in another realm
+ * (jsdom, node:vm, an iframe) fails it. Fall back to
+ * `Object.prototype.toString`, which reads the platform-set
+ * `Symbol.toStringTag` ("DOMException" on every implementation). Tradeoff:
+ * the tag is forgeable via `Symbol.toStringTag` — accepted, the same class of
+ * documented honesty as a hand-built `new DOMException("", "TimeoutError")`.
+ * `typeof` guard keeps exotic runtimes without the global from throwing.
+ */
+function isDOMException(value: unknown): value is DOMException {
+  return (
+    (typeof DOMException !== "undefined" && value instanceof DOMException) ||
+    Object.prototype.toString.call(value) === "[object DOMException]"
+  );
+}
+
+/**
  * Type guard that checks whether a value is an HTTP error (any {@link BaseHttpError} subclass).
  *
  * Keyed on a cross-copy brand rather than `instanceof`, so it returns `true`
@@ -178,10 +195,12 @@ export async function typedFetch<JsonReturnType>(
   // every request to a bodyless, header-less GET. Native `fetch` reads those
   // getters correctly, so a `Request` must be passed through untouched.
   //
-  // Consequence: `options.fetch` injection and passing a `Request` are
-  // mutually exclusive — a `Request` has no `fetch` property, and the spread
-  // above only strips `fetch` on the plain-object path. That is intentional;
-  // `options.fetch` is for the plain-object path.
+  // Consequence: `options.fetch` injection and passing a `Request` **in the
+  // options slot** are mutually exclusive — a `Request` has no `fetch`
+  // property, and the spread above only strips `fetch` on the plain-object
+  // path. That is intentional; `options.fetch` is for the plain-object path.
+  // (A `Request` in the url slot combines freely with plain options that
+  // carry `fetch`.)
   const init = options instanceof Request ? options : rest;
 
   // The AbortSignal can arrive via EITHER slot: the `options`/`init` (its
@@ -198,7 +217,16 @@ export async function typedFetch<JsonReturnType>(
   // `Request` is a global on every supported runtime (Node 20+, Bun, Deno,
   // browsers, edge). `instanceof Request` also narrows `url` (typed
   // `FetchInput`, which includes `Request`) so `url.signal` type-checks.
-  const signal = init.signal ?? (url instanceof Request ? url.signal : undefined);
+  // `signal: null` is a *present* init member per the fetch spec: it DETACHES
+  // the Request's signal — no signal governs the call. Only an absent or
+  // `undefined` `init.signal` falls back to the Request's own signal (WebIDL
+  // treats an `undefined` dictionary member as absent).
+  const signal =
+    init.signal !== undefined
+      ? (init.signal ?? undefined)
+      : url instanceof Request
+        ? url.signal
+        : undefined;
 
   let res: Response;
   try {
@@ -215,28 +243,38 @@ export async function typedFetch<JsonReturnType>(
     // (a documented Web API pattern), and fetch rejects with THAT reason, whose
     // `.name` is rarely "AbortError". Conversely, an unrelated error that merely
     // happens to be named "AbortError" must NOT be treated as a cancellation.
-    if (signal?.aborted) {
+    //
+    // The signal being aborted is necessary but NOT sufficient: fetch can
+    // reject for an unrelated reason even while the signal is already aborted
+    // (e.g. `method: "CONNECT"` or a bad header name → TypeError thrown during
+    // Request construction, before the abort is ever consulted). Only take the
+    // abort path when the rejection IS the abort: spec-compliant runtimes
+    // reject with `signal.reason` itself (bare `controller.abort()` sets a
+    // DOMException "AbortError" as the reason, `controller.abort(reason)` sets
+    // that exact reason — both satisfy `err === signal.reason`). The second
+    // arm covers exotic/polyfilled signals whose `reason` is undefined but
+    // whose abort still surfaces as a DOMException. Anything else falls
+    // through to NetworkError with the real cause.
+    if (
+      signal?.aborted &&
+      (err === signal.reason || (signal.reason === undefined && isDOMException(err)))
+    ) {
       const reason = signal.reason;
       // Classify a timeout by the *shape the platform produces*, not by a name
-      // a caller can forge. `AbortSignal.timeout()` aborts with a real
-      // `DOMException` named "TimeoutError"; a caller's
+      // a caller can forge on a plain error. `AbortSignal.timeout()` aborts
+      // with a real `DOMException` named "TimeoutError". A caller's
       // `controller.abort(reason)` can set any `reason.name` — including
-      // "TimeoutError" — on a plain `Error`, but cannot make it a
-      // `DOMException`. Requiring BOTH conditions keeps a forged name from
-      // hijacking timeout classification (and from losing `error.reason`).
+      // "TimeoutError" — on a plain `Error`; that stays an AbortedError because
+      // it is not a DOMException. The DOMException tag IS the accepted boundary
+      // here: `isDOMException` reads `Symbol.toStringTag`, so a caller who
+      // hand-builds that exact shape (`new DOMException("", "TimeoutError")` or
+      // an object tagged "DOMException") is opting into timeout classification,
+      // the same documented honesty as forging any platform-shaped value.
       //
       // The `name` check stays load-bearing: a bare `controller.abort()` also
       // produces a `DOMException`, but named "AbortError" — it must remain an
-      // AbortedError. `DOMException` is a global on every fetch-capable runtime
-      // (Node 20+, Bun, Deno, browsers, edge), but `signal?.aborted` above
-      // gates an unconditional `instanceof`, so we `typeof`-guard it to degrade
-      // gracefully (→ AbortedError, reason preserved) instead of throwing a
-      // `ReferenceError` in a polyfilled/exotic environment that lacks it.
-      if (
-        typeof DOMException !== "undefined" &&
-        reason instanceof DOMException &&
-        reason.name === "TimeoutError"
-      ) {
+      // AbortedError.
+      if (isDOMException(reason) && reason.name === "TimeoutError") {
         return {
           response: null,
           error: new TimeoutError("Request timed out", { cause: reason, url: requestUrl }),
