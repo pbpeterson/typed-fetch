@@ -49,7 +49,7 @@ The `<User[]>` type parameter **types the parse, it does not validate it** — `
 - **Untrusted/possibly-malformed payload?** Wrap the body read in try/catch — `.clone()` does not help here.
 - **Need to read the body more than once?** `.clone()` first, then read each copy — a body can only be consumed once.
 
-Opaque responses (`mode: "no-cors"`, `status: 0`) come back as `response`, per the fetch spec; their body is unreadable and `json()`/`text()` will reject.
+Opaque and error responses (`mode: "no-cors"`, `redirect: "manual"`, `Response.error()` — all `status: 0` / `type: "error"` or `"opaque"`) come back on the **success** branch as `response` (with `error: null`), per the fetch spec; `res.status >= 400` is the only failure test, and a status-0 response is not `>= 400`. If your call can produce one (browser `no-cors`, some service-worker-mediated fetches), check `response.ok` / `response.type` yourself — the body is unreadable and `json()`/`text()` will reject.
 
 ## Features
 
@@ -325,6 +325,13 @@ if (error instanceof BadRequestError) {
 }
 ```
 
+> **Bodies are single-use.** The response body is a one-shot stream. Reading it
+> a second time (`text()` after `json()`, etc.) throws a clear `TypeError` — call
+> `clone()` **before** the first read if you need it more than once. And `json()`
+> on an empty or non-JSON body still rejects with the platform's `SyntaxError`:
+> 4xx/5xx responses often carry an empty body or an HTML page, so reach for
+> `text()` when the payload may not be JSON.
+
 ### Network Errors, Aborts, and Timeouts
 
 `typedFetch` distinguishes three different ways a request can fail before it gets an HTTP
@@ -341,6 +348,14 @@ All three preserve the original error thrown by `fetch` on `cause`. **`AbortedEr
 aborted or timed-out requests. This is intentional: cancellation and timeouts are not
 network failures, and conflating them made the taxonomy lie. Use `isAbortError()` /
 `isTimeoutError()` to check for them explicitly.
+
+> **`NetworkError` also covers permanent, non-retryable request errors.** When
+> `fetch` throws while _constructing_ the request — an invalid URL, a forbidden
+> method (`CONNECT`, `TRACE`), a malformed header name — it raises a `TypeError`
+> that never reaches the network. `typedFetch` surfaces these as `NetworkError`
+> too (the original `TypeError` is on `error.cause`). A blind "retry on
+> `NetworkError`" loop will retry these forever, since no amount of retrying
+> fixes a bad URL. Inspect `error.cause` before retrying, and cap your retries.
 
 Cancellation is detected from the request's `AbortSignal` (`signal.aborted`), **not** from
 the rejected error's `.name`. That's what makes the mainstream pattern work: when you pass a

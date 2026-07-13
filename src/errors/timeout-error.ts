@@ -14,8 +14,12 @@ import { brand, timeoutErrorBrand } from "./brand";
 export class TimeoutError extends Error {
   override readonly name = "TimeoutError";
 
-  /** The original error thrown by `fetch`, if any. */
-  public override readonly cause?: unknown;
+  // `cause` is NOT redeclared as a class field on purpose. A field declaration
+  // (even bare) would, under ES2022 class-field semantics, define an own
+  // `cause: undefined` on every instance — making `"cause" in err` always true
+  // and defeating the constructor's `if ("cause" in options)` guard. The type
+  // is inherited from `Error` (`cause?: unknown`); the constructor assigns the
+  // own property only when a cause is actually supplied.
 
   /**
    * The requested URL, so concurrent timeouts are distinguishable in logs.

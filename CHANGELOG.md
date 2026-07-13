@@ -1,5 +1,44 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Exported `TypedHeaders` and `StrictHeaders` (types) and `statusCodeErrorMap`
+  (value) from the main entry, and `httpErrors` (value) and `HttpErrors` (type)
+  from both entries — types that the public `TypedFetchOptions` already
+  referenced and values documented as part of the contract, but which consumers
+  could not name or import.
+
+### Fixed
+
+- **`BaseHttpError` no longer leaks its internal `Response` as an own enumerable
+  property.** It was a constructor parameter property, so `JSON.stringify(err)`,
+  `{...err}`, and `Object.keys(err)` exposed a live `Response` handle. It is now
+  a native private field.
+- **`NetworkError` / `AbortedError` / `TimeoutError`: `"cause" in err` (and
+  `"reason" in err`) are honest again.** Under ES2022 class-field semantics the
+  field declarations defined an own `cause: undefined` on every instance, so
+  `"cause" in err` was always `true`. The property now exists only when a cause
+  is actually supplied.
+- **Error body readers (`json()`/`text()`/`blob()`/`arrayBuffer()`) throw a
+  clear `TypeError` on a second read**, matching `clone()`, instead of the
+  platform's opaque `Body is unusable`. (An empty/non-JSON body still rejects
+  with `SyntaxError` — use `text()` when unsure.)
+- **`clone()` also guards a locked (reader-held) body**, not only a consumed one.
+- **Abort/timeout classification tightened for polyfilled signals**: a
+  reason-less aborted signal only takes the abort path when the rejection is a
+  DOMException named `AbortError` or `TimeoutError` (not any DOMException), and a
+  polyfilled timeout signal now yields `TimeoutError` rather than `AbortedError`.
+
+### Documentation
+
+- Clarified that `NetworkError` also covers permanent, non-retryable
+  request-construction `TypeError`s (invalid URL, forbidden method) — warn
+  against blind retry loops.
+- Clarified that status-0 / `type: "error"` / opaque responses return on the
+  success branch; consumers must check `response.ok` / `response.type`.
+
 ## [1.0.0] - 2026-07-09
 
 ### Breaking

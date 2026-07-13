@@ -15,8 +15,12 @@ import { brand, abortedErrorBrand } from "./brand";
 export class AbortedError extends Error {
   override readonly name = "AbortedError";
 
-  /** The original error thrown by `fetch`, if any. */
-  public override readonly cause?: unknown;
+  // `cause` is NOT redeclared as a class field on purpose. A field declaration
+  // (even bare) would, under ES2022 class-field semantics, define an own
+  // `cause: undefined` on every instance — making `"cause" in err` always true
+  // and defeating the constructor's `if ("cause" in options)` guard. The type
+  // is inherited from `Error` (`cause?: unknown`); the constructor assigns the
+  // own property only when a cause is actually supplied.
 
   /**
    * The requested URL, so concurrent aborts are distinguishable in logs.
@@ -31,8 +35,11 @@ export class AbortedError extends Error {
    *
    * Typed `unknown` on purpose: the reason can be anything (an `Error`, a
    * string, an object). The consumer who supplied it must narrow it.
+   *
+   * `declare` for the same reason as {@link cause}: keep `"reason" in err`
+   * honest — an own property only when the constructor assigns it.
    */
-  public readonly reason: unknown;
+  declare public readonly reason: unknown;
 
   constructor(
     message: string = "Request aborted",

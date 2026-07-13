@@ -47,6 +47,7 @@ exports[`public API surface is frozen > ./errors subpath named exports 1`] = `
   "UnsupportedMediaTypeError",
   "UpgradeRequiredError",
   "VariantAlsoNegotiatesError",
+  "httpErrors",
 ]
 `;
 
@@ -97,11 +98,13 @@ exports[`public API surface is frozen > main entry named exports 1`] = `
   "UnsupportedMediaTypeError",
   "UpgradeRequiredError",
   "VariantAlsoNegotiatesError",
+  "httpErrors",
   "isAbortError",
   "isHttpError",
   "isKnownHttpError",
   "isNetworkError",
   "isTimeoutError",
+  "statusCodeErrorMap",
   "typedFetch",
 ]
 `;
@@ -109,6 +112,7 @@ exports[`public API surface is frozen > main entry named exports 1`] = `
 exports[`public TYPE surface is frozen > ./errors subpath type-only exports 1`] = `
 [
   "ClientErrors",
+  "HttpErrors",
   "ServerErrors",
   "TypedFetchError",
 ]
@@ -117,11 +121,14 @@ exports[`public TYPE surface is frozen > ./errors subpath type-only exports 1`] 
 exports[`public TYPE surface is frozen > main entry type-only exports 1`] = `
 [
   "ClientErrors",
+  "HttpErrors",
   "HttpMethods",
   "ServerErrors",
+  "StrictHeaders",
   "TypedFetchError",
   "TypedFetchOptions",
   "TypedFetchReturnType",
+  "TypedHeaders",
   "TypedResponse",
 ]
 `;

@@ -63,9 +63,15 @@ import {
   VariantAlsoNegotiatesError,
 } from "./src/errors";
 import type { ClientErrors, ServerErrors, TypedFetchError } from "./src/errors";
-import type { StrictHeaders } from "./src/headers";
+import type { StrictHeaders, TypedHeaders } from "./src/headers";
 import type { HttpMethods } from "./src/methods";
 import type { TypedFetchOptions, TypedFetchReturnType, TypedResponse } from "./index";
+// D1/D2: these must be nameable from the ROOT entry, not only from src/.
+import type {
+  TypedHeaders as TypedHeadersFromRoot,
+  StrictHeaders as StrictHeadersFromRoot,
+  HttpErrors as HttpErrorsFromRoot,
+} from "./index";
 
 // ── Test HTTP server ─────────────────────────────────────────────────
 // Spins up a real server on a random port. Query params control the response:
@@ -630,6 +636,62 @@ describe("typedFetch", () => {
     expect(result.error).toBeInstanceOf(AbortedError);
     expect(isAbortError(result.error)).toBe(true);
     expect(isNetworkError(result.error)).toBe(false);
+  });
+
+  // ── A1/A2: polyfilled signals whose `reason` is undefined ──────────────
+  // Some non-spec / polyfilled AbortSignals report `aborted: true` but never
+  // set `reason`. Arm 2 of the classifier handles them, but must only claim
+  // the abort when the rejection IS a platform abort DOMException
+  // (name "AbortError" or "TimeoutError") — not any DOMException.
+  const reasonlessAbortedSignal = () =>
+    ({ aborted: true, reason: undefined }) as unknown as AbortSignal;
+
+  test("A1: reason-less aborted signal + unrelated DOMException → NetworkError, not AbortedError", async () => {
+    const unrelated = new DOMException("denied", "SecurityError");
+    const stubFetch = vi.fn(async () => Promise.reject(unrelated)) as unknown as typeof fetch;
+
+    const result = await typedFetch(url({ status: 200 }), {
+      signal: reasonlessAbortedSignal(),
+      fetch: stubFetch,
+    });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isNetworkError(result.error)).toBe(true);
+    expect(isAbortError(result.error)).toBe(false);
+    if (isNetworkError(result.error)) {
+      expect(result.error.cause).toBe(unrelated);
+    }
+  });
+
+  test("A1: reason-less aborted signal + DOMException named 'AbortError' → AbortedError", async () => {
+    const aborted = new DOMException("aborted", "AbortError");
+    const stubFetch = vi.fn(async () => Promise.reject(aborted)) as unknown as typeof fetch;
+
+    const result = await typedFetch(url({ status: 200 }), {
+      signal: reasonlessAbortedSignal(),
+      fetch: stubFetch,
+    });
+
+    expect(result.error).toBeInstanceOf(AbortedError);
+    expect(isAbortError(result.error)).toBe(true);
+    expect(isTimeoutError(result.error)).toBe(false);
+  });
+
+  test("A2: reason-less (polyfilled) timeout signal + DOMException named 'TimeoutError' → TimeoutError", async () => {
+    const timedOut = new DOMException("timed out", "TimeoutError");
+    const stubFetch = vi.fn(async () => Promise.reject(timedOut)) as unknown as typeof fetch;
+
+    const result = await typedFetch(url({ status: 200 }), {
+      signal: reasonlessAbortedSignal(),
+      fetch: stubFetch,
+    });
+
+    expect(result.error).toBeInstanceOf(TimeoutError);
+    expect(isTimeoutError(result.error)).toBe(true);
+    expect(isAbortError(result.error)).toBe(false);
+    if (isTimeoutError(result.error)) {
+      expect(result.error.cause).toBe(timedOut);
+    }
   });
 
   // ── Fix 1d: realm-safe DOMException detection for timeout classification ─
@@ -1351,6 +1413,43 @@ describe("cross-copy brands", () => {
   });
 });
 
+// ── D1: header + roster types are nameable from the root entry point ──────
+describe("root entry exports the documented public types (D1/D2)", () => {
+  test("TypedHeaders / StrictHeaders / HttpErrors resolve from './index'", () => {
+    // Names must resolve from the root entry (D1). Assert against the src/
+    // originals so a broken re-export is a red type error here.
+    expectTypeOf<TypedHeadersFromRoot>().toEqualTypeOf<TypedHeaders>();
+    expectTypeOf<StrictHeadersFromRoot>().toEqualTypeOf<StrictHeaders>();
+    expectTypeOf<HttpErrorsFromRoot>().toEqualTypeOf<HttpErrors>();
+  });
+});
+
+// ── B2: cause/reason presence is honest (`declare`, no phantom undefined) ──
+describe("NetworkError / AbortedError / TimeoutError — cause & reason presence", () => {
+  test("cause is absent (not present-undefined) when none is given", () => {
+    for (const e of [new NetworkError("x"), new TimeoutError("x"), new AbortedError("x")]) {
+      expect("cause" in e).toBe(false);
+      expect(Object.keys(e)).not.toContain("cause");
+    }
+    // AbortedError.reason is equally absent when not supplied.
+    const aborted = new AbortedError("x");
+    expect("reason" in aborted).toBe(false);
+    expect(Object.keys(aborted)).not.toContain("reason");
+  });
+
+  test("an explicitly supplied cause/reason is recorded (guard preserved)", () => {
+    const net = new NetworkError("x", { cause: undefined });
+    expect("cause" in net).toBe(true);
+    expect(net.cause).toBeUndefined();
+
+    const boom = new Error("boom");
+    const aborted = new AbortedError("x", { cause: boom, reason: "stop" });
+    expect(aborted.cause).toBe(boom);
+    expect("reason" in aborted).toBe(true);
+    expect(aborted.reason).toBe("stop");
+  });
+});
+
 // ── Error class invariants ───────────────────────────────────────────
 
 // Shared by "error class consistency" and "roster sync" — one row per
@@ -1951,6 +2050,17 @@ describe.skipIf(!distExists)("public API surface is frozen", () => {
     const mod = await importDist("./dist/errors/index.mjs");
     // Same as above: sorting the fresh Object.keys() array in place is fine.
     expect(Object.keys(mod).sort()).toMatchSnapshot();
+  });
+
+  // D1/D2: values documented as part of the contract are reachable from the
+  // built package entry, not just from src/.
+  test("statusCodeErrorMap and httpErrors are importable from the main entry (D2)", async () => {
+    const mod = (await importDist("./dist/index.mjs")) as {
+      statusCodeErrorMap: typeof statusCodeErrorMap;
+      httpErrors: typeof httpErrors;
+    };
+    expect(mod.statusCodeErrorMap.get(404)?.name).toBe("NotFoundError");
+    expect(mod.httpErrors).toHaveLength(40);
   });
 });
 

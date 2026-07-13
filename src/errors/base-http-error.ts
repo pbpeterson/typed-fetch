@@ -31,53 +31,92 @@ export abstract class BaseHttpError extends Error {
   /** The URL of the failed request (from `response.url`). */
   public readonly url: string;
 
-  constructor(protected readonly response: Response) {
+  /**
+   * The underlying response. A native private field (not a parameter property)
+   * so it is NOT an own enumerable instance property — it never leaks into
+   * `JSON.stringify(err)`, `{...err}`, `Object.keys(err)`, or a structured
+   * logger, keeping the serialized error clean.
+   */
+  readonly #response: Response;
+
+  constructor(response: Response) {
     const line = response.statusText
       ? `HTTP ${response.status} ${response.statusText}`
       : `HTTP ${response.status}`;
     super(response.url ? `${line} (${response.url})` : line);
     this.url = response.url;
     this.headers = response.headers;
+    this.#response = response;
   }
 
-  /** Parse the error response body as JSON with an optional type parameter. */
+  /**
+   * Guard the single-use body readers with a clear message, mirroring
+   * {@link clone}. A `Response` body is a one-shot stream; the second read
+   * otherwise throws the platform's opaque `TypeError: Body is unusable`.
+   */
+  #assertBodyUnread(method: string): void {
+    if (this.#response.bodyUsed) {
+      throw new TypeError(
+        `Cannot read this error's body with ${method}(): its response body has already been read. ` +
+          "Response bodies are single-use — call clone() BEFORE the first read to read it more than once.",
+      );
+    }
+  }
+
+  /**
+   * Parse the error response body as JSON with an optional type parameter.
+   *
+   * Note: an empty or non-JSON body — common for 4xx/5xx responses, where many
+   * servers send an empty body or an HTML page — still rejects with the
+   * platform's `SyntaxError`. Use {@link text} when the body may not be JSON.
+   */
   async json<T = unknown>(): Promise<T> {
-    return this.response.json();
+    this.#assertBodyUnread("json");
+    return this.#response.json();
   }
 
   /** Parse the error response body as text. */
   async text(): Promise<string> {
-    return this.response.text();
+    this.#assertBodyUnread("text");
+    return this.#response.text();
   }
 
   /** Parse the error response body as a Blob. */
   async blob(): Promise<Blob> {
-    return this.response.blob();
+    this.#assertBodyUnread("blob");
+    return this.#response.blob();
   }
 
   /** Parse the error response body as an ArrayBuffer. */
   async arrayBuffer(): Promise<ArrayBuffer> {
-    return this.response.arrayBuffer();
+    this.#assertBodyUnread("arrayBuffer");
+    return this.#response.arrayBuffer();
   }
 
   /**
    * Clone the error so the response body can be read multiple times.
    *
-   * Must be called BEFORE the body is read — cloning duplicates the response
-   * body stream, which is impossible once it has been consumed. Calling it
-   * after `json()`/`text()`/`blob()`/`arrayBuffer()` throws a `TypeError`
-   * with a clear message (instead of the platform's opaque "Body is
-   * unusable").
+   * Must be called BEFORE the body is read or its stream is locked — cloning
+   * duplicates the response body stream, which is impossible once it has been
+   * consumed or a reader has been acquired. Calling it after
+   * `json()`/`text()`/`blob()`/`arrayBuffer()`, or while a reader holds the
+   * stream, throws a `TypeError` with a clear message (instead of the
+   * platform's opaque "Body is unusable").
    */
   clone(): this {
-    if (this.response.bodyUsed) {
+    if (this.#response.bodyUsed || this.#response.body?.locked) {
       throw new TypeError(
-        "Cannot clone this error: its response body has already been read. " +
+        "Cannot clone this error: its response body has already been read or its stream is locked. " +
           "Call clone() before json()/text()/blob()/arrayBuffer().",
       );
     }
+    // ASSUMPTION: every subclass constructor has the signature
+    // `(response: Response)`. All 40 status classes inherit this constructor
+    // and UnknownHttpError matches it, so this cast is sound today. A subclass
+    // that adds required constructor parameters would break clone() — keep the
+    // single-Response signature when adding error subclasses.
     const Ctor = this.constructor as new (response: Response) => this;
-    return new Ctor(this.response.clone());
+    return new Ctor(this.#response.clone());
   }
 }
 

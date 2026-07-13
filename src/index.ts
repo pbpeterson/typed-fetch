@@ -253,11 +253,17 @@ export async function typedFetch<JsonReturnType>(
     // DOMException "AbortError" as the reason, `controller.abort(reason)` sets
     // that exact reason — both satisfy `err === signal.reason`). The second
     // arm covers exotic/polyfilled signals whose `reason` is undefined but
-    // whose abort still surfaces as a DOMException. Anything else falls
-    // through to NetworkError with the real cause.
+    // whose abort still surfaces as one of the platform's abort DOMException
+    // shapes (named "AbortError" or "TimeoutError"). The name check keeps an
+    // unrelated DOMException failure (e.g. a "SecurityError" that happens to
+    // reject while a reason-less signal is aborted) OUT of the abort path.
+    // Anything else falls through to NetworkError with the real cause.
     if (
       signal?.aborted &&
-      (err === signal.reason || (signal.reason === undefined && isDOMException(err)))
+      (err === signal.reason ||
+        (signal.reason === undefined &&
+          isDOMException(err) &&
+          (err.name === "AbortError" || err.name === "TimeoutError")))
     ) {
       const reason = signal.reason;
       // Classify a timeout by the *shape the platform produces*, not by a name
@@ -274,10 +280,18 @@ export async function typedFetch<JsonReturnType>(
       // The `name` check stays load-bearing: a bare `controller.abort()` also
       // produces a `DOMException`, but named "AbortError" — it must remain an
       // AbortedError.
-      if (isDOMException(reason) && reason.name === "TimeoutError") {
+      //
+      // Classify off `reason ?? err`: spec runtimes record the timeout
+      // DOMException on `signal.reason` (arm 1, where `err === reason`), but a
+      // polyfilled timeout signal can leave `reason` undefined while the
+      // rejection itself (`err`, arm 2) is the DOMException named
+      // "TimeoutError". Falling back to `err` classifies that case as a
+      // TimeoutError instead of a generic AbortedError.
+      const timeoutBasis = reason ?? err;
+      if (isDOMException(timeoutBasis) && timeoutBasis.name === "TimeoutError") {
         return {
           response: null,
-          error: new TimeoutError("Request timed out", { cause: reason, url: requestUrl }),
+          error: new TimeoutError("Request timed out", { cause: timeoutBasis, url: requestUrl }),
         };
       }
       return {

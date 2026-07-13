@@ -9,14 +9,24 @@ import { brand, networkErrorBrand } from "./brand";
  * by `fetch` is preserved on {@link cause}, and the requested URL on
  * {@link url}.
  *
+ * This class also covers *permanent, non-retryable* request-construction
+ * failures: `fetch` throws a `TypeError` (surfaced here on `cause`) for an
+ * invalid URL, a forbidden method (`CONNECT`/`TRACE`), or a malformed header
+ * name — before touching the network. A blind retry-on-`NetworkError` loop will
+ * retry these forever; inspect `cause` before retrying.
+ *
  * Carries a cross-copy brand so `isNetworkError` works across module copies —
  * prefer it over raw `instanceof` at package boundaries.
  */
 export class NetworkError extends Error {
   override readonly name = "NetworkError";
 
-  /** The original error thrown by `fetch`, if any. */
-  public override readonly cause?: unknown;
+  // `cause` is NOT redeclared as a class field on purpose. A field declaration
+  // (even bare) would, under ES2022 class-field semantics, define an own
+  // `cause: undefined` on every instance — making `"cause" in err` always true
+  // and defeating the constructor's `if ("cause" in options)` guard. The type
+  // is inherited from `Error` (`cause?: unknown`); the constructor assigns the
+  // own property only when a cause is actually supplied.
 
   /**
    * The requested URL, so concurrent failures are distinguishable in logs.
