@@ -61,12 +61,12 @@
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
-    "@types/node": "^25.9.2",
-    "oxfmt": "^0.54.0",
+    "@types/node": "^26.1.1",
+    "oxfmt": "^0.59.0",
     "oxlint": "^1.69.0",
     "tsup": "^8.5.1",
     "tsx": "^4.20.3",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.8"
   },
   "engines": {
