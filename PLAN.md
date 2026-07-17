@@ -5,20 +5,24 @@ Take `@pbpeterson/typed-fetch` from `0.8.1` to a production-ready `1.0.0`.
 This document is self-contained. An engineer or coding agent can execute it top to
 bottom without any other context.
 
+**Status (2026-07-17):** implementation is complete on `release/1.0.0`. Local
+gates are green; the remaining unchecked items require the PR, hosted CI,
+trusted-publisher configuration, tag push, and npm publication.
+
 ## Ground rules
 
 - Do the work in the order given. Later items assume earlier ones are done.
 - **All breaking changes are batched into Phase 3.** Do not sneak a breaking change
   into any other phase.
 - Each phase ends with a **gate**. Do not start the next phase until the gate is green.
-- The four repo gates, run from the repo root, are:
-  - `pnpm test` — vitest, currently 241 tests, all passing.
-  - `pnpm typecheck` — `tsc --noEmit -p tsconfig.test.json`.
-  - `pnpm lint` — oxlint.
-  - `pnpm format:check` — oxfmt --check.
+- The release gates, run from the repo root, are `pnpm lint`,
+  `pnpm format:check`, `pnpm typecheck`, `pnpm build`, `pnpm test`,
+  `pnpm check-docs`, `pnpm verify-pack`, `pnpm check-consumer`,
+  `pnpm audit:prod`, and `pnpm audit`. Vitest currently runs 395 tests across
+  four files.
 - After any change to `src/`, also run `pnpm build` (tsup) and confirm exit 0.
-- Test file is a single `test.spec.ts` at repo root. It boots a real `node:http`
-  server (`test.spec.ts:65-91`) whose response is driven by query params:
+- Core integration coverage lives in `test.spec.ts` at repo root. It boots a
+  real `node:http` server whose response is driven by query params:
   `?status=`, `?body=`, `?header=Key:Value`. Reuse it; do not mock `fetch`.
 - Public entry is root `index.ts` (re-exports `src/`). Package build entries are
   `index.ts` and `src/errors/index.ts` (`tsup.config.ts:4-7`).
@@ -440,8 +444,9 @@ Make the release process trustworthy and prove the runtime claims before the 1.0
   - **A. Changesets:** `pnpm add -D @changesets/cli`, `pnpm changeset init`, PRs carry a
     changeset, release action opens a version PR. Highest ceremony, best changelog.
   - **B. Manual, disciplined:** keep hand versioning but add a `RELEASING.md` that
-    mandates: bump version, write CHANGELOG entry, `git tag v<x> && git push --tags`
-    (the tag push triggers `release.yml`). Every publish gets a tag, no exceptions.
+    mandates: bump version, write CHANGELOG entry, merge a green PR, tag the exact
+    `origin/main` tip, and push only `v<x>` (the tag push triggers `release.yml`).
+    Every publish gets a tag, no exceptions.
   - **Recommendation:** B for a solo maintainer. Changesets is overhead you'll fight.
 - **Verify:** `RELEASING.md` exists (or changesets configured); the tag → publish path
   is documented; a dry run `npm pack --dry-run` matches the live tarball file list
@@ -468,8 +473,8 @@ Make the release process trustworthy and prove the runtime claims before the 1.0
   invisible on GitHub and to non-Claude agents. There is no `CONTRIBUTING.md`.
 - **Files:** add `CONTRIBUTING.md`; add a "Development" section link from `README.md`.
 - **Change:** a short `CONTRIBUTING.md`: prerequisites (Node ≥ 20, `pnpm@10.33.0` —
-  note it's pinned via `packageManager`; run `pnpm approve-builds` after clone because
-  esbuild's build script is ignored), the four gates, how to add a status code (or
+  note it's pinned via `packageManager` and esbuild is explicitly allowlisted in
+  `onlyBuiltDependencies`), the release gates, how to add a status code (or
   "edit the table and run `pnpm generate`" if P1-08 landed), and the release policy
   from P2-03 + the semver policy from the Release Policy section below.
 - **Verify:** `CONTRIBUTING.md` present; a fresh `git clone && pnpm install && pnpm test`
@@ -646,59 +651,62 @@ Paste-ready for the README ("Non-goals"):
 
 All must be green before cutting `v1.0.0`:
 
-- [ ] `pnpm test` passes (≥ the current 241 tests + every test added by P1-03, P1-04,
-      P1-06, P1-07, P3-01, P3-02, P3-03).
-- [ ] `pnpm typecheck`, `pnpm lint`, `pnpm format:check` all exit 0.
-- [ ] `pnpm build` exits 0; `npm pack --dry-run` file list matches expectations
+- [x] `pnpm test` passes (395 tests, including the release-policy suite).
+- [x] `pnpm typecheck`, `pnpm lint`, `pnpm format:check` all exit 0.
+- [x] `pnpm build` exits 0; `npm pack --dry-run` file list matches expectations
       (no source/test/config leak).
+- [x] Documentation examples, packed-tarball consumer checks, and both dependency
+      audits pass.
 - [ ] CI green on Node 20, 22, 24 **and** Bun **and** Deno smoke jobs.
-- [ ] Roster sync test (P1-04) present and proven to fail on a deliberate drift.
-- [ ] API-surface snapshot (P3-03) committed and proven to fail on a stray export.
-- [ ] `isKnownHttpError` exported and proven to narrow `switch (error.status)` to a
+- [x] Roster sync test (P1-04) present and proven to fail on a deliberate drift.
+- [x] API-surface snapshot (P3-03) committed and proven to fail on a stray export.
+- [x] `isKnownHttpError` exported and proven to narrow `switch (error.status)` to a
       single class.
-- [ ] `ErrorType` second type parameter removed; two-arg calls fail to compile.
-- [ ] Abort and timeout return `AbortedError` / `TimeoutError`, not `NetworkError`.
-- [ ] README: never-throws boundary documented, clone example doesn't throw,
+- [x] Consumer-defined `BaseHttpError` subclasses are proven not to pass the
+      `isKnownHttpError` predicate.
+- [x] `ErrorType` second type parameter removed; two-arg calls fail to compile.
+- [x] Abort and timeout return `AbortedError` / `TimeoutError`, not `NetworkError`.
+- [x] README: never-throws boundary documented, clone example doesn't throw,
       `statusText` described as canonical, narrowing section rewritten, timeouts/abort
       section rewritten.
-- [ ] `CONTRIBUTING.md` present; fresh clone → install → test works from it alone.
-- [ ] Semver policy (above) written into CONTRIBUTING.md and README.
-- [ ] Actions SHA-pinned; provenance confirmed on npmjs.com after publish.
-- [ ] CHANGELOG has a complete `1.0.0` entry with a "Migrating from 0.x" section.
+- [x] `CONTRIBUTING.md` present; frozen-lockfile install and the documented gates pass.
+- [x] Semver policy (above) written into CONTRIBUTING.md and README.
+- [x] Actions SHA-pinned; release provenance and OIDC are configured in code.
+- [ ] npm trusted publisher configured and provenance confirmed after publication.
+- [x] CHANGELOG has a complete `1.0.0` entry with a "Migrating from 0.x" section.
 - [ ] Git tag `v1.0.0` pushed; release workflow published with provenance.
 
 ---
 
-## Judgment calls (maintainer must decide)
+## Resolved judgment calls
 
 - **J-1 (P1-05) — Opaque/status-0 responses: success or error?**
   Options: (a) keep on success branch, document (chosen default); (b) classify as an
-  error class. **Recommendation: (a).** They're spec-normal for `no-cors`; erroring
+  error class. **Decision: (a).** They're spec-normal for `no-cors`; erroring
   would surprise. Only revisit if users report silent-body-read failures.
 
 - **J-2 (P1-02) — Is changing `error.message` text a breaking change?**
   Options: (a) non-breaking, message text is not contract (chosen default);
-  (b) breaking, defer to Phase 3. **Recommendation: (a)** and write policy rule #3 so
+  (b) breaking, defer to Phase 3. **Decision: (a)** with policy rule #3 so
   this is settled forever.
 
 - **J-3 (P1-08) — Codegen the 40 error files now, or defer post-1.0?**
   Options: (a) now — clean P1-01, structurally kills the 5-place sync problem;
-  (b) defer — do P1-01 by hand. **Recommendation: (a)** if you have the appetite; the
-  generator pays for itself the first time a code is added. If time-boxed, (b) + P1-04
-  guardrail is acceptable.
+  (b) defer — do P1-01 by hand. **Decision: (b)** for 1.0, with the roster and
+  literal-type guardrails from P1-04.
 
 - **J-4 (P2-03) — Changesets vs. disciplined manual releases?**
-  **Recommendation: manual + `RELEASING.md`** for a solo maintainer; adopt changesets
+  **Decision: manual + `RELEASING.md`** for a solo maintainer; adopt changesets
   only if/when there are multiple contributors.
 
 - **J-5 (P3-02) — Should `AbortedError`/`TimeoutError` extend `NetworkError` or `Error`?**
   Options: (a) extend `NetworkError` (existing `isNetworkError` still catches them —
   lenient); (b) extend `Error` directly (clean taxonomy, `isNetworkError` stops matching
-  — a break). **Recommendation: (b).** Clean separation is the entire reason for the
+  — a break). **Decision: (b).** Clean separation is the entire reason for the
   split, and 1.0 is the one window to make it. Provide `isAbortError`/`isTimeoutError`.
 
 - **J-6 (Semver policy #1) — Adding an error class: minor or major?**
   Options: (a) minor (chosen default, standard practice for union widening);
   (b) major (maximally safe for exhaustive-switch consumers, but makes the library
-  rigid and discourages completeness). **Recommendation: (a)**, paired with a hard
+  rigid and discourages completeness). **Decision: (a)**, paired with a hard
   README rule that exhaustive switches keep a `default` branch.

@@ -2,67 +2,7 @@
 
 ## [Unreleased]
 
-### Security
-
-- Updated the development toolchain and pinned patched transitive `vite` and
-  `esbuild` versions. Both the full dependency audit and the production-only
-  audit now report zero known vulnerabilities; TypeScript remains on 6.x until
-  tsup's declaration build supports TypeScript 7.
-
-### Release engineering
-
-- Package identity and release tags must now exactly match the reviewed
-  metadata, point at the current `origin/main` tip, have a dated changelog
-  entry, and leave `[Unreleased]` empty before publication can start.
-- The tag workflow now reruns formatting, documentation, tarball-consumer, and
-  dependency-audit gates; pins Node and npm; disables release dependency
-  caching; verifies all eight CJS/ESM declaration/runtime entries; and
-  serializes publish jobs.
-- Documented the required trusted-publisher setup for token-free OIDC releases
-  and enabled provenance in both package metadata and the publish command.
-
-### Fixed
-
-- **`isKnownHttpError` no longer misclassifies consumer-defined
-  `BaseHttpError` subclasses as one of the library's dedicated status
-  classes.** Dedicated errors now carry a separate cross-copy brand, keeping
-  the guard's `ClientErrors | ServerErrors` type predicate sound while
-  preserving ESM/CJS and cross-entry behavior.
-- **`BaseHttpError` no longer leaks its internal `Response` as an own enumerable
-  property.** It was a constructor parameter property, so `JSON.stringify(err)`,
-  `{...err}`, and `Object.keys(err)` exposed a live `Response` handle. It is now
-  a native private field.
-- **`NetworkError` / `AbortedError` / `TimeoutError`: `"cause" in err` (and
-  `"reason" in err`) are honest again.** Under ES2022 class-field semantics the
-  field declarations defined an own `cause: undefined` on every instance, so
-  `"cause" in err` was always `true`. The property now exists only when a cause
-  is actually supplied.
-- **Error body readers (`json()`/`text()`/`blob()`/`arrayBuffer()`) throw a
-  clear `TypeError` on a second read**, matching `clone()`, instead of the
-  platform's opaque `Body is unusable`. (An empty/non-JSON body still rejects
-  with `SyntaxError` — use `text()` when unsure.)
-- **`clone()` also guards a locked (reader-held) body**, not only a consumed one.
-- **Abort/timeout classification tightened for polyfilled signals**: a
-  reason-less aborted signal only takes the abort path when the rejection is a
-  DOMException named `AbortError` or `TimeoutError` (not any DOMException), and a
-  polyfilled timeout signal now yields `TimeoutError` rather than `AbortedError`.
-
-### Documentation
-
-- Corrected the status-0 body guidance: filtered responses remain on the
-  success branch, but `Response.error().text()` resolves to an empty string
-  while `.json()` rejects for that empty body.
-- Public JSDoc examples are now compiled by `pnpm check-docs`, alongside the
-  Markdown and agent-skill examples.
-- Documented the complete 1.x semantic-versioning contract and corrected the
-  4xx/5xx error-class counts.
-- Clarified that `NetworkError` also covers permanent, non-retryable
-  request-construction `TypeError`s (invalid URL, forbidden method) — warn
-  against blind retry loops.
-- Clarified that status-0 / `type: "error"` / opaque responses return on the
-  success branch; consumers must check `response.ok` / `response.type`.
-
-## [1.0.0] - 2026-07-09
+## [1.0.0] - 2026-07-17
 
 ### Breaking
 
@@ -165,8 +105,50 @@
   (`.name` used to collapse to a mangled identifier like `"a"` under
   production minifiers).
 
+### Security
+
+- Updated the development toolchain and pinned patched transitive `vite` and
+  `esbuild` versions. Both the full dependency audit and the production-only
+  audit now report zero known vulnerabilities; TypeScript remains on 6.x until
+  tsup's declaration build supports TypeScript 7.
+
+### Release engineering
+
+- Package identity and release tags must now exactly match the reviewed
+  metadata, point at the current `origin/main` tip, have a dated changelog
+  entry, and leave `[Unreleased]` empty before publication can start.
+- The tag workflow now reruns formatting, documentation, tarball-consumer, and
+  dependency-audit gates; pins Node and npm; disables release dependency
+  caching; verifies all eight CJS/ESM declaration/runtime entries; and
+  serializes publish jobs.
+- Documented the required trusted-publisher setup for token-free OIDC releases
+  and enabled provenance in both package metadata and the publish command.
+
 ### Fixed
 
+- **`isKnownHttpError` no longer misclassifies consumer-defined
+  `BaseHttpError` subclasses as one of the library's dedicated status
+  classes.** Dedicated errors now carry a separate cross-copy brand, keeping
+  the guard's `ClientErrors | ServerErrors` type predicate sound while
+  preserving ESM/CJS and cross-entry behavior.
+- **`BaseHttpError` no longer leaks its internal `Response` as an own enumerable
+  property.** It was a constructor parameter property, so `JSON.stringify(err)`,
+  `{...err}`, and `Object.keys(err)` exposed a live `Response` handle. It is now
+  a native private field.
+- **`NetworkError` / `AbortedError` / `TimeoutError`: `"cause" in err` (and
+  `"reason" in err`) are honest again.** Under ES2022 class-field semantics the
+  field declarations defined an own `cause: undefined` on every instance, so
+  `"cause" in err` was always `true`. The property now exists only when a cause
+  is actually supplied.
+- **Error body readers (`json()`/`text()`/`blob()`/`arrayBuffer()`) throw a
+  clear `TypeError` on a second read**, matching `clone()`, instead of the
+  platform's opaque `Body is unusable`. (An empty/non-JSON body still rejects
+  with `SyntaxError` — use `text()` when unsure.)
+- **`clone()` also guards a locked (reader-held) body**, not only a consumed one.
+- **Abort/timeout classification tightened for polyfilled signals**: a
+  reason-less aborted signal only takes the abort path when the rejection is a
+  DOMException named `AbortError` or `TimeoutError` (not any DOMException), and a
+  polyfilled timeout signal now yields `TimeoutError` rather than `AbortedError`.
 - **Timeout classification now requires a `DOMException`, not a forgeable
   `reason.name`.** Detection previously matched a `reason` that was any `Error`
   whose `.name` was `"TimeoutError"`, so a caller doing
@@ -222,6 +204,21 @@
   the wire — the two could already disagree (`error.message` uses the real
   `response.statusText`; `error.statusText` is a hardcoded literal per
   class), and the docs previously implied they were the same value.
+
+### Documentation
+
+- Corrected the status-0 body guidance: filtered responses remain on the
+  success branch, but `Response.error().text()` resolves to an empty string
+  while `.json()` rejects for that empty body.
+- Public JSDoc examples are now compiled by `pnpm check-docs`, alongside the
+  Markdown and agent-skill examples.
+- Documented the complete 1.x semantic-versioning contract and corrected the
+  4xx/5xx error-class counts.
+- Clarified that `NetworkError` also covers permanent, non-retryable
+  request-construction `TypeError`s (invalid URL, forbidden method) — warn
+  against blind retry loops.
+- Clarified that status-0 / `type: "error"` / opaque responses return on the
+  success branch; consumers must check `response.ok` / `response.type`.
 
 ### Migrating from 0.x
 
