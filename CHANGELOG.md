@@ -2,14 +2,6 @@
 
 ## [Unreleased]
 
-### Added
-
-- Exported `TypedHeaders` and `StrictHeaders` (types) and `statusCodeErrorMap`
-  (value) from the main entry, and `httpErrors` (value) and `HttpErrors` (type)
-  from both entries — types that the public `TypedFetchOptions` already
-  referenced and values documented as part of the contract, but which consumers
-  could not name or import.
-
 ### Fixed
 
 - **`BaseHttpError` no longer leaks its internal `Response` as an own enumerable

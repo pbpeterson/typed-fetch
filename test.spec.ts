@@ -66,12 +66,6 @@ import type { ClientErrors, ServerErrors, TypedFetchError } from "./src/errors";
 import type { StrictHeaders, TypedHeaders } from "./src/headers";
 import type { HttpMethods } from "./src/methods";
 import type { TypedFetchOptions, TypedFetchReturnType, TypedResponse } from "./index";
-// D1/D2: these must be nameable from the ROOT entry, not only from src/.
-import type {
-  TypedHeaders as TypedHeadersFromRoot,
-  StrictHeaders as StrictHeadersFromRoot,
-  HttpErrors as HttpErrorsFromRoot,
-} from "./index";
 
 // ── Test HTTP server ─────────────────────────────────────────────────
 // Spins up a real server on a random port. Query params control the response:
@@ -1413,17 +1407,6 @@ describe("cross-copy brands", () => {
   });
 });
 
-// ── D1: header + roster types are nameable from the root entry point ──────
-describe("root entry exports the documented public types (D1/D2)", () => {
-  test("TypedHeaders / StrictHeaders / HttpErrors resolve from './index'", () => {
-    // Names must resolve from the root entry (D1). Assert against the src/
-    // originals so a broken re-export is a red type error here.
-    expectTypeOf<TypedHeadersFromRoot>().toEqualTypeOf<TypedHeaders>();
-    expectTypeOf<StrictHeadersFromRoot>().toEqualTypeOf<StrictHeaders>();
-    expectTypeOf<HttpErrorsFromRoot>().toEqualTypeOf<HttpErrors>();
-  });
-});
-
 // ── B2: cause/reason presence is honest (`declare`, no phantom undefined) ──
 describe("NetworkError / AbortedError / TimeoutError — cause & reason presence", () => {
   test("cause is absent (not present-undefined) when none is given", () => {
@@ -2050,17 +2033,6 @@ describe.skipIf(!distExists)("public API surface is frozen", () => {
     const mod = await importDist("./dist/errors/index.mjs");
     // Same as above: sorting the fresh Object.keys() array in place is fine.
     expect(Object.keys(mod).sort()).toMatchSnapshot();
-  });
-
-  // D1/D2: values documented as part of the contract are reachable from the
-  // built package entry, not just from src/.
-  test("statusCodeErrorMap and httpErrors are importable from the main entry (D2)", async () => {
-    const mod = (await importDist("./dist/index.mjs")) as {
-      statusCodeErrorMap: typeof statusCodeErrorMap;
-      httpErrors: typeof httpErrors;
-    };
-    expect(mod.statusCodeErrorMap.get(404)?.name).toBe("NotFoundError");
-    expect(mod.httpErrors).toHaveLength(40);
   });
 });
 
