@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Security
+
+- Updated the development toolchain and pinned patched transitive `vite` and
+  `esbuild` versions. Both the full dependency audit and the production-only
+  audit now report zero known vulnerabilities; TypeScript remains on 6.x until
+  tsup's declaration build supports TypeScript 7.
+
 ### Fixed
 
 - **`isKnownHttpError` no longer misclassifies consumer-defined
