@@ -10,22 +10,23 @@ Type-safe `fetch` wrapper that never throws. Returns `{ response, error }` discr
 ## Architecture
 
 ```
-index.ts                  → public barrel (functions, registries, all types)
+index.ts                  → intentionally small public barrel (functions, errors, public types)
 src/index.ts              → typedFetch core + type guards + TypedResponse/Options types
-src/headers.ts            → StrictHeaders / TypedHeaders (IntelliSense headers)
-src/methods.ts            → HttpMethods (no CONNECT/TRACE — fetch forbids them)
-src/http-status-codes.ts  → statusCodeErrorMap: ReadonlyMap<number, HttpErrors>
+src/headers.ts            → internal StrictHeaders / TypedHeaders (IntelliSense headers)
+src/methods.ts            → internal HttpMethods (no CONNECT/TRACE — fetch forbids them)
+src/http-status-codes.ts  → internal statusCodeErrorMap: ReadonlyMap<number, HttpErrors>
 src/errors/
   base-http-error.ts      → abstract base: message "HTTP 404 Not Found (<url>)",
                             url, headers, json<T>()/text()/blob()/arrayBuffer(),
                             generic clone(): this
+  known-http-error.ts     → internal branded base for the 40 dedicated classes
   network-error.ts        → NetworkError with cause (original fetch rejection)
   aborted-error.ts        → AbortedError (controller.abort()); extends Error, NOT NetworkError
   timeout-error.ts        → TimeoutError (AbortSignal.timeout()); extends Error, NOT NetworkError
   unknown-http-error.ts   → any status >= 400 not in the map (non-literal status)
-  helpers.ts              → ClientErrors/ServerErrors unions, TypedFetchError union, httpErrors array
+  helpers.ts              → public unions + internal HttpErrors/httpErrors registry
   index.ts                → re-export barrel for the ./errors subpath
-  <40 status files>       → 4-line classes, see pattern below
+  <40 status files>       → dedicated classes, see pattern below
 ```
 
 ## Core flow (src/index.ts)
@@ -49,15 +50,21 @@ No internal throw/catch control flow beyond the single `fetch` try/catch. Keep i
 
 ## Type guards (src/index.ts)
 
-Exported from the main entry: `isHttpError` (any `BaseHttpError`), `isKnownHttpError` (a dedicated class, excludes `UnknownHttpError` — narrows `switch (error.status)`), `isNetworkError`, `isAbortError`, `isTimeoutError`.
+Exported from the main entry: `isHttpError` (any `BaseHttpError`),
+`isKnownHttpError` (one of the library's dedicated classes), `isNetworkError`,
+`isAbortError`, and `isTimeoutError`. A consumer-defined `BaseHttpError`
+subclass passes `isHttpError` but not `isKnownHttpError`; the latter requires
+the separate internal known-error brand so its `ClientErrors | ServerErrors`
+predicate remains sound across duplicate package copies and ESM/CJS entries.
 
 ## Error class pattern
 
 ```typescript no-check
-import { BaseHttpError } from "./base-http-error";
+import { KnownHttpError } from "./known-http-error";
 
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404 */
-export class NotFoundError extends BaseHttpError {
+export class NotFoundError extends KnownHttpError {
+  override readonly name = "NotFoundError" as const;
   public readonly status = 404 as const;
   public readonly statusText = "Not Found" as const;
   static readonly status = 404 as const;
@@ -65,7 +72,11 @@ export class NotFoundError extends BaseHttpError {
 }
 ```
 
-Rules: `as const` (oxlint prefer-as-const), instance AND static props, no constructor, no clone() — base class provides both. File kebab-case matching class name. `statusText` is the canonical IANA reason phrase, not the server's wire value.
+Rules: extend the internal `KnownHttpError`; set an explicit literal `name`;
+use `as const` (oxlint prefer-as-const); provide instance AND static status
+properties; and add no constructor or `clone()` — the base class provides both.
+The file is kebab-case matching the class name. `statusText` is the canonical
+IANA reason phrase, not the server's wire value.
 
 ### Adding a new status code (5 hand-edited places)
 
@@ -84,12 +95,20 @@ Adding a class also changes the public API surface, so update the snapshot (see 
 These are what keep the hand-edited roster honest — run and read them when touching errors:
 
 - **Roster sync** (`describe("roster sync")`): compile-time `InstanceType<HttpErrors>` vs `ClientErrors | ServerErrors` exhaustiveness; runtime cardinality (exactly 40) and `httpErrors` ↔ `statusCodeErrorMap` agreement; and 40 explicit per-class `expectTypeOf<XError["status"]>().toEqualTypeOf<NNN>()` assertions (the array/union checks do NOT catch a single class's literal being widened — only the per-class ones do).
-- **API-surface snapshot** (`describe("public API surface is frozen")`): snapshots the sorted named exports of the BUILT `dist/index.mjs` and `dist/errors/index.mjs`. It is `describe.skipIf(!distExists)` — it only runs after `pnpm build` (dist/ is gitignored and CI runs `pnpm test` before `pnpm build`, so it skips there). Any export add/remove needs `pnpm build && pnpm test -u` to refresh the snapshot; a diff is a reviewable minor/major signal.
+- **API-surface snapshot** (`describe("public API surface is frozen")`): snapshots the sorted named exports of the BUILT `dist/index.mjs` and `dist/errors/index.mjs`. It is `describe.skipIf(!distExists)` — it only runs after `pnpm build` because `dist/` is gitignored. CI deliberately builds first. Any export add/remove needs `pnpm build && pnpm test -u` to refresh the snapshot; a diff is a reviewable minor/major signal.
 
 ## Verification (run all before commit)
 
 ```bash
-pnpm lint && pnpm format:check && pnpm typecheck && pnpm build && pnpm test
+pnpm lint
+pnpm format:check
+pnpm typecheck
+pnpm build
+pnpm test
+pnpm check-docs
+pnpm verify-pack
+pnpm check-consumer
+pnpm audit
 ```
 
 - Build BEFORE test so the API-surface snapshot tests actually run (they skip when `dist/` is absent).
@@ -105,16 +124,24 @@ pnpm lint && pnpm format:check && pnpm typecheck && pnpm build && pnpm test
 - oxfmt formats and sorts `package.json` — don't fight it.
 - `statusCodeErrorMap` is `ReadonlyMap` by type; never mutate.
 - `options.fetch` is stripped off before the init reaches the underlying fetch — don't forward it into the request.
-- Verified runtimes: Node 20+, Cloudflare Workers (workerd). Keep runtime code Web-standard only — no Node APIs outside tests.
+- CI verifies Node 20, 22, and 24 plus Bun and Deno. Browser and edge support
+  follows from the Web-standard-only runtime implementation, but a runtime is
+  not called verified until its smoke test exists. Keep Node APIs outside
+  production source.
 
 ## Release
 
 Releases are manual and tag-driven — the full, binding process is in **RELEASING.md**; follow it exactly. In short:
 
-1. Ensure `main` is green (`pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build`).
-2. Decide the bump using the **semver policy** in RELEASING.md, then bump `version` in `package.json` (edit the field directly — no `npm/pnpm version`).
-3. Add a `CHANGELOG.md` entry.
-4. Commit `package.json` + `CHANGELOG.md` together, tag `vX.Y.Z`, push the commit then the tag. The tag push triggers `.github/workflows/release.yml` → gates → `npm publish --provenance` (OIDC, no token).
+1. Open a release PR against `main` with the chosen version and dated changelog;
+   all required checks above must pass.
+2. Merge the PR and verify the exact release commit is the current
+   `origin/main` tip.
+3. Create and push the matching `vX.Y.Z` tag on that commit. The tag-triggered
+   workflow revalidates the version, commit, full gate set, tarball, and
+   consumer install before `npm publish --provenance` (OIDC, no token).
+4. Verify the npm version, dist-tag, provenance attestation, and GitHub release
+   after publication. Never retry by moving or reusing a published tag.
 
 Semver highlights (RELEASING.md is authoritative):
 

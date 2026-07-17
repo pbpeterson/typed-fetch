@@ -30,6 +30,13 @@
 
 ### Documentation
 
+- Corrected the status-0 body guidance: filtered responses remain on the
+  success branch, but `Response.error().text()` resolves to an empty string
+  while `.json()` rejects for that empty body.
+- Public JSDoc examples are now compiled by `pnpm check-docs`, alongside the
+  Markdown and agent-skill examples.
+- Documented the complete 1.x semantic-versioning contract and corrected the
+  4xx/5xx error-class counts.
 - Clarified that `NetworkError` also covers permanent, non-retryable
   request-construction `TypeError`s (invalid URL, forbidden method) — warn
   against blind retry loops.

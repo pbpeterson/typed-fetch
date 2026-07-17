@@ -91,7 +91,10 @@ if (!error) {
 
 ### Exhaustive status switch
 
-`isKnownHttpError` narrows to a dedicated class (excludes `UnknownHttpError`), so `switch (error.status)` narrows each case to the exact class:
+`isKnownHttpError` narrows to one of the library's dedicated classes. It excludes
+both `UnknownHttpError` and consumer-defined `BaseHttpError` subclasses (which
+still pass `isHttpError`), so `switch (error.status)` narrows each case to the
+exact class:
 
 ```typescript
 import { typedFetch, isKnownHttpError, NotFoundError } from "@pbpeterson/typed-fetch";

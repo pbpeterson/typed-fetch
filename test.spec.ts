@@ -67,6 +67,20 @@ import type { StrictHeaders } from "./src/headers";
 import type { HttpMethods } from "./src/methods";
 import type { TypedFetchOptions, TypedFetchReturnType, TypedResponse } from "./index";
 
+function reasonlessAbortedSignal(): AbortSignal {
+  return { aborted: true, reason: undefined } as unknown as AbortSignal;
+}
+
+function foreignError(...brands: symbol[]): Error {
+  const error = new Error("foreign copy");
+  for (const brand of brands) Object.defineProperty(error, brand, { value: true });
+  return error;
+}
+
+function responseWithStatus(status: number): Response {
+  return new Response(null, { status });
+}
+
 // ── Test HTTP server ─────────────────────────────────────────────────
 // Spins up a real server on a random port. Query params control the response:
 //   ?status=404          → respond with that status code
@@ -307,6 +321,23 @@ describe("typedFetch", () => {
 
     expect(result.error).toBe(null);
     expect(result.response).not.toBe(null);
+  });
+
+  test("status-0 Response.error() stays on the success branch with native body behavior", async () => {
+    const errorResponse = Response.error();
+    const result = await typedFetch("https://example.test/status-zero", {
+      fetch: async () => errorResponse,
+    });
+
+    expect(result.error).toBe(null);
+    expect(result.response).toBe(errorResponse);
+
+    if (result.response) {
+      expect(result.response.status).toBe(0);
+      expect(result.response.type).toBe("error");
+      expect(await result.response.clone().text()).toBe("");
+      await expect(result.response.json()).rejects.toBeInstanceOf(SyntaxError);
+    }
   });
 
   test("unmapped 4xx status → UnknownHttpError", async () => {
@@ -637,9 +668,6 @@ describe("typedFetch", () => {
   // set `reason`. Arm 2 of the classifier handles them, but must only claim
   // the abort when the rejection IS a platform abort DOMException
   // (name "AbortError" or "TimeoutError") — not any DOMException.
-  const reasonlessAbortedSignal = () =>
-    ({ aborted: true, reason: undefined }) as unknown as AbortSignal;
-
   test("A1: reason-less aborted signal + unrelated DOMException → NetworkError, not AbortedError", async () => {
     const unrelated = new DOMException("denied", "SecurityError");
     const stubFetch = vi.fn(async () => Promise.reject(unrelated)) as unknown as typeof fetch;
@@ -1335,37 +1363,31 @@ describe("cross-copy brands", () => {
   const abortBrand = Symbol.for("@pbpeterson/typed-fetch.AbortedError");
   const timeoutBrand = Symbol.for("@pbpeterson/typed-fetch.TimeoutError");
 
-  const foreign = (...brands: symbol[]): Error => {
-    const e = new Error("foreign copy");
-    for (const b of brands) Object.defineProperty(e, b, { value: true });
-    return e;
-  };
-
   test("isHttpError matches a foreign-copy HTTP error (no instanceof link)", () => {
-    const e = foreign(httpBrand);
+    const e = foreignError(httpBrand);
     expect(e instanceof BaseHttpError).toBe(false); // proves it is NOT the same copy
     expect(isHttpError(e)).toBe(true);
   });
 
   test("isKnownHttpError matches a foreign known error but not a foreign UnknownHttpError", () => {
-    expect(isKnownHttpError(foreign(httpBrand, knownHttpBrand))).toBe(true);
-    expect(isKnownHttpError(foreign(httpBrand))).toBe(false);
-    expect(isKnownHttpError(foreign(httpBrand, unknownBrand))).toBe(false);
+    expect(isKnownHttpError(foreignError(httpBrand, knownHttpBrand))).toBe(true);
+    expect(isKnownHttpError(foreignError(httpBrand))).toBe(false);
+    expect(isKnownHttpError(foreignError(httpBrand, unknownBrand))).toBe(false);
   });
 
   test("isNetworkError / isAbortError / isTimeoutError match their foreign copies", () => {
-    expect(isNetworkError(foreign(networkBrand))).toBe(true);
-    expect(isAbortError(foreign(abortBrand))).toBe(true);
-    expect(isTimeoutError(foreign(timeoutBrand))).toBe(true);
+    expect(isNetworkError(foreignError(networkBrand))).toBe(true);
+    expect(isAbortError(foreignError(abortBrand))).toBe(true);
+    expect(isTimeoutError(foreignError(timeoutBrand))).toBe(true);
   });
 
   test("guard exclusivity holds across foreign copies (no cross-family overlap)", () => {
     const samples = {
-      http: foreign(httpBrand, knownHttpBrand),
-      unknown: foreign(httpBrand, unknownBrand),
-      network: foreign(networkBrand),
-      abort: foreign(abortBrand),
-      timeout: foreign(timeoutBrand),
+      http: foreignError(httpBrand, knownHttpBrand),
+      unknown: foreignError(httpBrand, unknownBrand),
+      network: foreignError(networkBrand),
+      abort: foreignError(abortBrand),
+      timeout: foreignError(timeoutBrand),
     };
     // Each row: [isHttpError, isKnownHttpError, isNetworkError, isAbortError, isTimeoutError]
     expect([
@@ -2041,13 +2063,13 @@ describe.skipIf(!distExists)("public API surface is frozen", () => {
     const mod = await importDist("./dist/index.mjs");
     // Object.keys() returns a fresh array each call, so sorting it in place
     // (oxlint's unicorn/no-array-sort warning, not an error) is harmless.
-    expect(Object.keys(mod).sort()).toMatchSnapshot();
+    expect(Object.keys(mod).toSorted()).toMatchSnapshot();
   });
 
   test("./errors subpath named exports", async () => {
     const mod = await importDist("./dist/errors/index.mjs");
     // Same as above: sorting the fresh Object.keys() array in place is fine.
-    expect(Object.keys(mod).sort()).toMatchSnapshot();
+    expect(Object.keys(mod).toSorted()).toMatchSnapshot();
   });
 });
 
@@ -2097,7 +2119,7 @@ function typeOnlyExportsOf(dtsRelPath: string): string[] {
       return hasType && !hasValue ? sym.getName() : null;
     })
     .filter((name): name is string => name !== null)
-    .sort();
+    .toSorted();
 }
 
 describe.skipIf(!distExists)("public TYPE surface is frozen", () => {
@@ -2121,7 +2143,6 @@ describe.skipIf(!distExists)("public TYPE surface is frozen", () => {
 // this block skips (see distExists rationale above).
 describe.skipIf(!distExists)("guards work across module copies (dist)", () => {
   const require = createRequire(import.meta.url);
-  const mkResp = (status: number) => new Response(null, { status });
 
   test("axis 1 — ESM cross-entry: typedFetch from `.`, NotFoundError from `./errors`", async () => {
     const main = (await importDist("./dist/index.mjs")) as {
@@ -2133,7 +2154,7 @@ describe.skipIf(!distExists)("guards work across module copies (dist)", () => {
       NotFoundError: typeof NotFoundError;
     };
     const { error } = await main.typedFetch("http://x/y", {
-      fetch: async () => mkResp(404),
+      fetch: async () => responseWithStatus(404),
     });
     expect(main.isHttpError(error)).toBe(true);
     expect(main.isKnownHttpError(error)).toBe(true);
@@ -2152,7 +2173,7 @@ describe.skipIf(!distExists)("guards work across module copies (dist)", () => {
       NotFoundError: typeof NotFoundError;
     };
     const { error } = await main.typedFetch("http://x/y", {
-      fetch: async () => mkResp(404),
+      fetch: async () => responseWithStatus(404),
     });
     expect(main.isHttpError(error)).toBe(true);
     expect(main.isKnownHttpError(error)).toBe(true);
@@ -2166,7 +2187,7 @@ describe.skipIf(!distExists)("guards work across module copies (dist)", () => {
       isKnownHttpError: typeof isKnownHttpError;
     };
     const { error } = await esm.typedFetch("http://x/y", {
-      fetch: async () => mkResp(404),
+      fetch: async () => responseWithStatus(404),
     });
     expect(cjs.isHttpError(error)).toBe(true); // was false before the brand
     expect(cjs.isKnownHttpError(error)).toBe(true);
@@ -2208,8 +2229,14 @@ describe.skipIf(!distExists)("guards work across module copies (dist)", () => {
       g.isAbortError(v),
       g.isTimeoutError(v),
     ];
-    expect(row(new cjs.NotFoundError(mkResp(404)))).toEqual([true, true, false, false, false]);
-    expect(row(new cjs.InternalServerError(mkResp(500)))).toEqual([
+    expect(row(new cjs.NotFoundError(responseWithStatus(404)))).toEqual([
+      true,
+      true,
+      false,
+      false,
+      false,
+    ]);
+    expect(row(new cjs.InternalServerError(responseWithStatus(500)))).toEqual([
       true,
       true,
       false,
@@ -2217,7 +2244,13 @@ describe.skipIf(!distExists)("guards work across module copies (dist)", () => {
       false,
     ]);
     // axis 6: UnknownHttpError is http but NOT known, across copies.
-    expect(row(new cjs.UnknownHttpError(mkResp(499)))).toEqual([true, false, false, false, false]);
+    expect(row(new cjs.UnknownHttpError(responseWithStatus(499)))).toEqual([
+      true,
+      false,
+      false,
+      false,
+      false,
+    ]);
     expect(row(new cjs.NetworkError("x"))).toEqual([false, false, true, false, false]);
     expect(row(new cjs.AbortedError("x"))).toEqual([false, false, false, true, false]);
     expect(row(new cjs.TimeoutError("x"))).toEqual([false, false, false, false, true]);

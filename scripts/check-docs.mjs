@@ -2,8 +2,8 @@
 // @ts-check
 
 // ---------------------------------------------------------------------------
-// check-docs.mjs — typecheck every fenced TypeScript block in the docs against
-// the BUILT package (dist/), not against src/.
+// check-docs.mjs — typecheck every fenced TypeScript block in Markdown and
+// public JSDoc against the BUILT package (dist/), not against src/.
 //
 // WHY THIS EXISTS
 //   Three rounds of "verify the examples" review never ran `tsc`, and the
@@ -38,12 +38,15 @@ import { fileURLToPath } from "node:url";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 
-// Fixed roster of docs that carry public, copy-pasteable TypeScript.
-const DOC_FILES = [
-  "README.md",
-  "CONTRIBUTING.md",
-  "skills/typed-fetch/SKILL.md",
-  ".claude/skills/typed-fetch-maintainer/SKILL.md",
+// Fixed roster of sources that carry public, copy-pasteable TypeScript.
+// JSDoc is converted to Markdown without changing line counts, so diagnostics
+// still point at the original source line.
+const DOC_SOURCES = [
+  { file: "README.md", format: "markdown" },
+  { file: "CONTRIBUTING.md", format: "markdown" },
+  { file: "skills/typed-fetch/SKILL.md", format: "markdown" },
+  { file: ".claude/skills/typed-fetch-maintainer/SKILL.md", format: "markdown" },
+  { file: "src/index.ts", format: "jsdoc" },
 ];
 
 // The package's public entry points, as written in the docs.
@@ -101,6 +104,20 @@ function extractBlocks(md) {
     }
   }
   return blocks;
+}
+
+/**
+ * Remove the leading ` * ` decoration from JSDoc lines while preserving one
+ * output line per input line. Fenced examples then look exactly like Markdown
+ * to {@link extractBlocks}, and its 1-based fence locations remain source
+ * locations.
+ * @param {string} source
+ */
+function jsdocToMarkdown(source) {
+  return source
+    .split("\n")
+    .map((line) => line.replace(/^\s*\* ?/, ""))
+    .join("\n");
 }
 
 /**
@@ -203,13 +220,14 @@ function main() {
   const blocksDir = join(workDir, "blocks");
   mkdirSync(blocksDir, { recursive: true });
 
-  for (const rel of DOC_FILES) {
+  for (const { file: rel, format } of DOC_SOURCES) {
     const abs = join(repoRoot, rel);
     if (!existsSync(abs)) {
       console.error(`check-docs: doc file not found: ${rel}`);
       process.exit(1);
     }
-    const md = readFileSync(abs, "utf8");
+    const source = readFileSync(abs, "utf8");
+    const md = format === "jsdoc" ? jsdocToMarkdown(source) : source;
     const blocks = extractBlocks(md);
     for (const block of blocks) {
       totalTsBlocks += 1;
@@ -273,7 +291,7 @@ function main() {
   rmSync(workDir, { recursive: true, force: true });
 
   // ----- Report -----------------------------------------------------------
-  console.log(`check-docs: scanned ${DOC_FILES.length} doc files`);
+  console.log(`check-docs: scanned ${DOC_SOURCES.length} documentation sources`);
   console.log(`  TypeScript blocks found : ${totalTsBlocks}`);
   console.log(`  checked against dist/    : ${checked}`);
   console.log(`  skipped (\`${SKIP_MARKER}\`)      : ${skipped.length}`);

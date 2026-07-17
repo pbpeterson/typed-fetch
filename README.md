@@ -49,7 +49,15 @@ The `<User[]>` type parameter **types the parse, it does not validate it** — `
 - **Untrusted/possibly-malformed payload?** Wrap the body read in try/catch — `.clone()` does not help here.
 - **Need to read the body more than once?** `.clone()` first, then read each copy — a body can only be consumed once.
 
-Opaque and error responses (`mode: "no-cors"`, `redirect: "manual"`, `Response.error()` — all `status: 0` / `type: "error"` or `"opaque"`) come back on the **success** branch as `response` (with `error: null`), per the fetch spec; `res.status >= 400` is the only failure test, and a status-0 response is not `>= 400`. If your call can produce one (browser `no-cors`, some service-worker-mediated fetches), check `response.ok` / `response.type` yourself — the body is unreadable and `json()`/`text()` will reject.
+Filtered responses with `status: 0` — `opaque`, `opaqueredirect`, and
+`Response.error()` responses — come back on the **success** branch as `response`
+(with `error: null`), per the Fetch standard. `res.status >= 400` is the only
+HTTP-failure test, and zero is not `>= 400`. If your call can produce one
+(browser `no-cors`, manual redirects, or service-worker-mediated fetches), check
+`response.ok` / `response.type` yourself. Preserve the platform's native body
+behavior: opaque bodies are unreadable, while `Response.error().text()` resolves
+to `""` and its `.json()` rejects with `SyntaxError` because the empty body is
+not JSON.
 
 ## Features
 
@@ -445,7 +453,7 @@ and aborted requests are as easy to correlate in logs as HTTP errors.
 ## Available Error Classes
 
 <details>
-<summary><strong>4xx Client Errors</strong> (40 classes total)</summary>
+<summary><strong>4xx Client Errors</strong> (29 classes)</summary>
 
 | Class                               | Status | Status Text                     |
 | ----------------------------------- | ------ | ------------------------------- |
@@ -482,7 +490,7 @@ and aborted requests are as easy to correlate in logs as HTTP errors.
 </details>
 
 <details>
-<summary><strong>5xx Server Errors</strong></summary>
+<summary><strong>5xx Server Errors</strong> (11 classes; 40 dedicated HTTP classes total)</summary>
 
 | Class                                | Status | Status Text                     |
 | ------------------------------------ | ------ | ------------------------------- |
@@ -557,9 +565,13 @@ every guard below.
 
 ### `isKnownHttpError(error): error is ClientErrors | ServerErrors`
 
-Type guard for a _known_, dedicated HTTP error class (excludes `UnknownHttpError`).
-Narrowing on `error.status` after this guard is exhaustive over the mapped codes —
-see [Exhaustive status narrowing](#exhaustive-status-narrowing-with-isknownhttperror).
+Type guard for a _known_, dedicated HTTP error class. It excludes both
+`UnknownHttpError` and consumer-defined subclasses of `BaseHttpError`; those
+custom subclasses still pass `isHttpError()`. Dedicated library errors carry a
+separate cross-copy brand so this `ClientErrors | ServerErrors` predicate stays
+sound across ESM/CJS and duplicate package installations. Narrowing on
+`error.status` after this guard is exhaustive over the mapped codes — see
+[Exhaustive status narrowing](#exhaustive-status-narrowing-with-isknownhttperror).
 
 ### `isNetworkError(error): error is NetworkError`
 
@@ -673,6 +685,27 @@ Things this library deliberately does not do, and won't:
 - **Runtime response-body validation as a hard dependency** — a Standard Schema hook may come later as an _additive, zero-dependency_ feature, not as a required dependency.
 - **`rawStatusText` field** — the wire reason phrase is already on `error.message`; a second field is only added if there's real demand.
 - **Making body reads never-throw (eager buffering)** — it would break streaming semantics; the never-throws guarantee is documented to end at the response envelope.
+
+## Semantic versioning contract
+
+1. Adding a new dedicated HTTP error class is a **minor** release. Consumers
+   switching on `error.status` after `isKnownHttpError()` must keep a `default`
+   branch so an additive status remains safe.
+2. Changing a status that already returned `UnknownHttpError` to return a new
+   dedicated class is a **major** release because it changes the runtime type of
+   an existing path.
+3. Human-readable `error.message` text is diagnostic and is not a stable API
+   contract.
+4. A class's `statusText` is its canonical IANA reason phrase and is part of the
+   public contract; it does not mirror a server's wire reason phrase.
+5. Removing or renaming an export, or changing an existing class's `status` or
+   `statusText` literal, is a **major** release.
+6. Every npm publication must come from the matching `vX.Y.Z` Git tag through
+   the repository's release workflow.
+7. Node.js 20 is the current minimum. Dropping a supported Node major requires
+   a **major** release.
+
+See [`RELEASING.md`](./RELEASING.md) for the binding release procedure.
 
 ## Contributing
 

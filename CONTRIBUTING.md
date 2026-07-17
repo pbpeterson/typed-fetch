@@ -93,8 +93,9 @@ make a test pass — regenerate it from a real build.
 ### Documentation examples are typechecked (`pnpm check-docs`)
 
 `scripts/check-docs.mjs` extracts every fenced ` ```ts ` / ` ```typescript `
-block from `README.md`, `CONTRIBUTING.md`, and both `SKILL.md` files, rewrites
-the `@pbpeterson/typed-fetch` import to point at the **built `dist/`**, and
+block from `README.md`, `CONTRIBUTING.md`, both `SKILL.md` files, and the public
+JSDoc examples in `src/index.ts`. It rewrites the
+`@pbpeterson/typed-fetch` import to point at the **built `dist/`**, then
 typechecks each block with the project's `tsc`. This is why it must run **after
 `pnpm build`** — `dist/` is the compile target. If `dist/` is missing the guard
 **fails loudly** rather than skipping. It exists because the README's headline
@@ -126,11 +127,12 @@ list.
 
 **Limitation — compilation is necessary, not sufficient.** A block can typecheck
 and still be wrong, so a green `check-docs` is not proof the docs are correct.
-The clearest example lives in this repo: the maintainer skill's error-class
-template omits `override readonly name = "..."`. That compiles fine, but under
-minification the class name is mangled and the error's `.name` becomes garbage —
-a real runtime bug this guard will **never** catch. When you edit an error-class
-example, verify `override readonly name` is present by eye; `check-docs` won't.
+A class template can, for example, compile while omitting
+`override readonly name = "..."`. Under minification the constructor name may
+then be mangled and the error's `.name` becomes incorrect — a runtime contract
+this guard will **never** prove. When you edit an error-class example, verify
+`override readonly name` and the intended literal values by eye; `check-docs`
+only proves the TypeScript example is well-formed.
 
 ### The packed tarball is consumed as a real user (`pnpm check-consumer`)
 
@@ -192,10 +194,10 @@ error — do all of the following:
    fields must be `as const` literals:
 
    ```typescript no-check
-   import { BaseHttpError } from "./base-http-error";
+   import { KnownHttpError } from "./known-http-error";
 
    /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/NNN */
-   export class XxxError extends BaseHttpError {
+   export class XxxError extends KnownHttpError {
      override readonly name = "XxxError" as const;
      public readonly status = NNN as const;
      public readonly statusText = "<Status Text>" as const;

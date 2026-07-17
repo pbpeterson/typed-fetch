@@ -44,6 +44,9 @@ function isDOMException(value: unknown): value is DOMException {
  *
  * @example
  * ```ts
+ * import { isHttpError } from "@pbpeterson/typed-fetch";
+ *
+ * declare const error: unknown;
  * if (isHttpError(error)) {
  *   console.log(error.status, error.statusText);
  * }
@@ -60,6 +63,9 @@ export function isHttpError(error: unknown): error is BaseHttpError {
  *
  * @example
  * ```ts
+ * import { isNetworkError } from "@pbpeterson/typed-fetch";
+ *
+ * declare const error: unknown;
  * if (isNetworkError(error)) {
  *   console.log("Connection failed:", error.message);
  * }
@@ -79,6 +85,9 @@ export function isNetworkError(error: unknown): error is NetworkError {
  *
  * @example
  * ```ts
+ * import { isAbortError } from "@pbpeterson/typed-fetch";
+ *
+ * declare const error: unknown;
  * if (isAbortError(error)) {
  *   console.log("Request was cancelled");
  * }
@@ -98,6 +107,9 @@ export function isAbortError(error: unknown): error is AbortedError {
  *
  * @example
  * ```ts
+ * import { isTimeoutError } from "@pbpeterson/typed-fetch";
+ *
+ * declare const error: unknown;
  * if (isTimeoutError(error)) {
  *   console.log("Request timed out");
  * }
@@ -117,10 +129,16 @@ export function isTimeoutError(error: unknown): error is TimeoutError {
  *
  * @example
  * ```ts
+ * import { isKnownHttpError } from "@pbpeterson/typed-fetch";
+ *
+ * declare const error: unknown;
  * if (isKnownHttpError(error)) {
  *   switch (error.status) {
  *     case 404:
  *       // error: NotFoundError
+ *       break;
+ *     default:
+ *       // Keep a default: minor releases may add dedicated status classes.
  *       break;
  *   }
  * }
@@ -176,9 +194,15 @@ export type TypedFetchOptions = FetchParams[1] & {
  *
  * @example
  * ```ts
+ * import { typedFetch } from "@pbpeterson/typed-fetch";
+ *
+ * interface User {
+ *   id: number;
+ * }
+ *
  * const { response, error } = await typedFetch<User>("/api/users/1");
  * if (error) {
- *   console.log(error.status);
+ *   console.log(error.name);
  * } else {
  *   const user = await response.json();
  * }
