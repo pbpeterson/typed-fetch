@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SEMVER =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
 /** @param {string} value */
 function escapeRegex(value) {
@@ -38,7 +38,8 @@ export function validateRelease(candidate) {
     throw new Error("Release validation must run from a tag ref.");
   }
 
-  if (!SEMVER.test(candidate.version)) {
+  const semverMatch = SEMVER.exec(candidate.version);
+  if (!semverMatch) {
     throw new Error(
       `package.json version ${JSON.stringify(candidate.version)} is not valid SemVer.`,
     );
@@ -92,7 +93,7 @@ export function validateRelease(candidate) {
     throw new Error("The CHANGELOG [Unreleased] section must be empty before publishing.");
   }
 
-  return { distTag: candidate.version.includes("-") ? "next" : "latest" };
+  return { distTag: semverMatch[4] === undefined ? "latest" : "next" };
 }
 
 /** @param {string} ref */

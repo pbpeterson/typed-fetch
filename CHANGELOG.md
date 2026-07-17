@@ -130,7 +130,9 @@
   `BaseHttpError` subclasses as one of the library's dedicated status
   classes.** Dedicated errors now carry a separate cross-copy brand, keeping
   the guard's `ClientErrors | ServerErrors` type predicate sound while
-  preserving ESM/CJS and cross-entry behavior.
+  preserving ESM/CJS and cross-entry behavior. The guard also verifies the
+  receiving version's status map, so an older copy rejects dedicated statuses
+  introduced by a newer minor.
 - **`BaseHttpError` no longer leaks its internal `Response` as an own enumerable
   property.** It was a constructor parameter property, so `JSON.stringify(err)`,
   `{...err}`, and `Object.keys(err)` exposed a live `Response` handle. It is now
@@ -222,7 +224,7 @@
 
 ### Migrating from 0.x
 
-Two breaking changes to handle:
+Breaking changes to handle:
 
 **1. The second `ErrorType` type parameter is gone.**
 
@@ -299,6 +301,39 @@ If you only checked `error instanceof NetworkError` (or `isNetworkError`) to
 catch _any_ pre-response failure, add the two new branches above it —
 `isNetworkError` on its own will silently stop matching aborted and
 timed-out requests.
+
+**3. Internal registries and autocomplete-only aliases are no longer named exports.**
+
+The public surface now contains the runtime functions, error classes, and
+consumer-facing types. Replace imports of the removed implementation details:
+
+```typescript
+// Before (0.x)
+import {
+  statusCodeErrorMap,
+  httpErrors,
+  type HttpErrors,
+  type TypedHeaders,
+  type StrictHeaders,
+} from "@pbpeterson/typed-fetch";
+
+// After (1.x)
+import {
+  isKnownHttpError,
+  type ClientErrors,
+  type ServerErrors,
+  type TypedFetchOptions,
+} from "@pbpeterson/typed-fetch";
+
+type KnownHttpError = ClientErrors | ServerErrors;
+type RequestHeaders = NonNullable<TypedFetchOptions["headers"]>;
+```
+
+Use `isKnownHttpError()` plus `switch (error.status)` (or an individual error
+class) instead of consulting `statusCodeErrorMap` / `httpErrors`. Use
+`ClientErrors | ServerErrors` instead of `HttpErrors`, and derive the accepted
+header input from `TypedFetchOptions["headers"]` instead of importing
+`TypedHeaders` or `StrictHeaders`.
 
 ## 0.8.0 (2026-06-09)
 

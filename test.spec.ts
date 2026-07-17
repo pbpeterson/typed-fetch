@@ -77,6 +77,12 @@ function foreignError(...brands: symbol[]): Error {
   return error;
 }
 
+function foreignHttpError(status: number, ...brands: symbol[]): Error {
+  const error = foreignError(...brands);
+  Object.defineProperty(error, "status", { value: status });
+  return error;
+}
+
 function responseWithStatus(status: number): Response {
   return new Response(null, { status });
 }
@@ -822,26 +828,26 @@ describe("typedFetch", () => {
     expect(result.error).toBeInstanceOf(NotFoundError);
 
     if (isHttpError(result.error)) {
-      // "this is a 404" — assert on .status, not on "404" appearing in .message.
       expect(result.error.status).toBe(404);
-      // "the request url is captured" — .url is the structural field for this
-      // (localhost lives in the url); message text is not part of the contract.
       expect(result.error.url).toBe(new URL(requestUrl).toString());
       expect(result.error.url).toContain("localhost");
+      // Characterizes the URL-bearing constructor branch. Message wording is
+      // regression-tested here but remains outside the SemVer contract.
+      expect(result.error.message).toContain("localhost");
     }
   });
 
   test("BaseHttpError takes the no-url message branch when response.url is empty", () => {
     // A directly-constructed Response has `url === ""`, so BaseHttpError's
     // `response.url ? `${line} (${url})` : line` branch takes the no-url path.
-    // The structural observable of that branch is `error.url === ""` (there is
-    // no url to append). We assert on that and on the status fields, never on
-    // the constructed message text (per RELEASING.md: message is not contract).
     const error = new NotFoundError(new Response(null, { status: 404, statusText: "Not Found" }));
 
     expect(error.url).toBe("");
     expect(error.status).toBe(404);
     expect(error.statusText).toBe("Not Found");
+    // Characterizes the no-URL branch without making message text a public
+    // SemVer guarantee.
+    expect(error.message).toBe("HTTP 404 Not Found");
   });
 
   test("error.json() parses the response body", async () => {
@@ -904,6 +910,7 @@ describe("typedFetch", () => {
 
     if (isNetworkError(result.error)) {
       expect(result.error.cause).toBe("boom");
+      expect(result.error.message).toBe("Network error");
     }
   });
 
@@ -924,11 +931,9 @@ describe("typedFetch", () => {
     expect(result.error).toBeInstanceOf(NetworkError);
 
     if (isNetworkError(result.error)) {
-      // The fallback (`err.message || err.name`) picked up `.name` because the
-      // Error's message was empty. `cause` is the structural observable: it is
-      // the exact rejected Error, whose `.name` is what the fallback used.
       expect(result.error.cause).toBe(dnsLike);
       expect((result.error.cause as Error).name).toBe("ENOTFOUND");
+      expect(result.error.message).toBe("ENOTFOUND");
     }
   });
 
@@ -1370,9 +1375,13 @@ describe("cross-copy brands", () => {
   });
 
   test("isKnownHttpError matches a foreign known error but not a foreign UnknownHttpError", () => {
-    expect(isKnownHttpError(foreignError(httpBrand, knownHttpBrand))).toBe(true);
-    expect(isKnownHttpError(foreignError(httpBrand))).toBe(false);
-    expect(isKnownHttpError(foreignError(httpBrand, unknownBrand))).toBe(false);
+    expect(isKnownHttpError(foreignHttpError(404, httpBrand, knownHttpBrand))).toBe(true);
+    expect(isKnownHttpError(foreignHttpError(499, httpBrand))).toBe(false);
+    expect(isKnownHttpError(foreignHttpError(499, httpBrand, unknownBrand))).toBe(false);
+  });
+
+  test("isKnownHttpError rejects a dedicated status unknown to this package version", () => {
+    expect(isKnownHttpError(foreignHttpError(599, httpBrand, knownHttpBrand))).toBe(false);
   });
 
   test("isNetworkError / isAbortError / isTimeoutError match their foreign copies", () => {
@@ -1383,8 +1392,8 @@ describe("cross-copy brands", () => {
 
   test("guard exclusivity holds across foreign copies (no cross-family overlap)", () => {
     const samples = {
-      http: foreignError(httpBrand, knownHttpBrand),
-      unknown: foreignError(httpBrand, unknownBrand),
+      http: foreignHttpError(404, httpBrand, knownHttpBrand),
+      unknown: foreignHttpError(499, httpBrand, unknownBrand),
       network: foreignError(networkBrand),
       abort: foreignError(abortBrand),
       timeout: foreignError(timeoutBrand),

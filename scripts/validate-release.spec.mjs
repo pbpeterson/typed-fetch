@@ -33,6 +33,20 @@ describe("validateRelease", () => {
   });
 
   test.each([
+    ["numeric-prefix prerelease", "1.0.0-1a", "next"],
+    ["hyphenated build metadata", "1.0.0+build-1", "latest"],
+  ])("accepts valid %s SemVer", (_name, version, distTag) => {
+    expect(
+      validateRelease({
+        ...release,
+        tag: `v${version}`,
+        version,
+        changelog: release.changelog.replaceAll("1.0.0", version),
+      }),
+    ).toEqual({ distTag });
+  });
+
+  test.each([
     ["tag ref", { refType: "branch" }, "must run from a tag ref"],
     ["strict SemVer", { tag: "v01.0.0", version: "01.0.0" }, "valid SemVer"],
     ["exact version", { tag: "v1.0.1" }, "must exactly match"],

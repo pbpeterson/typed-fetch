@@ -31,7 +31,9 @@
  * Discriminating a *specific* HTTP subclass across copies (e.g.
  * `error instanceof NotFoundError` when the two came from different copies) is
  * deliberately NOT solved here — see the README. Use `isKnownHttpError` then
- * `switch (error.status)`, which is copy-proof.
+ * `switch (error.status)`, which is copy-proof. `isKnownHttpError` also checks
+ * the receiving copy's status map so a newer minor's newly added status cannot
+ * be narrowed to an older copy's union.
  */
 
 /** Brand for any {@link BaseHttpError} subclass (all 4xx/5xx errors). */

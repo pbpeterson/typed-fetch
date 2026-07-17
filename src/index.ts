@@ -122,9 +122,11 @@ export function isTimeoutError(error: unknown): error is TimeoutError {
 /**
  * Type guard for a *known*, dedicated HTTP error class (excludes {@link UnknownHttpError}).
  *
- * Keyed on cross-copy brands — works across entry points and module formats.
- * Narrowing on `error.status` after this guard is exhaustive over the mapped
- * codes, and is the copy-proof way to reach a specific subclass (a raw
+ * Keyed on cross-copy brands and restricted to the status map in this package
+ * version — works across entry points and module formats without accepting a
+ * dedicated status introduced by a newer copy. Narrowing on `error.status`
+ * after this guard is exhaustive over this version's mapped codes, and is the
+ * copy-proof way to reach a specific subclass (a raw
  * `error instanceof NotFoundError` is NOT reliable across copies).
  *
  * @example
@@ -145,7 +147,17 @@ export function isTimeoutError(error: unknown): error is TimeoutError {
  * ```
  */
 export function isKnownHttpError(error: unknown): error is ClientErrors | ServerErrors {
-  return hasBrand(error, httpErrorBrand) && hasBrand(error, knownHttpErrorBrand);
+  if (!hasBrand(error, httpErrorBrand) || !hasBrand(error, knownHttpErrorBrand)) {
+    return false;
+  }
+
+  try {
+    const status = (error as { readonly status?: unknown }).status;
+    return typeof status === "number" && statusCodeErrorMap.has(status);
+  } catch {
+    // Hostile proxies/getters are not valid library errors.
+    return false;
+  }
 }
 
 /** A `Response` whose `json()` (and `clone()`) carry the expected body type. */

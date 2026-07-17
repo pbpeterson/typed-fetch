@@ -46,7 +46,7 @@ No internal throw/catch control flow beyond the single `fetch` try/catch. Keep i
 
 - `AbortedError` and `TimeoutError` do NOT extend `NetworkError`. `isNetworkError()` returns **false** for both aborts and timeouts. This is deliberate — consumers discriminate with `isAbortError(e)` / `isTimeoutError(e)`, never by inspecting `error.cause.name`.
 - `AbortedError` carries the abort reason as `error.reason` (plus the original rejection as `cause`); `TimeoutError` is the sub-case produced by `AbortSignal.timeout()`.
-- HTTP errors carry `error.url` (from `response.url`) and fold the server's wire reason phrase into `error.message`. `error.message` is NOT part of the semver contract (see RELEASING.md) — never assert on it; assert on `.status`/`.name`/`.statusText`.
+- HTTP errors carry `error.url` (from `response.url`) and fold the server's wire reason phrase into `error.message`. `error.message` is NOT part of the semver contract (see RELEASING.md). Consumer-facing behavior tests should assert on `.status`/`.name`/`.statusText`; narrowly scoped constructor regression tests may characterize message branches without promoting the text to a public guarantee.
 
 ## Type guards (src/index.ts)
 
@@ -54,8 +54,9 @@ Exported from the main entry: `isHttpError` (any `BaseHttpError`),
 `isKnownHttpError` (one of the library's dedicated classes), `isNetworkError`,
 `isAbortError`, and `isTimeoutError`. A consumer-defined `BaseHttpError`
 subclass passes `isHttpError` but not `isKnownHttpError`; the latter requires
-the separate internal known-error brand so its `ClientErrors | ServerErrors`
-predicate remains sound across duplicate package copies and ESM/CJS entries.
+the separate internal known-error brand and a status present in the receiving
+copy's map. Its `ClientErrors | ServerErrors` predicate therefore remains sound
+across duplicate copies, ESM/CJS entries, and mixed minor versions.
 
 ## Error class pattern
 
@@ -143,8 +144,9 @@ Releases are PR-reviewed and tag-driven — the full, binding process is in
    workflow revalidates the version, commit, full gate set, tarball, and
    consumer install before `npm publish --provenance` through OIDC, with no
    repository npm token.
-4. Verify the npm version, dist-tag, provenance attestation, and GitHub release
-   after publication. Never retry by moving or reusing a published tag.
+4. Verify the npm version, dist-tag, provenance attestation, source commit, and
+   workflow run after publication. Never retry by moving or reusing a published
+   tag.
 
 Semver highlights (RELEASING.md is authoritative):
 

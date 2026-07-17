@@ -43,8 +43,8 @@ Before opening a PR, all of these must pass:
 pnpm lint          # oxlint
 pnpm format:check  # oxfmt --check
 pnpm typecheck     # tsc --noEmit -p tsconfig.test.json
-pnpm test          # vitest run
-pnpm build          # tsup — confirm the package actually builds
+pnpm build         # tsup — confirm the package actually builds
+pnpm test          # vitest run — includes checks against the built dist/
 pnpm check-docs     # typecheck every fenced TS block in the docs (run AFTER build)
 pnpm verify-pack    # assert the published tarball's file manifest (run AFTER build)
 pnpm check-consumer # pack + install the tarball, exercise it as a real consumer (run AFTER build)
@@ -73,7 +73,7 @@ one snapshot cannot see the other:
   meaning). Type-only exports (`export type { … }`, re-exported interfaces and
   type aliases) never exist at runtime, so `Object.keys()` is structurally
   blind to them. Deleting `export type { HttpMethods }` from the barrel once
-  passed **all eight gates** — this axis exists to close that hole. Both entry
+  passed every gate at the time — this axis exists to close that hole. Both entry
   points (`.` and `./errors`) are covered.
 
 Both blocks read from `dist/`, so run them **after `pnpm build`** (e.g.

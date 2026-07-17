@@ -568,9 +568,11 @@ every guard below.
 Type guard for a _known_, dedicated HTTP error class. It excludes both
 `UnknownHttpError` and consumer-defined subclasses of `BaseHttpError`; those
 custom subclasses still pass `isHttpError()`. Dedicated library errors carry a
-separate cross-copy brand so this `ClientErrors | ServerErrors` predicate stays
-sound across ESM/CJS and duplicate package installations. Narrowing on
-`error.status` after this guard is exhaustive over the mapped codes — see
+separate cross-copy brand, and the guard confirms that `error.status` exists in
+the receiving package version's map. This keeps the `ClientErrors | ServerErrors`
+predicate sound across ESM/CJS, duplicate installations, and mixed minor
+versions: a status introduced by a newer copy is not accepted by an older one.
+Narrowing on `error.status` after this guard is exhaustive over this version's mapped codes — see
 [Exhaustive status narrowing](#exhaustive-status-narrowing-with-isknownhttperror).
 
 ### `isNetworkError(error): error is NetworkError`
