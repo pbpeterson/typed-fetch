@@ -4,7 +4,7 @@
 [![npm version](https://img.shields.io/npm/v/%40pbpeterson%2Ftyped-fetch)](https://www.npmjs.com/package/@pbpeterson/typed-fetch)
 [![license](https://img.shields.io/npm/l/%40pbpeterson%2Ftyped-fetch)](./LICENSE)
 
-A type-safe HTTP client for TypeScript that never throws. Inspired by Go's error handling pattern, built on top of the native Fetch API.
+A type-safe HTTP client for TypeScript that returns request errors as values. Inspired by Go's error handling pattern, built on top of the native Fetch API.
 
 > **Upgrading from 0.x?** 1.0 has breaking changes — see [Migrating from 0.x](./CHANGELOG.md#migrating-from-0x).
 
@@ -61,7 +61,7 @@ not JSON.
 
 ## Features
 
-- **Never throws** - All errors are returned as values
+- **Request errors as values** - Network, HTTP, abort, and timeout failures are returned through a discriminated union
 - **Fully typed** - Complete TypeScript support with literal status types
 - **Built on Fetch** - Thin wrapper around the native Fetch API, same arguments
 - **40 HTTP error classes** - Covering all standard HTTP status codes (400-511)

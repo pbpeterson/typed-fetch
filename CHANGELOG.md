@@ -209,6 +209,10 @@
 
 ### Documentation
 
+- Qualified the errors-as-values promise across package metadata, README, and
+  public JSDoc: request failures resolve as `error`, while native body readers
+  can still reject for malformed/empty data or a consumed body. An explicit
+  204 regression test locks that boundary down.
 - Corrected the status-0 body guidance: filtered responses remain on the
   success branch, but `Response.error().text()` resolves to an empty string
   while `.json()` rejects for that empty body.
@@ -377,3 +381,6 @@ header input from `TypedFetchOptions["headers"]` instead of importing
 ## 0.7.2 and earlier
 
 See the [commit history](https://github.com/pbpeterson/typed-fetch/commits/main).
+
+[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v0.8.1...v1.0.0

@@ -5,7 +5,7 @@ description: Maintainer guide for @pbpeterson/typed-fetch — a zero-dependency,
 
 # typed-fetch Maintainer Guide
 
-Type-safe `fetch` wrapper that never throws. Returns `{ response, error }` discriminated union. Zero runtime dependencies. Published to npm as `@pbpeterson/typed-fetch` via OIDC trusted publishing.
+Type-safe `fetch` wrapper that resolves request failures through a `{ response, error }` discriminated union. Native body readers remain throwing operations. Zero runtime dependencies. Published to npm as `@pbpeterson/typed-fetch` via OIDC trusted publishing.
 
 ## Architecture
 

@@ -65,7 +65,12 @@ import {
 import type { ClientErrors, ServerErrors, TypedFetchError } from "./src/errors";
 import type { StrictHeaders } from "./src/headers";
 import type { HttpMethods } from "./src/methods";
-import type { TypedFetchOptions, TypedFetchReturnType, TypedResponse } from "./index";
+import {
+  typedFetch as publicTypedFetch,
+  type TypedFetchOptions,
+  type TypedFetchReturnType,
+  type TypedResponse,
+} from "./index";
 
 function reasonlessAbortedSignal(): AbortSignal {
   return { aborted: true, reason: undefined } as unknown as AbortSignal;
@@ -327,6 +332,20 @@ describe("typedFetch", () => {
 
     expect(result.error).toBe(null);
     expect(result.response).not.toBe(null);
+  });
+
+  test("204 stays on the success branch while json() preserves native empty-body rejection", async () => {
+    const result = await publicTypedFetch(url({ status: 204 }));
+
+    expect(result.error).toBe(null);
+    expect(result.response).not.toBe(null);
+
+    if (result.response) {
+      expect(result.response.status).toBe(204);
+      expect(result.response.ok).toBe(true);
+      expect(await result.response.clone().text()).toBe("");
+      await expect(result.response.json()).rejects.toBeInstanceOf(SyntaxError);
+    }
   });
 
   test("status-0 Response.error() stays on the success branch with native body behavior", async () => {

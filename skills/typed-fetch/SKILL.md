@@ -5,7 +5,7 @@ description: Write HTTP client code with @pbpeterson/typed-fetch — a zero-depe
 
 # Using typed-fetch
 
-`typedFetch` wraps native `fetch` — same arguments (URL/Request, RequestInit) — but never throws. It resolves to a discriminated union:
+`typedFetch` wraps native `fetch` — same arguments (URL/Request, RequestInit) — and resolves request failures to a discriminated union instead of rejecting. Body readers remain native operations and can still reject:
 
 ```typescript
 import { typedFetch } from "@pbpeterson/typed-fetch";
@@ -29,7 +29,7 @@ Rules the generated code must follow:
 
 - Check `error` first; TypeScript then knows `response` is non-null (and vice versa).
 - The success body is NOT pre-parsed — call `response.json()` / `.text()` yourself.
-- Never wrap `typedFetch` in try/catch — it does not throw.
+- Do not wrap the `typedFetch` request itself in try/catch for network or HTTP failures; inspect its `error` value. Body reads such as `response.json()` are separate operations and can still throw.
 - `error.message` is for humans and may include the request URL when known; never parse or assert on it. Branch on the error class or `error.status`.
 - Runs anywhere native fetch exists: Node 20+, browsers, Cloudflare Workers, Deno, Bun.
 

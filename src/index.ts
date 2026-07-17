@@ -160,9 +160,17 @@ export function isKnownHttpError(error: unknown): error is ClientErrors | Server
   }
 }
 
-/** A `Response` whose `json()` (and `clone()`) carry the expected body type. */
+/**
+ * A `Response` whose `json()` (and `clone()`) carry the expected body type.
+ *
+ * {@link json} provides a compile-time type only; it does not validate the
+ * payload. Body readers retain native `Response` behavior and may reject for
+ * malformed/empty JSON or an already-consumed body.
+ */
 export interface TypedResponse<JsonReturnType> extends Response {
+  /** Parse JSON with an unchecked compile-time result type; native body-read errors still reject. */
   json(): Promise<JsonReturnType>;
+  /** Clone the response while preserving the typed {@link json} method. */
   clone(): TypedResponse<JsonReturnType>;
 }
 
@@ -192,10 +200,13 @@ export type TypedFetchOptions = FetchParams[1] & {
 };
 
 /**
- * Type-safe wrapper around the native `fetch` API that returns errors as values
- * instead of throwing exceptions.
+ * Type-safe wrapper around the native `fetch` API that resolves network, HTTP,
+ * abort, and timeout request failures as error values instead of rejecting.
+ * Body readers on the returned response are separate native operations and
+ * may still reject for malformed/empty data or a consumed body.
  *
- * @typeParam JsonReturnType - Expected response body type on success.
+ * @typeParam JsonReturnType - Expected response body type on success. This is
+ *   a compile-time type only and does not perform runtime validation.
  *
  * @param url - The resource URL, same as `fetch()`.
  * @param options - Request options with typed `headers` and `method`.

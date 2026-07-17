@@ -18,7 +18,7 @@ trusted-publisher configuration, tag push, and npm publication.
 - The release gates, run from the repo root, are `pnpm lint`,
   `pnpm format:check`, `pnpm typecheck`, `pnpm build`, `pnpm test`,
   `pnpm check-docs`, `pnpm verify-pack`, `pnpm check-consumer`,
-  `pnpm audit:prod`, and `pnpm audit`. Vitest currently runs 398 tests across
+  `pnpm audit:prod`, and `pnpm audit`. Vitest currently runs 399 tests across
   four files.
 - After any change to `src/`, also run `pnpm build` (tsup) and confirm exit 0.
 - Core integration coverage lives in `test.spec.ts` at repo root. It boots a
@@ -651,7 +651,7 @@ Paste-ready for the README ("Non-goals"):
 
 All must be green before cutting `v1.0.0`:
 
-- [x] `pnpm test` passes (398 tests, including the release-policy suite).
+- [x] `pnpm test` passes (399 tests, including the release-policy suite).
 - [x] `pnpm typecheck`, `pnpm lint`, `pnpm format:check` all exit 0.
 - [x] `pnpm build` exits 0; `npm pack --dry-run` file list matches expectations
       (no source/test/config leak).
