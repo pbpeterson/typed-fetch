@@ -1,7 +1,7 @@
-import { BaseHttpError } from "./base-http-error";
+import { KnownHttpError } from "./known-http-error";
 
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/407 */
-export class ProxyAuthenticationRequiredError extends BaseHttpError {
+export class ProxyAuthenticationRequiredError extends KnownHttpError {
   override readonly name = "ProxyAuthenticationRequiredError" as const;
   public readonly status = 407 as const;
   public readonly statusText = "Proxy Authentication Required" as const;

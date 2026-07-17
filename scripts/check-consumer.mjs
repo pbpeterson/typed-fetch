@@ -230,8 +230,22 @@ try {
   const r = runProbe(
     "probe-esm.mjs",
     `
-import { typedFetch, isHttpError, NotFoundError, NetworkError, AbortedError, TimeoutError } from "${PKG_NAME}";
+import {
+  typedFetch,
+  isHttpError,
+  isKnownHttpError,
+  BaseHttpError,
+  NotFoundError,
+  AbortedError,
+  TimeoutError,
+} from "${PKG_NAME}";
 import { start404 } from "./server.mjs";
+
+class CustomHttpError extends BaseHttpError {
+  name = "CustomHttpError";
+  status = 599;
+  statusText = "Custom Error";
+}
 
 const out = {};
 const srv = await start404();
@@ -240,9 +254,14 @@ try {
   const { response, error } = await typedFetch(srv.url);
   out.responseNull = response === null;
   out.isHttpError = isHttpError(error);
+  out.isKnownHttpError = isKnownHttpError(error);
   out.instanceofNotFound = error instanceof NotFoundError;
   out.status404 = error && error.status === 404;
   out.name = error && error.name;
+
+  const custom = new CustomHttpError(new Response(null, { status: 599 }));
+  out.customIsHttp = isHttpError(custom);
+  out.customIsNotKnown = !isKnownHttpError(custom);
 
   // injected fetch implementation
   let injectedCalled = false;
@@ -280,6 +299,9 @@ console.log(JSON.stringify(out));
   );
   record("esm:response-null", r.responseNull, `responseNull=${r.responseNull}`);
   record("esm:isHttpError", r.isHttpError, `isHttpError=${r.isHttpError}`);
+  record("esm:isKnownHttpError", r.isKnownHttpError, `isKnownHttpError=${r.isKnownHttpError}`);
+  record("esm:custom-is-http", r.customIsHttp, `customIsHttp=${r.customIsHttp}`);
+  record("esm:custom-is-not-known", r.customIsNotKnown, `customIsNotKnown=${r.customIsNotKnown}`);
   record("esm:instanceof-NotFoundError", r.instanceofNotFound, `got name=${r.name}`);
   record("esm:status-404", r.status404, `status check=${r.status404}`);
   record("esm:injected-fetch-called", r.injectedCalled, `injectedCalled=${r.injectedCalled}`);
@@ -306,7 +328,7 @@ try {
   const r = runProbe(
     "probe-cjs.cjs",
     `
-const { typedFetch, isHttpError, NotFoundError } = require("${PKG_NAME}");
+const { typedFetch, isHttpError, isKnownHttpError, NotFoundError } = require("${PKG_NAME}");
 const http = require("node:http");
 
 function start404() {
@@ -326,6 +348,7 @@ function start404() {
     const { response, error } = await typedFetch(srv.url);
     out.responseNull = response === null;
     out.isHttpError = isHttpError(error);
+    out.isKnownHttpError = isKnownHttpError(error);
     out.instanceofNotFound = error instanceof NotFoundError;
     out.status404 = error && error.status === 404;
     out.name = error && error.name;
@@ -338,6 +361,7 @@ function start404() {
   );
   record("cjs:response-null", r.responseNull, `responseNull=${r.responseNull}`);
   record("cjs:isHttpError", r.isHttpError, `isHttpError=${r.isHttpError}`);
+  record("cjs:isKnownHttpError", r.isKnownHttpError, `isKnownHttpError=${r.isKnownHttpError}`);
   record("cjs:instanceof-NotFoundError", r.instanceofNotFound, `got name=${r.name}`);
   record("cjs:status-404", r.status404, `status check=${r.status404}`);
 } catch (err) {
@@ -412,6 +436,7 @@ try {
   const { error } = await typedFetch(srv.url);
   out.name = error && error.name;
   out.cjsGuardOnEsmError = cjs.isHttpError(error);
+  out.cjsKnownGuardOnEsmError = cjs.isKnownHttpError(error);
   out.cjsInstanceofOnEsmError = error instanceof cjs.NotFoundError;
 } finally {
   srv.close();
@@ -423,6 +448,11 @@ console.log(JSON.stringify(out));
     "crossformat:require-guard-on-esm-error",
     r.cjsGuardOnEsmError,
     `require("${PKG_NAME}").isHttpError(esmError name=${r.name}) = ${r.cjsGuardOnEsmError} (must be true — the brand-based guard works across CJS/ESM)`,
+  );
+  record(
+    "crossformat:require-known-guard-on-esm-error",
+    r.cjsKnownGuardOnEsmError,
+    `require("${PKG_NAME}").isKnownHttpError(esmError name=${r.name}) = ${r.cjsKnownGuardOnEsmError}`,
   );
   // Informational, NOT an assertion: cross-FORMAT `instanceof` on a distinct
   // class copy cannot work across the dual-package boundary — this is exactly
@@ -447,12 +477,15 @@ console.log(JSON.stringify(out));
 console.log("\n▸ Consumer typecheck (bundler + nodenext) …");
 const tscBin = join(REPO_ROOT, "node_modules", ".bin", "tsc");
 const CONSUMER_TS = `
-import { typedFetch, isHttpError, NotFoundError } from "${PKG_NAME}";
+import { typedFetch, isHttpError, isKnownHttpError, NotFoundError } from "${PKG_NAME}";
 import { NotFoundError as SubpathNotFound } from "${PKG_NAME}/errors";
 
 export async function demo(): Promise<string> {
   const { response, error } = await typedFetch<{ id: number }>("https://example.test/x");
   if (error) {
+    if (isKnownHttpError(error) && error.status === 404) {
+      return error.name;
+    }
     if (isHttpError(error)) {
       // status is present on HTTP errors after the guard
       return \`http \${error.status}\`;

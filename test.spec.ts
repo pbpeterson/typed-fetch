@@ -63,7 +63,7 @@ import {
   VariantAlsoNegotiatesError,
 } from "./src/errors";
 import type { ClientErrors, ServerErrors, TypedFetchError } from "./src/errors";
-import type { StrictHeaders, TypedHeaders } from "./src/headers";
+import type { StrictHeaders } from "./src/headers";
 import type { HttpMethods } from "./src/methods";
 import type { TypedFetchOptions, TypedFetchReturnType, TypedResponse } from "./index";
 
@@ -1286,6 +1286,19 @@ describe("isKnownHttpError", () => {
     expect(isKnownHttpError(new NotFoundError(new Response(null, { status: 404 })))).toBe(true);
   });
 
+  test("false for a consumer-defined BaseHttpError subclass", () => {
+    class CustomHttpError extends BaseHttpError {
+      override readonly name = "CustomHttpError" as const;
+      readonly status = 599 as const;
+      readonly statusText = "Custom Error" as const;
+    }
+
+    const error = new CustomHttpError(new Response(null, { status: 599 }));
+
+    expect(isHttpError(error)).toBe(true);
+    expect(isKnownHttpError(error)).toBe(false);
+  });
+
   test("false for UnknownHttpError, NetworkError, plain Error, and non-errors", () => {
     expect(isKnownHttpError(new UnknownHttpError(new Response(null, { status: 420 })))).toBe(false);
     expect(isKnownHttpError(new NetworkError("fail"))).toBe(false);
@@ -1316,6 +1329,7 @@ describe("cross-copy brands", () => {
   // brand symbol but NO prototype link to this module's classes. If a guard
   // still used `instanceof`, every case below would fail.
   const httpBrand = Symbol.for("@pbpeterson/typed-fetch.BaseHttpError");
+  const knownHttpBrand = Symbol.for("@pbpeterson/typed-fetch.KnownHttpError");
   const unknownBrand = Symbol.for("@pbpeterson/typed-fetch.UnknownHttpError");
   const networkBrand = Symbol.for("@pbpeterson/typed-fetch.NetworkError");
   const abortBrand = Symbol.for("@pbpeterson/typed-fetch.AbortedError");
@@ -1334,7 +1348,8 @@ describe("cross-copy brands", () => {
   });
 
   test("isKnownHttpError matches a foreign known error but not a foreign UnknownHttpError", () => {
-    expect(isKnownHttpError(foreign(httpBrand))).toBe(true);
+    expect(isKnownHttpError(foreign(httpBrand, knownHttpBrand))).toBe(true);
+    expect(isKnownHttpError(foreign(httpBrand))).toBe(false);
     expect(isKnownHttpError(foreign(httpBrand, unknownBrand))).toBe(false);
   });
 
@@ -1346,7 +1361,7 @@ describe("cross-copy brands", () => {
 
   test("guard exclusivity holds across foreign copies (no cross-family overlap)", () => {
     const samples = {
-      http: foreign(httpBrand),
+      http: foreign(httpBrand, knownHttpBrand),
       unknown: foreign(httpBrand, unknownBrand),
       network: foreign(networkBrand),
       abort: foreign(abortBrand),

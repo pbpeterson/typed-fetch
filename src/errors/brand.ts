@@ -21,12 +21,12 @@
  *
  * ## Scope of the fix
  *
- * The brands identify the four *root* runtime kinds a consumer branches on:
- * {@link httpErrorBrand} (any 4xx/5xx), {@link unknownHttpErrorBrand} (the
- * catch-all subclass, so `isKnownHttpError` can exclude it),
- * {@link networkErrorBrand}, {@link abortedErrorBrand}, and
- * {@link timeoutErrorBrand}. The library's guards key off these brands instead
- * of `instanceof`, so they work across copies and formats.
+ * The brands identify the runtime categories a consumer branches on:
+ * {@link httpErrorBrand} (any 4xx/5xx), {@link knownHttpErrorBrand} (one of the
+ * library's dedicated status classes), {@link unknownHttpErrorBrand} (the
+ * catch-all subclass), {@link networkErrorBrand}, {@link abortedErrorBrand},
+ * and {@link timeoutErrorBrand}. The library's guards key off these brands
+ * instead of `instanceof`, so they work across copies and formats.
  *
  * Discriminating a *specific* HTTP subclass across copies (e.g.
  * `error instanceof NotFoundError` when the two came from different copies) is
@@ -37,9 +37,14 @@
 /** Brand for any {@link BaseHttpError} subclass (all 4xx/5xx errors). */
 export const httpErrorBrand: unique symbol = Symbol.for("@pbpeterson/typed-fetch.BaseHttpError");
 
+/** Brand for one of the library's dedicated, literal-status HTTP errors. */
+export const knownHttpErrorBrand: unique symbol = Symbol.for(
+  "@pbpeterson/typed-fetch.KnownHttpError",
+);
+
 /**
- * Brand for {@link UnknownHttpError} specifically, so `isKnownHttpError` can
- * exclude the catch-all subclass across copies.
+ * Brand for {@link UnknownHttpError} specifically, preserving its identity
+ * across module copies independently of the dedicated-error brand.
  */
 export const unknownHttpErrorBrand: unique symbol = Symbol.for(
   "@pbpeterson/typed-fetch.UnknownHttpError",

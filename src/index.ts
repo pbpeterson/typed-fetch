@@ -9,9 +9,9 @@ import {
   abortedErrorBrand,
   hasBrand,
   httpErrorBrand,
+  knownHttpErrorBrand,
   networkErrorBrand,
   timeoutErrorBrand,
-  unknownHttpErrorBrand,
 } from "./errors/brand";
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
@@ -127,7 +127,7 @@ export function isTimeoutError(error: unknown): error is TimeoutError {
  * ```
  */
 export function isKnownHttpError(error: unknown): error is ClientErrors | ServerErrors {
-  return hasBrand(error, httpErrorBrand) && !hasBrand(error, unknownHttpErrorBrand);
+  return hasBrand(error, httpErrorBrand) && hasBrand(error, knownHttpErrorBrand);
 }
 
 /** A `Response` whose `json()` (and `clone()`) carry the expected body type. */

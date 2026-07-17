@@ -1,7 +1,7 @@
-import { BaseHttpError } from "./base-http-error";
+import { KnownHttpError } from "./known-http-error";
 
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/405 */
-export class MethodNotAllowedError extends BaseHttpError {
+export class MethodNotAllowedError extends KnownHttpError {
   override readonly name = "MethodNotAllowedError" as const;
   public readonly status = 405 as const;
   public readonly statusText = "Method Not Allowed" as const;

@@ -1,7 +1,7 @@
-import { BaseHttpError } from "./base-http-error";
+import { KnownHttpError } from "./known-http-error";
 
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/504 */
-export class GatewayTimeoutError extends BaseHttpError {
+export class GatewayTimeoutError extends KnownHttpError {
   override readonly name = "GatewayTimeoutError" as const;
   public readonly status = 504 as const;
   public readonly statusText = "Gateway Timeout" as const;

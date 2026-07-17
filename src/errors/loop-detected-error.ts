@@ -1,7 +1,7 @@
-import { BaseHttpError } from "./base-http-error";
+import { KnownHttpError } from "./known-http-error";
 
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/508 */
-export class LoopDetectedError extends BaseHttpError {
+export class LoopDetectedError extends KnownHttpError {
   override readonly name = "LoopDetectedError" as const;
   public readonly status = 508 as const;
   public readonly statusText = "Loop Detected" as const;

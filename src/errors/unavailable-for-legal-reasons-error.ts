@@ -1,7 +1,7 @@
-import { BaseHttpError } from "./base-http-error";
+import { KnownHttpError } from "./known-http-error";
 
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/451 */
-export class UnavailableForLegalReasonsError extends BaseHttpError {
+export class UnavailableForLegalReasonsError extends KnownHttpError {
   override readonly name = "UnavailableForLegalReasonsError" as const;
   public readonly status = 451 as const;
   public readonly statusText = "Unavailable For Legal Reasons" as const;

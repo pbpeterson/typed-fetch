@@ -1,7 +1,7 @@
-import { BaseHttpError } from "./base-http-error";
+import { KnownHttpError } from "./known-http-error";
 
 /** @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401 */
-export class UnauthorizedError extends BaseHttpError {
+export class UnauthorizedError extends KnownHttpError {
   override readonly name = "UnauthorizedError" as const;
   public readonly status = 401 as const;
   public readonly statusText = "Unauthorized" as const;

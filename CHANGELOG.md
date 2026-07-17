@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **`isKnownHttpError` no longer misclassifies consumer-defined
+  `BaseHttpError` subclasses as one of the library's dedicated status
+  classes.** Dedicated errors now carry a separate cross-copy brand, keeping
+  the guard's `ClientErrors | ServerErrors` type predicate sound while
+  preserving ESM/CJS and cross-entry behavior.
 - **`BaseHttpError` no longer leaks its internal `Response` as an own enumerable
   property.** It was a constructor parameter property, so `JSON.stringify(err)`,
   `{...err}`, and `Object.keys(err)` exposed a live `Response` handle. It is now
