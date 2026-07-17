@@ -9,6 +9,18 @@
   audit now report zero known vulnerabilities; TypeScript remains on 6.x until
   tsup's declaration build supports TypeScript 7.
 
+### Release engineering
+
+- Package identity and release tags must now exactly match the reviewed
+  metadata, point at the current `origin/main` tip, have a dated changelog
+  entry, and leave `[Unreleased]` empty before publication can start.
+- The tag workflow now reruns formatting, documentation, tarball-consumer, and
+  dependency-audit gates; pins Node and npm; disables release dependency
+  caching; verifies all eight CJS/ESM declaration/runtime entries; and
+  serializes publish jobs.
+- Documented the required trusted-publisher setup for token-free OIDC releases
+  and enabled provenance in both package metadata and the publish command.
+
 ### Fixed
 
 - **`isKnownHttpError` no longer misclassifies consumer-defined

@@ -32,6 +32,13 @@ import { fileURLToPath } from "node:url";
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PKG_NAME = "@pbpeterson/typed-fetch";
 
+// pnpm lifecycle scripts expose pnpm-only npm_config_* keys. Strip them only
+// from nested npm calls so npm's output is deterministic and warning-free.
+const npmEnvironment = { ...process.env };
+for (const key of Object.keys(npmEnvironment)) {
+  if (key.toLowerCase().startsWith("npm_config_")) delete npmEnvironment[key];
+}
+
 // ---------------------------------------------------------------------------
 // KNOWN_FAILING — assertions that fail against the CURRENT (unfixed) artifact.
 //
@@ -125,7 +132,8 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 }
 
 function run(cmd, args, opts = {}) {
-  return execFileSync(cmd, args, { encoding: "utf8", ...opts });
+  const env = cmd === "npm" ? npmEnvironment : process.env;
+  return execFileSync(cmd, args, { encoding: "utf8", env, ...opts });
 }
 
 // ---------------------------------------------------------------------------

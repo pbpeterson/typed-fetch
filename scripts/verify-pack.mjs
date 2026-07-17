@@ -23,15 +23,26 @@
 
 import { execFileSync } from "node:child_process";
 
+// pnpm forwards its own config as npm_config_* variables to lifecycle scripts.
+// Newer npm versions warn about pnpm-only keys. The pack manifest must be
+// deterministic and does not need user/package-manager configuration.
+const npmEnvironment = { ...process.env };
+for (const key of Object.keys(npmEnvironment)) {
+  if (key.toLowerCase().startsWith("npm_config_")) delete npmEnvironment[key];
+}
+
 // Compiled entry points that MUST be in every published tarball. These back the
 // `main`, `module`, `types` and `exports` fields in package.json — if any is
 // missing, the package is broken for some consumer (CJS, ESM, or types).
 const REQUIRED_DIST_FILES = [
   "dist/index.js", // main (CJS)
   "dist/index.mjs", // module (ESM)
-  "dist/index.d.ts", // types
+  "dist/index.d.ts", // require types
+  "dist/index.d.mts", // import types
   "dist/errors/index.js", // ./errors (CJS)
   "dist/errors/index.mjs", // ./errors (ESM)
+  "dist/errors/index.d.ts", // ./errors require types
+  "dist/errors/index.d.mts", // ./errors import types
 ];
 
 // Metadata files consumers rely on. npm always includes package.json; LICENSE
@@ -74,6 +85,7 @@ let raw;
 try {
   raw = execFileSync("npm", ["pack", "--dry-run", "--json"], {
     encoding: "utf8",
+    env: npmEnvironment,
     stdio: ["ignore", "pipe", "inherit"],
   });
 } catch (err) {

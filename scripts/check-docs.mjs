@@ -16,12 +16,11 @@
 //
 // WHAT IT DOES / DOES NOT CATCH
 //   Compilation is NECESSARY, not SUFFICIENT. A block can typecheck and still be
-//   semantically wrong. The clearest live example: the maintainer skill's error
-//   -class template (see .claude/skills/typed-fetch-maintainer/SKILL.md) omits
-//   `override readonly name = "..."`. That compiles fine, but at runtime a
-//   minifier can rename the class and the error's `.name` becomes garbage — a
-//   real bug this guard will NEVER see. Do not treat a green run here as proof
-//   the docs are correct; it only proves they still TYPECHECK against dist/.
+//   semantically wrong. An error-class template could omit an explicit literal
+//   `name` and still compile, even though a minifier could then change runtime
+//   behavior. This guard will NEVER see that class of bug. Do not treat a green
+//   run here as proof the docs are correct; it only proves they still TYPECHECK
+//   against dist/.
 //
 // RUN ORDER
 //   MUST run AFTER `pnpm build`. dist/ is the compile target. If dist/ is

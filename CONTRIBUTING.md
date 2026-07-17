@@ -48,6 +48,8 @@ pnpm build          # tsup — confirm the package actually builds
 pnpm check-docs     # typecheck every fenced TS block in the docs (run AFTER build)
 pnpm verify-pack    # assert the published tarball's file manifest (run AFTER build)
 pnpm check-consumer # pack + install the tarball, exercise it as a real consumer (run AFTER build)
+pnpm audit:prod     # fail on any known runtime-dependency vulnerability
+pnpm audit          # fail on high/critical vulnerabilities in the full toolchain
 ```
 
 Run them all locally; CI runs the same checks and will fail the PR otherwise.
@@ -262,11 +264,11 @@ policy below.
 
 ## Release process and semver policy
 
-Releasing is manual and tag-driven; see [`RELEASING.md`](./RELEASING.md) for
-the full process. The semver rules that govern what counts as `patch` /
-`minor` / `major` for this package are also defined there — read them before
-making a change that touches an error class, an export, or `status`/
-`statusText`. In short:
+Releasing is PR-reviewed and tag-driven; see [`RELEASING.md`](./RELEASING.md)
+for the full process and required npm OIDC setup. The semver rules that govern
+what counts as `patch` / `minor` / `major` for this package are also defined
+there — read them before making a change that touches an error class, an
+export, or `status`/`statusText`. In short:
 
 - Adding a new dedicated HTTP error class is `minor`.
 - Moving a code from `UnknownHttpError` to a dedicated class is `major`.

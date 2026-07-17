@@ -1,8 +1,8 @@
 name: Release
 
-# Publishes via npm trusted publishing (OIDC) — no NPM_TOKEN secret needed.
-# One-time setup on npmjs.com: package Settings → Trusted Publisher →
-# GitHub Actions, repository pbpeterson/typed-fetch, workflow release.yml.
+# Publishes via npm trusted publishing (OIDC) — no long-lived npm token.
+# Before tagging: configure this existing package's Trusted Publisher for
+# pbpeterson/typed-fetch and workflow release.yml on npmjs.com.
 on:
   push:
     tags: ["v*"]
@@ -11,21 +11,35 @@ permissions:
   contents: read
   id-token: write # required for OIDC trusted publishing + provenance
 
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: 22
-          cache: pnpm
+          node-version: 22.23.1
           registry-url: https://registry.npmjs.org
-      # Trusted publishing requires npm >= 11.5
-      - run: npm install -g npm@latest
+      # Fail before installation if the vX.Y.Z tag, package version, dated
+      # changelog, tag target, or current origin/main tip do not all match.
+      - id: release
+        run: |
+          git fetch --no-tags origin main
+          node scripts/validate-release.mjs
+      # Trusted publishing requires npm >= 11.5. Pin it so an npm release
+      # cannot silently change the publisher between review and execution.
+      - run: npm install -g npm@11.18.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      - run: pnpm format:check
       - run: pnpm typecheck
       # Build explicitly BEFORE test and publish. Do NOT rely on the
       # `prepublishOnly` lifecycle hook — if it is renamed, removed, or a
@@ -35,18 +49,12 @@ jobs:
       # test (gated on dist existence) is exercised instead of skipped.
       - run: pnpm build
       - run: pnpm test
+      - run: pnpm check-docs
       # Defense in depth: assert the tarball's file manifest (required entry
       # points present, no source/test leaks) before we publish it. Contents
       # are covered by the API-surface snapshot test above, which runs first.
       - run: pnpm verify-pack
-      # Derive the npm dist-tag from the git ref. A prerelease tag (semver
-      # build/prerelease, i.e. one containing `-`, e.g. v1.0.0-rc.1) must NOT
-      # move `latest`; it publishes under `next`. A normal tag gets `latest`.
-      - id: disttag
-        run: |
-          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            echo "tag=next" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-          fi
-      - run: npm publish --provenance --access public --tag ${{ steps.disttag.outputs.tag }}
+      - run: pnpm check-consumer
+      - run: pnpm audit:prod
+      - run: pnpm audit
+      - run: npm publish --provenance --access public --tag ${{ steps.release.outputs.dist_tag }}

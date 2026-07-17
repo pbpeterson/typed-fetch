@@ -108,6 +108,7 @@ pnpm test
 pnpm check-docs
 pnpm verify-pack
 pnpm check-consumer
+pnpm audit:prod
 pnpm audit
 ```
 
@@ -131,7 +132,8 @@ pnpm audit
 
 ## Release
 
-Releases are manual and tag-driven — the full, binding process is in **RELEASING.md**; follow it exactly. In short:
+Releases are PR-reviewed and tag-driven — the full, binding process is in
+**RELEASING.md**; follow it exactly. In short:
 
 1. Open a release PR against `main` with the chosen version and dated changelog;
    all required checks above must pass.
@@ -139,7 +141,8 @@ Releases are manual and tag-driven — the full, binding process is in **RELEASI
    `origin/main` tip.
 3. Create and push the matching `vX.Y.Z` tag on that commit. The tag-triggered
    workflow revalidates the version, commit, full gate set, tarball, and
-   consumer install before `npm publish --provenance` (OIDC, no token).
+   consumer install before `npm publish --provenance` through OIDC, with no
+   repository npm token.
 4. Verify the npm version, dist-tag, provenance attestation, and GitHub release
    after publication. Never retry by moving or reusing a published tag.
 

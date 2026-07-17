@@ -7,43 +7,45 @@ This document is the entire process. Follow it exactly, every time.
 ## Why this document exists
 
 Publishing on this project is **tag-driven**: pushing a `v*` git tag is what
-triggers `.github/workflows/release.yml` and puts a new version on npm.
-Historically, versions `0.4.0` through `0.7.2` were published to npm **without**
-a corresponding git tag — there is no way to reconstruct what commit those
-releases were built from. That must never happen again. Every publish gets a
-tag. No exceptions.
+triggers `.github/workflows/release.yml` and puts a new version on npm. npm's
+current `latest` is `0.8.1`; `1.0.0` is the first stable release. Versions
+`0.4.0` through `0.7.2` were published without corresponding Git tags, which
+must not happen again. Every publication must be reconstructable from an
+immutable tag, reviewed commit, lockfile, workflow run, and provenance
+attestation.
 
 ## How publishing actually works
 
 - `.github/workflows/release.yml` triggers on `push: tags: ["v*"]` — nothing
   else publishes.
-- It runs on `ubuntu-latest`, checks out the repo, installs pnpm/Node 22,
-  upgrades to the latest npm (trusted publishing needs npm >= 11.5), then runs
-  `pnpm install --frozen-lockfile`. The steps that follow run **in this exact
-  order**:
+- Before dependencies are installed, `scripts/validate-release.mjs` fails the
+  workflow unless all of these are true:
+  - package name, public repository, public access, and provenance metadata are
+    the expected immutable publishing identity;
+  - the ref is strict SemVer and exactly `v<package.json version>`;
+  - the tag points to `HEAD`, which is also the current `origin/main` tip;
+  - `CHANGELOG.md` has a dated section for the version;
+  - the `[Unreleased]` changelog section is empty.
+- The workflow uses a GitHub-hosted runner, Node `22.23.1`, pnpm from the exact
+  `packageManager` field, and npm `11.18.0`. Release dependencies are not
+  restored from a package-manager cache. It installs the reviewed lockfile with
+  `pnpm install --frozen-lockfile`, then runs:
   1. `pnpm lint`
-  2. `pnpm typecheck`
-  3. `pnpm build` — the workflow builds `dist/` **explicitly**, before test and
-     publish (see the note on `prepublishOnly` below).
-  4. `pnpm test` — runs after the build, so `dist/` exists and the
-     API-surface snapshot test (which imports `dist/index.mjs` and is skipped
-     when `dist/` is absent) is actually exercised, not silently skipped.
-  5. `pnpm verify-pack` — a release gate that runs `npm pack --dry-run` and
-     asserts the tarball's **file manifest** (see
-     [scripts/verify-pack.mjs](./scripts/verify-pack.mjs)). It checks that the
-     required `dist/` entry points and `LICENSE`/`README.md` are present and
-     that nothing from `src/`, `scripts/`, tests, or config leaks in. It does
-     **not** verify file contents — the API-surface snapshot test (step 4)
-     covers that, and runs first.
-  6. `npm publish --provenance --access public --tag <dist-tag>` — the dist-tag
-     is derived from the git ref: a prerelease tag (one containing `-`, e.g.
-     `v1.0.0-rc.1`) publishes under `next`; a normal tag publishes under
-     `latest`.
-- Publishing uses **npm trusted publishing (OIDC)** — the workflow has
-  `id-token: write` permission and authenticates to npm via GitHub Actions'
-  OIDC identity. There is **no `NPM_TOKEN` secret** to rotate or leak. Trusted
-  publishing is configured once on npmjs.com (package Settings → Trusted
-  Publisher → GitHub Actions → this repo → `release.yml`).
+  2. `pnpm format:check`
+  3. `pnpm typecheck`
+  4. `pnpm build`
+  5. `pnpm test`
+  6. `pnpm check-docs`
+  7. `pnpm verify-pack`
+  8. `pnpm check-consumer`
+  9. `pnpm audit:prod`
+  10. `pnpm audit`
+- `verify-pack` asserts every CJS, ESM, and declaration entry in the tarball;
+  `check-consumer` installs that tarball into a scratch project and exercises
+  both entry points, both module formats, and consumer typechecking.
+- Only after every gate passes does the workflow run
+  `npm publish --provenance --access public --tag <dist-tag>`. A prerelease such
+  as `1.1.0-rc.1` uses `next`; a stable version uses `latest`.
 - The build is done by the **explicit `pnpm build` step above**, not by the
   `prepublishOnly` lifecycle hook. `"prepublishOnly": "npm run build"` still
   exists in `package.json`, but it is now a **redundant safety net**, not the
@@ -54,62 +56,82 @@ tag. No exceptions.
   from the published tarball back to this workflow run and commit) and
   ensures the scoped package publishes as public, not private.
 
-Because the workflow itself runs `pnpm lint` / `pnpm typecheck` / `pnpm build` /
-`pnpm test` / `pnpm verify-pack` before publishing, a red gate on the tagged
-commit will fail the release. **Note:** the release workflow does **not** run
-`format:check` — only `ci.yml` (on PRs and pushes) does. So the release gate
-will not catch a formatting violation on the tagged commit; run `format:check`
-locally (see below) to keep formatting honest. And don't rely on CI to catch
-the other gates for you either — run them locally first so a failed release
-doesn't leave you with a pushed tag and no published package.
+### Required npm setup before `v1.0.0`
+
+The package already exists on npm, so `1.0.0` can and must publish directly
+through trusted publishing—no bootstrap token is needed:
+
+1. Enable 2FA on the npm maintainer account.
+2. On npmjs.com, open `@pbpeterson/typed-fetch` → Settings → Trusted Publisher.
+3. Authorize GitHub Actions for repository `pbpeterson/typed-fetch`, workflow
+   `release.yml`, and the `npm publish` action. Every field is case-sensitive.
+4. Confirm this repository has no `NPM_TOKEN` Actions secret and revoke any old
+   npm automation token for this package.
+5. Set package publishing access to require 2FA and disallow traditional
+   tokens. Trusted publishing continues to work through short-lived OIDC
+   credentials.
+
+See [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/) for the
+registry-side setup and requirements. npm does not test the configuration when
+it is saved, so verify the repository and workflow filename carefully before
+pushing the release tag.
 
 ## Release checklist
 
 Run every step, in order, for every release:
 
-1. **Make sure `main` is green.** Run the full gate locally — this is a
-   superset of what the release workflow runs (it adds `format:check`, which
-   the release workflow does not run; only `ci.yml` does):
+1. **Prepare a release branch and PR.** Decide the version with the
+   [SemVer policy](#semver-policy), edit `package.json` directly, move all
+   pending changelog entries from `[Unreleased]` into
+   `## [X.Y.Z] - YYYY-MM-DD`, and leave `[Unreleased]` empty. For the first
+   stable publication, the version is already `1.0.0`.
+2. **Run the exact gates locally, in order:**
    ```bash
-   pnpm lint && pnpm format:check && pnpm typecheck && pnpm build && pnpm test && pnpm verify-pack
+   pnpm lint
+   pnpm format:check
+   pnpm typecheck
+   pnpm build
+   pnpm test
+   pnpm check-docs
+   pnpm verify-pack
+   pnpm check-consumer
+   pnpm audit:prod
+   pnpm audit
    ```
-   Run `build` before `test` and `verify-pack`, exactly as the release
-   workflow does: the API-surface snapshot test and `verify-pack` both inspect
-   `dist/`, so it must exist first.
-2. **Decide the version bump** using the [semver policy](#semver-policy)
-   below.
-3. **Bump the version in `package.json`.** Edit the `"version"` field
-   directly (no `npm version` / `pnpm version` commands that also tag — this
-   process tags manually in step 5 after the changelog is committed).
-4. **Write the CHANGELOG entry.** Add a new section to `CHANGELOG.md` above
-   the previous entry, following the existing format (`## <version>
-(<date>)`, with `### Breaking` / `### Added` / `### Changed` / `### Fixed`
-   subsections as needed). Every publish gets an entry — this is the
-   changelog of record since there are no changeset files to generate one
-   from.
-5. **Commit the bump and the changelog together:**
+   `build` must precede every artifact gate because the tests, docs checker,
+   tarball validator, and scratch consumer inspect `dist/`.
+3. **Commit the release candidate and open a PR:**
    ```bash
-   git add package.json CHANGELOG.md
-   git commit -m "chore: release v<x.y.z>"
+   git commit -m "chore: release X.Y.Z"
    ```
-6. **Tag the release commit:**
+   Required checks must pass before merge; do not tag the PR branch.
+4. **Merge the PR and update the local `main`.** Confirm the commit you intend
+   to tag is the remote tip:
    ```bash
-   git tag v<x.y.z>
+   git fetch origin main
+   git switch main
+   git pull --ff-only origin main
+   test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
    ```
-7. **Push the commit, then push the tag:**
+5. **Before `v1.0.0` only:** complete
+   [Required npm setup](#required-npm-setup-before-v100). Do this before the
+   irreversible tag push.
+6. **Create an annotated tag on that exact commit and push only that tag:**
    ```bash
-   git push
-   git push --tags
+   git tag -a vX.Y.Z -m "@pbpeterson/typed-fetch X.Y.Z"
+   git push origin vX.Y.Z
    ```
-   Pushing the tag is what triggers `release.yml` and publishes to npm.
-8. **Verify the publish**: check the
+   Never use `git push --tags`; it can publish unrelated local tags. Never move
+   or reuse a tag that has been pushed.
+7. **Watch the Release workflow to completion.** If it fails, do not publish
+   manually and do not move the tag. Fix the issue through a new reviewed
+   release commit and version.
+8. **Verify the publication:** check the
    [npm package page](https://www.npmjs.com/package/@pbpeterson/typed-fetch)
-   shows the new version with a provenance badge, and that the corresponding
-   GitHub Actions run succeeded.
-
-There is no dry-run publish step in CI, but you can sanity-check the tarball
-manifest locally at any time with `npm pack --dry-run` (or `pnpm verify-pack`,
-which asserts that manifest and is the same gate the release workflow runs).
+   shows the correct version, `latest`/`next` dist-tag, provenance badge, source
+   commit, and workflow. Install the exact version in a clean consumer once.
+   `pnpm verify-pack` is the authoritative dry-run manifest check; the release
+   workflow executes it again immediately before publication.
 
 ## Semver policy
 
@@ -129,8 +151,8 @@ the rule, not intuition.
    just fail to narrow the new class).
 2. **Moving a status code from `UnknownHttpError` to a dedicated class is a
    `major`.** Unlike (1), this changes the runtime type of an existing,
-   already-dedicated code path: anyone doing `instanceof UnknownHttpError`
-   for that specific code now gets a different class.
+   previously-unknown code path: anyone doing `instanceof UnknownHttpError`
+   for that specific status now gets a different class.
 3. **`error.message` text is NOT part of the semver contract.** Message
    wording may change in any release, including patches. Assert on
    `.status` and `.name` in tests and application code, never on
