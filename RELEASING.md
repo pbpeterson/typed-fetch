@@ -157,11 +157,14 @@ the rule, not intuition.
    wording may change in any release, including patches. Assert on
    `.status` and `.name` in tests and application code, never on
    `.message` content.
-4. **`statusText` is the canonical IANA reason phrase for the status code —
-   not the value the server sent on the wire — and IS part of the contract.**
+4. **`statusText` is the library's canonical protocol label for the status code
+   — not the value the server sent on the wire — and IS part of the contract.**
    It is literal-typed per class (e.g. `NotFoundError.statusText` is always
-   `"Not Found"`). The server's actual wire reason phrase, when present, is
-   folded into `error.message` instead.
+   `"Not Found"`) and normally follows the current IANA registry. Intentional
+   historical exceptions: 418 keeps `"I'm a teapot"`; 510 keeps
+   `"Not Extended"` without the registry's `(OBSOLETED)` lifecycle annotation.
+   The server's actual wire reason phrase, when present, is folded into
+   `error.message` instead.
 5. **Removing or renaming a named export, or changing a class's `status` or
    `statusText` literal, is a `major`.**
 6. **Every publish gets a `v<version>` git tag**, and the tag push is what

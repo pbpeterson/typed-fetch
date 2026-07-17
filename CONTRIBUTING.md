@@ -66,7 +66,10 @@ one snapshot cannot see the other:
 
 - **Value surface** (`public API surface is frozen`): the runtime named
   exports, read via `Object.keys(await import("dist/index.mjs"))`. This sees
-  only bindings that exist at runtime — functions, classes, values.
+  only bindings that exist at runtime — functions, classes, values. The same
+  suite also derives every dedicated class from the internal `httpErrors`
+  roster and requires both `.` and `./errors` to export it, catching a future
+  class that is registered internally but omitted from a barrel.
 - **Type surface** (`public TYPE surface is frozen`): the type-only exports,
   read from the built `dist/*.d.mts` with the **TypeScript compiler API**
   (`getExportsOfModule`, keeping symbols that carry a type meaning but no value
@@ -254,6 +257,9 @@ point of them:
   **typecheck** via the per-class assertions in
   `"every class's status and statusText are their own literal type, not
 number/string"`.
+- Omitting a registered class from either public barrel fails the dist-gated
+  `"exports every dedicated class in the internal roster"` checks for `.` and
+  `./errors`.
 
 So the invariant that the roster is complete and every class carries its exact
 literal `status`/`statusText` is enforced by the test suite, not by a

@@ -40,7 +40,10 @@ src/errors/
 3. `res.status >= 400` → mapped class from `statusCodeErrorMap`, else `UnknownHttpError`.
 4. Otherwise success — body NOT parsed; consumer calls `response.json()`. 3xx with `redirect: "manual"` is success.
 
-No internal throw/catch control flow beyond the single `fetch` try/catch. Keep it that way.
+No broad internal throw/catch control flow beyond the single `fetch` envelope.
+Narrow defensive readers may catch hostile property/prototype access solely to
+keep a rejected custom-fetch value inside that envelope; they must not drive
+normal request control flow.
 
 ### The error contract (consumer-facing — keep it stable)
 
@@ -76,8 +79,9 @@ export class NotFoundError extends KnownHttpError {
 Rules: extend the internal `KnownHttpError`; set an explicit literal `name`;
 use `as const` (oxlint prefer-as-const); provide instance AND static status
 properties; and add no constructor or `clone()` — the base class provides both.
-The file is kebab-case matching the class name. `statusText` is the canonical
-IANA reason phrase, not the server's wire value.
+The file is kebab-case matching the class name. `statusText` is the library's
+canonical protocol label (normally the current IANA phrase), not the server's
+wire value. The documented historical exceptions are 418 and 510.
 
 ### Adding a new status code (5 hand-edited places)
 
@@ -96,7 +100,7 @@ Adding a class also changes the public API surface, so update the snapshot (see 
 These are what keep the hand-edited roster honest — run and read them when touching errors:
 
 - **Roster sync** (`describe("roster sync")`): compile-time `InstanceType<HttpErrors>` vs `ClientErrors | ServerErrors` exhaustiveness; runtime cardinality (exactly 40) and `httpErrors` ↔ `statusCodeErrorMap` agreement; and 40 explicit per-class `expectTypeOf<XError["status"]>().toEqualTypeOf<NNN>()` assertions (the array/union checks do NOT catch a single class's literal being widened — only the per-class ones do).
-- **API-surface snapshot** (`describe("public API surface is frozen")`): snapshots the sorted named exports of the BUILT `dist/index.mjs` and `dist/errors/index.mjs`. It is `describe.skipIf(!distExists)` — it only runs after `pnpm build` because `dist/` is gitignored. CI deliberately builds first. Any export add/remove needs `pnpm build && pnpm test -u` to refresh the snapshot; a diff is a reviewable minor/major signal.
+- **API-surface snapshot + barrel completeness** (`describe("public API surface is frozen")`): snapshots the sorted named exports of the BUILT `dist/index.mjs` and `dist/errors/index.mjs`, then compares the internal `httpErrors` names/statuses with both entry points so a registered class cannot ship without being importable. It is `describe.skipIf(!distExists)` — it only runs after `pnpm build` because `dist/` is gitignored. CI deliberately builds first. Any intentional export add/remove needs `pnpm build && pnpm test -u` to refresh the snapshot.
 
 ## Verification (run all before commit)
 

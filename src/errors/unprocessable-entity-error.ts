@@ -4,7 +4,7 @@ import { KnownHttpError } from "./known-http-error";
 export class UnprocessableEntityError extends KnownHttpError {
   override readonly name = "UnprocessableEntityError" as const;
   public readonly status = 422 as const;
-  public readonly statusText = "Unprocessable Entity" as const;
+  public readonly statusText = "Unprocessable Content" as const;
   static readonly status = 422 as const;
-  static readonly statusText = "Unprocessable Entity" as const;
+  static readonly statusText = "Unprocessable Content" as const;
 }

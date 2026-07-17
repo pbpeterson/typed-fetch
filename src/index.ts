@@ -16,6 +16,30 @@ import {
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
 
+function readStringProperty(value: object, property: "message" | "name"): string | undefined {
+  try {
+    const result = (value as Record<"message" | "name", unknown>)[property];
+    return typeof result === "string" ? result : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isError(value: unknown): value is Error {
+  try {
+    return value instanceof Error;
+  } catch {
+    return false;
+  }
+}
+
+function networkErrorMessage(value: unknown): string {
+  if (!isError(value)) return "Network error";
+  return (
+    readStringProperty(value, "message") || readStringProperty(value, "name") || "Network error"
+  );
+}
+
 /**
  * Realm-safe DOMException detection. `instanceof DOMException` is bound to the
  * current realm's constructor, so a DOMException created in another realm
@@ -27,10 +51,19 @@ import { HttpMethods } from "./methods";
  * `typeof` guard keeps exotic runtimes without the global from throwing.
  */
 function isDOMException(value: unknown): value is DOMException {
-  return (
-    (typeof DOMException !== "undefined" && value instanceof DOMException) ||
-    Object.prototype.toString.call(value) === "[object DOMException]"
-  );
+  try {
+    return (
+      (typeof DOMException !== "undefined" && value instanceof DOMException) ||
+      Object.prototype.toString.call(value) === "[object DOMException]"
+    );
+  } catch {
+    // Hostile proxies / Symbol.toStringTag getters are not platform exceptions.
+    return false;
+  }
+}
+
+function isDOMExceptionNamed(value: unknown, ...names: string[]): value is DOMException {
+  return isDOMException(value) && names.includes(readStringProperty(value as object, "name") ?? "");
 }
 
 /**
@@ -213,7 +246,9 @@ export type TypedFetchOptions = FetchParams[1] & {
  * @returns A discriminated union: `{ response, error: null }` on success,
  *   `{ response: null, error }` on failure. `error` is the full
  *   {@link TypedFetchError} union — narrow it with {@link isKnownHttpError}
- *   and `switch (error.status)`, or with `instanceof`.
+ *   and `switch (error.status)`. Raw `instanceof` is only reliable when the
+ *   producer and consumer share one module graph; use the brand-based guards
+ *   across duplicate package copies or ESM/CJS boundaries.
  *
  * @example
  * ```ts
@@ -308,9 +343,7 @@ export async function typedFetch<JsonReturnType>(
     if (
       signal?.aborted &&
       (err === signal.reason ||
-        (signal.reason === undefined &&
-          isDOMException(err) &&
-          (err.name === "AbortError" || err.name === "TimeoutError")))
+        (signal.reason === undefined && isDOMExceptionNamed(err, "AbortError", "TimeoutError")))
     ) {
       const reason = signal.reason;
       // Classify a timeout by the *shape the platform produces*, not by a name
@@ -335,7 +368,7 @@ export async function typedFetch<JsonReturnType>(
       // "TimeoutError". Falling back to `err` classifies that case as a
       // TimeoutError instead of a generic AbortedError.
       const timeoutBasis = reason ?? err;
-      if (isDOMException(timeoutBasis) && timeoutBasis.name === "TimeoutError") {
+      if (isDOMExceptionNamed(timeoutBasis, "TimeoutError")) {
         return {
           response: null,
           error: new TimeoutError("Request timed out", { cause: timeoutBasis, url: requestUrl }),
@@ -346,7 +379,7 @@ export async function typedFetch<JsonReturnType>(
         error: new AbortedError("Request aborted", { cause: err, reason, url: requestUrl }),
       };
     }
-    const message = err instanceof Error ? err.message || err.name : "Network error";
+    const message = networkErrorMessage(err);
     return {
       response: null,
       error: new NetworkError(message, { cause: err, url: requestUrl }),

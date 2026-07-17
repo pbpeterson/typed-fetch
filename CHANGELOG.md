@@ -60,9 +60,17 @@
   IntelliSense (the suggestions are structural and need no import). Only the
   named exports are gone; if you imported either type by name, inline the shape
   or use `TypedFetchOptions["headers"]` instead.
+- **The literal `statusText` values for 413 and 422 now follow RFC 9110:**
+  `"Payload Too Large"` → `"Content Too Large"`, and
+  `"Unprocessable Entity"` → `"Unprocessable Content"`. The historical class
+  names remain exported for source compatibility.
 
 ### Added
 
+- A built-artifact invariant now proves that both `.` and `./errors` export
+  every dedicated class in the internal roster; the existing surface snapshots
+  alone could not detect a future class registered internally but omitted from
+  the barrels.
 - `dist/`-level cross-copy / cross-format regression tests that exercise the
   _built_ artifacts (both entry points, both ESM and CJS), so a regression to
   `instanceof`-based guards is caught — the previous suite only imported
@@ -126,6 +134,11 @@
 
 ### Fixed
 
+- Rejections from an injected `options.fetch` can no longer escape the
+  errors-as-values envelope when their `message`/`name` properties throw.
+  Abort/timeout inspection now uses the same defensive access, preserving the
+  hostile value on `cause`/`reason` while returning `NetworkError` or
+  `AbortedError` safely.
 - **`isKnownHttpError` no longer misclassifies consumer-defined
   `BaseHttpError` subclasses as one of the library's dedicated status
   classes.** Dedicated errors now carry a separate cross-copy brand, keeping
@@ -201,11 +214,12 @@
   reads the body with `error.json()` and then calls `error.clone()` — that
   order throws `TypeError: Response.clone: Body has already been consumed`.
   The example now clones before the first read.
-- `statusText` is now documented (README and JSDoc) as the canonical IANA
-  reason phrase for the status code, not necessarily what the server sent on
-  the wire — the two could already disagree (`error.message` uses the real
-  `response.statusText`; `error.statusText` is a hardcoded literal per
-  class), and the docs previously implied they were the same value.
+- `statusText` is now documented (README and JSDoc) as the library's canonical
+  protocol label for the status code (normally the current IANA phrase), not
+  necessarily what the server sent on the wire — the two could already disagree
+  (`error.message` uses the real `response.statusText`; `error.statusText` is a
+  hardcoded literal per class), and the docs previously implied they were the
+  same value. The historical 418/510 registry exceptions are explicit.
 
 ### Documentation
 

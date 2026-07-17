@@ -66,7 +66,9 @@ import type { ClientErrors, ServerErrors, TypedFetchError } from "./src/errors";
 import type { StrictHeaders } from "./src/headers";
 import type { HttpMethods } from "./src/methods";
 import {
+  RequestTooLongError as PublicRequestTooLongError,
   typedFetch as publicTypedFetch,
+  UnprocessableEntityError as PublicUnprocessableEntityError,
   type TypedFetchOptions,
   type TypedFetchReturnType,
   type TypedResponse,
@@ -334,6 +336,11 @@ describe("typedFetch", () => {
     expect(result.response).not.toBe(null);
   });
 
+  test("413 and 422 expose their RFC 9110 reason phrases", () => {
+    expect(PublicRequestTooLongError.statusText).toBe("Content Too Large");
+    expect(PublicUnprocessableEntityError.statusText).toBe("Unprocessable Content");
+  });
+
   test("204 stays on the success branch while json() preserves native empty-body rejection", async () => {
     const result = await publicTypedFetch(url({ status: 204 }));
 
@@ -566,6 +573,30 @@ describe("typedFetch", () => {
     expect(isAbortError(result.error)).toBe(false);
   });
 
+  test("an abort reason with a throwing DOMException name getter still resolves as AbortedError", async () => {
+    const hostileReason = new DOMException("hostile abort reason", "AbortError");
+    Object.defineProperty(hostileReason, "name", {
+      get() {
+        throw new Error("hostile DOMException name getter");
+      },
+    });
+    const controller = new AbortController();
+    controller.abort(hostileReason);
+    const stubFetch = vi.fn(async () => Promise.reject(hostileReason)) as unknown as typeof fetch;
+
+    const result = await publicTypedFetch("https://example.invalid/hostile-abort-name", {
+      signal: controller.signal,
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(AbortedError);
+    if (isAbortError(result.error)) {
+      expect(result.error.reason).toBe(hostileReason);
+      expect(result.error.cause).toBe(hostileReason);
+    }
+  });
+
   // AXIS 7: AbortSignal.any() composing a user signal and a timeout signal —
   // whichever fires first wins, and classification must follow the actual
   // winner's reason (a DOMException "TimeoutError" vs the user's reason).
@@ -707,6 +738,27 @@ describe("typedFetch", () => {
     expect(isAbortError(result.error)).toBe(false);
     if (isNetworkError(result.error)) {
       expect(result.error.cause).toBe(unrelated);
+    }
+  });
+
+  test("A1: reason-less aborted signal + throwing DOMException name getter → NetworkError", async () => {
+    const hostile = new DOMException("hostile", "AbortError");
+    Object.defineProperty(hostile, "name", {
+      get() {
+        throw new Error("hostile DOMException name getter");
+      },
+    });
+    const stubFetch = vi.fn(async () => Promise.reject(hostile)) as unknown as typeof fetch;
+
+    const result = await publicTypedFetch("https://example.invalid/reasonless-hostile-name", {
+      signal: reasonlessAbortedSignal(),
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    if (isNetworkError(result.error)) {
+      expect(result.error.cause).toBe(hostile);
     }
   });
 
@@ -953,6 +1005,65 @@ describe("typedFetch", () => {
       expect(result.error.cause).toBe(dnsLike);
       expect((result.error.cause as Error).name).toBe("ENOTFOUND");
       expect(result.error.message).toBe("ENOTFOUND");
+    }
+  });
+
+  test("an injected fetch rejection with a throwing message getter still resolves as NetworkError", async () => {
+    const hostile = new Error();
+    Object.defineProperty(hostile, "message", {
+      get() {
+        throw new Error("hostile message getter");
+      },
+    });
+    const stubFetch = vi.fn(async () => Promise.reject(hostile)) as unknown as typeof fetch;
+
+    const result = await publicTypedFetch("https://example.invalid/hostile-message", {
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    if (isNetworkError(result.error)) {
+      expect(result.error.cause).toBe(hostile);
+    }
+  });
+
+  test("an injected fetch rejection with a throwing name getter still resolves as NetworkError", async () => {
+    const hostile = new Error("");
+    Object.defineProperty(hostile, "name", {
+      get() {
+        throw new Error("hostile name getter");
+      },
+    });
+    const stubFetch = vi.fn(async () => Promise.reject(hostile)) as unknown as typeof fetch;
+
+    const result = await publicTypedFetch("https://example.invalid/hostile-name", {
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    if (isNetworkError(result.error)) {
+      expect(result.error.cause).toBe(hostile);
+    }
+  });
+
+  test("an injected fetch rejection with a throwing getPrototypeOf trap still resolves", async () => {
+    const hostile = new Proxy(new Error("hostile proxy"), {
+      getPrototypeOf() {
+        throw new Error("hostile getPrototypeOf trap");
+      },
+    });
+    const stubFetch = vi.fn(async () => Promise.reject(hostile)) as unknown as typeof fetch;
+
+    const result = await publicTypedFetch("https://example.invalid/hostile-prototype", {
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    if (isNetworkError(result.error)) {
+      expect(result.error.cause).toBe(hostile);
     }
   });
 
@@ -1802,7 +1913,7 @@ describe("roster sync", () => {
     expectTypeOf<PreconditionFailedError["status"]>().toEqualTypeOf<412>();
     expectTypeOf<PreconditionFailedError["statusText"]>().toEqualTypeOf<"Precondition Failed">();
     expectTypeOf<RequestTooLongError["status"]>().toEqualTypeOf<413>();
-    expectTypeOf<RequestTooLongError["statusText"]>().toEqualTypeOf<"Payload Too Large">();
+    expectTypeOf<RequestTooLongError["statusText"]>().toEqualTypeOf<"Content Too Large">();
     expectTypeOf<RequestUriTooLongError["status"]>().toEqualTypeOf<414>();
     expectTypeOf<RequestUriTooLongError["statusText"]>().toEqualTypeOf<"URI Too Long">();
     expectTypeOf<UnsupportedMediaTypeError["status"]>().toEqualTypeOf<415>();
@@ -1820,7 +1931,7 @@ describe("roster sync", () => {
     expectTypeOf<MisdirectedRequestError["status"]>().toEqualTypeOf<421>();
     expectTypeOf<MisdirectedRequestError["statusText"]>().toEqualTypeOf<"Misdirected Request">();
     expectTypeOf<UnprocessableEntityError["status"]>().toEqualTypeOf<422>();
-    expectTypeOf<UnprocessableEntityError["statusText"]>().toEqualTypeOf<"Unprocessable Entity">();
+    expectTypeOf<UnprocessableEntityError["statusText"]>().toEqualTypeOf<"Unprocessable Content">();
     expectTypeOf<LockedError["status"]>().toEqualTypeOf<423>();
     expectTypeOf<LockedError["statusText"]>().toEqualTypeOf<"Locked">();
     expectTypeOf<FailedDependencyError["status"]>().toEqualTypeOf<424>();
@@ -2054,6 +2165,12 @@ test("error .name is a hardcoded string literal, not this.constructor.name", () 
 // re-run with `-u` (see CONTRIBUTING.md → "Updating the public-surface
 // snapshots").
 //
+// A separate roster → barrel invariant in the value-surface suite derives the
+// dedicated class names/statuses from `httpErrors` and requires both built
+// entry points to expose exactly that roster. Snapshots alone cannot catch a
+// future class registered internally but accidentally omitted from a barrel,
+// because the unchanged export list would still match the old snapshot.
+//
 // dist/-ordering: this reads from `dist/`, which only exists after
 // `pnpm build`. `dist/` is gitignored, so on a fresh local checkout it is
 // absent until you build. In CI it is present: .github/workflows/ci.yml runs
@@ -2098,6 +2215,19 @@ describe.skipIf(!distExists)("public API surface is frozen", () => {
     const mod = await importDist("./dist/errors/index.mjs");
     // Same as above: sorting the fresh Object.keys() array in place is fine.
     expect(Object.keys(mod).toSorted()).toMatchSnapshot();
+  });
+
+  test.each([
+    ["main entry", "./dist/index.mjs"],
+    ["./errors subpath", "./dist/errors/index.mjs"],
+  ])("%s exports every dedicated class in the internal roster", async (_entry, path) => {
+    const mod = await importDist(path);
+
+    for (const ErrorClass of httpErrors) {
+      expect(Object.hasOwn(mod, ErrorClass.name)).toBe(true);
+      const exported = mod[ErrorClass.name] as { readonly status?: unknown };
+      expect(exported.status).toBe(ErrorClass.status);
+    }
   });
 });
 

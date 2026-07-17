@@ -470,14 +470,14 @@ and aborted requests are as easy to correlate in logs as HTTP errors.
 | `GoneError`                         | 410    | Gone                            |
 | `LengthRequiredError`               | 411    | Length Required                 |
 | `PreconditionFailedError`           | 412    | Precondition Failed             |
-| `RequestTooLongError`               | 413    | Payload Too Large               |
+| `RequestTooLongError`               | 413    | Content Too Large               |
 | `RequestUriTooLongError`            | 414    | URI Too Long                    |
 | `UnsupportedMediaTypeError`         | 415    | Unsupported Media Type          |
 | `RequestedRangeNotSatisfiableError` | 416    | Range Not Satisfiable           |
 | `ExpectationFailedError`            | 417    | Expectation Failed              |
 | `ImATeapotError`                    | 418    | I'm a teapot                    |
 | `MisdirectedRequestError`           | 421    | Misdirected Request             |
-| `UnprocessableEntityError`          | 422    | Unprocessable Entity            |
+| `UnprocessableEntityError`          | 422    | Unprocessable Content           |
 | `LockedError`                       | 423    | Locked                          |
 | `FailedDependencyError`             | 424    | Failed Dependency               |
 | `TooEarlyError`                     | 425    | Too Early                       |
@@ -632,7 +632,7 @@ All HTTP error classes extend `BaseHttpError`:
 **Instance Properties:**
 
 - `status` - HTTP status code (literal type, e.g. `404`)
-- `statusText` - The canonical IANA reason phrase for `status` (literal type, e.g. `"Not Found"`) - not the server's wire value. The server's wire phrase, when present, is in `error.message`.
+- `statusText` - The library's canonical protocol label for `status` (normally the current IANA phrase; literal type, e.g. `"Not Found"`) - not the server's wire value. The server's wire phrase, when present, is in `error.message`.
 - `url` - The URL of the failed request (from `response.url`)
 - `headers` - Response `Headers` object
 - `name` - Error class name (e.g. `"NotFoundError"`)
@@ -648,7 +648,7 @@ All HTTP error classes extend `BaseHttpError`:
 **Static Properties** (access status codes without creating an instance):
 
 - `status` - HTTP status code (e.g. `NotFoundError.status === 404`)
-- `statusText` - The canonical IANA reason phrase for `status` (e.g. `NotFoundError.statusText === "Not Found"`) - not the server's wire value
+- `statusText` - The library's canonical protocol label for `status` (normally the current IANA phrase; e.g. `NotFoundError.statusText === "Not Found"`) - not the server's wire value
 
 ### `NetworkError`, `AbortedError`, `TimeoutError`
 
@@ -698,8 +698,11 @@ Things this library deliberately does not do, and won't:
    an existing path.
 3. Human-readable `error.message` text is diagnostic and is not a stable API
    contract.
-4. A class's `statusText` is its canonical IANA reason phrase and is part of the
-   public contract; it does not mirror a server's wire reason phrase.
+4. A class's `statusText` is the library's canonical protocol label and is part
+   of the public contract; it does not mirror a server's wire reason phrase.
+   Labels normally follow the current IANA registry. Two historical exceptions
+   are intentional: 418 keeps `"I'm a teapot"`, and 510 keeps `"Not Extended"`
+   without the registry's lifecycle annotation `(OBSOLETED)`.
 5. Removing or renaming an export, or changing an existing class's `status` or
    `statusText` literal, is a **major** release.
 6. Every npm publication must come from the matching `vX.Y.Z` Git tag through

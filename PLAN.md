@@ -18,7 +18,7 @@ trusted-publisher configuration, tag push, and npm publication.
 - The release gates, run from the repo root, are `pnpm lint`,
   `pnpm format:check`, `pnpm typecheck`, `pnpm build`, `pnpm test`,
   `pnpm check-docs`, `pnpm verify-pack`, `pnpm check-consumer`,
-  `pnpm audit:prod`, and `pnpm audit`. Vitest currently runs 399 tests across
+  `pnpm audit:prod`, and `pnpm audit`. Vitest currently runs 407 tests across
   four files.
 - After any change to `src/`, also run `pnpm build` (tsup) and confirm exit 0.
 - Core integration coverage lives in `test.spec.ts` at repo root. It boots a
@@ -116,9 +116,10 @@ cost almost nothing.
   text" with no caveat.
 - **Files:** `README.md:381-385` and the JSDoc at `base-http-error.ts:16-17`.
 - **Change (docs only — no behavior change here):** in both places, describe
-  `statusText` as the **canonical** IANA reason phrase for the status code, not the
-  server's wire value; note that the server's wire phrase, when present, is in
-  `error.message`.
+  `statusText` as the library's canonical protocol label (normally the current IANA
+  phrase), not the server's wire value; note that the server's wire phrase, when
+  present, is in `error.message`. The intentional historical labels for 418/510 are
+  documented in the final contract.
 - **Verify:** `rg -n "canonical" README.md src/errors/base-http-error.ts` shows both
   updated.
 - **Breaking:** No. (Exposing a `rawStatusText` field is OUT of scope for 1.0 — see
@@ -636,8 +637,10 @@ Paste-ready for the README ("Non-goals"):
    changes runtime type for anyone matching `instanceof UnknownHttpError` on that code.
 3. **`error.message` text is NOT part of the contract.** Assert on `.status`/`.name`.
    We may change message wording in any release.
-4. **`statusText` is the canonical IANA reason phrase, not the wire value**, and is part
-   of the contract (it's literal-typed).
+4. **`statusText` is the library's canonical protocol label, not the wire value**, and
+   is part of the contract (it's literal-typed). Labels normally follow the current
+   IANA registry; 418 (`"I'm a teapot"`) and 510 (`"Not Extended"` without the
+   registry's lifecycle annotation) are intentional historical exceptions.
 5. **Removing/renaming any named export, or changing a class's `status`/`statusText`
    literal, is `major`.** Enforced by the API-surface snapshot (P3-03) and roster tests
    (P1-04).
@@ -651,7 +654,7 @@ Paste-ready for the README ("Non-goals"):
 
 All must be green before cutting `v1.0.0`:
 
-- [x] `pnpm test` passes (399 tests, including the release-policy suite).
+- [x] `pnpm test` passes (407 tests, including the release-policy suite).
 - [x] `pnpm typecheck`, `pnpm lint`, `pnpm format:check` all exit 0.
 - [x] `pnpm build` exits 0; `npm pack --dry-run` file list matches expectations
       (no source/test/config leak).
@@ -667,8 +670,8 @@ All must be green before cutting `v1.0.0`:
 - [x] `ErrorType` second type parameter removed; two-arg calls fail to compile.
 - [x] Abort and timeout return `AbortedError` / `TimeoutError`, not `NetworkError`.
 - [x] README: never-throws boundary documented, clone example doesn't throw,
-      `statusText` described as canonical, narrowing section rewritten, timeouts/abort
-      section rewritten.
+      `statusText` policy and historical exceptions documented, narrowing section
+      rewritten, timeouts/abort section rewritten.
 - [x] `CONTRIBUTING.md` present; frozen-lockfile install and the documented gates pass.
 - [x] Semver policy (above) written into CONTRIBUTING.md and README.
 - [x] Actions SHA-pinned; release provenance and OIDC are configured in code.

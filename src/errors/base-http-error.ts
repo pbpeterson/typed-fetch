@@ -22,9 +22,10 @@ export abstract class BaseHttpError extends Error {
   public abstract readonly status: number;
 
   /**
-   * The canonical IANA reason phrase for {@link status} (literal type, e.g.
-   * `"Not Found"`) - not the server's wire value. The server's wire phrase,
-   * when present, is in {@link Error.message | message}.
+   * The library's canonical protocol label for {@link status} (normally the
+   * current IANA phrase; literal-typed, e.g. `"Not Found"`) - not the server's
+   * wire value. The server's wire phrase, when present, is in
+   * {@link Error.message | message}.
    */
   public abstract readonly statusText: string;
 
