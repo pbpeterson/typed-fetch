@@ -1,13 +1,20 @@
-// Deno smoke test: proves the built package works under Deno, including
-// type-checking against the built .d.ts (`deno check`).
+// Deno smoke test: proves the built package imports, type-checks, and runs
+// under Deno (a distinct runtime with its own TypeScript and lib types).
 // Spins a tiny local HTTP server that always 404s, calls `typedFetch`
 // against it, and asserts the returned error is a `NotFoundError`.
 //
 // Run with: deno run --allow-net scripts/smoke/deno.ts
 // Type-check with: deno check scripts/smoke/deno.ts
-// Requires: pnpm build (dist/index.mjs + dist/index.d.mts must exist)
+// Requires: pnpm build (dist/index.mjs must exist)
+//
+// Note: this imports the built `.mjs` directly. Deno resolves types for a
+// direct file import from the JS itself, not the sibling `.d.mts` (whose
+// internal `./errors/index.mjs` specifiers Deno does not remap to their
+// declarations), so the guard's type predicate does not narrow here. Runtime
+// behavior is what this smoke proves; deep type-consumability is covered by
+// `pnpm check-consumer` (real tsc, node resolution, skipLibCheck:false).
 
-import { isHttpError, typedFetch } from "../../dist/index.mjs";
+import { isKnownHttpError, typedFetch } from "../../dist/index.mjs";
 
 const server = Deno.serve(
   { port: 0, onListen: () => {} },
@@ -25,14 +32,18 @@ try {
   if (error === null) {
     throw new Error("expected error to be non-null");
   }
-  if (!isHttpError(error)) {
-    throw new Error(`expected an HTTP error, got ${JSON.stringify(error)}`);
+  if (!isKnownHttpError(error)) {
+    throw new Error(`expected a known HTTP error, got ${JSON.stringify(error)}`);
   }
-  if (error.name !== "NotFoundError") {
-    throw new Error(`expected error.name to be "NotFoundError", got ${JSON.stringify(error.name)}`);
+  // isKnownHttpError proved the shape at runtime; read the documented fields.
+  const knownError = error as { readonly name: string; readonly status: number };
+  if (knownError.name !== "NotFoundError") {
+    throw new Error(
+      `expected error.name to be "NotFoundError", got ${JSON.stringify(knownError.name)}`,
+    );
   }
-  if (error.status !== 404) {
-    throw new Error(`expected error.status to be 404, got ${JSON.stringify(error.status)}`);
+  if (knownError.status !== 404) {
+    throw new Error(`expected error.status to be 404, got ${JSON.stringify(knownError.status)}`);
   }
 
   console.log("deno smoke: OK (NotFoundError, status 404)");
