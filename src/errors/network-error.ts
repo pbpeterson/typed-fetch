@@ -1,8 +1,8 @@
 import { brand, networkErrorBrand } from "./brand";
 
 /**
- * Represents a network-level failure (DNS, connection refused, timeout,
- * aborted request, etc.).
+ * Represents a network-level failure (DNS, connection refused, TLS handshake,
+ * redirect, etc.). Aborts and timeouts have their own error classes.
  *
  * Unlike HTTP errors, a `NetworkError` has no status code or response body
  * because the request never reached the server. The original error thrown

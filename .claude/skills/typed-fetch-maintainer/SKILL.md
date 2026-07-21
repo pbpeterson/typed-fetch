@@ -18,7 +18,7 @@ src/http-status-codes.ts  → internal statusCodeErrorMap: ReadonlyMap<number, H
 src/errors/
   base-http-error.ts      → abstract base: message "HTTP 404 Not Found (<url>)",
                             url, headers, json<T>()/text()/blob()/arrayBuffer(),
-                            generic clone(): this
+                            clone(recreate?): this
   known-http-error.ts     → internal branded base for the 40 dedicated classes
   network-error.ts        → NetworkError with cause (original fetch rejection)
   aborted-error.ts        → AbortedError (controller.abort()); extends Error, NOT NetworkError
@@ -31,8 +31,13 @@ src/errors/
 
 ## Core flow (src/index.ts)
 
-1. Pull an optional `fetch` override off `options` (`options.fetch`, defaults to global `fetch`); the rest is the `RequestInit`.
-2. `try { res = await fetchImpl(url, init) } catch (err)` → classify the rejection:
+1. Inside the request `try`, read an optional `options.fetch` override. When
+   present, build a descriptor/prototype-preserving facade that hides the
+   extension while a proxy delegates property reads to the original receiver;
+   otherwise forward `options` unchanged. Resolve the effective abort signal
+   with realm-safe `Request` detection.
+2. `try { res = await fetchImpl(url, init) } catch (err)` also covers option
+   getters and normalization, then classifies the failure:
    - an abort → `AbortedError` (with the original rejection as `cause`),
    - a timeout (from `AbortSignal.timeout()`) → `TimeoutError`,
    - anything else → `NetworkError`.
@@ -59,7 +64,7 @@ Exported from the main entry: `isHttpError` (any `BaseHttpError`),
 subclass passes `isHttpError` but not `isKnownHttpError`; the latter requires
 the separate internal known-error brand and a status present in the receiving
 copy's map. Its `ClientErrors | ServerErrors` predicate therefore remains sound
-across duplicate copies, ESM/CJS entries, and mixed minor versions.
+across duplicate copies, ESM/CJS entries, and mixed package versions.
 
 ## Error class pattern
 
@@ -95,6 +100,11 @@ The roster is hand-maintained. To add a dedicated class for status code `NNN`:
 
 Adding a class also changes the public API surface, so update the snapshot (see below): `pnpm build && pnpm test -u`.
 
+Built-in classes clone through their `Response`-only constructors.
+Consumer-defined subclasses must pass `clone(response => new Custom(...))`,
+even if they currently have no extra state; this prevents a future
+constructor/private-state change from silently corrupting clones.
+
 ## Guardrail tests (test.spec.ts)
 
 These are what keep the hand-edited roster honest — run and read them when touching errors:
@@ -117,6 +127,9 @@ pnpm audit:prod
 pnpm audit
 ```
 
+With Deno installed, also run `pnpm check-deno-consumer` after `pnpm build`.
+CI always runs it against an installed packed artifact and its public types.
+
 - Build BEFORE test so the API-surface snapshot tests actually run (they skip when `dist/` is absent).
 - `pnpm typecheck` uses `tsconfig.test.json` — includes `test.spec.ts` so `expectTypeOf` assertions are real. Plain `tsc --noEmit` skips them.
 - Tests hit a real local HTTP server (no mocks). Query params drive responses: `?status=`, `?body=`, `?header=Key:Value`.
@@ -129,7 +142,12 @@ pnpm audit
 - `tsup.config.ts` carries `ignoreDeprecations: "6.0"` in dts compilerOptions — tsup injects deprecated `baseUrl`; remove when tsup fixes it.
 - oxfmt formats and sorts `package.json` — don't fight it.
 - `statusCodeErrorMap` is `ReadonlyMap` by type; never mutate.
-- `options.fetch` is stripped off before the init reaches the underlying fetch — don't forward it into the request.
+- `options.fetch` is stripped before the init reaches the underlying fetch.
+  The sanitized facade/proxy preserves reflection while reading getters against
+  the original receiver. Do not replace this with object spread:
+  inherited/WebIDL properties, private-backed getters, and cross-realm
+  `Request` behavior must survive, and accessor failures must stay inside the
+  error envelope.
 - CI verifies Node 20, 22, and 24 plus Bun and Deno. Browser and edge support
   follows from the Web-standard-only runtime implementation, but a runtime is
   not called verified until its smoke test exists. Keep Node APIs outside
@@ -145,15 +163,18 @@ Releases are PR-reviewed and tag-driven — the full, binding process is in
 2. Merge the PR and verify the exact release commit is the current
    `origin/main` tip.
 3. Create and push the matching `vX.Y.Z` tag on that commit. The tag-triggered
-   workflow revalidates the version, commit, full gate set, tarball, and
-   consumer install before `npm publish --provenance` through OIDC, with no
-   repository npm token.
+   workflow first requires the reusable Node/Bun/Deno/security CI matrix, then
+   revalidates the version, commit, full publish gate set, tarball, and consumer
+   install before `npm publish --provenance` through OIDC, with no repository
+   npm token.
 4. Verify the npm version, dist-tag, provenance attestation, source commit, and
    workflow run after publication. Never retry by moving or reusing a published
    tag.
 
 Semver highlights (RELEASING.md is authoritative):
 
-- **Adding a dedicated error class to `ClientErrors`/`ServerErrors` is a `minor`** — the value was always reachable at runtime (as `UnknownHttpError`); nothing that compiled stops compiling. Consumers must keep a `default:` in exhaustive `switch (error.status)`.
-- **Moving a code from `UnknownHttpError` to a dedicated class is a `major`** (changes the runtime type of an existing code path).
+- **Registering a dedicated error class in `ClientErrors`/`ServerErrors` is a
+  `major`**: it widens the returned union and changes that status from
+  `UnknownHttpError` to the dedicated runtime class. Consumers should still
+  keep a `default:` for forward compatibility and mixed package versions.
 - Removing/renaming an export, or changing a class's `status`/`statusText` literal, is a `major`. Node engines stay `>=20`; dropping a Node major is a `major`.

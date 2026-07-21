@@ -14,6 +14,12 @@ function escapeRegex(value) {
   return value.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** @param {string} value */
+function isCalendarDate(value) {
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
+}
+
 /**
  * Validate everything that must be true before the workflow may publish.
  * Keeping this pure makes the release policy executable and unit-testable.
@@ -74,11 +80,14 @@ export function validateRelease(candidate) {
   }
 
   const releaseHeading = new RegExp(
-    `^## \\[${escapeRegex(candidate.version)}\\] - \\d{4}-\\d{2}-\\d{2}$`,
+    `^## \\[${escapeRegex(candidate.version)}\\] - (\\d{4}-\\d{2}-\\d{2})$`,
     "m",
-  );
-  if (!releaseHeading.test(candidate.changelog)) {
+  ).exec(candidate.changelog);
+  if (!releaseHeading) {
     throw new Error(`Version ${candidate.version} needs a dated CHANGELOG release heading.`);
+  }
+  if (!isCalendarDate(releaseHeading[1])) {
+    throw new Error(`Version ${candidate.version} needs a valid calendar date in CHANGELOG.md.`);
   }
 
   const unreleasedHeading = /^## \[Unreleased\]\s*$/m.exec(candidate.changelog);

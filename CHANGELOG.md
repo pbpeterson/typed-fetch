@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Breaking
+
+- `BaseHttpError.clone()` no longer guesses how to construct consumer-defined
+  subclasses. Those subclasses must pass the new recreation callback
+  (`error.clone(response => new CustomError(response, state))`); a no-argument
+  call now throws instead of risking silent state loss. Built-in errors retain
+  their no-argument `clone()` behavior. This requires a major version when the
+  pending changelog is released.
+
+### Added
+
+- Added an installed-tarball Deno typecheck that resolves the package by its
+  bare npm name and verifies the published `.d.mts` declarations.
+
+### Fixed
+
+- `typedFetch` now preserves inherited `RequestInit` properties, WebIDL
+  getters, proxied/cross-realm `Request` objects, and abort signals while
+  removing its `fetch` override. Errors thrown while reading or
+  normalizing request options are returned as `NetworkError` instead of
+  escaping the never-rejecting request envelope.
+- Release validation now rejects impossible calendar dates such as
+  `2026-02-30`, not only malformed date strings.
+
+### Release engineering
+
+- Tag releases now wait for the reusable full CI workflow (Node 20/22/24,
+  security, Bun, and Deno) before the publish job can receive OIDC permission.
+  The publish job still repeats the release gates against the tagged commit.
+
+### Documentation
+
+- Unified the SemVer contract: registering a dedicated HTTP error class is a
+  major change because it replaces `UnknownHttpError` for an existing runtime
+  path and widens the returned union.
+- Refreshed the v1 release state and clarified that aborts and timeouts are not
+  `NetworkError` cases.
+
 ## [1.0.0] - 2026-07-17
 
 ### Breaking
@@ -145,7 +183,7 @@
   the guard's `ClientErrors | ServerErrors` type predicate sound while
   preserving ESM/CJS and cross-entry behavior. The guard also verifies the
   receiving version's status map, so an older copy rejects dedicated statuses
-  introduced by a newer minor.
+  introduced by a newer package version.
 - **`BaseHttpError` no longer leaks its internal `Response` as an own enumerable
   property.** It was a constructor parameter property, so `JSON.stringify(err)`,
   `{...err}`, and `Object.keys(err)` exposed a live `Response` handle. It is now
@@ -268,8 +306,7 @@ if (error && isKnownHttpError(error)) {
       console.log("Forbidden"); // error: ForbiddenError
       break;
     default:
-      // Keep a default: adding a new error class to the library is a minor
-      // version bump, so new cases can appear here without a major release.
+      // Keep a default for forward compatibility and mixed package versions.
       console.log(`HTTP ${error.status}`);
   }
 }

@@ -260,6 +260,132 @@ describe("typedFetch", () => {
     expect(init).toMatchObject({ method: "POST" });
   });
 
+  test("preserves inherited RequestInit properties while stripping the fetch override", async () => {
+    const stubFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+    const options = Object.assign(Object.create({ method: "POST" }) as TypedFetchOptions, {
+      fetch: stubFetch,
+    });
+
+    await typedFetch("https://example.invalid/inherited-options", options);
+
+    expect(stubFetch).toHaveBeenCalledTimes(1);
+    const [, init] = stubFetch.mock.calls[0] ?? [];
+    expect(init?.method).toBe("POST");
+    expect(init && "fetch" in init).toBe(false);
+  });
+
+  test("uses an inherited fetch override without forwarding it", async () => {
+    const stubFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+    const options = Object.create({ fetch: stubFetch, method: "POST" }) as TypedFetchOptions;
+
+    await typedFetch("https://example.invalid/inherited-fetch", options);
+
+    expect(stubFetch).toHaveBeenCalledTimes(1);
+    const [, init] = stubFetch.mock.calls[0] ?? [];
+    expect(init?.method).toBe("POST");
+    expect(init && "fetch" in init).toBe(false);
+  });
+
+  test("preserves prototype getters backed by private state with an own fetch override", async () => {
+    const stubFetch = vi.fn<typeof fetch>(async (_input, init) => {
+      expect(init?.method).toBe("POST");
+      return new Response(null, { status: 200 });
+    });
+    class OptionsWithPrivateState {
+      readonly #method = "POST";
+
+      constructor(readonly fetch: typeof globalThis.fetch) {}
+
+      get method(): string {
+        return this.#method;
+      }
+    }
+    const options = new OptionsWithPrivateState(stubFetch) as TypedFetchOptions;
+
+    const result = await typedFetch("https://example.invalid/private-getter", options);
+
+    expect(result.error).toBe(null);
+    expect(stubFetch).toHaveBeenCalledTimes(1);
+    const [, init] = stubFetch.mock.calls[0] ?? [];
+    expect(init && "fetch" in init).toBe(false);
+  });
+
+  test("turns a throwing RequestInit getter into a NetworkError value", async () => {
+    const cause = new Error("method getter exploded");
+    const options = Object.defineProperty({}, "method", {
+      enumerable: true,
+      get() {
+        throw cause;
+      },
+    }) as TypedFetchOptions;
+
+    const result = await typedFetch("data:text/plain,ok", options);
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+  });
+
+  test("turns a throwing fetch-override getter into a NetworkError value", async () => {
+    const cause = new Error("fetch getter exploded");
+    const options = Object.defineProperty({}, "fetch", {
+      get() {
+        throw cause;
+      },
+    }) as TypedFetchOptions;
+
+    const result = await typedFetch("data:text/plain,ok", options);
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+  });
+
+  test("does not reject while resolving the URL for a NetworkError", async () => {
+    const cause = new Error("URL coercion exploded");
+    const hostileInput = {
+      [Symbol.toPrimitive]() {
+        throw cause;
+      },
+    } as unknown as string;
+
+    const result = await typedFetch(hostileInput);
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+    expect(result.error?.url).toBe("");
+  });
+
+  test("does not reject while inspecting a hostile abort signal", async () => {
+    const rejection = new Error("custom fetch failed");
+    const hostileSignal = Object.defineProperties(
+      {},
+      {
+        aborted: {
+          get() {
+            throw new Error("aborted getter exploded");
+          },
+        },
+        reason: {
+          get() {
+            throw new Error("reason getter exploded");
+          },
+        },
+      },
+    ) as AbortSignal;
+    const stubFetch = vi.fn(async () => Promise.reject(rejection)) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/hostile-signal", {
+      fetch: stubFetch,
+      signal: hostileSignal,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(rejection);
+  });
+
   test("omitting fetch still uses the global fetch (test server)", async () => {
     const result = await typedFetch(url({ status: 200, body: JSON.stringify({ id: 1 }) }));
 
@@ -1194,6 +1320,45 @@ describe("typedFetch", () => {
   // exact slot the spread corrupts — and prove it now reaches fetch untouched.
   // Each fails on the pre-fix (spread) implementation.
   describe("Request passed as the options argument is preserved (not spread away)", () => {
+    test("an augmented Request can carry a fetch override without losing WebIDL state", async () => {
+      const target = url({ status: 200 });
+      const stubFetch = vi.fn<typeof fetch>((input, init) => fetch(input, init));
+      const options = Object.assign(new Request(target, { method: "POST" }), {
+        fetch: stubFetch,
+      }) as TypedFetchOptions;
+
+      const result = await typedFetch(target, options);
+
+      expect(result.error).toBe(null);
+      expect(result.response?.headers.get("X-Echo-Method")).toBe("POST");
+      expect(stubFetch).toHaveBeenCalledTimes(1);
+      const [, init] = stubFetch.mock.calls[0] ?? [];
+      expect(init).toBeInstanceOf(Request);
+      expect(init && "fetch" in init).toBe(false);
+    });
+
+    test("Request-like options without an instanceof link preserve their signal", async () => {
+      const target = url({ status: 200 });
+      const controller = new AbortController();
+      const reason = new Error("proxied Request cancel");
+      controller.abort(reason);
+      const request = new Request(target, { signal: controller.signal });
+      const proxiedRequest = new Proxy(request, {
+        get(targetRequest, property) {
+          return Reflect.get(targetRequest, property, targetRequest);
+        },
+        getPrototypeOf() {
+          return null;
+        },
+      });
+
+      const result = await typedFetch(target, proxiedRequest);
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(AbortedError);
+      if (isAbortError(result.error)) expect(result.error.reason).toBe(reason);
+    });
+
     test("Request method reaches the server", async () => {
       const target = url({ status: 200 });
       const result = await typedFetch(target, new Request(target, { method: "POST" }));
@@ -1276,6 +1441,32 @@ describe("typedFetch", () => {
   // misses it entirely and misclassifies every cancellation as a NetworkError.
   // The signal must be resolved from wherever it actually lives.
   describe("AbortSignal carried by a Request in the url slot is honored", () => {
+    test("Request-like URL without an instanceof link is still classified", async () => {
+      const target = url({ status: 200 });
+      const controller = new AbortController();
+      const reason = new Error("cross-realm cancel");
+      controller.abort(reason);
+      const request = new Request(target, { signal: controller.signal });
+      const crossRealmRequest = new Proxy(request, {
+        get(targetRequest, property) {
+          return Reflect.get(targetRequest, property, targetRequest);
+        },
+        getPrototypeOf() {
+          return null;
+        },
+      });
+      const stubFetch = vi.fn(async () => Promise.reject(reason)) as unknown as typeof fetch;
+
+      const result = await typedFetch(crossRealmRequest, { fetch: stubFetch });
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(AbortedError);
+      if (isAbortError(result.error)) {
+        expect(result.error.reason).toBe(reason);
+        expect(result.error.url).toBe(request.url);
+      }
+    });
+
     test("pre-aborted signal via Request in url slot → AbortedError; reason is the abort reason", async () => {
       const target = url({ status: 200 });
       const controller = new AbortController();

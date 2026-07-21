@@ -53,6 +53,10 @@ pnpm audit          # fail on high/critical vulnerabilities in the full toolchai
 ```
 
 Run them all locally; CI runs the same checks and will fail the PR otherwise.
+CI additionally runs Bun and Deno runtime smokes. Its Deno job runs
+`pnpm check-deno-consumer` after the build, installing the packed artifact and
+typechecking the package's public `.d.mts` declarations by bare package name.
+Run that command locally too when Deno is installed.
 
 If `pnpm format:check` fails, run `pnpm format` to fix it in place, then
 re-check.
@@ -265,8 +269,18 @@ So the invariant that the roster is complete and every class carries its exact
 literal `status`/`statusText` is enforced by the test suite, not by a
 generator.
 
-Adding a new error class this way is a `minor` release — see the semver
+Registering a new error class this way is a `major` release — see the semver
 policy below.
+
+### Consumer subclasses and cloning
+
+Built-in classes support `BaseHttpError.clone()` without extra configuration.
+Consumer subclasses must pass the optional recreation callback, even when they
+currently accept only a `Response`, so a future constructor/private-state
+change cannot silently corrupt clones. For example:
+`error.clone((response) => new CustomHttpError(response, error.context))`.
+Add a regression test that consumes both bodies and verifies custom state is
+preserved.
 
 ## Release process and semver policy
 
@@ -276,8 +290,8 @@ what counts as `patch` / `minor` / `major` for this package are also defined
 there — read them before making a change that touches an error class, an
 export, or `status`/`statusText`. In short:
 
-- Adding a new dedicated HTTP error class is `minor`.
-- Moving a code from `UnknownHttpError` to a dedicated class is `major`.
+- Registering a new dedicated HTTP error class is `major`: it widens the
+  returned union and moves that status away from `UnknownHttpError`.
 - `error.message` text is never part of the contract; `error.status` /
   `error.name` / `error.statusText` are.
 - Removing or renaming a named export, or changing a class's `status` /

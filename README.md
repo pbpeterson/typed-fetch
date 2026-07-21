@@ -271,9 +271,7 @@ if (error && isKnownHttpError(error)) {
       console.log("Please log in"); // error: UnauthorizedError
       break;
     default:
-      // Keep a `default` even though this switch looks exhaustive: adding a new
-      // error class to the library ships in a minor release, so new cases can
-      // appear without a major bump. (See RELEASING.md#semver-policy.)
+      // Keep a `default` for forward compatibility and mixed package versions.
       console.log(`HTTP ${error.status}`);
   }
 }
@@ -534,18 +532,21 @@ and aborted requests are as easy to correlate in logs as HTTP errors.
   but any string is accepted, exactly like native fetch (see the note below). Accepts an
   optional `fetch` property to override the fetch implementation used for the
   request (useful for testing, dependency injection, or custom agents); it is
-  stripped before the request options are forwarded, so it never leaks into the
-  underlying `fetch()` call.
+  removed from a descriptor/prototype-preserving view before the request
+  options are forwarded, so it never leaks into the underlying `fetch()` call.
+  Without an override, the original options object is forwarded unchanged.
+  Inherited `RequestInit` properties and WebIDL getters are therefore
+  preserved.
 
   You can also pass a `Request` object in the url slot (the same shapes `fetch()` accepts),
   which is the pattern this library champions for carrying a `signal`. A `Request` is
   forwarded to `fetch()` untouched — its `method`, `headers`, `signal`, and (on Node)
   `body` are preserved. Note that a body-carrying `Request` passed in the **options** slot
   is rejected by browsers on this path (WebIDL requires `duplex` there), so keep bodies on
-  the plain-object options path. Passing a `Request` in the **options** slot and using the
-  `fetch` override are mutually exclusive: a `Request` has no `fetch` property, so the
-  override only applies on the plain-object options path. A `Request` in the **url** slot
-  combines freely with a plain options object carrying `fetch`.
+  the plain-object options path. An augmented `Request` in the **options** slot can carry a
+  `fetch` override; the sanitized view preserves its WebIDL-backed fields while hiding the
+  extension from the injected implementation. A `Request` in the **url** slot also combines
+  freely with a plain options object carrying `fetch`.
 
 **Returns:**
 
@@ -570,7 +571,7 @@ Type guard for a _known_, dedicated HTTP error class. It excludes both
 custom subclasses still pass `isHttpError()`. Dedicated library errors carry a
 separate cross-copy brand, and the guard confirms that `error.status` exists in
 the receiving package version's map. This keeps the `ClientErrors | ServerErrors`
-predicate sound across ESM/CJS, duplicate installations, and mixed minor
+predicate sound across ESM/CJS, duplicate installations, and mixed package
 versions: a status introduced by a newer copy is not accepted by an older one.
 Narrowing on `error.status` after this guard is exhaustive over this version's mapped codes — see
 [Exhaustive status narrowing](#exhaustive-status-narrowing-with-isknownhttperror).
@@ -643,7 +644,13 @@ All HTTP error classes extend `BaseHttpError`:
 - `text()` - Parse as text
 - `blob()` - Parse as Blob
 - `arrayBuffer()` - Parse as ArrayBuffer
-- `clone()` - Clone the error for multiple body reads (call it **before** the first read; it throws a clear `TypeError` once the body has been consumed)
+- `clone(recreate?)` - Clone the error for multiple body reads (call it **before** the first read; it throws a clear `TypeError` once the body has been consumed)
+
+Built-in errors need no callback. Consumer subclasses must explicitly recreate
+themselves so constructor/private state cannot be lost silently, for example:
+`error.clone((response) => new CustomHttpError(response, error.context))`.
+Calling `clone()` without a callback on a consumer subclass throws an actionable
+`TypeError`.
 
 **Static Properties** (access status codes without creating an instance):
 
@@ -690,24 +697,23 @@ Things this library deliberately does not do, and won't:
 
 ## Semantic versioning contract
 
-1. Adding a new dedicated HTTP error class is a **minor** release. Consumers
-   switching on `error.status` after `isKnownHttpError()` must keep a `default`
-   branch so an additive status remains safe.
-2. Changing a status that already returned `UnknownHttpError` to return a new
-   dedicated class is a **major** release because it changes the runtime type of
-   an existing path.
-3. Human-readable `error.message` text is diagnostic and is not a stable API
+1. Registering a new dedicated HTTP error class in
+   `ClientErrors`/`ServerErrors` is a **major** release. It both widens the
+   returned union and changes that status from `UnknownHttpError` to the new
+   runtime class. Consumers should still keep a `default` branch for forward
+   compatibility and mixed package versions.
+2. Human-readable `error.message` text is diagnostic and is not a stable API
    contract.
-4. A class's `statusText` is the library's canonical protocol label and is part
+3. A class's `statusText` is the library's canonical protocol label and is part
    of the public contract; it does not mirror a server's wire reason phrase.
    Labels normally follow the current IANA registry. Two historical exceptions
    are intentional: 418 keeps `"I'm a teapot"`, and 510 keeps `"Not Extended"`
    without the registry's lifecycle annotation `(OBSOLETED)`.
-5. Removing or renaming an export, or changing an existing class's `status` or
+4. Removing or renaming an export, or changing an existing class's `status` or
    `statusText` literal, is a **major** release.
-6. Every npm publication must come from the matching `vX.Y.Z` Git tag through
+5. Every npm publication must come from the matching `vX.Y.Z` Git tag through
    the repository's release workflow.
-7. Node.js 20 is the current minimum. Dropping a supported Node major requires
+6. Node.js 20 is the current minimum. Dropping a supported Node major requires
    a **major** release.
 
 See [`RELEASING.md`](./RELEASING.md) for the binding release procedure.

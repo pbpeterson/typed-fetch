@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: [main]
   pull_request:
@@ -97,5 +98,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+      # Install the packed artifact into a package.json project so Deno must
+      # resolve the public exports map and .d.mts declarations, not just JS.
+      - run: pnpm check-deno-consumer
+      # Separate direct-dist smoke: syntax + runtime behavior in Deno.
       - run: deno check scripts/smoke/deno.ts
       - run: deno run --allow-net scripts/smoke/deno.ts

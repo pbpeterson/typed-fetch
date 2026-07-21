@@ -32,7 +32,7 @@
  * `error instanceof NotFoundError` when the two came from different copies) is
  * deliberately NOT solved here — see the README. Use `isKnownHttpError` then
  * `switch (error.status)`, which is copy-proof. `isKnownHttpError` also checks
- * the receiving copy's status map so a newer minor's newly added status cannot
+ * the receiving copy's status map so a newer version's newly added status cannot
  * be narrowed to an older copy's union.
  */
 

@@ -1,13 +1,17 @@
-# typed-fetch 1.0 execution plan
+# typed-fetch 1.0 execution plan (completed)
 
 Take `@pbpeterson/typed-fetch` from `0.8.1` to a production-ready `1.0.0`.
 
 This document is self-contained. An engineer or coding agent can execute it top to
 bottom without any other context.
 
-**Status (2026-07-17):** implementation is complete on `release/1.0.0`. Local
-gates are green; the remaining unchecked items require the PR, hosted CI,
-trusted-publisher configuration, tag push, and npm publication.
+**Status (2026-07-21):** `1.0.0` was published from tag `v1.0.0` on 2026-07-17
+through npm trusted publishing with provenance. The release workflow passed,
+but the companion CI run for that tag failed its Deno smoke; the Deno issue was
+fixed on `main` after publication. The release workflow now depends on the full
+reusable Node/Bun/Deno/security matrix so that mismatch cannot recur. This file
+is retained as the completed historical execution plan with that exception;
+phase descriptions below preserve their pre-release context.
 
 ## Ground rules
 
@@ -18,8 +22,10 @@ trusted-publisher configuration, tag push, and npm publication.
 - The release gates, run from the repo root, are `pnpm lint`,
   `pnpm format:check`, `pnpm typecheck`, `pnpm build`, `pnpm test`,
   `pnpm check-docs`, `pnpm verify-pack`, `pnpm check-consumer`,
-  `pnpm audit:prod`, and `pnpm audit`. Vitest currently runs 407 tests across
+  `pnpm audit:prod`, and `pnpm audit`. Vitest currently runs 423 tests across
   four files.
+- Hosted CI additionally runs Bun and Deno runtime smokes plus an
+  installed-tarball Deno declaration check (`pnpm check-deno-consumer`).
 - After any change to `src/`, also run `pnpm build` (tsup) and confirm exit 0.
 - Core integration coverage lives in `test.spec.ts` at repo root. It boots a
   real `node:http` server whose response is driven by query params:
@@ -30,10 +36,10 @@ trusted-publisher configuration, tag push, and npm publication.
 ## Orientation: current file map
 
 - `index.ts` — public re-export barrel (root).
-- `src/index.ts` — `typedFetch`, `isHttpError`, `isNetworkError`, `TypedResponse`,
-  `TypedFetchReturnType`, `TypedFetchOptions`. Control flow at `src/index.ts:92-121`.
+- `src/index.ts` — `typedFetch`, realm-safe Request handling, type guards,
+  `TypedResponse`, `TypedFetchReturnType`, and `TypedFetchOptions`.
 - `src/errors/base-http-error.ts` — abstract `BaseHttpError` (message build,
-  `this.name = this.constructor.name` at line 25, `clone()` at 49-53, body methods 29-47).
+  body readers, and `clone()` with explicit consumer-subclass recreation).
 - `src/errors/network-error.ts` — `NetworkError extends Error` (not `BaseHttpError`).
 - `src/errors/unknown-http-error.ts` — `UnknownHttpError` (`status`/`statusText` are
   `number`/`string`, not literals — lines 11-12).
@@ -626,27 +632,22 @@ Paste-ready for the README ("Non-goals"):
 
 ## Release / semver policy (must be written into CONTRIBUTING.md + README)
 
-1. **Adding a new HTTP error class to `ClientErrors`/`ServerErrors` is a `minor`.**
-   Rationale: it _widens_ the returned error union. Consumers doing exhaustive
-   `switch (error.status)` with no `default` could in theory miss a case, but adding a
-   member to a returned union is conventionally minor (the value was always reachable at
-   runtime as `UnknownHttpError`; we're only giving it a name). Document that exhaustive
-   switches **must** keep a `default` branch. If the maintainer wants to treat it as
-   `major`, that's defensible but makes the library rigid — see JUDGMENT CALL J-6.
-2. **Moving a code from `UnknownHttpError` to a dedicated class is a `major`.** It
-   changes runtime type for anyone matching `instanceof UnknownHttpError` on that code.
-3. **`error.message` text is NOT part of the contract.** Assert on `.status`/`.name`.
+1. **Registering a new HTTP error class in `ClientErrors`/`ServerErrors` is a
+   `major`.** It widens the returned union and necessarily moves that status
+   from `UnknownHttpError` to a different runtime class. Consumers should still
+   keep a `default` branch for forward compatibility and mixed versions.
+2. **`error.message` text is NOT part of the contract.** Assert on `.status`/`.name`.
    We may change message wording in any release.
-4. **`statusText` is the library's canonical protocol label, not the wire value**, and
+3. **`statusText` is the library's canonical protocol label, not the wire value**, and
    is part of the contract (it's literal-typed). Labels normally follow the current
    IANA registry; 418 (`"I'm a teapot"`) and 510 (`"Not Extended"` without the
    registry's lifecycle annotation) are intentional historical exceptions.
-5. **Removing/renaming any named export, or changing a class's `status`/`statusText`
+4. **Removing/renaming any named export, or changing a class's `status`/`statusText`
    literal, is `major`.** Enforced by the API-surface snapshot (P3-03) and roster tests
    (P1-04).
-6. **Every publish gets a git tag `v<version>`**, and the tag push is what triggers the
+5. **Every publish gets a git tag `v<version>`**, and the tag push is what triggers the
    release workflow. No more untagged npm versions.
-7. **Node engines:** `>=20` stays. Dropping a Node major is `major`.
+6. **Node engines:** `>=20` stays. Dropping a Node major is `major`.
 
 ---
 
@@ -654,13 +655,15 @@ Paste-ready for the README ("Non-goals"):
 
 All must be green before cutting `v1.0.0`:
 
-- [x] `pnpm test` passes (407 tests, including the release-policy suite).
+- [x] `pnpm test` passes (423 tests, including the release-policy suite).
 - [x] `pnpm typecheck`, `pnpm lint`, `pnpm format:check` all exit 0.
 - [x] `pnpm build` exits 0; `npm pack --dry-run` file list matches expectations
       (no source/test/config leak).
 - [x] Documentation examples, packed-tarball consumer checks, and both dependency
       audits pass.
-- [ ] CI green on Node 20, 22, 24 **and** Bun **and** Deno smoke jobs.
+- [ ] CI green on Node 20, 22, 24 **and** Bun **and** Deno smoke jobs before
+      `v1.0.0` (historical exception: the tag's Deno job failed and was fixed
+      post-release; the release dependency is now fail-closed).
 - [x] Roster sync test (P1-04) present and proven to fail on a deliberate drift.
 - [x] API-surface snapshot (P3-03) committed and proven to fail on a stray export.
 - [x] `isKnownHttpError` exported and proven to narrow `switch (error.status)` to a
@@ -675,9 +678,9 @@ All must be green before cutting `v1.0.0`:
 - [x] `CONTRIBUTING.md` present; frozen-lockfile install and the documented gates pass.
 - [x] Semver policy (above) written into CONTRIBUTING.md and README.
 - [x] Actions SHA-pinned; release provenance and OIDC are configured in code.
-- [ ] npm trusted publisher configured and provenance confirmed after publication.
+- [x] npm trusted publisher configured and provenance confirmed after publication.
 - [x] CHANGELOG has a complete `1.0.0` entry with a "Migrating from 0.x" section.
-- [ ] Git tag `v1.0.0` pushed; release workflow published with provenance.
+- [x] Git tag `v1.0.0` pushed; release workflow published with provenance.
 
 ---
 
@@ -709,7 +712,8 @@ All must be green before cutting `v1.0.0`:
   split, and 1.0 is the one window to make it. Provide `isAbortError`/`isTimeoutError`.
 
 - **J-6 (Semver policy #1) — Adding an error class: minor or major?**
-  Options: (a) minor (chosen default, standard practice for union widening);
-  (b) major (maximally safe for exhaustive-switch consumers, but makes the library
-  rigid and discourages completeness). **Decision: (a)**, paired with a hard
-  README rule that exhaustive switches keep a `default` branch.
+  Options: (a) minor (conventional for some union widening); (b) major
+  (maximally safe for both exhaustive-switch consumers and runtime
+  `UnknownHttpError` checks). **Final decision: (b)** because registering a
+  mapped class necessarily changes an existing status's runtime type. Keep the
+  `default` recommendation for forward compatibility and mixed versions.

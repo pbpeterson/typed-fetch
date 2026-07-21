@@ -66,6 +66,18 @@ function isDOMExceptionNamed(value: unknown, ...names: string[]): value is DOMEx
   return isDOMException(value) && names.includes(readStringProperty(value as object, "name") ?? "");
 }
 
+/** Realm-safe Request detection for iframe, worker, and duplicated-runtime inputs. */
+function isRequest(value: unknown): value is Request {
+  try {
+    return (
+      (typeof Request !== "undefined" && value instanceof Request) ||
+      Object.prototype.toString.call(value) === "[object Request]"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Type guard that checks whether a value is an HTTP error (any {@link BaseHttpError} subclass).
  *
@@ -173,7 +185,7 @@ export function isTimeoutError(error: unknown): error is TimeoutError {
  *       // error: NotFoundError
  *       break;
  *     default:
- *       // Keep a default: minor releases may add dedicated status classes.
+ *       // Keep a default for forward compatibility and mixed package versions.
  *       break;
  *   }
  * }
@@ -221,6 +233,51 @@ export type TypedFetchReturnType<JsonReturnType> =
 type FetchParams = Parameters<typeof fetch>;
 
 type FetchInput = FetchParams[0];
+
+function withoutFetchOverride(options: TypedFetchOptions): RequestInit {
+  const descriptors = Object.getOwnPropertyDescriptors(options);
+  delete descriptors.fetch;
+  const sanitizedTarget = Object.create(Object.getPrototypeOf(options), descriptors) as RequestInit;
+
+  // The proxy target exposes the same descriptors/prototype for reflection but
+  // deliberately omits the extension. Ordinary reads delegate to the original
+  // object with the original receiver: prototype getters backed by WebIDL
+  // internal slots or JavaScript private fields would reject a descriptor-only
+  // clone because that clone does not carry those slots.
+  return new Proxy(sanitizedTarget, {
+    get(_target, property) {
+      return property === "fetch" ? undefined : Reflect.get(options, property, options);
+    },
+    has(_target, property) {
+      return property === "fetch" ? false : Reflect.has(options, property);
+    },
+  });
+}
+
+function requestUrl(input: FetchInput): string {
+  try {
+    return isRequest(input) ? input.url : String(input);
+  } catch {
+    return "";
+  }
+}
+
+function abortState(signal: AbortSignal | undefined): {
+  readonly aborted: boolean;
+  readonly reason: unknown;
+} {
+  if (!signal) return { aborted: false, reason: undefined };
+  try {
+    return signal.aborted
+      ? { aborted: true, reason: signal.reason }
+      : { aborted: false, reason: undefined };
+  } catch {
+    // A hostile/polyfilled signal must not make the request envelope reject.
+    // Without a trustworthy state snapshot, treat the original rejection as a
+    // network/request-construction failure instead of guessing cancellation.
+    return { aborted: false, reason: undefined };
+  }
+}
 
 /** Request options accepted by {@link typedFetch} — `RequestInit` with typed `headers` and `method`. */
 export type TypedFetchOptions = FetchParams[1] & {
@@ -270,48 +327,28 @@ export async function typedFetch<JsonReturnType>(
   url: FetchInput,
   options: TypedFetchOptions = {},
 ): Promise<TypedFetchReturnType<JsonReturnType>> {
-  const { fetch: fetchImpl = fetch, ...rest } = options;
-  // A `Request` is a host exotic object: `method`, `headers`, `signal`, and
-  // `body` are prototype getters, NOT own enumerable properties, so object
-  // rest spread (`...rest`) copies NONE of them — it would silently downgrade
-  // every request to a bodyless, header-less GET. Native `fetch` reads those
-  // getters correctly, so a `Request` must be passed through untouched.
-  //
-  // Consequence: `options.fetch` injection and passing a `Request` **in the
-  // options slot** are mutually exclusive — a `Request` has no `fetch`
-  // property, and the spread above only strips `fetch` on the plain-object
-  // path. That is intentional; `options.fetch` is for the plain-object path.
-  // (A `Request` in the url slot combines freely with plain options that
-  // carry `fetch`.)
-  const init = options instanceof Request ? options : rest;
-
-  // The AbortSignal can arrive via EITHER slot: the `options`/`init` (its
-  // `.signal`), OR a `Request` passed as the first argument (`url.signal`) —
-  // the canonical fetch pattern used by service workers, middleware, and
-  // request factories. Resolve the signal that actually governs this call so
-  // the catch block can key abort/timeout classification off it.
-  //
-  // Precedence matches native `fetch(request, init)`: when `init.signal` is
-  // present it OVERRIDES `request.signal` entirely (the Request's own signal
-  // is then ignored, verified against native fetch). So `init.signal` wins;
-  // only when it is absent do we fall back to the Request's signal.
-  //
-  // `Request` is a global on every supported runtime (Node 20+, Bun, Deno,
-  // browsers, edge). `instanceof Request` also narrows `url` (typed
-  // `FetchInput`, which includes `Request`) so `url.signal` type-checks.
-  // `signal: null` is a *present* init member per the fetch spec: it DETACHES
-  // the Request's signal — no signal governs the call. Only an absent or
-  // `undefined` `init.signal` falls back to the Request's own signal (WebIDL
-  // treats an `undefined` dictionary member as absent).
-  const signal =
-    init.signal !== undefined
-      ? (init.signal ?? undefined)
-      : url instanceof Request
-        ? url.signal
-        : undefined;
-
+  let signal: AbortSignal | undefined;
   let res: Response;
   try {
+    const hasFetchOverride = "fetch" in options;
+    const fetchImpl = options.fetch ?? fetch;
+    // Fetch reads RequestInit as a WebIDL dictionary, so inherited properties
+    // and prototype getters are part of the input. Preserve its prototype and
+    // descriptors when removing this library's `fetch` extension; an object
+    // spread would silently drop inherited `method`, `headers`, `body`, or
+    // `signal` values. Without an override, pass the original object untouched.
+    const init = hasFetchOverride ? withoutFetchOverride(options) : options;
+
+    // The AbortSignal can arrive via EITHER slot: the `options`/`init` (its
+    // `.signal`), OR a `Request` passed as the first argument (`url.signal`).
+    // `signal: null` detaches the Request's signal; absent/undefined falls back.
+    signal =
+      init.signal !== undefined
+        ? (init.signal ?? undefined)
+        : isRequest(url)
+          ? url.signal
+          : undefined;
+
     res = await fetchImpl(url, init);
   } catch (err) {
     // The requested URL, so pre-response errors (which hold no `Response`) are
@@ -319,7 +356,8 @@ export async function typedFetch<JsonReturnType>(
     // already gives HTTP errors. `FetchInput` is `string | URL | Request`; a
     // `Request` exposes the resolved absolute URL on `.url`, and `String()`
     // stringifies both a `string` (identity) and a `URL` (its `href`).
-    const requestUrl = url instanceof Request ? url.url : String(url);
+    const resolvedRequestUrl = requestUrl(url);
+    const { aborted, reason } = abortState(signal);
     // The AbortSignal is the authority on cancellation — NOT the rejected
     // error's `.name`. A caller can pass any reason to `controller.abort(reason)`
     // (a documented Web API pattern), and fetch rejects with THAT reason, whose
@@ -341,11 +379,10 @@ export async function typedFetch<JsonReturnType>(
     // reject while a reason-less signal is aborted) OUT of the abort path.
     // Anything else falls through to NetworkError with the real cause.
     if (
-      signal?.aborted &&
-      (err === signal.reason ||
-        (signal.reason === undefined && isDOMExceptionNamed(err, "AbortError", "TimeoutError")))
+      aborted &&
+      (err === reason ||
+        (reason === undefined && isDOMExceptionNamed(err, "AbortError", "TimeoutError")))
     ) {
-      const reason = signal.reason;
       // Classify a timeout by the *shape the platform produces*, not by a name
       // a caller can forge on a plain error. `AbortSignal.timeout()` aborts
       // with a real `DOMException` named "TimeoutError". A caller's
@@ -371,18 +408,25 @@ export async function typedFetch<JsonReturnType>(
       if (isDOMExceptionNamed(timeoutBasis, "TimeoutError")) {
         return {
           response: null,
-          error: new TimeoutError("Request timed out", { cause: timeoutBasis, url: requestUrl }),
+          error: new TimeoutError("Request timed out", {
+            cause: timeoutBasis,
+            url: resolvedRequestUrl,
+          }),
         };
       }
       return {
         response: null,
-        error: new AbortedError("Request aborted", { cause: err, reason, url: requestUrl }),
+        error: new AbortedError("Request aborted", {
+          cause: err,
+          reason,
+          url: resolvedRequestUrl,
+        }),
       };
     }
     const message = networkErrorMessage(err);
     return {
       response: null,
-      error: new NetworkError(message, { cause: err, url: requestUrl }),
+      error: new NetworkError(message, { cause: err, url: resolvedRequestUrl }),
     };
   }
 

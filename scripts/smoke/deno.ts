@@ -1,5 +1,5 @@
-// Deno smoke test: proves the built package imports, type-checks, and runs
-// under Deno (a distinct runtime with its own TypeScript and lib types).
+// Deno runtime smoke: proves the built JavaScript imports and runs under Deno
+// (a distinct runtime with its own TypeScript and Web API implementation).
 // Spins a tiny local HTTP server that always 404s, calls `typedFetch`
 // against it, and asserts the returned error is a `NotFoundError`.
 //
@@ -7,12 +7,9 @@
 // Type-check with: deno check scripts/smoke/deno.ts
 // Requires: pnpm build (dist/index.mjs must exist)
 //
-// Note: this imports the built `.mjs` directly. Deno resolves types for a
-// direct file import from the JS itself, not the sibling `.d.mts` (whose
-// internal `./errors/index.mjs` specifiers Deno does not remap to their
-// declarations), so the guard's type predicate does not narrow here. Runtime
-// behavior is what this smoke proves; deep type-consumability is covered by
-// `pnpm check-consumer` (real tsc, node resolution, skipLibCheck:false).
+// This direct `.mjs` import deliberately tests runtime only. Published Deno
+// type-consumability is covered separately by `pnpm check-deno-consumer`, which
+// installs the tarball and imports it through its package name and exports map.
 
 import { isKnownHttpError, typedFetch } from "../../dist/index.mjs";
 

@@ -1,5 +1,41 @@
 import { describe, test, expect } from "vitest";
-import { NotFoundError, UnknownHttpError } from "./src/errors";
+import { BaseHttpError, NotFoundError, UnknownHttpError } from "./src/errors";
+
+class ContextHttpError extends BaseHttpError {
+  override readonly name = "ContextHttpError" as const;
+  readonly status = 499 as const;
+  readonly statusText = "Custom" as const;
+
+  constructor(
+    response: Response,
+    public readonly context: string,
+  ) {
+    super(response);
+    if (!context) throw new TypeError("context is required");
+  }
+}
+
+class UnconfiguredContextHttpError extends BaseHttpError {
+  override readonly name = "UnconfiguredContextHttpError" as const;
+  readonly status = 499 as const;
+  readonly statusText = "Custom" as const;
+
+  constructor(
+    response: Response,
+    public readonly context?: string,
+  ) {
+    super(response);
+  }
+}
+
+class ContextNotFoundError extends NotFoundError {
+  constructor(
+    response: Response,
+    public readonly context?: string,
+  ) {
+    super(response);
+  }
+}
 
 describe("BaseHttpError — response is not an own enumerable property (B1)", () => {
   test("response never leaks into keys, spread, or JSON", async () => {
@@ -52,6 +88,40 @@ describe("BaseHttpError — friendly double-read guard on body readers (B4)", ()
 });
 
 describe("BaseHttpError.clone()", () => {
+  test("consumer subclasses can preserve custom constructor state", async () => {
+    const error = new ContextHttpError(new Response("body", { status: 499 }), "tenant-42");
+
+    const cloned = error.clone(
+      (response) => new ContextHttpError(response, error.context) as typeof error,
+    );
+
+    expect(cloned).toBeInstanceOf(ContextHttpError);
+    expect(cloned.context).toBe("tenant-42");
+    expect(await error.text()).toBe("body");
+    expect(await cloned.text()).toBe("body");
+  });
+
+  test("subclasses cannot silently lose optional constructor state", () => {
+    const error = new UnconfiguredContextHttpError(
+      new Response("body", { status: 499 }),
+      "tenant-42",
+    );
+
+    expect(() => error.clone()).toThrowError(/pass a recreate callback/);
+    expect(error.context).toBe("tenant-42");
+  });
+
+  test("subclasses of built-in errors also require explicit recreation", () => {
+    const error = new ContextNotFoundError(new Response("body", { status: 404 }), "tenant-42");
+
+    expect(() => error.clone()).toThrowError(/pass a recreate callback/);
+
+    const cloned = error.clone(
+      (response) => new ContextNotFoundError(response, error.context) as typeof error,
+    );
+    expect(cloned.context).toBe("tenant-42");
+  });
+
   test("clone() after json() throws a TypeError with a clear message", async () => {
     const error = new NotFoundError(new Response('{"a":1}', { status: 404 }));
     await error.json();
@@ -77,6 +147,14 @@ describe("BaseHttpError.clone()", () => {
 
     expect(() => error.clone()).toThrowError(/already been read/);
     expect(() => error.clone()).toThrowError(TypeError);
+  });
+
+  test("UnknownHttpError clones without a recreation callback", async () => {
+    const error = new UnknownHttpError(new Response("body", { status: 499 }));
+    const cloned = error.clone();
+
+    expect(cloned).toBeInstanceOf(UnknownHttpError);
+    expect(await cloned.text()).toBe("body");
   });
 
   test("clone() on a locked-but-unread body throws the clear TypeError (B6)", () => {

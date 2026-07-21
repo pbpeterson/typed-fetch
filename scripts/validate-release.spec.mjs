@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { readFileSync } from "node:fs";
 import { validateRelease } from "./validate-release.mjs";
 
 const release = {
@@ -30,6 +31,15 @@ describe("validateRelease", () => {
         changelog: release.changelog.replaceAll("1.0.0", "1.0.0-rc.1"),
       }),
     ).toEqual({ distTag: "next" });
+  });
+
+  test("rejects an impossible changelog calendar date", () => {
+    expect(() =>
+      validateRelease({
+        ...release,
+        changelog: release.changelog.replace("2026-07-17", "2026-02-30"),
+      }),
+    ).toThrow("valid calendar date");
   });
 
   test.each([
@@ -73,5 +83,21 @@ describe("validateRelease", () => {
     ],
   ])("rejects a release with an invalid %s", (_name, change, expectedMessage) => {
     expect(() => validateRelease({ ...release, ...change })).toThrow(expectedMessage);
+  });
+});
+
+describe("release workflow policy", () => {
+  test("publish depends on the reusable full CI workflow", () => {
+    const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+    const releaseWorkflow = readFileSync(
+      new URL("../.github/workflows/release.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(ci).toMatch(/^on:\n\s+workflow_call:/m);
+    expect(ci).toContain("pnpm check-deno-consumer");
+    expect(releaseWorkflow).toMatch(/checks:\n(?:.|\n)*?uses: \.\/\.github\/workflows\/ci\.yml/);
+    expect(releaseWorkflow).toMatch(/publish:\n\s+needs: checks/);
+    expect(releaseWorkflow.match(/id-token: write/g)).toHaveLength(1);
   });
 });

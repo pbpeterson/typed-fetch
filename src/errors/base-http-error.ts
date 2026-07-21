@@ -1,4 +1,23 @@
-import { brand, httpErrorBrand } from "./brand";
+import { brand, httpErrorBrand, knownHttpErrorBrand, unknownHttpErrorBrand } from "./brand";
+
+function ownsBrand(value: object, brandSymbol: symbol): boolean {
+  try {
+    return Object.getOwnPropertyDescriptor(value, brandSymbol)?.value === true;
+  } catch {
+    return false;
+  }
+}
+
+function supportsDefaultClone(error: BaseHttpError): boolean {
+  try {
+    const prototype = Object.getPrototypeOf(error) as object;
+    if (ownsBrand(prototype, unknownHttpErrorBrand)) return true;
+    const parentPrototype = Object.getPrototypeOf(prototype) as object;
+    return ownsBrand(parentPrototype, knownHttpErrorBrand);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Abstract base class for all HTTP error classes (4xx and 5xx).
@@ -103,21 +122,42 @@ export abstract class BaseHttpError extends Error {
    * `json()`/`text()`/`blob()`/`arrayBuffer()`, or while a reader holds the
    * stream, throws a `TypeError` with a clear message (instead of the
    * platform's opaque "Body is unusable").
+   *
+   * Built-in errors need no callback. Consumer subclasses must pass a
+   * recreation callback so custom constructor/private state cannot be lost
+   * silently.
+   *
+   * @example
+   * ```ts
+   * const copy = error.clone(
+   *   (response) => new CustomHttpError(response, error.context),
+   * );
+   * ```
    */
-  clone(): this {
+  clone(recreate?: (response: Response) => this): this {
     if (this.#response.bodyUsed || this.#response.body?.locked) {
       throw new TypeError(
         "Cannot clone this error: its response body has already been read or its stream is locked. " +
           "Call clone() before json()/text()/blob()/arrayBuffer().",
       );
     }
-    // ASSUMPTION: every subclass constructor has the signature
-    // `(response: Response)`. All 40 status classes inherit this constructor
-    // and UnknownHttpError matches it, so this cast is sound today. A subclass
-    // that adds required constructor parameters would break clone() — keep the
-    // single-Response signature when adding error subclasses.
-    const Ctor = this.constructor as new (response: Response) => this;
-    return new Ctor(this.#response.clone());
+    if (!recreate && !supportsDefaultClone(this)) {
+      throw new TypeError(
+        `Cannot clone ${this.name} safely: consumer subclasses must pass a recreate callback ` +
+          "to clone(response => ...) so custom state is preserved.",
+      );
+    }
+    const clonedResponse = this.#response.clone();
+    try {
+      if (recreate) return recreate(clonedResponse);
+      const Ctor = this.constructor as new (response: Response) => this;
+      return new Ctor(clonedResponse);
+    } catch (cause) {
+      throw new TypeError(
+        `Cannot clone ${this.name}: the recreate callback or response-only constructor failed.`,
+        { cause },
+      );
+    }
   }
 }
 
