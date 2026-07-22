@@ -7,8 +7,8 @@ This document is the entire process. Follow it exactly, every time.
 ## Why this document exists
 
 Publishing on this project is **tag-driven**: pushing a `v*` git tag is what
-triggers `.github/workflows/release.yml` and puts a new version on npm. npm's
-current `latest` is `1.0.0`, first published on 2026-07-17 from tag `v1.0.0`
+triggers `.github/workflows/release.yml` and puts a new version on npm. The
+first stable release, `1.0.0`, was published on 2026-07-17 from tag `v1.0.0`
 through the trusted-publishing workflow. Versions
 `0.4.0` through `0.7.2` were published without corresponding Git tags, which
 must not happen again. Every publication must be reconstructable from an

@@ -2,22 +2,14 @@
 
 ## [Unreleased]
 
-### Breaking
-
-- `BaseHttpError.clone()` no longer guesses how to construct consumer-defined
-  subclasses. Those subclasses must pass the new recreation callback
-  (`error.clone(response => new CustomError(response, state))`); a no-argument
-  call now throws instead of risking silent state loss. Built-in errors retain
-  their no-argument `clone()` behavior. This requires a major version when the
-  pending changelog is released.
-
-### Added
-
-- Added an installed-tarball Deno typecheck that resolves the package by its
-  bare npm name and verifies the published `.d.mts` declarations.
+## [1.0.1] - 2026-07-22
 
 ### Fixed
 
+- `BaseHttpError.clone()` now accepts an optional recreation callback so
+  consumer-defined subclasses can preserve custom constructor and private
+  state. Calling `clone()` without a callback keeps the response-only behavior
+  from `1.0.0` for backward compatibility.
 - `typedFetch` now preserves inherited `RequestInit` properties, WebIDL
   getters, proxied/cross-realm `Request` objects, and abort signals while
   removing its `fetch` override. Errors thrown while reading or
@@ -28,6 +20,8 @@
 
 ### Release engineering
 
+- Added an installed-tarball Deno typecheck that resolves the package by its
+  bare npm name and verifies the published `.d.mts` declarations.
 - Tag releases now wait for the reusable full CI workflow (Node 20/22/24,
   security, Bun, and Deno) before the publish job can receive OIDC permission.
   The publish job still repeats the release gates against the tagged commit.
@@ -433,5 +427,6 @@ header input from `TypedFetchOptions["headers"]` instead of importing
 
 See the [commit history](https://github.com/pbpeterson/typed-fetch/commits/main).
 
-[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v0.8.1...v1.0.0
