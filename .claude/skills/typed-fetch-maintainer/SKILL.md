@@ -128,8 +128,9 @@ pnpm audit:prod
 pnpm audit
 ```
 
-With Deno installed, also run `pnpm check-deno-consumer` after `pnpm build`.
-CI always runs it against an installed packed artifact and its public types.
+With Deno 2 installed, also run `pnpm check-deno-consumer` after `pnpm build`.
+The manual `node_modules` mode requires Deno 2. CI always runs the gate against
+an installed packed artifact and its public types.
 
 - Build BEFORE test so the API-surface snapshot tests actually run (they skip when `dist/` is absent).
 - `pnpm typecheck` uses `tsconfig.test.json` — includes `test.spec.ts` so `expectTypeOf` assertions are real. Plain `tsc --noEmit` skips them.
