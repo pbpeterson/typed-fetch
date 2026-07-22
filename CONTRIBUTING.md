@@ -275,9 +275,9 @@ policy below.
 ### Consumer subclasses and cloning
 
 Built-in classes support `BaseHttpError.clone()` without extra configuration.
-Consumer subclasses must pass the optional recreation callback, even when they
-currently accept only a `Response`, so a future constructor/private-state
-change cannot silently corrupt clones. For example:
+Consumer subclasses retain the response-only `clone()` behavior from 1.0.0,
+but it cannot preserve additional constructor or private state. Pass the
+optional recreation callback when a subclass has such state. For example:
 `error.clone((response) => new CustomHttpError(response, error.context))`.
 Add a regression test that consumes both bodies and verifies custom state is
 preserved.

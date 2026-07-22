@@ -1,23 +1,4 @@
-import { brand, httpErrorBrand, knownHttpErrorBrand, unknownHttpErrorBrand } from "./brand";
-
-function ownsBrand(value: object, brandSymbol: symbol): boolean {
-  try {
-    return Object.getOwnPropertyDescriptor(value, brandSymbol)?.value === true;
-  } catch {
-    return false;
-  }
-}
-
-function supportsDefaultClone(error: BaseHttpError): boolean {
-  try {
-    const prototype = Object.getPrototypeOf(error) as object;
-    if (ownsBrand(prototype, unknownHttpErrorBrand)) return true;
-    const parentPrototype = Object.getPrototypeOf(prototype) as object;
-    return ownsBrand(parentPrototype, knownHttpErrorBrand);
-  } catch {
-    return false;
-  }
-}
+import { brand, httpErrorBrand } from "./brand";
 
 /**
  * Abstract base class for all HTTP error classes (4xx and 5xx).
@@ -123,9 +104,10 @@ export abstract class BaseHttpError extends Error {
    * stream, throws a `TypeError` with a clear message (instead of the
    * platform's opaque "Body is unusable").
    *
-   * Built-in errors need no callback. Consumer subclasses must pass a
-   * recreation callback so custom constructor/private state cannot be lost
-   * silently.
+   * Built-in errors need no callback. Consumer subclasses can pass a
+   * recreation callback to preserve custom constructor or private state.
+   * Without a callback, cloning uses the compatible response-only constructor
+   * behavior from version 1.0.0 and cannot preserve additional state.
    *
    * @example
    * ```ts
@@ -139,12 +121,6 @@ export abstract class BaseHttpError extends Error {
       throw new TypeError(
         "Cannot clone this error: its response body has already been read or its stream is locked. " +
           "Call clone() before json()/text()/blob()/arrayBuffer().",
-      );
-    }
-    if (!recreate && !supportsDefaultClone(this)) {
-      throw new TypeError(
-        `Cannot clone ${this.name} safely: consumer subclasses must pass a recreate callback ` +
-          "to clone(response => ...) so custom state is preserved.",
       );
     }
     const clonedResponse = this.#response.clone();

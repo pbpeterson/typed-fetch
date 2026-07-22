@@ -39,7 +39,7 @@ phase descriptions below preserve their pre-release context.
 - `src/index.ts` — `typedFetch`, realm-safe Request handling, type guards,
   `TypedResponse`, `TypedFetchReturnType`, and `TypedFetchOptions`.
 - `src/errors/base-http-error.ts` — abstract `BaseHttpError` (message build,
-  body readers, and `clone()` with explicit consumer-subclass recreation).
+  body readers, and `clone()` with optional consumer-subclass recreation).
 - `src/errors/network-error.ts` — `NetworkError extends Error` (not `BaseHttpError`).
 - `src/errors/unknown-http-error.ts` — `UnknownHttpError` (`status`/`statusText` are
   `number`/`string`, not literals — lines 11-12).

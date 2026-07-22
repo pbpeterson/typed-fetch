@@ -101,9 +101,10 @@ The roster is hand-maintained. To add a dedicated class for status code `NNN`:
 Adding a class also changes the public API surface, so update the snapshot (see below): `pnpm build && pnpm test -u`.
 
 Built-in classes clone through their `Response`-only constructors.
-Consumer-defined subclasses must pass `clone(response => new Custom(...))`,
-even if they currently have no extra state; this prevents a future
-constructor/private-state change from silently corrupting clones.
+Consumer-defined subclasses keep the response-only `clone()` behavior for
+compatibility. It cannot preserve additional constructor or private state, so
+subclasses with such state should pass
+`clone(response => new Custom(...))`.
 
 ## Guardrail tests (test.spec.ts)
 

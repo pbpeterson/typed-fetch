@@ -101,20 +101,26 @@ describe("BaseHttpError.clone()", () => {
     expect(await cloned.text()).toBe("body");
   });
 
-  test("subclasses cannot silently lose optional constructor state", () => {
+  test("consumer subclasses keep response-only clone compatibility", async () => {
     const error = new UnconfiguredContextHttpError(
       new Response("body", { status: 499 }),
       "tenant-42",
     );
 
-    expect(() => error.clone()).toThrowError(/pass a recreate callback/);
+    const cloned = error.clone();
+
+    expect(cloned).toBeInstanceOf(UnconfiguredContextHttpError);
     expect(error.context).toBe("tenant-42");
+    expect(cloned.context).toBeUndefined();
+    expect(await cloned.text()).toBe("body");
   });
 
-  test("subclasses of built-in errors also require explicit recreation", () => {
+  test("subclasses of built-in errors keep no-callback clone compatibility", () => {
     const error = new ContextNotFoundError(new Response("body", { status: 404 }), "tenant-42");
 
-    expect(() => error.clone()).toThrowError(/pass a recreate callback/);
+    const defaultClone = error.clone();
+    expect(defaultClone).toBeInstanceOf(ContextNotFoundError);
+    expect(defaultClone.context).toBeUndefined();
 
     const cloned = error.clone(
       (response) => new ContextNotFoundError(response, error.context) as typeof error,
