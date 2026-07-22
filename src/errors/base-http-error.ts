@@ -124,15 +124,14 @@ export abstract class BaseHttpError extends Error {
       );
     }
     const clonedResponse = this.#response.clone();
-    try {
-      if (recreate) return recreate(clonedResponse);
+    if (!recreate) {
       const Ctor = this.constructor as new (response: Response) => this;
       return new Ctor(clonedResponse);
+    }
+    try {
+      return recreate(clonedResponse);
     } catch (cause) {
-      throw new TypeError(
-        `Cannot clone ${this.name}: the recreate callback or response-only constructor failed.`,
-        { cause },
-      );
+      throw new TypeError(`Cannot clone ${this.name}: the recreate callback failed.`, { cause });
     }
   }
 }

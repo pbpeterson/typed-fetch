@@ -115,6 +115,12 @@ describe("BaseHttpError.clone()", () => {
     expect(await cloned.text()).toBe("body");
   });
 
+  test("response-only cloning preserves consumer constructor failures", () => {
+    const error = new ContextHttpError(new Response("body", { status: 499 }), "tenant-42");
+
+    expect(() => error.clone()).toThrowError("context is required");
+  });
+
   test("subclasses of built-in errors keep no-callback clone compatibility", () => {
     const error = new ContextNotFoundError(new Response("body", { status: 404 }), "tenant-42");
 
