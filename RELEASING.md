@@ -108,8 +108,10 @@ Run every step, in order, for every release:
    `build` must precede every artifact gate because the tests, docs checker,
    tarball validator, and scratch consumer inspect `dist/`.
    For local parity with the Deno CI job, also run
-   `pnpm check-deno-consumer` after `pnpm build` when Deno is installed. The
-   tag workflow enforces this gate regardless of local runtime availability.
+   `pnpm check-deno-consumer` after `pnpm build` when Deno 2 is installed. This
+   gate needs Deno 2 to resolve the unpublished local tarball from
+   `node_modules`. The tag workflow enforces it regardless of local runtime
+   availability.
 3. **Commit the release candidate and open a PR:**
    ```bash
    git commit -m "chore: release X.Y.Z"

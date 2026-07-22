@@ -101,8 +101,12 @@ try {
 
   const denoVersion = execFileSync("deno", ["--version"], { encoding: "utf8" });
   const denoMajor = Number.parseInt(/deno (\d+)/.exec(denoVersion)?.[1] ?? "0", 10);
-  const nodeModulesMode = denoMajor >= 2 ? "--node-modules-dir=manual" : "--node-modules-dir=true";
-  execFileSync("deno", ["check", nodeModulesMode, "consumer.ts"], {
+  if (denoMajor < 2) {
+    throw new Error(
+      "check-deno-consumer requires Deno 2 or later so it can resolve the unpublished local tarball from node_modules.",
+    );
+  }
+  execFileSync("deno", ["check", "--node-modules-dir=manual", "consumer.ts"], {
     cwd: workDir,
     stdio: "inherit",
   });

@@ -21,9 +21,8 @@ import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
 
 type User = { id: number; name: string };
 
-// Native fetch: you must check raw.ok.
+// Native fetch: this example forgets the required raw.ok check.
 const raw = await fetch("/api/users");
-if (!raw.ok) throw new Error(`HTTP ${raw.status}`);
 const usersRaw = await raw.json();
 
 // typedFetch: request errors are values.
@@ -491,6 +490,8 @@ Each pre-response error also has a `url` value. Use this value to identify faile
 `options` extends `RequestInit`. It gives autocomplete for common headers and methods, but it accepts all strings that native Fetch accepts.
 
 The optional `fetch` property sets a custom Fetch implementation. Use it for tests, dependency injection, or custom agents.
+
+When `options` has no custom `fetch` property, `typedFetch` gives the original object to native `fetch` without changes.
 
 `typedFetch` removes the custom property before it calls the Fetch implementation. It keeps inherited properties and WebIDL getters.
 

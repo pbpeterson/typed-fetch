@@ -56,7 +56,8 @@ Run them all locally; CI runs the same checks and will fail the PR otherwise.
 CI additionally runs Bun and Deno runtime smokes. Its Deno job runs
 `pnpm check-deno-consumer` after the build, installing the packed artifact and
 typechecking the package's public `.d.mts` declarations by bare package name.
-Run that command locally too when Deno is installed.
+Run that command locally too when Deno 2 is installed. Deno 1 cannot resolve
+an unpublished local tarball through the required manual `node_modules` mode.
 
 If `pnpm format:check` fails, run `pnpm format` to fix it in place, then
 re-check.
