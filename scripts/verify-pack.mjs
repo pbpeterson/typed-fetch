@@ -17,7 +17,8 @@
 //
 // So this runs `npm pack --dry-run --json`, inspects the exact file list that
 // WOULD be published, and fails loudly if the manifest is wrong: a required
-// file is absent, a forbidden path leaked in, or LICENSE/README.md is missing.
+// file is absent, LICENSE/README.md is missing, or ANY packed path is not on
+// the allow-list below.
 // Zero dependencies on purpose: the package ships no runtime deps and must not
 // grow a dev dep for a release guard.
 
@@ -49,28 +50,49 @@ const REQUIRED_DIST_FILES = [
 // and README.md must be present for the package page and license to be intact.
 const REQUIRED_META_FILES = ["LICENSE", "README.md"];
 
-// Nothing outside dist/ (plus the metadata files above) belongs in the tarball.
-// A leak here means source, tests, or config would ship to consumers. Matched
-// as path prefixes / exact paths against the packed file list.
-const FORBIDDEN_PREFIXES = ["src/", "scripts/", "__snapshots__/"];
-const FORBIDDEN_EXACT = [
-  "test.spec.ts",
-  "PLAN.md",
-  "tsconfig.json",
-  "tsconfig.test.json",
-  "tsup.config.ts",
-];
-// Any file matching these patterns is a leak regardless of directory.
-const FORBIDDEN_PATTERNS = [
-  /\.spec\.ts$/, // test files
-  /\.test\.ts$/, // test files
-  /(^|\/)tsconfig[^/]*\.json$/, // tsconfig.json, tsconfig.test.json, etc.
-  /(^|\/)__snapshots__\//, // snapshot dirs at any depth
+// ALLOWLIST, not a denylist.
+//
+// A denylist here was structurally unable to do its job. `files: ["dist"]` means
+// the ONLY thing that can ship is `dist/` plus metadata — and the old denylist
+// (`src/`, `scripts/`, `__snapshots__/`, `*.spec.ts`, `tsconfig*.json`) covered
+// exactly the paths that `files` already excluded, while covering nothing inside
+// `dist/`. Proven: `dist/.env`, `dist/index.mjs.map` (whose `sourcesContent`
+// re-ships every source file the denylist was written to block), and
+// `dist/src/index.ts` all packed with a clean "no leaks" report.
+//
+// So: every packed path must match one of these. Anything else fails.
+const ALLOWED_EXACT = new Set([
+  "package.json", // npm always includes it
+  "LICENSE",
+  "README.md",
+  ...REQUIRED_DIST_FILES,
+]);
+
+// tsup emits shared code as `chunk-<HASH>.<js|mjs>` next to the entry points.
+// The hash changes per build, so this is the one pattern that cannot be exact.
+const ALLOWED_PATTERNS = [/^dist\/chunk-[A-Za-z0-9_-]+\.(?:js|mjs)$/];
+
+// Named for the report, so a failure says WHAT kind of leak it is rather than
+// only "not allowed". Checked before the allowlist so the message is specific.
+const LEAK_RULES = [
+  { label: "dotfile / secret", test: (f) => /(^|\/)\.[^/]+$/.test(f) },
+  { label: "sourcemap", test: (f) => f.endsWith(".map") },
+  { label: "source directory inside dist", test: (f) => f.startsWith("dist/src/") },
+  {
+    label: "TypeScript source (not a declaration)",
+    test: (f) => f.endsWith(".ts") && !f.endsWith(".d.ts") && !f.endsWith(".d.mts"),
+  },
+  { label: "test file", test: (f) => /\.(?:spec|test)\.[cm]?[jt]s$/.test(f) },
+  { label: "tsconfig", test: (f) => /(^|\/)tsconfig[^/]*\.json$/.test(f) },
+  { label: "snapshot directory", test: (f) => /(^|\/)__snapshots__\//.test(f) },
 ];
 
-// Full build currently emits 13 files. A count below this means dist is
-// partially built or something silently dropped out of the tarball.
+// Full build emits exactly 13 files: 8 required entry points + 2 chunks (one
+// per format) + LICENSE + README.md + package.json. MIN catches a partial
+// build; MAX catches anything extra that the allowlist somehow admits, so a
+// future build change has to be looked at rather than absorbed silently.
 const MIN_FILE_COUNT = 13;
+const MAX_FILE_COUNT = 13;
 
 function fail(message) {
   console.error(`\n✖ verify-pack: ${message}\n`);
@@ -119,22 +141,32 @@ if (missingMeta.length > 0) {
   fail(`tarball is missing required metadata file(s):\n    - ${missingMeta.join("\n    - ")}`);
 }
 
-// 3. No forbidden source/test/config files leaked in.
-const leaked = packedFiles.filter(
-  (f) =>
-    FORBIDDEN_PREFIXES.some((p) => f.startsWith(p)) ||
-    FORBIDDEN_EXACT.includes(f) ||
-    FORBIDDEN_PATTERNS.some((re) => re.test(f)),
-);
+// 3. Every packed path must be on the allowlist. Known leak shapes are named
+//    explicitly so the failure explains itself.
+const leaked = [];
+for (const f of packedFiles) {
+  const rule = LEAK_RULES.find((r) => r.test(f));
+  if (rule) {
+    leaked.push(`${f}  (${rule.label})`);
+    continue;
+  }
+  if (ALLOWED_EXACT.has(f)) continue;
+  if (ALLOWED_PATTERNS.some((re) => re.test(f))) continue;
+  leaked.push(`${f}  (not on the allow-list)`);
+}
 if (leaked.length > 0) {
   fail(
-    "tarball would ship source/internal file(s) that must never be published:\n" +
+    "tarball would ship file(s) that are not part of the published artifact:\n" +
       `    - ${leaked.join("\n    - ")}\n` +
-      "Tighten the `files` allow-list in package.json (it should be `dist` only).",
+      "Clean dist/ and rebuild (`pnpm build` runs tsup with clean:true). If a new " +
+      "file genuinely belongs in the artifact, add it to ALLOWED_EXACT/ALLOWED_PATTERNS " +
+      "here and bump MAX_FILE_COUNT deliberately.",
   );
 }
 
-// 4. Sanity-check the overall file count.
+// 4. Sanity-check the overall file count. A sourcemap or a stray dotfile is
+//    caught above; this catches a partial build (too few) and anything the
+//    allow-list admits that nobody looked at (too many).
 const fileCount = typeof pkg.entryCount === "number" ? pkg.entryCount : packedFiles.length;
 if (fileCount < MIN_FILE_COUNT) {
   fail(
@@ -142,10 +174,18 @@ if (fileCount < MIN_FILE_COUNT) {
       "Build output looks incomplete.",
   );
 }
+if (fileCount > MAX_FILE_COUNT) {
+  fail(
+    `tarball has ${fileCount} file(s), expected at most ${MAX_FILE_COUNT}:\n` +
+      `    - ${packedFiles.join("\n    - ")}\n` +
+      "Something new is shipping. Confirm it belongs, then bump MAX_FILE_COUNT.",
+  );
+}
 
 console.log(
   `✔ verify-pack: manifest OK — ${fileCount} files; ` +
-    `all ${REQUIRED_DIST_FILES.length} required entry points + LICENSE/README present, no leaks.`,
+    `all ${REQUIRED_DIST_FILES.length} required entry points + LICENSE/README present, ` +
+    "every packed path on the allow-list.",
 );
 for (const f of [...REQUIRED_DIST_FILES, ...REQUIRED_META_FILES]) {
   console.log(`    ✓ ${f}`);
