@@ -344,15 +344,41 @@ if (isHttpError(error)) {
 }
 ```
 
-`cancel()` frees the resources immediately. But it can also close the connection instead of a return of the connection to the keep-alive pool.
+Without a `clone()`, `await cancel()` waits for the release of the body. The promise resolves after the release.
 
-Read the body with `text()` when the connection is more important than the bytes.
+`cancel()` does not read the remaining bytes. Thus the runtime can close the connection instead of a return of the connection to the keep-alive pool.
+
+A body read has the opposite trade-off. `text()` downloads the remaining bytes, but it permits connection reuse.
+
+Read the body with `text()` when connection reuse is more important than the transfer. Cancel the body when the transfer is more important.
 
 `cancel()` resolves when the response has no body. It is also safe after a complete body read.
 
-`cancel()` rejects with `TypeError` when a reader holds the stream. Release that reader first.
+`cancel()` rejects with `TypeError` when an external reader holds the stream. Release that reader first.
 
 After a `cancel()`, all body readers and `clone()` throw `TypeError`.
+
+##### Cancel a cloned body
+
+`clone()` tees the body stream. The platform releases the source only after the release of every branch.
+
+Thus `cancel()` on one branch stays pending until the other branch is also read or cancelled. Release all branches:
+
+```typescript
+import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
+
+const { error } = await typedFetch("/api/users/123");
+
+if (isHttpError(error)) {
+  const copy = error.clone();
+
+  await Promise.all([error.cancel(), copy.cancel()]);
+}
+```
+
+`cancel()` on one branch never cancels the other branch. You made the copy in order to read it.
+
+A repeated `cancel()` on the same error settles together with the first call. It never reports success before the first call.
 
 ### Network errors, aborts, and timeouts
 
@@ -464,6 +490,26 @@ controller.abort(new Error("route change"));
 ```
 
 The first signal that aborts decides the result. A manual abort gives `AbortedError`. The deadline gives `TimeoutError`.
+
+`AbortSignal.any()` requires Node 20.3 or a later version. The package floor is Node 20, so this recipe is not available on Node 20.0 to 20.2.
+
+On those versions, use only one signal. Give `AbortSignal.timeout()` for a deadline, or a controller signal for a manual cancellation.
+
+You can also do the combination manually. Make one controller and abort it from a timer and from your own code:
+
+```typescript
+import { typedFetch } from "@pbpeterson/typed-fetch";
+
+const controller = new AbortController();
+
+const timer = setTimeout(() => controller.abort(new Error("deadline")), 5000);
+
+const { error } = await typedFetch("/api/users", { signal: controller.signal });
+
+clearTimeout(timer);
+```
+
+This form gives `AbortedError` for both cases. Read `error.reason` to identify the deadline.
 
 Each pre-response error also has a `url` value. Use this value to identify failed concurrent requests.
 
@@ -648,7 +694,7 @@ Instance methods:
 - `text()`: Read the body as text.
 - `blob()`: Read the body as a `Blob`.
 - `arrayBuffer()`: Read the body as an `ArrayBuffer`.
-- `cancel(reason?)`: Release the body without a read.
+- `cancel(reason?)`: Release the body without a read. After a `clone()`, release every branch.
 - `clone(recreate?)`: Clone the error before a body read.
 
 Do not call `clone()` after you read the body, cancel the body, or lock its stream. The method throws `TypeError`.

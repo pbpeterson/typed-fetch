@@ -9,11 +9,19 @@
 - `BaseHttpError.cancel(reason?)` releases an error response body without
   buffering it. An unread error body keeps its stream open and pins the
   underlying connection, which defeats keep-alive for code that logs
-  `error.message` and drops the error. `cancel()` resolves when the response
-  carries no body, is safe to call again after a completed read, and rejects
-  with a `TypeError` when a reader holds the stream. Cancelling frees resources
-  immediately but can close the connection instead of returning it to the pool —
-  read the body with `text()` when the connection matters more than the bytes.
+  `error.message` and drops the error. It resolves when the response carries no
+  body, when the body was already consumed, and when this library already read
+  it; a repeated call settles with the first one; and it rejects with a
+  `TypeError` when an EXTERNAL reader holds the stream. Cancelling does not
+  download the remaining bytes, so the runtime may close the connection instead
+  of returning it to the keep-alive pool — read the body with `text()` when
+  connection reuse matters more than the transfer.
+- A minimum-runtime smoke (`scripts/smoke/node-min.mjs`, wired as the
+  `node-min-smoke` CI job) executes the built artifact on Node **20.0.0**, the
+  declared `engines` floor. The existing matrix uses `node-version: 20`, which
+  resolves to the latest 20.x, so the floor itself was never run. The toolchain
+  is not installed there: CI builds on Node 22 and switches to 20.0.0 for the
+  smoke alone.
 
 ### Fixed
 
@@ -39,6 +47,47 @@
   `TypeError` instead of the platform's opaque "Body is unusable". `clone()`
   already had this check. Native parse failures for an empty or invalid JSON
   body are unchanged.
+- `cancel()` no longer decides "this body is already gone" from
+  `response.bodyUsed`, which is runtime-specific: **Bun** reports it as soon as
+  `getReader()` locks the stream, while Node, Deno, and workerd keep it `false`
+  until the stream is disturbed. On Bun an externally locked body therefore
+  reported success without releasing anything, and then permanently blocked the
+  readers. The library now tracks its own reads and decides in a fixed order —
+  repeated cancel, library read, external lock, consumed body, releasable body.
+- `cancel()` after `clone()` is now correct and idempotent. Cloning tees the
+  body stream, and the platform releases the source only once every branch is
+  read or cancelled, so the promise stays pending until the sibling is released.
+  That native semantics is kept deliberately (resolving early would report a
+  release that did not happen), and it is now documented with the
+  `Promise.all([error.cancel(), copy.cancel()])` pattern. A repeated `cancel()`
+  settles **with** the in-flight one instead of reporting success while the
+  first is still waiting, and a late rejection can no longer surface as an
+  unhandled rejection. Cancelling one branch never cancels its sibling.
+- `BaseHttpError` keeps its per-instance state in a module-scoped `WeakMap`
+  instead of ECMAScript `#private` fields. TypeScript emits a nominal
+  `#private;` marker into each declaration file, so `dist/index.d.ts` and
+  `dist/index.d.mts` declared two incompatible `NotFoundError` types: a
+  CJS-typed wrapper package could not hand an error to an ESM app without a cast
+  (`TS2741: Property '#private' is missing`). The response stays out of
+  `JSON.stringify`, spreads, and `Object.keys` exactly as before. Tradeoff: the
+  error classes are now purely structural, so a same-shaped object is
+  assignable — the brand guards (`isHttpError`), not assignability, remain the
+  authority on provenance.
+- `TypedHeaders` no longer names the global `HeadersInit`, which is declared
+  only in `lib.dom.d.ts`. A Node consumer without DOM failed to compile the
+  published declarations (`TS2304: Cannot find name 'HeadersInit'`) or, with
+  `skipLibCheck` on, silently degraded `TypedHeaders` to `any` and lost the
+  whole `StrictHeaders` layer. The headers arm is now derived from the ambient
+  `fetch` signature, which resolves identically with and without DOM.
+- Error detection is realm-safe. `instanceof Error` is bound to the current
+  realm, so an error from a `node:vm` context, an iframe, or a worker failed it:
+  a cross-realm rejection lost its message (`NetworkError: Network error`) and a
+  cross-realm implementation `AbortError` was misclassified as a
+  `NetworkError` even with the governing signal aborted. Detection now falls
+  back to the platform tag and, for a subclass that overrides
+  `Symbol.toStringTag`, to a tight structural test. A bare object literal named
+  `"AbortError"` is still never an error, and an abort name with no aborted
+  signal is still a `NetworkError`.
 - `BaseHttpError.clone()` now accepts an optional recreation callback so
   consumer-defined subclasses can preserve custom constructor and private
   state. Calling `clone()` without a callback keeps the response-only behavior
@@ -53,6 +102,23 @@
 
 ### Release engineering
 
+- `verify-pack` is now an ALLOW-list. Its denylist was structurally unable to do
+  its job: `files: ["dist"]` means only `dist/` plus metadata can ever ship, and
+  the denylist covered exactly the paths `files` already excluded while covering
+  nothing inside `dist/`. A `dist/.env`, a sourcemap carrying `sourcesContent`
+  (which re-ships every source file), and a `dist/src/index.ts` all packed with
+  a clean "no leaks" report. Every packed path must now match the expected
+  entry points, build chunks, or metadata, and a `MAX_FILE_COUNT` sits beside
+  the existing minimum. `scripts/verify-pack.spec.mjs` proves each leak fails.
+- `check-docs` now globs every file under `src/` for public JSDoc instead of
+  reading a hand-maintained list of one. The list omitted
+  `src/errors/base-http-error.ts`, so the published `clone()` example shipped
+  with four TypeScript errors — undefined `CustomHttpError`, undefined `error`,
+  and an implicit `any`. That example is now self-contained and compiles.
+- `check-consumer` typechecks five configurations instead of two: `bundler`,
+  `nodenext`, Node **without** DOM, Node **with** DOM, and a CJS→ESM
+  assignability pass. Both new passes fail against the previous build and pass
+  against this one.
 - Added an installed-tarball Deno typecheck that resolves the package by its
   bare npm name and verifies the published `.d.mts` declarations.
 - Tag releases now wait for the reusable full CI workflow (Node 20/22/24,
@@ -69,6 +135,14 @@
 - Documented `cancel()`, the widened abort classification for custom Fetch
   implementations, and the hardened response inspection. Added an
   `AbortSignal.any()` recipe that combines a manual controller with a deadline.
+- Corrected the `cancel()` documentation: it no longer claims resources are
+  freed "immediately". The README now states what `await cancel()` waits for,
+  that a cloned body requires every branch to be released, and the explicit
+  trade-off — cancelling skips the remaining bytes but can cost connection
+  reuse, while reading them keeps the connection but pays the transfer.
+- Noted that the `AbortSignal.any()` deadline recipe requires Node 20.3 or
+  later, while the package floor stays at Node 20, and added a single-controller
+  alternative for Node 20.0–20.2. The `engines` floor is unchanged.
 
 ## [1.0.0] - 2026-07-17
 

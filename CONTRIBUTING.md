@@ -286,6 +286,18 @@ only reachable through `json()`/`text()`/`blob()`/`arrayBuffer()`,
 - `cancel()` never buffers. Test it with a `ReadableStream` whose `cancel()`
   callback records the call and whose `pull()` records buffering — a passing
   test asserts the cancel callback ran and `pull` never did.
+- Never infer "we already read this body" from `response.bodyUsed`. That flag
+  is runtime-specific: Bun sets it when `getReader()` locks the stream, Node,
+  Deno, and workerd do not. The state carries its own `readStarted`, and
+  `cancel()` decides in a fixed order — repeated cancel, library read, external
+  lock, consumed body, releasable body.
+- `clone()` tees the stream, so a `cancel()` on one branch stays pending until
+  the sibling is released. Keep that native semantics; do not resolve early.
+- The per-instance state lives in a module-scoped `WeakMap`, not in `#private`
+  fields. `#private` emits a nominal `#private;` marker into the declarations,
+  which makes the `.d.ts` and `.d.mts` copies of every error class mutually
+  unassignable. Do not reintroduce `#private`, `private`, or `protected` on any
+  publicly exported class.
 
 ### Consumer subclasses and cloning
 

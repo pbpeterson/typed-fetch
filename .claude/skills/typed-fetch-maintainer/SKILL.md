@@ -116,13 +116,26 @@ subclasses with such state should pass
 
 ## Error body lifecycle (src/errors/base-http-error.ts)
 
-The failed `Response` lives in the `#response` private field, so the body is
-reachable only through the readers, `cancel(reason?)`, and `clone()`. Keep the
-shared reader guard and the `clone()` guard in sync — both reject a body that
-is consumed (`bodyUsed`), cancelled (`#cancelled`), or `body.locked`, and both
-throw the library's `TypeError` rather than the platform's "Body is unusable".
-`cancel()` must never buffer: it short-circuits on an already-released body,
-rejects on a locked stream, and otherwise forwards to `body.cancel(reason)`.
+Per-instance state lives in a module-scoped `WeakMap<BaseHttpError, State>`
+(`{ response, cancelled, readStarted, teed, cancelling }`), NOT in `#private`
+fields. `#private` emits a nominal `#private;` marker into the declarations,
+making `.d.ts` and `.d.mts` copies of every error class mutually unassignable —
+the same dual-package boundary the runtime brands exist to cross. Never
+reintroduce `#private`/`private`/`protected` on an exported class; the accepted
+cost is that the classes are structural.
+
+Keep the shared reader guard and the `clone()` guard in sync — both reject a
+body that is cancelled, read by this library (`readStarted`), consumed
+(`bodyUsed`), or `body.locked`, and both throw the library's `TypeError` rather
+than the platform's "Body is unusable".
+
+`cancel()` never buffers and decides in a FIXED order: repeated cancel (returns
+the in-flight promise) → library read → external lock (throws) → consumed body
+→ release. `bodyUsed` must never stand in for "we read it": Bun sets it on
+`getReader()`, Node/Deno/workerd do not. `clone()` tees the stream and marks
+both sides `teed`; the platform releases the source only when every branch is
+released, so a lone `cancel()` stays pending — keep that, do not resolve early,
+and never auto-cancel the sibling.
 
 ## Guardrail tests (test.spec.ts)
 
