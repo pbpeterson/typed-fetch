@@ -1,4 +1,5 @@
 import http from "node:http";
+import vm from "node:vm";
 import { readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -74,6 +75,10 @@ import {
   type TypedFetchReturnType,
   type TypedResponse,
 } from "./index";
+
+function crossRealmContext(): vm.Context {
+  return vm.createContext({});
+}
 
 function reasonlessAbortedSignal(): AbortSignal {
   return { aborted: true, reason: undefined } as unknown as AbortSignal;
@@ -1197,6 +1202,129 @@ describe("typedFetch", () => {
     const stubFetch = vi.fn(async () => Promise.reject(notAnError)) as unknown as typeof fetch;
 
     const result = await typedFetch("https://example.invalid/object-abort", {
+      signal: controller.signal,
+      fetch: stubFetch,
+    });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isAbortError(result.error)).toBe(false);
+  });
+
+  // ── Fix 1f: cross-realm rejections ─────────────────────────────────────
+  // `instanceof Error` is bound to the current realm's constructor, so an
+  // error built in a `node:vm` context, an iframe, or a worker fails it. Every
+  // other platform guard in this module already has a realm-safe fallback;
+  // error detection must too, or a foreign rejection loses its message and a
+  // foreign abort stops being recognized.
+
+  test("a cross-realm Error keeps its message on the NetworkError", async () => {
+    const foreign = vm.runInContext(
+      "new TypeError('foreign network failure')",
+      crossRealmContext(),
+    ) as Error;
+    // Precondition: this is exactly the value `instanceof` cannot see.
+    expect(foreign instanceof Error).toBe(false);
+
+    const stubFetch = vi.fn(async () => Promise.reject(foreign)) as unknown as typeof fetch;
+    const result = await typedFetch("https://example.invalid/cross-realm", { fetch: stubFetch });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.message).toBe("foreign network failure");
+    expect(result.error?.cause).toBe(foreign);
+  });
+
+  test("a cross-realm implementation AbortError is still a cancellation", async () => {
+    const foreign = vm.runInContext(
+      "const e = new Error('The operation was aborted.'); e.name = 'AbortError'; e",
+      crossRealmContext(),
+    ) as Error;
+    expect(foreign instanceof Error).toBe(false);
+
+    const controller = new AbortController();
+    controller.abort();
+    const stubFetch = vi.fn(async () => Promise.reject(foreign)) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/cross-realm-abort", {
+      signal: controller.signal,
+      fetch: stubFetch,
+    });
+
+    expect(result.error).toBeInstanceOf(AbortedError);
+    expect(isAbortError(result.error)).toBe(true);
+    expect(isNetworkError(result.error)).toBe(false);
+  });
+
+  test("a cross-realm subclass with a custom toStringTag is still a cancellation", async () => {
+    // A subclass may override Symbol.toStringTag, so `[object Error]` alone is
+    // not a sufficient test either.
+    const foreign = vm.runInContext(
+      `class ImplAbortError extends Error {
+         get [Symbol.toStringTag]() { return "AbortError"; }
+       }
+       const e = new ImplAbortError("The operation was aborted.");
+       e.name = "AbortError";
+       e`,
+      crossRealmContext(),
+    ) as Error;
+    expect(foreign instanceof Error).toBe(false);
+    expect(Object.prototype.toString.call(foreign)).toBe("[object AbortError]");
+
+    const controller = new AbortController();
+    controller.abort();
+    const stubFetch = vi.fn(async () => Promise.reject(foreign)) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/cross-realm-tagged", {
+      signal: controller.signal,
+      fetch: stubFetch,
+    });
+
+    expect(result.error).toBeInstanceOf(AbortedError);
+    expect(isAbortError(result.error)).toBe(true);
+  });
+
+  test("a cross-realm error with a hostile message getter still resolves as a value", async () => {
+    const foreign = vm.runInContext(
+      `const e = new Error("x");
+       Object.defineProperty(e, "message", { get() { throw new Error("hostile"); } });
+       Object.defineProperty(e, "name", { get() { throw new Error("hostile"); } });
+       e`,
+      crossRealmContext(),
+    ) as Error;
+
+    const stubFetch = vi.fn(async () => Promise.reject(foreign)) as unknown as typeof fetch;
+    const result = await typedFetch("https://example.invalid/cross-realm-hostile", {
+      fetch: stubFetch,
+    });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.message).toBe("Network error");
+    expect(result.error?.cause).toBe(foreign);
+  });
+
+  test("a cross-realm AbortError with NO aborted signal stays a NetworkError", async () => {
+    const foreign = vm.runInContext(
+      "const e = new Error('nope'); e.name = 'AbortError'; e",
+      crossRealmContext(),
+    ) as Error;
+    const stubFetch = vi.fn(async () => Promise.reject(foreign)) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/cross-realm-no-signal", {
+      fetch: stubFetch,
+    });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isAbortError(result.error)).toBe(false);
+  });
+
+  test("an aborted signal + a forged object named 'AbortError' stays a NetworkError", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    // A bare object literal is not an error, whatever it calls itself. It has
+    // no stack and its prototype is Object.prototype.
+    const forged = { name: "AbortError", message: "not an error", stack: "fake" };
+    const stubFetch = vi.fn(async () => Promise.reject(forged)) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/forged-object", {
       signal: controller.signal,
       fetch: stubFetch,
     });

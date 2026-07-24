@@ -25,9 +25,39 @@ function readStringProperty(value: object, property: "message" | "name"): string
   }
 }
 
+/**
+ * Realm-safe error detection.
+ *
+ * `instanceof Error` is bound to the current realm's constructor, so an error
+ * built in a `node:vm` context, an iframe, or a worker fails it — and an
+ * injected fetch implementation is exactly the kind of code that can live in
+ * another realm. Three layers, narrowest first:
+ *
+ *  1. `instanceof` — the same-realm fast path.
+ *  2. The platform tag. `Object.prototype.toString` reports `[object Error]`
+ *     for any object carrying the [[ErrorData]] slot, whatever realm made it,
+ *     and `[object DOMException]` for platform exceptions.
+ *  3. A subclass may override `Symbol.toStringTag` (node-fetch-shaped classes
+ *     can report `[object AbortError]`), so the tag is not sufficient either.
+ *     Fall back to structure — but tightly: require a real prototype and a
+ *     string `stack`, so a hand-written `{ name: "AbortError" }` object literal
+ *     can never claim to be an error.
+ *
+ * Every read is guarded: a hostile proxy or a throwing getter is not an error.
+ */
 function isError(value: unknown): value is Error {
   try {
-    return value instanceof Error;
+    if (value instanceof Error) return true;
+  } catch {
+    // A hostile `Symbol.hasInstance` is not a platform error.
+    return false;
+  }
+  if (value === null || typeof value !== "object") return false;
+  try {
+    const tag = Object.prototype.toString.call(value);
+    if (tag === "[object Error]" || tag === "[object DOMException]") return true;
+    if (Object.getPrototypeOf(value) === Object.prototype) return false;
+    return typeof (value as { readonly stack?: unknown }).stack === "string";
   } catch {
     return false;
   }
