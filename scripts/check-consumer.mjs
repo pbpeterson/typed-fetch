@@ -482,7 +482,7 @@ console.log(JSON.stringify(out));
 //    per-condition ESM resolution, which surfaces the single-`types`/`.d.mts`
 //    masquerade that `attw` would flag as FalseCJS/FalseESM.
 // ---------------------------------------------------------------------------
-console.log("\n▸ Consumer typecheck (bundler + nodenext) …");
+console.log("\n▸ Consumer typecheck (resolution modes, lib matrix, cross-format) …");
 const tscBin = join(REPO_ROOT, "node_modules", ".bin", "tsc");
 const CONSUMER_TS = `
 import { typedFetch, isHttpError, isKnownHttpError, NotFoundError } from "${PKG_NAME}";
@@ -509,13 +509,54 @@ export function isNF(e: unknown): e is NotFoundError | SubpathNotFound {
 }
 `;
 
-// Run both typechecks with the consumer project as cwd so the bare specifier
+// A Node consumer WITHOUT DOM is the case the published declarations must not
+// assume. `HeadersInit` lives only in lib.dom.d.ts and `@types/node` does not
+// declare it, so naming it directly made this pass fail outright with
+// `TS2304: Cannot find name 'HeadersInit'` — or, with skipLibCheck on, silently
+// collapse `TypedHeaders` to `any`. The `IsAny` probe below is what catches the
+// silent variant: an `any` would satisfy every assignment and look green.
+const CONSUMER_NO_DOM_TS = `
+import { typedFetch, type TypedFetchOptions } from "${PKG_NAME}";
+
+export async function demo(): Promise<void> {
+  await typedFetch("https://example.test/x", {
+    headers: { "Content-Type": "application/json", "X-Custom": "1" },
+  });
+}
+
+type HeadersOf = NonNullable<TypedFetchOptions["headers"]>;
+type IsAny<T> = 0 extends 1 & T ? true : false;
+export const headersIsNotAny: IsAny<HeadersOf> extends true ? never : true = true;
+`;
+
+// Cross-format assignability. A CJS-typed middle package hands an error to an
+// ESM app: with a `#private` field in the declarations these are two nominal
+// types and the assignment needs a cast (`TS2741: Property '#private' is
+// missing`). The library keeps its per-instance state in a module-scoped
+// WeakMap precisely so this compiles.
+const CONSUMER_CJS_CTS = `
+import { NotFoundError } from "${PKG_NAME}";
+
+export function makeError(): NotFoundError {
+  return new NotFoundError(new Response(null, { status: 404 }));
+}
+`;
+const CONSUMER_ESM_MTS = `
+import type { NotFoundError, TypedFetchError } from "${PKG_NAME}";
+import { makeError } from "./cross-format.cjs";
+
+export const fromCjs: NotFoundError = makeError();
+export const asUnion: TypedFetchError = makeError();
+`;
+
+// The repo's own @types, so the Node passes need no network install.
+const REPO_TYPE_ROOTS = [join(REPO_ROOT, "node_modules", "@types")];
+
+// Run each typecheck with the consumer project as cwd so the bare specifier
 // `@pbpeterson/typed-fetch` resolves through the real install. We place the
-// tsconfig+source inside the consumer dir to make resolution consumer-relative.
-function typecheckInConsumer(moduleResolution) {
-  const fname = `consumer.${moduleResolution}.ts`;
-  const cfgname = `tsconfig.${moduleResolution}.json`;
-  writeFileSync(join(consumer, fname), CONSUMER_TS);
+// tsconfig+sources inside the consumer dir to make resolution consumer-relative.
+function typecheckInConsumer({ id, moduleResolution, lib, types, files }) {
+  const cfgname = `tsconfig.${id}.json`;
   const moduleKind = moduleResolution === "nodenext" ? "nodenext" : "esnext";
   writeFileSync(
     join(consumer, cfgname),
@@ -525,14 +566,15 @@ function typecheckInConsumer(moduleResolution) {
           target: "es2022",
           module: moduleKind,
           moduleResolution,
-          lib: ["ES2022", "DOM"],
+          lib,
           strict: true,
           noEmit: true,
           // skipLibCheck:false so a broken .d.ts in the package surfaces.
           skipLibCheck: false,
-          types: [],
+          types,
+          ...(types.length > 0 ? { typeRoots: REPO_TYPE_ROOTS } : {}),
         },
-        files: [fname],
+        files,
       },
       null,
       2,
@@ -550,10 +592,57 @@ function typecheckInConsumer(moduleResolution) {
   }
 }
 
-for (const mr of ["bundler", "nodenext"]) {
-  const { ok, output } = typecheckInConsumer(mr);
-  const id = `typecheck:${mr}`;
-  record(id, ok, ok ? "" : `tsc(${mr}) errors:\n${indent(output)}`);
+writeFileSync(join(consumer, "consumer.api.ts"), CONSUMER_TS);
+writeFileSync(join(consumer, "consumer.nodom.ts"), CONSUMER_NO_DOM_TS);
+writeFileSync(join(consumer, "cross-format.cts"), CONSUMER_CJS_CTS);
+writeFileSync(join(consumer, "cross-format.mts"), CONSUMER_ESM_MTS);
+
+const TYPECHECK_PASSES = [
+  // The two original resolution modes.
+  {
+    id: "bundler",
+    moduleResolution: "bundler",
+    lib: ["ES2022", "DOM"],
+    types: [],
+    files: ["consumer.api.ts"],
+  },
+  {
+    id: "nodenext",
+    moduleResolution: "nodenext",
+    lib: ["ES2022", "DOM"],
+    types: [],
+    files: ["consumer.api.ts"],
+  },
+  // A backend service: Node types, no DOM lib.
+  {
+    id: "node-without-dom",
+    moduleResolution: "nodenext",
+    lib: ["ES2023"],
+    types: ["node"],
+    files: ["consumer.nodom.ts"],
+  },
+  // The same consumer with DOM also present.
+  {
+    id: "node-with-dom",
+    moduleResolution: "nodenext",
+    lib: ["ES2023", "DOM"],
+    types: ["node"],
+    files: ["consumer.nodom.ts"],
+  },
+  // CJS -> ESM assignability across the two declaration files.
+  {
+    id: "cross-format-cjs-esm",
+    moduleResolution: "nodenext",
+    lib: ["ES2022", "DOM"],
+    types: [],
+    files: ["cross-format.mts", "cross-format.cts"],
+  },
+];
+
+for (const pass of TYPECHECK_PASSES) {
+  const { ok, output } = typecheckInConsumer(pass);
+  const id = `typecheck:${pass.id}`;
+  record(id, ok, ok ? "" : `tsc(${pass.id}) errors:\n${indent(output)}`);
 }
 
 function indent(s) {

@@ -29,7 +29,15 @@
 // ---------------------------------------------------------------------------
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,15 +45,47 @@ import { fileURLToPath } from "node:url";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 
-// Fixed roster of sources that carry public, copy-pasteable TypeScript.
-// JSDoc is converted to Markdown without changing line counts, so diagnostics
-// still point at the original source line.
+// Sources that carry public, copy-pasteable TypeScript. JSDoc is converted to
+// Markdown without changing line counts, so diagnostics still point at the
+// original source line.
+//
+// The Markdown roster is hand-maintained (each entry is a deliberate public
+// document). The JSDoc side is NOT: it globs every file under src/, because a
+// hand-maintained list silently under-reports. It listed only `src/index.ts`,
+// so the published `clone()` example in `src/errors/base-http-error.ts` shipped
+// with four TS errors (undefined `CustomHttpError`, undefined `error`, an
+// implicit `any`) that this guard exists to catch and never looked at.
+const DOC_MARKDOWN_SOURCES = [
+  "README.md",
+  "CONTRIBUTING.md",
+  "skills/typed-fetch/SKILL.md",
+  ".claude/skills/typed-fetch-maintainer/SKILL.md",
+];
+
+/**
+ * Every `.ts` file under src/, relative to the repo root, sorted for stable
+ * reporting.
+ * @param {string} dir
+ * @param {string} prefix
+ * @returns {string[]}
+ */
+function collectSourceFiles(dir, prefix) {
+  /** @type {string[]} */
+  const found = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      found.push(...collectSourceFiles(join(dir, entry.name), rel));
+    } else if (entry.name.endsWith(".ts")) {
+      found.push(rel);
+    }
+  }
+  return found.toSorted();
+}
+
 const DOC_SOURCES = [
-  { file: "README.md", format: "markdown" },
-  { file: "CONTRIBUTING.md", format: "markdown" },
-  { file: "skills/typed-fetch/SKILL.md", format: "markdown" },
-  { file: ".claude/skills/typed-fetch-maintainer/SKILL.md", format: "markdown" },
-  { file: "src/index.ts", format: "jsdoc" },
+  ...DOC_MARKDOWN_SOURCES.map((file) => ({ file, format: "markdown" })),
+  ...collectSourceFiles(join(repoRoot, "src"), "src").map((file) => ({ file, format: "jsdoc" })),
 ];
 
 // The package's public entry points, as written in the docs.
