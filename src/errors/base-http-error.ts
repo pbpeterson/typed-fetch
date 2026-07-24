@@ -52,14 +52,18 @@ export abstract class BaseHttpError extends Error {
 
   /**
    * Guard the single-use body readers with a clear message, mirroring
-   * {@link clone}. A `Response` body is a one-shot stream; the second read
+   * {@link clone}. A `Response` body is a one-shot stream; a second read
    * otherwise throws the platform's opaque `TypeError: Body is unusable`.
+   *
+   * A locked stream counts as unavailable too: a reader holds it, so
+   * `bodyUsed` can still be `false` while every reader here would fail.
    */
-  #assertBodyUnread(method: string): void {
-    if (this.#response.bodyUsed) {
+  #assertBodyReadable(method: string): void {
+    if (this.#response.bodyUsed || this.#response.body?.locked) {
       throw new TypeError(
-        `Cannot read this error's body with ${method}(): its response body has already been read. ` +
-          "Response bodies are single-use — call clone() BEFORE the first read to read it more than once.",
+        `Cannot read this error's body with ${method}(): its response body has already been read ` +
+          "or its stream is locked. Response bodies are single-use — call clone() BEFORE the " +
+          "first read to read it more than once.",
       );
     }
   }
@@ -72,25 +76,25 @@ export abstract class BaseHttpError extends Error {
    * platform's `SyntaxError`. Use {@link text} when the body may not be JSON.
    */
   async json<T = unknown>(): Promise<T> {
-    this.#assertBodyUnread("json");
+    this.#assertBodyReadable("json");
     return this.#response.json();
   }
 
   /** Parse the error response body as text. */
   async text(): Promise<string> {
-    this.#assertBodyUnread("text");
+    this.#assertBodyReadable("text");
     return this.#response.text();
   }
 
   /** Parse the error response body as a Blob. */
   async blob(): Promise<Blob> {
-    this.#assertBodyUnread("blob");
+    this.#assertBodyReadable("blob");
     return this.#response.blob();
   }
 
   /** Parse the error response body as an ArrayBuffer. */
   async arrayBuffer(): Promise<ArrayBuffer> {
-    this.#assertBodyUnread("arrayBuffer");
+    this.#assertBodyReadable("arrayBuffer");
     return this.#response.arrayBuffer();
   }
 

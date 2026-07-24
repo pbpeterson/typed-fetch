@@ -87,6 +87,31 @@ describe("BaseHttpError — friendly double-read guard on body readers (B4)", ()
   });
 });
 
+describe("BaseHttpError — readers detect a locked body (B7)", () => {
+  test("every reader throws the library TypeError while a reader holds the stream", async () => {
+    const readers = ["json", "text", "blob", "arrayBuffer"] as const;
+    for (const reader of readers) {
+      const response = new Response("x", { status: 404 });
+      // Locked but NOT used: the case a bodyUsed-only guard misses, which
+      // otherwise surfaces the platform's opaque "Body is unusable".
+      response.body?.getReader();
+      const error = new NotFoundError(response);
+
+      expect(response.bodyUsed).toBe(false);
+      await expect((error[reader] as () => Promise<unknown>)()).rejects.toThrowError(TypeError);
+      await expect((error[reader] as () => Promise<unknown>)()).rejects.toThrowError(
+        /stream is locked/,
+      );
+    }
+  });
+
+  test("an unlocked body still reads normally", async () => {
+    const error = new NotFoundError(new Response("x", { status: 404 }));
+
+    expect(await error.text()).toBe("x");
+  });
+});
+
 describe("BaseHttpError.clone()", () => {
   test("consumer subclasses can preserve custom constructor state", async () => {
     const error = new ContextHttpError(new Response("body", { status: 499 }), "tenant-42");
@@ -177,7 +202,7 @@ describe("BaseHttpError.clone()", () => {
     const error = new NotFoundError(response);
 
     expect(error.clone).toBeDefined();
-    expect(() => error.clone()).toThrowError(/already been read or its stream is locked/);
+    expect(() => error.clone()).toThrowError(/its stream is locked/);
     expect(() => error.clone()).toThrowError(TypeError);
   });
 });
