@@ -79,9 +79,26 @@ export type StrictHeaders = {
   [key: string]: string | undefined;
 };
 
-/** Headers type that accepts both {@link StrictHeaders} (with IntelliSense) and raw `HeadersInit`. */
+/**
+ * The `headers` type the ambient `fetch` accepts, derived from its own
+ * signature.
+ *
+ * NOT the global `HeadersInit`: that name lives only in `lib.dom.d.ts`, and
+ * `@types/node` does not declare it. Naming it directly made the published
+ * declarations fail to compile for a Node consumer without DOM
+ * (`TS2304: Cannot find name 'HeadersInit'`), or — with `skipLibCheck` on —
+ * silently collapse {@link TypedHeaders} to `any`, which drops the whole
+ * {@link StrictHeaders} layer. Deriving it from `fetch` resolves to the same
+ * type under DOM and to the Node equivalent without it.
+ */
+type NativeFetchHeaders = NonNullable<NonNullable<Parameters<typeof fetch>[1]>["headers"]>;
+
+/**
+ * Headers type that accepts both {@link StrictHeaders} (with IntelliSense) and
+ * whatever raw headers input the platform's `fetch` accepts.
+ */
 export type TypedHeaders =
   | {
       [K in keyof StrictHeaders as Canonical<K & string>]?: StrictHeaders[K];
     }
-  | HeadersInit;
+  | NativeFetchHeaders;
