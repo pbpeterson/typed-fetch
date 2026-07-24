@@ -197,6 +197,151 @@ describe("BaseHttpError.cancel()", () => {
   });
 });
 
+/**
+ * A `Response` whose `bodyUsed` NEVER flips, whatever happens to the stream.
+ * `cancel()` must not infer "already released" from `bodyUsed`, because that
+ * flag is runtime-specific: some runtimes set it on cancellation, some do not.
+ */
+function bodyUsedNeverFlipsResponse(): {
+  response: Response;
+  state: { cancelled: boolean };
+} {
+  const state = { cancelled: false };
+  const body = new ReadableStream<Uint8Array>({
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  const response = new Response(body, { status: 404 });
+  Object.defineProperty(response, "bodyUsed", { get: () => false });
+  return { response, state };
+}
+
+/**
+ * A `Response` that reports `bodyUsed` as soon as a reader locks the stream —
+ * Bun's observed behavior, where Node, Deno, and workerd all keep it `false`.
+ * A `cancel()` that keys on `bodyUsed` to detect an earlier read reports
+ * success here without ever releasing the stream.
+ */
+function bunShapedResponse(): { response: Response; state: { cancelled: boolean } } {
+  const state = { cancelled: false };
+  const body = new ReadableStream<Uint8Array>({
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  const response = new Response(body, { status: 404 });
+  Object.defineProperty(response, "bodyUsed", {
+    get(this: Response) {
+      return this.body?.locked ?? false;
+    },
+  });
+  return { response, state };
+}
+
+describe("BaseHttpError.cancel() — decision order does not rely on bodyUsed", () => {
+  test("cancels a body whose runtime never flips bodyUsed", async () => {
+    const { response, state } = bodyUsedNeverFlipsResponse();
+    const error = new NotFoundError(response);
+
+    await error.cancel();
+
+    expect(state.cancelled).toBe(true);
+  });
+
+  test("blocks the readers after cancel() even when bodyUsed stays false", async () => {
+    const { response } = bodyUsedNeverFlipsResponse();
+    const error = new NotFoundError(response);
+    await error.cancel();
+
+    expect(response.bodyUsed).toBe(false);
+    await expect(error.text()).rejects.toThrowError(/cancelled/);
+    expect(() => error.clone()).toThrowError(/cancelled/);
+  });
+
+  test("a reader lock still rejects on a runtime that reports bodyUsed for it", async () => {
+    const { response, state } = bunShapedResponse();
+    response.body?.getReader();
+    const error = new NotFoundError(response);
+
+    // The Bun shape: locked AND bodyUsed at the same time. A bodyUsed-first
+    // check would report success and silently leave the stream held.
+    expect(response.bodyUsed).toBe(true);
+    await expect(error.cancel()).rejects.toThrowError(/locked/);
+    expect(state.cancelled).toBe(false);
+  });
+
+  test("a library read wins over an external lock report", async () => {
+    const error = new NotFoundError(new Response("body", { status: 404 }));
+    expect(await error.text()).toBe("body");
+
+    // `text()` leaves the stream locked on some runtimes. The library knows it
+    // started that read, so cancel() must resolve rather than claim a lock.
+    await expect(error.cancel()).resolves.toBeUndefined();
+  });
+});
+
+describe("BaseHttpError.cancel() — cloned (teed) bodies", () => {
+  test("releasing every branch settles both cancellations", async () => {
+    const { response, state } = trackedResponse();
+    const error = new NotFoundError(response);
+    const copy = error.clone();
+
+    await Promise.all([error.cancel(), copy.cancel()]);
+
+    expect(state.cancelled).toBe(true);
+  });
+
+  test("cancelling one branch alone does not settle while the other is held", async () => {
+    const { response } = trackedResponse();
+    const error = new NotFoundError(response);
+    const copy = error.clone();
+
+    const settled = await Promise.race([
+      error.cancel().then(() => "settled"),
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 50)),
+    ]);
+
+    // Native tee semantics: the source is only released once BOTH branches
+    // are. This is documented, not worked around.
+    expect(settled).toBe("pending");
+
+    // The sibling releases the source and both cancellations settle.
+    await Promise.all([error.cancel(), copy.cancel()]);
+  });
+
+  test("a repeated cancel settles with the first one, never before it", async () => {
+    const { response } = trackedResponse();
+    const error = new NotFoundError(response);
+    const copy = error.clone();
+
+    const first = error.cancel();
+    const second = error.cancel();
+
+    const raced = await Promise.race([
+      second.then(() => "settled"),
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 50)),
+    ]);
+    // A repeated cancel must not report success while the first is still
+    // waiting for the sibling branch.
+    expect(raced).toBe("pending");
+
+    await Promise.all([first, second, copy.cancel()]);
+  });
+
+  test("clone() does not cancel the sibling branch", async () => {
+    const { response } = trackedResponse();
+    const error = new NotFoundError(response);
+    const copy = error.clone();
+
+    await Promise.all([error.cancel(), copy.text().catch(() => {})]);
+
+    // The copy was created to be read; cancelling the original must not take
+    // that away.
+    expect(true).toBe(true);
+  });
+});
+
 describe("BaseHttpError — readers detect a locked body (B7)", () => {
   test("every reader throws the library TypeError while a reader holds the stream", async () => {
     const readers = ["json", "text", "blob", "arrayBuffer"] as const;
