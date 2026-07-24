@@ -87,6 +87,104 @@ describe("BaseHttpError — friendly double-read guard on body readers (B4)", ()
   });
 });
 
+/**
+ * A response whose body records whether it was cancelled and whether anything
+ * ever pulled from it. `cancel()` must reach the stream WITHOUT buffering, so
+ * `pulled` has to stay false.
+ */
+function trackedResponse(status = 404): {
+  response: Response;
+  state: { cancelled: boolean; reason: unknown; pulled: boolean };
+} {
+  const state = { cancelled: false, reason: undefined as unknown, pulled: false };
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      state.pulled = true;
+      controller.enqueue(new TextEncoder().encode("payload"));
+      controller.close();
+    },
+    cancel(reason) {
+      state.cancelled = true;
+      state.reason = reason;
+    },
+  });
+  return { response: new Response(body, { status }), state };
+}
+
+describe("BaseHttpError.cancel()", () => {
+  test("releases the body without buffering it", async () => {
+    const { response, state } = trackedResponse();
+    const error = new NotFoundError(response);
+
+    await error.cancel();
+
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBe(false);
+  });
+
+  test("forwards the cancellation reason to the stream", async () => {
+    const { response, state } = trackedResponse();
+    const error = new NotFoundError(response);
+    const reason = new Error("error body not needed");
+
+    await error.cancel(reason);
+
+    expect(state.reason).toBe(reason);
+  });
+
+  test("resolves without error when the response has no body", async () => {
+    const error = new NotFoundError(new Response(null, { status: 404 }));
+
+    await expect(error.cancel()).resolves.toBeUndefined();
+  });
+
+  test("readers throw the library TypeError after cancel()", async () => {
+    const { response } = trackedResponse();
+    const error = new NotFoundError(response);
+    await error.cancel();
+
+    await expect(error.json()).rejects.toThrowError(TypeError);
+    await expect(error.text()).rejects.toThrowError(/cancelled/);
+    await expect(error.blob()).rejects.toThrowError(/cancelled/);
+    await expect(error.arrayBuffer()).rejects.toThrowError(/cancelled/);
+  });
+
+  test("clone() after cancel() throws the library TypeError", async () => {
+    const { response } = trackedResponse();
+    const error = new NotFoundError(response);
+    await error.cancel();
+
+    expect(() => error.clone()).toThrowError(TypeError);
+    expect(() => error.clone()).toThrowError(/cancelled/);
+  });
+
+  test("rejects with a clear TypeError when a reader locks the stream", async () => {
+    const { response, state } = trackedResponse();
+    response.body?.getReader();
+    const error = new NotFoundError(response);
+
+    await expect(error.cancel()).rejects.toThrowError(/locked/);
+    await expect(error.cancel()).rejects.toThrowError(TypeError);
+    expect(state.cancelled).toBe(false);
+  });
+
+  test("is idempotent after a completed read", async () => {
+    const error = new NotFoundError(new Response("body", { status: 404 }));
+    expect(await error.text()).toBe("body");
+
+    await expect(error.cancel()).resolves.toBeUndefined();
+  });
+
+  test("cancel() is available on UnknownHttpError too", async () => {
+    const { response, state } = trackedResponse(499);
+    const error = new UnknownHttpError(response);
+
+    await error.cancel();
+
+    expect(state.cancelled).toBe(true);
+  });
+});
+
 describe("BaseHttpError — readers detect a locked body (B7)", () => {
   test("every reader throws the library TypeError while a reader holds the stream", async () => {
     const readers = ["json", "text", "blob", "arrayBuffer"] as const;
