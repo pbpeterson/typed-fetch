@@ -53,6 +53,8 @@ Body readers keep the native Fetch behavior. `json()`, `text()`, and the other b
 - Use `try/catch` for a body read when the data can be invalid.
 - Call `.clone()` before the first body read when you must read the body two times.
 
+A custom Fetch implementation is not trusted input. `typedFetch` returns a `NetworkError` when the implementation resolves a value that is not a `Response`.
+
 `typedFetch` treats only statuses of 400 or more as HTTP errors. Thus, a response with status `0` stays on the success branch.
 
 Browsers can produce status `0` for `opaque`, `opaqueredirect`, and `Response.error()` responses. Check `response.ok` or `response.type` for these responses.
@@ -68,6 +70,7 @@ Opaque response bodies cannot be read. `Response.error().text()` returns `""`, a
 - Gives brand-based type guards for all error groups.
 - Keeps the original pre-response error in `cause`.
 - Gives typed success and error body readers.
+- Releases an unread error body with `cancel()`.
 - Has no runtime dependencies.
 
 ## Installation
@@ -320,9 +323,36 @@ if (error instanceof BadRequestError) {
 }
 ```
 
-A body is a one-use stream. A second read rejects with `TypeError`.
+A body is a one-use stream. A second read rejects with `TypeError`. A read also rejects with `TypeError` when a reader holds the stream.
 
 An empty or non-JSON body makes `json()` reject with `SyntaxError`. Use `text()` when the body format is not known.
+
+#### Cancel an unread error body
+
+Every error body needs a read or a cancel. An unread body keeps the stream open, and the open stream pins the connection.
+
+Call `cancel()` when the body content is not necessary. This method releases the body without a read of the content.
+
+```typescript
+import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
+
+const { error } = await typedFetch("/api/users/123");
+
+if (isHttpError(error)) {
+  console.log(error.status);
+  await error.cancel();
+}
+```
+
+`cancel()` frees the resources immediately. But it can also close the connection instead of a return of the connection to the keep-alive pool.
+
+Read the body with `text()` when the connection is more important than the bytes.
+
+`cancel()` resolves when the response has no body. It is also safe after a complete body read.
+
+`cancel()` rejects with `TypeError` when a reader holds the stream. Release that reader first.
+
+After a `cancel()`, all body readers and `clone()` throw `TypeError`.
 
 ### Network errors, aborts, and timeouts
 
@@ -345,6 +375,14 @@ The request signal controls abort classification. The name of the rejected error
 The signal can be in `options.signal` or in a `Request` input. An options signal has priority over the signal in a `Request`.
 
 An explicit `signal: null` disconnects the signal in a `Request`. An absent or `undefined` signal does not disconnect it.
+
+The classification also covers a custom Fetch implementation. Some implementations reject with their own abort error instead of the signal reason.
+
+`typedFetch` returns `AbortedError` when the signal reports an abort and the rejected error has the name `"AbortError"`.
+
+An error with the name `"AbortError"` stays a `NetworkError` when no signal reports an abort.
+
+The signal reason still decides between an abort and a timeout. A timeout reason gives `TimeoutError`, also for an implementation that rejects with an abort error.
 
 ```typescript
 import { typedFetch, isNetworkError, isAbortError, isTimeoutError } from "@pbpeterson/typed-fetch";
@@ -408,6 +446,24 @@ if (isTimeoutError(error)) {
 A timeout requires a `DOMException` with the name `"TimeoutError"`. This is the value that `AbortSignal.timeout()` supplies.
 
 A plain `Error` with the same name does not create a timeout. `typedFetch` returns `AbortedError` and keeps that value in `reason`.
+
+#### Manual cancellation with a deadline
+
+Use `AbortSignal.any()` when the code needs a manual cancellation and a deadline together.
+
+```typescript
+import { typedFetch } from "@pbpeterson/typed-fetch";
+
+const controller = new AbortController();
+
+const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]);
+
+const { error } = await typedFetch("/api/users", { signal });
+
+controller.abort(new Error("route change"));
+```
+
+The first signal that aborts decides the result. A manual abort gives `AbortedError`. The deadline gives `TimeoutError`.
 
 Each pre-response error also has a `url` value. Use this value to identify failed concurrent requests.
 
@@ -494,6 +550,8 @@ The optional `fetch` property sets a custom Fetch implementation. Use it for tes
 When `options` has no custom `fetch` property, `typedFetch` gives the original object to native `fetch` without changes.
 
 `typedFetch` removes the custom property before it calls the Fetch implementation. It keeps inherited properties and WebIDL getters.
+
+`typedFetch` also protects the response inspection. A custom implementation that resolves a value that is not a `Response` gives a `NetworkError` with the original `TypeError` in `cause`.
 
 You can give a `Request` in the `url` position. `typedFetch` keeps its method, headers, signal, and Node.js body.
 
@@ -590,9 +648,10 @@ Instance methods:
 - `text()`: Read the body as text.
 - `blob()`: Read the body as a `Blob`.
 - `arrayBuffer()`: Read the body as an `ArrayBuffer`.
+- `cancel(reason?)`: Release the body without a read.
 - `clone(recreate?)`: Clone the error before a body read.
 
-Do not call `clone()` after you read the body or lock its stream. The method throws `TypeError`.
+Do not call `clone()` after you read the body, cancel the body, or lock its stream. The method throws `TypeError`.
 
 Built-in errors do not need a recreation callback. A consumer subclass can also call `clone()` without a callback.
 

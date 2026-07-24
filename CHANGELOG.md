@@ -4,8 +4,41 @@
 
 ## [1.0.1] - 2026-07-22
 
+### Added
+
+- `BaseHttpError.cancel(reason?)` releases an error response body without
+  buffering it. An unread error body keeps its stream open and pins the
+  underlying connection, which defeats keep-alive for code that logs
+  `error.message` and drops the error. `cancel()` resolves when the response
+  carries no body, is safe to call again after a completed read, and rejects
+  with a `TypeError` when a reader holds the stream. Cancelling frees resources
+  immediately but can close the connection instead of returning it to the pool —
+  read the body with `text()` when the connection matters more than the bytes.
+
 ### Fixed
 
+- Abort and timeout classification now also covers Fetch implementations that
+  reject with their **own** abort error instead of `signal.reason`. Only an
+  identity match (`err === signal.reason`) took the abort path before, so
+  `whatwg-fetch` (jsdom), `node-fetch@3`, and other injected implementations
+  produced a `NetworkError` for a cancelled request — and a retry loop keyed on
+  `NetworkError` would reissue calls the caller had explicitly cancelled. A
+  governing signal that reports `aborted` plus an error-shaped rejection named
+  `"AbortError"` or `"TimeoutError"` is now classified as the cancellation, and
+  the signal's `reason` still decides `AbortedError` vs `TimeoutError`. An
+  aborted signal remains necessary but not sufficient: an unrelated rejection
+  (a `TypeError` from `Request` construction, a `SecurityError`, a bare object
+  carrying a `name`) still returns `NetworkError`.
+- `typedFetch` no longer rejects when an injected Fetch implementation resolves
+  a value that is not a `Response`, or a `Response` whose `status`/`url` getter
+  throws. Response inspection now runs inside the never-rejecting envelope and
+  returns a `NetworkError` carrying the original error in `cause`. Valid
+  responses keep their existing classification.
+- The body readers `json()`, `text()`, `blob()`, and `arrayBuffer()` now detect
+  a **locked** stream, not only a consumed one, and throw the library's clear
+  `TypeError` instead of the platform's opaque "Body is unusable". `clone()`
+  already had this check. Native parse failures for an empty or invalid JSON
+  body are unchanged.
 - `BaseHttpError.clone()` now accepts an optional recreation callback so
   consumer-defined subclasses can preserve custom constructor and private
   state. Calling `clone()` without a callback keeps the response-only behavior
@@ -33,6 +66,9 @@
   path and widens the returned union.
 - Refreshed the v1 release state and clarified that aborts and timeouts are not
   `NetworkError` cases.
+- Documented `cancel()`, the widened abort classification for custom Fetch
+  implementations, and the hardened response inspection. Added an
+  `AbortSignal.any()` recipe that combines a manual controller with a deadline.
 
 ## [1.0.0] - 2026-07-17
 

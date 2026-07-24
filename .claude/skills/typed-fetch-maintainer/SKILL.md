@@ -18,7 +18,7 @@ src/http-status-codes.ts  → internal statusCodeErrorMap: ReadonlyMap<number, H
 src/errors/
   base-http-error.ts      → abstract base: message "HTTP 404 Not Found (<url>)",
                             url, headers, json<T>()/text()/blob()/arrayBuffer(),
-                            clone(recreate?): this
+                            cancel(reason?): Promise<void>, clone(recreate?): this
   known-http-error.ts     → internal branded base for the 40 dedicated classes
   network-error.ts        → NetworkError with cause (original fetch rejection)
   aborted-error.ts        → AbortedError (controller.abort()); extends Error, NOT NetworkError
@@ -36,13 +36,21 @@ src/errors/
    extension while a proxy delegates property reads to the original receiver;
    otherwise forward `options` unchanged. Resolve the effective abort signal
    with realm-safe `Request` detection.
-2. `try { res = await fetchImpl(url, init) } catch (err)` also covers option
-   getters and normalization, then classifies the failure:
+2. `const res = await fetchImpl(url, init)` inside the `try`, which also covers
+   option getters and normalization, then classifies any failure:
    - an abort → `AbortedError` (with the original rejection as `cause`),
    - a timeout (from `AbortSignal.timeout()`) → `TimeoutError`,
    - anything else → `NetworkError`.
      Never rethrows.
-3. `res.status >= 400` → mapped class from `statusCodeErrorMap`, else `UnknownHttpError`.
+     Abort classification takes the abort path when `err === signal.reason` OR the
+     governing signal reports `aborted` and the rejection is error-shaped and named
+     `"AbortError"`/`"TimeoutError"` — an injected fetch (whatwg-fetch,
+     node-fetch@3) builds its own abort error. `reason ?? err` then decides
+     timeout vs abort. An aborted signal alone is never sufficient.
+3. `res.status >= 400` → mapped class from `statusCodeErrorMap`, else
+   `UnknownHttpError`. This runs INSIDE the same `try`: an injected fetch can
+   resolve a non-`Response` or a hostile getter, and that must stay an error
+   value.
 4. Otherwise success — body NOT parsed; consumer calls `response.json()`. 3xx with `redirect: "manual"` is success.
 
 No broad internal throw/catch control flow beyond the single `fetch` envelope.
@@ -105,6 +113,16 @@ Consumer-defined subclasses keep the response-only `clone()` behavior for
 compatibility. It cannot preserve additional constructor or private state, so
 subclasses with such state should pass
 `clone(response => new Custom(...))`.
+
+## Error body lifecycle (src/errors/base-http-error.ts)
+
+The failed `Response` lives in the `#response` private field, so the body is
+reachable only through the readers, `cancel(reason?)`, and `clone()`. Keep the
+shared reader guard and the `clone()` guard in sync — both reject a body that
+is consumed (`bodyUsed`), cancelled (`#cancelled`), or `body.locked`, and both
+throw the library's `TypeError` rather than the platform's "Body is unusable".
+`cancel()` must never buffer: it short-circuits on an already-released body,
+rejects on a locked stream, and otherwise forwards to `body.cancel(reason)`.
 
 ## Guardrail tests (test.spec.ts)
 

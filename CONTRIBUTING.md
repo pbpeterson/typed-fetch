@@ -273,6 +273,20 @@ generator.
 Registering a new error class this way is a `major` release — see the semver
 policy below.
 
+### Error response bodies
+
+`BaseHttpError` keeps the failed `Response` in a private field, so the body is
+only reachable through `json()`/`text()`/`blob()`/`arrayBuffer()`,
+`cancel()`, and `clone()`. Two invariants hold there:
+
+- The shared reader guard rejects a body that is consumed, cancelled, or
+  locked by a reader, and it must stay in sync with the `clone()` guard.
+  Both throw the library's `TypeError` instead of the platform's opaque
+  "Body is unusable".
+- `cancel()` never buffers. Test it with a `ReadableStream` whose `cancel()`
+  callback records the call and whose `pull()` records buffering — a passing
+  test asserts the cancel callback ran and `pull` never did.
+
 ### Consumer subclasses and cloning
 
 Built-in classes support `BaseHttpError.clone()` without extra configuration.
