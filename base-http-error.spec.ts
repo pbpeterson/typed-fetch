@@ -81,6 +81,18 @@ describe("BaseHttpError — friendly double-read guard on body readers (B4)", ()
     }
   });
 
+  test("the guard names the reader that was called", async () => {
+    // The message interpolates the method name so a consumer can see WHICH
+    // call failed; a hardcoded name would still match the /already been read/
+    // assertions above.
+    const error = new NotFoundError(new Response("x", { status: 404 }));
+    await error.text();
+
+    await expect(error.blob()).rejects.toThrowError(/with blob\(\)/);
+    await expect(error.arrayBuffer()).rejects.toThrowError(/with arrayBuffer\(\)/);
+    await expect(error.json()).rejects.toThrowError(/with json\(\)/);
+  });
+
   test("json() on an empty body still rejects with the platform SyntaxError (B4: no swallowing)", async () => {
     const error = new NotFoundError(new Response("", { status: 404 }));
     await expect(error.json()).rejects.toThrowError(SyntaxError);
@@ -290,6 +302,28 @@ describe("BaseHttpError.clone()", () => {
 
     expect(cloned).toBeInstanceOf(UnknownHttpError);
     expect(await cloned.text()).toBe("body");
+  });
+
+  test("a throwing recreate callback is wrapped, with the original as cause", () => {
+    const error = new NotFoundError(new Response("body", { status: 404 }));
+    const boom = new Error("recreate exploded");
+
+    let thrown: unknown;
+    try {
+      error.clone(() => {
+        throw boom;
+      });
+    } catch (caught) {
+      thrown = caught;
+    }
+
+    // The no-callback path deliberately does NOT wrap (a consumer constructor's
+    // own error must survive verbatim); the callback path does, so the consumer
+    // can tell "my callback failed" from "the body was unusable".
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/recreate callback failed/);
+    expect((thrown as Error).message).toContain("NotFoundError");
+    expect((thrown as Error).cause).toBe(boom);
   });
 
   test("clone() on a locked-but-unread body throws the clear TypeError (B6)", () => {

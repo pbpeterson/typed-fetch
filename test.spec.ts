@@ -14,6 +14,7 @@ import {
 } from "./src/index";
 import { statusCodeErrorMap } from "./src/http-status-codes";
 import { httpErrors } from "./src/errors/helpers";
+import { hasBrand } from "./src/errors/brand";
 import type { HttpErrors } from "./src/errors/helpers";
 import {
   AbortedError,
@@ -254,10 +255,16 @@ describe("typedFetch", () => {
     });
 
     expect(stubFetch).toHaveBeenCalledTimes(1);
-    const [, init] = stubFetch.mock.calls[0] ?? [];
+    const [input, init] = stubFetch.mock.calls[0] ?? [];
+    expect(input).toBe("https://example.invalid/no-leak");
     expect(init).toBeDefined();
     expect(init && "fetch" in init).toBe(false);
     expect(init).toMatchObject({ method: "POST" });
+    // The proxy traps hide `fetch` from a plain read, but the sanitized target
+    // must not carry the descriptor either: reflection over the init object is
+    // part of what a fetch implementation may legitimately do.
+    expect(Reflect.ownKeys(init as object)).not.toContain("fetch");
+    expect(Object.getOwnPropertyDescriptor(init as object, "fetch")).toBeUndefined();
   });
 
   test("preserves inherited RequestInit properties while stripping the fetch override", async () => {
@@ -355,6 +362,40 @@ describe("typedFetch", () => {
     expect(result.error).toBeInstanceOf(NetworkError);
     expect(result.error?.cause).toBe(cause);
     expect(result.error?.url).toBe("");
+  });
+
+  // The hostile-signal fallback must report "not aborted". A fallback that
+  // guessed `aborted: true` would turn any abort-shaped rejection into a
+  // cancellation on a signal whose state could not be read at all — so the
+  // rejection here is deliberately abort-shaped.
+  test("an unreadable signal never yields a cancellation, even for an abort-shaped rejection", async () => {
+    const hostileSignal = Object.defineProperties(
+      {},
+      {
+        aborted: {
+          get() {
+            throw new Error("aborted getter exploded");
+          },
+        },
+        reason: {
+          get() {
+            throw new Error("reason getter exploded");
+          },
+        },
+      },
+    ) as AbortSignal;
+    const rejection = new DOMException("Aborted", "AbortError");
+    const stubFetch = vi.fn(async () => Promise.reject(rejection)) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/hostile-signal-abort-shaped", {
+      signal: hostileSignal,
+      fetch: stubFetch,
+    });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isNetworkError(result.error)).toBe(true);
+    expect(isAbortError(result.error)).toBe(false);
+    expect(result.error?.cause).toBe(rejection);
   });
 
   test("does not reject while inspecting a hostile abort signal", async () => {
@@ -877,11 +918,18 @@ describe("typedFetch", () => {
     controller.abort();
     // The Request in the url slot carries an already-aborted signal, but the
     // options pass `signal: null`, which per the fetch spec DETACHES it — no
-    // signal governs the call. With an injected fetch rejecting a TypeError and
-    // no governing signal, this is a plain NetworkError, never AbortedError.
+    // signal governs the call.
+    //
+    // The rejection is the Request signal's OWN reason, which is what makes
+    // this test load-bearing: it satisfies the `err === reason` arm for anyone
+    // who resolves the signal wrongly. A detach implemented as
+    // `init.signal ?? url.signal` would resolve the aborted signal here and
+    // classify this as AbortedError. Rejecting with an unrelated error instead
+    // would pass either way, proving nothing about the detach.
     const request = new Request(url({ status: 200 }), { signal: controller.signal });
-    const unrelated = new TypeError("kaboom");
-    const stubFetch = vi.fn(async () => Promise.reject(unrelated)) as unknown as typeof fetch;
+    const stubFetch = vi.fn(async () =>
+      Promise.reject(controller.signal.reason),
+    ) as unknown as typeof fetch;
 
     const result = await typedFetch(request, {
       signal: null,
@@ -966,6 +1014,28 @@ describe("typedFetch", () => {
     expect(result.error).toBeInstanceOf(AbortedError);
     expect(isAbortError(result.error)).toBe(true);
     expect(isTimeoutError(result.error)).toBe(false);
+  });
+
+  // A cross-realm DOMException fails `instanceof Error` AND `instanceof
+  // DOMException`; only the platform tag identifies it. Without a real
+  // cross-realm value in the suite, the DOMException arm of the abort-shape
+  // test is dead code — every same-realm DOMException is also an Error.
+  test("A1: reason-less aborted signal + a cross-realm-shaped abort DOMException → AbortedError", async () => {
+    const crossRealmAbort = {
+      name: "AbortError",
+      message: "Aborted",
+      [Symbol.toStringTag]: "DOMException",
+    };
+    expect(crossRealmAbort instanceof Error).toBe(false);
+    const stubFetch = vi.fn(async () => Promise.reject(crossRealmAbort)) as unknown as typeof fetch;
+
+    const result = await typedFetch(url({ status: 200 }), {
+      signal: reasonlessAbortedSignal(),
+      fetch: stubFetch,
+    });
+
+    expect(result.error).toBeInstanceOf(AbortedError);
+    expect(isAbortError(result.error)).toBe(true);
   });
 
   test("A2: reason-less (polyfilled) timeout signal + DOMException named 'TimeoutError' → TimeoutError", async () => {
@@ -1272,12 +1342,17 @@ describe("typedFetch", () => {
     const body = JSON.stringify({ error: "bad request" });
     const result = await typedFetch(url({ status: 400, body }));
 
-    if (isHttpError(result.error)) {
-      const cloned = result.error.clone();
+    // Assert the branch is REACHED before narrowing into it. Without this, a
+    // regression that returns a success (or the wrong error kind) makes the
+    // whole test body unreachable and it still reports green.
+    expect(result.error).toBeInstanceOf(BadRequestError);
+    expect(isHttpError(result.error)).toBe(true);
+    if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
 
-      expect(await result.error.json()).toEqual({ error: "bad request" });
-      expect(await cloned.json()).toEqual({ error: "bad request" });
-    }
+    const cloned = result.error.clone();
+
+    expect(await result.error.json()).toEqual({ error: "bad request" });
+    expect(await cloned.json()).toEqual({ error: "bad request" });
   });
 
   // ── P1-07: enumerated coverage gaps ──────────────────────────────────
@@ -1952,6 +2027,44 @@ describe("cross-copy brands", () => {
     expect((e as unknown as Record<symbol, unknown>)[httpBrand]).toBe(true);
   });
 
+  // The assertions above are all structurally insensitive: Object.keys never
+  // returns symbols, a spread copies own properties while the brand sits on the
+  // prototype, and hasOwnProperty is false by construction. They pass whatever
+  // descriptor `brand()` writes. Assert the descriptor itself — `writable` and
+  // `configurable` are the security-relevant bits, because a writable brand
+  // could be stripped from a real error or stamped onto a foreign one.
+  test("brand descriptors are frozen on the prototype", () => {
+    const cases: Array<[object, symbol]> = [
+      [BaseHttpError.prototype, httpBrand],
+      [NetworkError.prototype, networkBrand],
+      [AbortedError.prototype, abortBrand],
+      [TimeoutError.prototype, timeoutBrand],
+      [UnknownHttpError.prototype, unknownBrand],
+    ];
+    for (const [prototype, brandSymbol] of cases) {
+      expect(Object.getOwnPropertyDescriptor(prototype, brandSymbol)).toEqual({
+        value: true,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+  });
+
+  test("UnknownHttpError carries its own brand on a real instance", () => {
+    // No library guard reads this brand, so only a direct assertion keeps the
+    // documented cross-copy contract honest.
+    const error = new UnknownHttpError(new Response(null, { status: 499 }));
+    expect(hasBrand(error, unknownBrand)).toBe(true);
+    expect(hasBrand(error, knownHttpBrand)).toBe(false);
+  });
+
+  test("hasBrand requires the literal value true, not merely a truthy one", () => {
+    expect(hasBrand({ [httpBrand]: 1 }, httpBrand)).toBe(false);
+    expect(hasBrand({ [httpBrand]: "yes" }, httpBrand)).toBe(false);
+    expect(hasBrand({ [httpBrand]: true }, httpBrand)).toBe(true);
+  });
+
   test("guards reject values with no brand", () => {
     for (const v of [null, undefined, {}, new Error("x"), 42, "s"]) {
       expect(isHttpError(v)).toBe(false);
@@ -1986,6 +2099,35 @@ describe("NetworkError / AbortedError / TimeoutError — cause & reason presence
     expect(aborted.cause).toBe(boom);
     expect("reason" in aborted).toBe(true);
     expect(aborted.reason).toBe("stop");
+  });
+
+  // A PARTIAL options object is the case an `if (options)` guard cannot tell
+  // apart from a supplied cause. Constructing with no options at all exercises
+  // neither branch of the `"cause" in options` test.
+  test("a partial options object still leaves the absent members absent", () => {
+    const net = new NetworkError("x", { url: "https://example.test/a" });
+    expect("cause" in net).toBe(false);
+    expect(net.url).toBe("https://example.test/a");
+
+    const timedOut = new TimeoutError("x", { url: "https://example.test/b" });
+    expect("cause" in timedOut).toBe(false);
+    expect(timedOut.url).toBe("https://example.test/b");
+
+    const causeOnly = new AbortedError("x", { cause: new Error("c") });
+    expect("reason" in causeOnly).toBe(false);
+
+    const reasonOnly = new AbortedError("x", { reason: "r" });
+    expect("cause" in reasonOnly).toBe(false);
+    expect(reasonOnly.reason).toBe("r");
+  });
+
+  test("url defaults to the empty string, including for an explicit undefined", () => {
+    for (const e of [new NetworkError("x"), new AbortedError("x"), new TimeoutError("x")]) {
+      expect(e.url).toBe("");
+    }
+    expect(new NetworkError("x", { url: undefined }).url).toBe("");
+    expect(new AbortedError("x", { url: undefined }).url).toBe("");
+    expect(new TimeoutError("x", { url: undefined }).url).toBe("");
   });
 });
 
