@@ -11,7 +11,7 @@
 // type-consumability is covered separately by `pnpm check-deno-consumer`, which
 // installs the tarball and imports it through its package name and exports map.
 
-import { isKnownHttpError, typedFetch } from "../../dist/index.mjs";
+import { isKnownHttpError, NotFoundError, typedFetch } from "../../dist/index.mjs";
 
 const server = Deno.serve(
   { port: 0, onListen: () => {} },
@@ -43,7 +43,34 @@ try {
     throw new Error(`expected error.status to be 404, got ${JSON.stringify(knownError.status)}`);
   }
 
-  console.log("deno smoke: OK (NotFoundError, status 404)");
+  // Releasing an unread error body must work here too.
+  // An explicit reason: `deno check` reads the parameter list from the
+  // emitted .mjs, where the optionality lives in the .d.mts only.
+  await (error as { cancel: (reason?: unknown) => Promise<void> }).cancel("smoke");
+
+  // The mirror of the Bun case: Deno keeps `bodyUsed` false while a reader
+  // holds the stream, so the SAME decision order has to reach the lock check
+  // on both runtimes and reject rather than silently report success.
+  const locked = new Response("payload", { status: 404 });
+  locked.body!.getReader();
+  const lockedError = new NotFoundError(locked);
+
+  let cancelFailure: unknown = null;
+  try {
+    await lockedError.cancel("smoke");
+  } catch (err) {
+    cancelFailure = err;
+  }
+  if (!(cancelFailure instanceof TypeError)) {
+    throw new Error(
+      `expected cancel() on an externally locked body to reject with a TypeError, got ${cancelFailure}`,
+    );
+  }
+  if (!/locked/.test(cancelFailure.message)) {
+    throw new Error(`expected the lock to be named in the message, got ${cancelFailure.message}`);
+  }
+
+  console.log("deno smoke: OK (NotFoundError, status 404; locked-body cancel rejects)");
 } finally {
   await server.shutdown();
 }

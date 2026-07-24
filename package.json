@@ -82,6 +82,7 @@
     "check-docs": "node scripts/check-docs.mjs",
     "check-consumer": "node scripts/check-consumer.mjs",
     "check-deno-consumer": "node scripts/check-deno-consumer.mjs",
+    "smoke:node-min": "node scripts/smoke/node-min.mjs",
     "prepublishOnly": "npm run build"
   },
   "devDependencies": {
