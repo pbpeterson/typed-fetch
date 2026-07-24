@@ -350,7 +350,6 @@ export async function typedFetch<JsonReturnType>(
   options: TypedFetchOptions = {},
 ): Promise<TypedFetchReturnType<JsonReturnType>> {
   let signal: AbortSignal | undefined;
-  let res: Response;
   try {
     const hasFetchOverride = "fetch" in options;
     const fetchImpl = options.fetch ?? fetch;
@@ -371,7 +370,25 @@ export async function typedFetch<JsonReturnType>(
           ? url.signal
           : undefined;
 
-    res = await fetchImpl(url, init);
+    const res = await fetchImpl(url, init);
+
+    // Inside the envelope on purpose. `fetchImpl` can be an injected
+    // implementation, so the resolved value is untrusted input: a partial test
+    // double resolves a non-Response, and a hostile `status`/`url` getter
+    // throws while being read. Both must surface as an error VALUE, which is
+    // the contract this function exists to keep, instead of rejecting.
+    if (res.status >= 400) {
+      const ErrorClass = statusCodeErrorMap.get(res.status);
+      return {
+        response: null,
+        error: ErrorClass ? new ErrorClass(res) : new UnknownHttpError(res),
+      };
+    }
+
+    return {
+      response: res as TypedResponse<JsonReturnType>,
+      error: null,
+    };
   } catch (err) {
     // The requested URL, so pre-response errors (which hold no `Response`) are
     // still distinguishable in logs — the correlation `BaseHttpError.url`
@@ -456,17 +473,4 @@ export async function typedFetch<JsonReturnType>(
       error: new NetworkError(message, { cause: err, url: resolvedRequestUrl }),
     };
   }
-
-  if (res.status >= 400) {
-    const ErrorClass = statusCodeErrorMap.get(res.status);
-    return {
-      response: null,
-      error: ErrorClass ? new ErrorClass(res) : new UnknownHttpError(res),
-    };
-  }
-
-  return {
-    response: res as TypedResponse<JsonReturnType>,
-    error: null,
-  };
 }

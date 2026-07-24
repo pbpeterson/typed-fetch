@@ -386,6 +386,72 @@ describe("typedFetch", () => {
     expect(result.error?.cause).toBe(rejection);
   });
 
+  // ── Fix 3: the envelope also covers response inspection ────────────────
+  // An injected fetch is outside the library's control. A mock that resolves a
+  // non-Response, or a Response with a hostile getter, must still surface as an
+  // error VALUE — the envelope's whole promise — instead of rejecting.
+
+  test("an injected fetch that resolves a non-Response → NetworkError value, no rejection", async () => {
+    const result = await typedFetch("https://example.invalid/undefined-response", {
+      fetch: (async () => undefined) as unknown as typeof fetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isNetworkError(result.error)).toBe(true);
+    expect(result.error?.cause).toBeInstanceOf(TypeError);
+  });
+
+  test("a Response whose url getter throws → NetworkError value, no rejection", async () => {
+    const cause = new Error("url getter exploded");
+    const hostileResponse = new Response(null, { status: 404 });
+    Object.defineProperty(hostileResponse, "url", {
+      get() {
+        throw cause;
+      },
+    });
+    const stubFetch = vi.fn(async () => hostileResponse) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/hostile-response", {
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+  });
+
+  test("a Response whose status getter throws → NetworkError value, no rejection", async () => {
+    const cause = new Error("status getter exploded");
+    const hostileResponse = new Response(null, { status: 200 });
+    Object.defineProperty(hostileResponse, "status", {
+      get() {
+        throw cause;
+      },
+    });
+    const stubFetch = vi.fn(async () => hostileResponse) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/hostile-status", {
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+  });
+
+  test("hardened response inspection keeps normal classification intact", async () => {
+    const notFound = await typedFetch(url({ status: 404 }));
+    expect(notFound.error).toBeInstanceOf(NotFoundError);
+
+    const unknown = await typedFetch(url({ status: 499 }));
+    expect(unknown.error).toBeInstanceOf(UnknownHttpError);
+
+    const ok = await typedFetch(url({ status: 204 }));
+    expect(ok.error).toBe(null);
+    expect(ok.response?.status).toBe(204);
+  });
+
   test("omitting fetch still uses the global fetch (test server)", async () => {
     const result = await typedFetch(url({ status: 200, body: JSON.stringify({ id: 1 }) }));
 
