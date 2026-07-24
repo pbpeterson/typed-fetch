@@ -66,6 +66,28 @@ function isDOMExceptionNamed(value: unknown, ...names: string[]): value is DOMEx
   return isDOMException(value) && names.includes(readStringProperty(value as object, "name") ?? "");
 }
 
+/**
+ * Detect a rejection that carries a platform *abort* name.
+ *
+ * A spec-exact runtime rejects with `signal.reason` itself, which the
+ * identity check already catches. Other implementations build their own error:
+ * `whatwg-fetch` (the jsdom polyfill) rejects with a FRESH
+ * `DOMException("Aborted", "AbortError")`, and `node-fetch@3` rejects with its
+ * own `AbortError` class — a plain `Error` subclass, not a DOMException. Both
+ * shapes are accepted here.
+ *
+ * Restricted to error-shaped values so an arbitrary object carrying a `name`
+ * property cannot claim a cancellation. This is only ever consulted while the
+ * governing signal reports `aborted`, which is what keeps an unrelated failure
+ * (a `TypeError` from Request construction, a `SecurityError`) out of the abort
+ * path.
+ */
+function isAbortShapedRejection(value: unknown): boolean {
+  if (!isError(value) && !isDOMException(value)) return false;
+  const name = readStringProperty(value as object, "name");
+  return name === "AbortError" || name === "TimeoutError";
+}
+
 /** Realm-safe Request detection for iframe, worker, and duplicated-runtime inputs. */
 function isRequest(value: unknown): value is Request {
   try {
@@ -368,21 +390,25 @@ export async function typedFetch<JsonReturnType>(
     // reject for an unrelated reason even while the signal is already aborted
     // (e.g. `method: "CONNECT"` or a bad header name → TypeError thrown during
     // Request construction, before the abort is ever consulted). Only take the
-    // abort path when the rejection IS the abort: spec-compliant runtimes
-    // reject with `signal.reason` itself (bare `controller.abort()` sets a
-    // DOMException "AbortError" as the reason, `controller.abort(reason)` sets
-    // that exact reason — both satisfy `err === signal.reason`). The second
-    // arm covers exotic/polyfilled signals whose `reason` is undefined but
-    // whose abort still surfaces as one of the platform's abort DOMException
-    // shapes (named "AbortError" or "TimeoutError"). The name check keeps an
-    // unrelated DOMException failure (e.g. a "SecurityError" that happens to
-    // reject while a reason-less signal is aborted) OUT of the abort path.
+    // abort path when the rejection IS the abort.
+    //
+    // Arm 1 — identity. Spec-compliant runtimes reject with `signal.reason`
+    // itself (bare `controller.abort()` sets a DOMException "AbortError" as the
+    // reason, `controller.abort(reason)` sets that exact reason — both satisfy
+    // `err === signal.reason`).
+    //
+    // Arm 2 — abort shape. An injected or polyfilled fetch is under no
+    // obligation to reject with `signal.reason`: `whatwg-fetch` builds a fresh
+    // DOMException, `node-fetch@3` throws its own `AbortError` class, and an
+    // exotic signal can report `aborted` while leaving `reason` undefined. When
+    // the governing signal says the call was cancelled AND the rejection
+    // carries a platform abort name, this IS that cancellation. The name check
+    // keeps an unrelated failure (a "SecurityError", a Request-construction
+    // TypeError) OUT of the abort path, and the value must be error-shaped so a
+    // bare object cannot claim a cancellation.
+    //
     // Anything else falls through to NetworkError with the real cause.
-    if (
-      aborted &&
-      (err === reason ||
-        (reason === undefined && isDOMExceptionNamed(err, "AbortError", "TimeoutError")))
-    ) {
+    if (aborted && (err === reason || isAbortShapedRejection(err))) {
       // Classify a timeout by the *shape the platform produces*, not by a name
       // a caller can forge on a plain error. `AbortSignal.timeout()` aborts
       // with a real `DOMException` named "TimeoutError". A caller's
@@ -398,12 +424,13 @@ export async function typedFetch<JsonReturnType>(
       // produces a `DOMException`, but named "AbortError" — it must remain an
       // AbortedError.
       //
-      // Classify off `reason ?? err`: spec runtimes record the timeout
-      // DOMException on `signal.reason` (arm 1, where `err === reason`), but a
-      // polyfilled timeout signal can leave `reason` undefined while the
-      // rejection itself (`err`, arm 2) is the DOMException named
-      // "TimeoutError". Falling back to `err` classifies that case as a
-      // TimeoutError instead of a generic AbortedError.
+      // Classify off `reason ?? err` — the signal's reason FIRST. It is the
+      // only value that records WHY the call ended, and an injected fetch's own
+      // rejection usually says just "aborted" even when the signal timed out.
+      // Reading the reason first keeps `AbortSignal.timeout()` a TimeoutError
+      // under such an implementation. The `err` fallback covers a polyfilled
+      // timeout signal that leaves `reason` undefined while the rejection
+      // itself is the DOMException named "TimeoutError".
       const timeoutBasis = reason ?? err;
       if (isDOMExceptionNamed(timeoutBasis, "TimeoutError")) {
         return {

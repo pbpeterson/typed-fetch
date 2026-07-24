@@ -946,6 +946,129 @@ describe("typedFetch", () => {
     expect(isAbortError(result.error)).toBe(false);
   });
 
+  // ── Fix 1e: fetch implementations that reject with their OWN abort error ─
+  // A spec-exact runtime rejects with `signal.reason` itself, so `err ===
+  // reason` catches it. An injected/polyfilled fetch (whatwg-fetch, node-fetch,
+  // a custom agent) builds its own abort error instead. The governing signal is
+  // still the authority: when it reports aborted AND the rejection carries a
+  // platform abort name, the call WAS cancelled.
+
+  test("aborted signal + a DIFFERENT DOMException named 'AbortError' → AbortedError, reason preserved", async () => {
+    const controller = new AbortController();
+    const reason = new Error("user navigated away");
+    controller.abort(reason);
+    // whatwg-fetch (the standard jsdom polyfill) rejects with a FRESH
+    // DOMException, never with `signal.reason`.
+    const polyfillAbort = new DOMException("Aborted", "AbortError");
+    const stubFetch = vi.fn(async () => Promise.reject(polyfillAbort)) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/polyfill-abort", {
+      signal: controller.signal,
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(AbortedError);
+    expect(isAbortError(result.error)).toBe(true);
+    expect(isNetworkError(result.error)).toBe(false);
+    if (isAbortError(result.error)) {
+      // The caller's reason stays the authority on WHY; cause keeps the
+      // implementation's own error.
+      expect(result.error.reason).toBe(reason);
+      expect(result.error.cause).toBe(polyfillAbort);
+    }
+  });
+
+  // node-fetch@3 rejects with its own `AbortError` class — a plain `Error`
+  // subclass, NOT a DOMException. Simulated here by shape so the package keeps
+  // zero dependencies.
+  test("aborted signal + an implementation's own Error named 'AbortError' → AbortedError", async () => {
+    class NodeFetchAbortError extends Error {
+      override readonly name = "AbortError";
+    }
+    const controller = new AbortController();
+    controller.abort();
+    const implAbort = new NodeFetchAbortError("The operation was aborted.");
+    const stubFetch = vi.fn(async () => Promise.reject(implAbort)) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/node-fetch-abort", {
+      signal: controller.signal,
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(AbortedError);
+    expect(isAbortError(result.error)).toBe(true);
+    expect(isTimeoutError(result.error)).toBe(false);
+    if (isAbortError(result.error)) {
+      expect(result.error.cause).toBe(implAbort);
+    }
+  });
+
+  // The signal's reason, not the rejection, decides timeout vs plain abort: the
+  // implementation's own error says only "aborted", while the signal records
+  // the real DOMException "TimeoutError".
+  test("timeout reason + an implementation's own 'AbortError' rejection → TimeoutError", async () => {
+    class NodeFetchAbortError extends Error {
+      override readonly name = "AbortError";
+    }
+    const controller = new AbortController();
+    const timeoutReason = new DOMException("The operation timed out.", "TimeoutError");
+    controller.abort(timeoutReason);
+    const stubFetch = vi.fn(async () =>
+      Promise.reject(new NodeFetchAbortError("The operation was aborted.")),
+    ) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/impl-timeout", {
+      signal: controller.signal,
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(TimeoutError);
+    expect(isTimeoutError(result.error)).toBe(true);
+    expect(isAbortError(result.error)).toBe(false);
+    if (isTimeoutError(result.error)) {
+      expect(result.error.cause).toBe(timeoutReason);
+    }
+  });
+
+  test("reason-less aborted signal + an implementation's own 'AbortError' → AbortedError", async () => {
+    class NodeFetchAbortError extends Error {
+      override readonly name = "AbortError";
+    }
+    const implAbort = new NodeFetchAbortError("The operation was aborted.");
+    const stubFetch = vi.fn(async () => Promise.reject(implAbort)) as unknown as typeof fetch;
+
+    const result = await typedFetch(url({ status: 200 }), {
+      signal: reasonlessAbortedSignal(),
+      fetch: stubFetch,
+    });
+
+    expect(result.error).toBeInstanceOf(AbortedError);
+    expect(isAbortError(result.error)).toBe(true);
+    if (isAbortError(result.error)) {
+      expect(result.error.reason).toBeUndefined();
+    }
+  });
+
+  // A non-error rejection named "AbortError" is not an abort error shape. The
+  // widened predicate must not accept bare objects.
+  test("aborted signal + a plain object named 'AbortError' → NetworkError", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const notAnError = { name: "AbortError", message: "not an error" };
+    const stubFetch = vi.fn(async () => Promise.reject(notAnError)) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/object-abort", {
+      signal: controller.signal,
+      fetch: stubFetch,
+    });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isAbortError(result.error)).toBe(false);
+  });
+
   // ── Fix 2: error.url on pre-response errors ────────────────────────────
   // AXIS 8 + 9: url is populated on NetworkError / AbortedError / TimeoutError,
   // and is correct whether the request input was a string, a URL, or a Request.
