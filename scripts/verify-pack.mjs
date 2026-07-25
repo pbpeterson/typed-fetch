@@ -23,8 +23,7 @@
 // grow a dev dep for a release guard.
 
 import { execFileSync } from "node:child_process";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/is-main-module.mjs";
 // The pack manifest must be deterministic and owes nothing to the shell that
 // happens to be running it; NPM_ENV drops pnpm's forwarded npm_config_* keys.
 // See scripts/lib/npm-pack.mjs for why all three npm-calling gates need this.
@@ -255,5 +254,4 @@ function main() {
 // Importing this module must do nothing at all; only `node scripts/verify-pack.mjs`
 // runs the gate. The end-to-end tests in the spec exist to prove this guard has
 // not come undone — a disconnected main() would make the gate exit 0 in silence.
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) main();
+if (isMainModule(import.meta.url)) main();

@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, describe, expect, test } from "vitest";
+import { createScratchDir } from "./lib/scratch-dir.mjs";
 import { readPackManifest, verifyPackManifest } from "./verify-pack.mjs";
 
 // The exact manifest a clean `pnpm build` + `npm pack` produces: package.json +
@@ -225,11 +226,11 @@ function makePackage(extraFiles = {}) {
   return dir;
 }
 
-function runVerifyPack(dir) {
+function runVerifyPack(dir, entry = VERIFY_PACK) {
   try {
     return {
       code: 0,
-      output: execFileSync(process.execPath, [VERIFY_PACK], {
+      output: execFileSync(process.execPath, [entry], {
         cwd: dir,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
@@ -254,4 +255,56 @@ describe("verify-pack — end to end", () => {
     expect(output).toContain("Refusing to publish");
     expect(output).not.toContain("manifest OK");
   });
+});
+
+// A symlink anywhere in the invocation path used to make the isMain guard false,
+// so the gate defined everything, printed nothing, and exited 0 — which CI reads
+// as a pass. The tests above start the script by its real path and cannot see
+// that. These start it the way a symlinked checkout does.
+const links = createScratchDir("tf-verify-pack-link-");
+afterAll(() => links.dispose());
+
+// `npm pack` on a cold runner is slow, and a flaky release-gate spec is worse
+// than a slow one.
+const NPM_TIMEOUT = 120_000;
+
+describe.skipIf(process.platform === "win32")("verify-pack — started through a symlink", () => {
+  test.each([
+    [
+      "a symlinked scripts directory",
+      () => {
+        const linked = join(links.path, "scripts");
+        if (!existsSync(linked)) symlinkSync(scriptDir, linked);
+        return join(linked, "verify-pack.mjs");
+      },
+    ],
+    [
+      "a symlinked script file",
+      () => {
+        const linked = join(links.path, "verify-pack.mjs");
+        if (!existsSync(linked)) symlinkSync(VERIFY_PACK, linked);
+        return linked;
+      },
+    ],
+  ])(
+    "still inspects the manifest through %s",
+    (_name, entry) => {
+      const { code, output } = runVerifyPack(makePackage(), entry());
+      expect(output).toContain("manifest OK");
+      expect(code).toBe(0);
+    },
+    NPM_TIMEOUT,
+  );
+
+  test(
+    "still fails a leaking manifest through a symlinked script file",
+    () => {
+      const linked = join(links.path, "verify-pack-leak.mjs");
+      if (!existsSync(linked)) symlinkSync(VERIFY_PACK, linked);
+      const { code, output } = runVerifyPack(makePackage({ "dist/.env": "NPM_TOKEN=x\n" }), linked);
+      expect(code).toBe(1);
+      expect(output).toContain("Refusing to publish");
+    },
+    NPM_TIMEOUT,
+  );
 });

@@ -19,6 +19,13 @@ jobs:
     timeout-minutes: 15
     strategy:
       fail-fast: false
+      # The first entry must be the major in `engines.node`, or the declared
+      # floor becomes an unverified claim. `20` here resolves to the LATEST
+      # 20.x, which is why the separate `node-min-smoke` job below pins the
+      # exact floor. Both are required: this job proves the toolchain and the
+      # suite work on the major, the smoke job proves the shipped artifact works
+      # on the exact floor. `scripts/validate-release.spec.mjs` fails if this
+      # list loses that major. Adding a newer major is always allowed.
       matrix:
         node-version: [20, 22, 24]
     steps:

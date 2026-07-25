@@ -27,6 +27,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/is-main-module.mjs";
 import { installTarball, NPM_ENV, packTarball } from "./lib/npm-pack.mjs";
 import { createScratchDir } from "./lib/scratch-dir.mjs";
 
@@ -302,6 +303,17 @@ export async function demo(): Promise<void> {
 type HeadersOf = NonNullable<TypedFetchOptions["headers"]>;
 type IsAny<T> = 0 extends 1 & T ? true : false;
 export const headersIsNotAny: IsAny<HeadersOf> extends true ? never : true = true;
+
+// A header value must be a string. \`undefined\` reaches the platform as the
+// literal "undefined". Without \`lib.dom\` the platform type alone does NOT
+// reject it (undici's HeaderRecord is an all-optional mapped type), so this
+// directive is unused — and \`tsc\` fails with TS2578 — unless the package's
+// own \`headers\` type rejects it. That is the whole point of this line.
+declare const token: string | undefined;
+export async function optionalHeader(): Promise<void> {
+  // @ts-expect-error - Authorization must be a string, never string | undefined
+  await typedFetch("https://example.test/x", { headers: { Authorization: token } });
+}
 `;
 
 // Cross-format assignability. A CJS-typed middle package hands an error to an
@@ -841,5 +853,4 @@ function main() {
 
 // Importing this module must do nothing at all; only
 // `node scripts/check-consumer.mjs` runs the gate.
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) main();
+if (isMainModule(import.meta.url)) main();

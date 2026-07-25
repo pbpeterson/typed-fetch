@@ -1,4 +1,9 @@
-import { describe, expect, test } from "vitest";
+import { execFileSync } from "node:child_process";
+import { existsSync, symlinkSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterAll, describe, expect, test } from "vitest";
+import { createScratchDir } from "./lib/scratch-dir.mjs";
 import {
   attributeDiagnostics,
   extractBlocks,
@@ -488,4 +493,70 @@ describe("REQUIRED_DIST_ENTRIES", () => {
       "errors/index.d.ts",
     ]);
   });
+});
+
+// ---------------------------------------------------------------------------
+// The gate must RUN. Everything above is pure and covers the decisions; none of
+// it proves that `node scripts/check-docs.mjs` still reaches main(). A lexical
+// isMain guard made this gate print nothing and exit 0 through any symlink in
+// the invocation path, and CI reads that as a pass.
+// ---------------------------------------------------------------------------
+const scriptDir = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(scriptDir, "..");
+const CHECK_DOCS = join(scriptDir, "check-docs.mjs");
+
+// The gate compiles every documented block with tsc. That is fast on a warm
+// machine and slow on a cold CI runner, so the budget is generous: a flaky
+// release-gate spec is worse than a slow one.
+const CHECK_DOCS_TIMEOUT = 120_000;
+
+const links = createScratchDir("tf-check-docs-link-");
+afterAll(() => links.dispose());
+
+/** @param {string} entry */
+function runCheckDocs(entry) {
+  try {
+    return {
+      code: 0,
+      output: execFileSync(process.execPath, [entry], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }),
+    };
+  } catch (err) {
+    return { code: err.status ?? 1, output: `${err.stdout ?? ""}${err.stderr ?? ""}` };
+  }
+}
+
+describe.skipIf(process.platform === "win32")("check-docs — the gate runs", () => {
+  test.each([
+    ["its real path", () => CHECK_DOCS],
+    [
+      "a symlinked checkout directory",
+      () => {
+        const linked = join(links.path, "checkout");
+        if (!existsSync(linked)) symlinkSync(repoRoot, linked);
+        return join(linked, "scripts", "check-docs.mjs");
+      },
+    ],
+    [
+      "a symlinked script file",
+      () => {
+        const linked = join(links.path, "check-docs.mjs");
+        if (!existsSync(linked)) symlinkSync(CHECK_DOCS, linked);
+        return linked;
+      },
+    ],
+  ])(
+    "reports a verdict when started through %s",
+    (_name, entry) => {
+      // Every branch of main() — the OK line, a missing dist/, a failed block —
+      // starts a line with `check-docs: `. Only a guard that never reached
+      // main() prints nothing at all, and that is the failure under test.
+      const { output } = runCheckDocs(entry());
+      expect(output).toMatch(/^check-docs: /m);
+    },
+    CHECK_DOCS_TIMEOUT,
+  );
 });

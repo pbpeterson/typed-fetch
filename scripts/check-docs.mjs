@@ -32,6 +32,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/is-main-module.mjs";
 import { createScratchDir } from "./lib/scratch-dir.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -526,8 +527,7 @@ export function wrapBlock(code) {
 }
 
 // Importing this module must do nothing at all; only `node scripts/check-docs.mjs`
-// runs the gate. Note the guard is lexical — it does not resolve symlinks, while
-// Node's ESM loader realpaths import.meta.url — so a symlinked checkout would
-// make it false and this gate would print nothing and exit 0.
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) main();
+// runs the gate. isMainModule resolves symlinks on both sides; a lexical
+// comparison made this gate print nothing and exit 0 through a symlinked
+// checkout.
+if (isMainModule(import.meta.url)) main();

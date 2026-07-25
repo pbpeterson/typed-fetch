@@ -21,15 +21,38 @@ import { typedFetch, isHttpError, isKnownHttpError, isNetworkError } from "../..
 
 const MINIMUM = [20, 0, 0];
 
-const [major = 0, minor = 0] = process.versions.node.split(".").map(Number);
-if (major < MINIMUM[0]) {
+// Compare the running Node version against MINIMUM component by component and
+// return -1 (below the floor), 0 (exactly the floor), or 1 (above the floor).
+//
+// The earlier check compared only major and minor. That had two consequences,
+// both of which let this file report a pass it had not earned. Node 20.0.5 is
+// not the floor, but neither `major > 20` nor `minor > 0` held, so the script
+// treated it as the floor. And had MINIMUM ever gained a non-zero minor or
+// patch, a runtime BELOW the floor would have passed both guards: the refusal
+// test read only the major, and the notice test read only major and minor. One
+// three-component comparison closes both.
+//
+// A non-numeric component counts as 0. `process.versions.node` carries one on a
+// nightly build (for example "20.0.0-nightly"), and NaN comparisons are always
+// false, which would silently take the "this is the floor" branch.
+function compareToMinimum(version) {
+  const parts = version.split(".").map(Number);
+  for (let index = 0; index < MINIMUM.length; index += 1) {
+    const part = Number.isFinite(parts[index]) ? parts[index] : 0;
+    if (part !== MINIMUM[index]) return part < MINIMUM[index] ? -1 : 1;
+  }
+  return 0;
+}
+
+const order = compareToMinimum(process.versions.node);
+if (order < 0) {
   console.error(
     `node-min smoke: refusing to run on Node ${process.versions.node}; ` +
       `the declared floor is ${MINIMUM.join(".")}.`,
   );
   process.exit(1);
 }
-if (major > MINIMUM[0] || minor > MINIMUM[1]) {
+if (order > 0) {
   const notice =
     `node-min smoke: running on Node ${process.versions.node}, not the ` +
     `${MINIMUM.join(".")} floor. This run does NOT prove floor support.`;

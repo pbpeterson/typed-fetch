@@ -3,8 +3,7 @@
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { isMainModule } from "./lib/is-main-module.mjs";
 
 const SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
@@ -134,8 +133,12 @@ function main() {
   );
 }
 
-const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (isMain) {
+// Importing this module must do nothing at all; only
+// `node scripts/validate-release.mjs` runs the gate. isMainModule resolves
+// symlinks on both sides — a lexical comparison makes this gate exit 0 in
+// silence whenever a symlink sits in the invocation path, and this gate is the
+// only check between a tag and `npm publish`.
+if (isMainModule(import.meta.url)) {
   try {
     main();
   } catch (error) {

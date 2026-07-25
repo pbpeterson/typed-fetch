@@ -66,4 +66,15 @@ jobs:
       - run: pnpm check-consumer
       - run: pnpm audit:prod
       - run: pnpm audit
-      - run: npm publish --provenance --access public --tag ${{ steps.release.outputs.dist_tag }}
+      # The dist-tag reaches npm through the environment, not through raw
+      # expression interpolation on the command line. If validate-release did not
+      # run, the step never wrote the output, and an empty value would leave npm
+      # with a bare `--tag`. Stop here instead, and name the cause.
+      - env:
+          DIST_TAG: ${{ steps.release.outputs.dist_tag }}
+        run: |
+          [ -n "$DIST_TAG" ] || {
+            echo "publish: dist_tag is empty; validate-release did not run." >&2
+            exit 1
+          }
+          npm publish --provenance --access public --tag "$DIST_TAG"
