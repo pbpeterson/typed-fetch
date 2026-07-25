@@ -24,20 +24,14 @@
 // Exits non-zero with a per-assertion report if any consumer contract breaks.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installTarball, NPM_ENV, packTarball } from "./lib/npm-pack.mjs";
+import { createScratchDir } from "./lib/scratch-dir.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PKG_NAME = "@pbpeterson/typed-fetch";
-
-// pnpm lifecycle scripts expose pnpm-only npm_config_* keys. Strip them only
-// from nested npm calls so npm's output is deterministic and warning-free.
-const npmEnvironment = { ...process.env };
-for (const key of Object.keys(npmEnvironment)) {
-  if (key.toLowerCase().startsWith("npm_config_")) delete npmEnvironment[key];
-}
 
 // ---------------------------------------------------------------------------
 // KNOWN_FAILING — assertions that fail against the CURRENT (unfixed) artifact.
@@ -110,29 +104,12 @@ function note(id, detail) {
 
 // ---------------------------------------------------------------------------
 // Temp dirs + cleanup. Everything lives under one mkdtemp root so a single rm
-// cleans it all, even on early exit.
+// cleans it all, even on early exit or a Ctrl-C mid-install.
 // ---------------------------------------------------------------------------
-const WORK = mkdtempSync(join(tmpdir(), "tf-consumer-"));
-let cleaned = false;
-function cleanup() {
-  if (cleaned) return;
-  cleaned = true;
-  try {
-    rmSync(WORK, { recursive: true, force: true });
-  } catch {
-    /* best effort */
-  }
-}
-process.on("exit", cleanup);
-for (const sig of ["SIGINT", "SIGTERM"]) {
-  process.on(sig, () => {
-    cleanup();
-    process.exit(1);
-  });
-}
+const { path: WORK } = createScratchDir("tf-consumer-");
 
 function run(cmd, args, opts = {}) {
-  const env = cmd === "npm" ? npmEnvironment : process.env;
+  const env = cmd === "npm" ? NPM_ENV : process.env;
   return execFileSync(cmd, args, { encoding: "utf8", env, ...opts });
 }
 
@@ -144,20 +121,12 @@ const packDir = join(WORK, "pack");
 mkdirSync(packDir, { recursive: true });
 let tarball;
 try {
-  const out = run("npm", ["pack", "--pack-destination", packDir, "--json"], {
-    cwd: REPO_ROOT,
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-  const meta = JSON.parse(out);
-  const filename = (Array.isArray(meta) ? meta[0] : meta).filename;
   // npm reports the logical filename; the real file on disk uses the sanitized
-  // (scope-stripped) name. Resolve against what actually landed in packDir.
-  const packed = readdirSync(packDir).filter((f) => f.endsWith(".tgz"));
-  if (packed.length !== 1) {
-    throw new Error(`expected exactly one .tgz in ${packDir}, found ${packed.join(", ")}`);
-  }
-  tarball = join(packDir, packed[0]);
-  console.log(`  packed: ${packed[0]} (reported ${filename})`);
+  // (scope-stripped) name. packTarball resolves against what actually landed in
+  // packDir and hands back npm's claim only so the report can show both.
+  const packed = packTarball(REPO_ROOT, packDir);
+  tarball = packed.path;
+  console.log(`  packed: ${basename(tarball)} (reported ${packed.reported})`);
 } catch (err) {
   console.error(`\n✖ npm pack failed: ${err.message}`);
   process.exit(1);
@@ -184,10 +153,7 @@ writeFileSync(
   ),
 );
 try {
-  run("npm", ["install", "--no-audit", "--no-fund", "--save", tarball], {
-    cwd: consumer,
-    stdio: ["ignore", "pipe", "inherit"],
-  });
+  installTarball(consumer, tarball, { flags: ["--no-audit", "--no-fund", "--save"] });
   console.log("  install OK");
 } catch (err) {
   console.error(`\n✖ npm install of tarball failed: ${err.message}`);

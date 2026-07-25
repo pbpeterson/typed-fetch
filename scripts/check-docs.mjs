@@ -29,18 +29,10 @@
 // ---------------------------------------------------------------------------
 
 import { execFileSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createScratchDir } from "./lib/scratch-dir.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
@@ -223,7 +215,12 @@ function main() {
   const failures = [];
 
   // Scratch tmp dir for the per-block .ts files + a dedicated tsconfig.
-  const workDir = mkdtempSync(join(tmpdir(), "typed-fetch-docs-"));
+  // createScratchDir removes it on exit as well as on demand: this script has
+  // failure branches (a missing doc file below, the TS5112 abort further down)
+  // that used to exit straight past the rmSync and leak a directory on exactly
+  // the runs someone was already debugging.
+  const scratch = createScratchDir("typed-fetch-docs-");
+  const workDir = scratch.path;
 
   // (b) TS5112 defence. When you pass files on the command line AND a
   // tsconfig.json exists, tsc refuses to load the config and emits TS5112,
@@ -322,12 +319,12 @@ function main() {
     if (failures.length === 0) {
       console.error("check-docs: tsc failed but no block diagnostics were parsed. Raw output:\n");
       console.error(tscOutput);
-      rmSync(workDir, { recursive: true, force: true });
+      scratch.dispose();
       process.exit(1);
     }
   }
 
-  rmSync(workDir, { recursive: true, force: true });
+  scratch.dispose();
 
   // ----- Report -----------------------------------------------------------
   console.log(`check-docs: scanned ${DOC_SOURCES.length} documentation sources`);

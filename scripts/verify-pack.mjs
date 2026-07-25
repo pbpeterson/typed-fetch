@@ -23,14 +23,10 @@
 // grow a dev dep for a release guard.
 
 import { execFileSync } from "node:child_process";
-
-// pnpm forwards its own config as npm_config_* variables to lifecycle scripts.
-// Newer npm versions warn about pnpm-only keys. The pack manifest must be
-// deterministic and does not need user/package-manager configuration.
-const npmEnvironment = { ...process.env };
-for (const key of Object.keys(npmEnvironment)) {
-  if (key.toLowerCase().startsWith("npm_config_")) delete npmEnvironment[key];
-}
+// The pack manifest must be deterministic and owes nothing to the shell that
+// happens to be running it; NPM_ENV drops pnpm's forwarded npm_config_* keys.
+// See scripts/lib/npm-pack.mjs for why all three npm-calling gates need this.
+import { NPM_ENV } from "./lib/npm-pack.mjs";
 
 // Compiled entry points that MUST be in every published tarball. These back the
 // `main`, `module`, `types` and `exports` fields in package.json — if any is
@@ -107,7 +103,7 @@ let raw;
 try {
   raw = execFileSync("npm", ["pack", "--dry-run", "--json"], {
     encoding: "utf8",
-    env: npmEnvironment,
+    env: NPM_ENV,
     stdio: ["ignore", "pipe", "inherit"],
   });
 } catch (err) {
