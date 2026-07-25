@@ -278,17 +278,15 @@ error — do all of the following:
    - add `| XxxError` to the correct union — `ClientErrors` for a 4xx,
      `ServerErrors` for a 5xx (both unions are alphabetically sorted).
 
-4. **Map the status code in `src/http-status-codes.ts`** — add the
-   `import { XxxError } from "./errors/<kebab>-error";` line and a
-   `[NNN, XxxError],` entry to `statusCodeErrorMap` (entries are in
-   ascending status-code order).
+4. **Nothing to do in `src/http-status-codes.ts`.** `statusCodeErrorMap` is
+   derived from `httpErrors` — it reads each class's own `static status` — so
+   step 3 already registered the status code. Do not add a hand-written entry.
 
 5. **Update `test.spec.ts`**:
    - add `{ Class: XxxError, status: NNN },` to the `allErrors` table (in
-     status-code order);
-   - bump the cardinality counts from `40` to `41` in the "roster cardinality
-     is exactly 40" test, the "httpErrors contains all 40 error classes" test,
-     and the "statusCodeErrorMap contains all 40 status codes" test;
+     status-code order). The cardinality assertions count `allErrors.length`,
+     so there are no magic numbers to bump — but note the test **titles** still
+     say "40" and are worth updating for readability;
    - add an explicit per-class assertion pair inside the "every class's status
      and statusText are their own literal type" test:
      ```typescript no-check
@@ -306,10 +304,13 @@ point of them:
 - Forgetting to add the class to a `ClientErrors`/`ServerErrors` union (but
   leaving it in `httpErrors`) fails **typecheck** via the
   `"HttpErrors instance union matches ClientErrors | ServerErrors"` test.
-- Dropping the class from the `httpErrors` array, or a mismatched
-  status-code map entry, fails the **runtime**
+- Dropping the class from the `httpErrors` array fails the **runtime**
   `"roster cardinality is exactly 40 and map <-> array agree"` test (and the
-  cardinality assertions in the `"httpErrors & statusCodeErrorMap"` block).
+  cardinality assertions in the `"httpErrors & statusCodeErrorMap"` block),
+  which count against the independently authored `allErrors` table. A
+  status-code map entry that disagrees with the class's own `static status` is
+  no longer possible at all — `statusCodeErrorMap` is derived from
+  `httpErrors`.
 - Widening a class's `status`/`statusText` off its literal type fails
   **typecheck** via the per-class assertions in
   `"every class's status and statusText are their own literal type, not
@@ -324,6 +325,44 @@ generator.
 
 Registering a new error class this way is a `major` release — see the semver
 policy below.
+
+### Do not propose generating, collapsing, or factory-building the roster
+
+The steps above are repetitive, and the natural reaction is to propose a code
+generator or a generic `makeHttpError(status, statusText)` factory. That has
+been evaluated in depth and **rejected**. Please read
+[ADR 0001](./docs/adr/0001-keep-the-http-error-roster-hand-written.md) before
+opening an issue or PR for it. The four facts that settle it:
+
+1. **The roster does not change.** All 40 classes landed in the initial commit
+   and not one status class has been added or removed in the 12.5 months and
+   132 commits since. Upstream is equally static: the roster already covers
+   every IANA-registered 4xx/5xx code, and the newest one to be newly
+   registered is 425 Too Early (RFC 8470, **2018**).
+2. **A factory measurably degrades the published `.d.ts`.** Under
+   `tsc --declaration`, `clone()`'s polymorphic `this` collapses to `any`, the
+   named `declare class` becomes an anonymous object type, `extends
+KnownHttpError` disappears, and the whole `BaseHttpError` surface inlines
+   into all 40 declarations (about +520 lines). The duplication buys precisely
+   the thing the factory removes.
+3. **It was already built, and reverted the same day.** Commit `31fa896` added
+   a 431-line `scripts/generate-errors.ts`; `6cc8c56` deleted it 84 minutes
+   later because it could not actually add a status code (it crashed on a
+   hardcoded `!== 40` guard, then emitted non-compiling code), never pruned
+   orphaned files, and relocated the parallel lists into four hidden ones
+   inside itself. Read both commit messages.
+4. **Drift is already impossible past CI.** The `roster sync` tests are an
+   independently authored second source of truth — see "The safety net" above.
+   The duplication is checked, not trusted.
+
+One argument that is **not** a reason to keep things hand-written: "a factory
+would break class names and stack traces." That is false —
+`Object.defineProperty(C, "name", ...)` reproduces the instance `name`, the
+`stack` header line, and `String(error)` exactly. Do not use it. The case
+rests on the emitted declarations, not on runtime behaviour.
+
+A proposal that clears the bar in ADR 0001's "What would change our mind"
+section is genuinely welcome; one that re-runs the arguments above is not.
 
 ### Error response bodies
 
