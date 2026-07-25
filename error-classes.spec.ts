@@ -303,3 +303,32 @@ test("error .name is a hardcoded string literal, not this.constructor.name", () 
   const src = readFileSync("src/errors/base-http-error.ts", "utf8");
   expect(src).not.toMatch(/this\.name\s*=\s*this\.constructor\.name/);
 });
+
+describe("message and url agree on what they disclose", () => {
+  test("BaseHttpError: the message carries the redacted URL, the property the full href", () => {
+    const response = new Response(null, { status: 404, statusText: "Not Found" });
+    Object.defineProperty(response, "url", {
+      value: "https://api.test/v1/things?access_token=SECRET",
+    });
+    const error = new NotFoundError(response);
+
+    expect(error.message).toBe("HTTP 404 Not Found (https://api.test/v1/things)");
+    expect(error.toJSON().url).toBe("https://api.test/v1/things");
+    // The record's message and its url describe the same URL.
+    expect(error.toJSON().message).toContain(error.toJSON().url);
+    // The escape hatch is untouched.
+    expect(error.url).toBe("https://api.test/v1/things?access_token=SECRET");
+  });
+
+  test("NetworkError: undici's credential message loses the password", () => {
+    const url = "http://alice:hunter2@api.test/v1/things";
+    const error = new NetworkError(
+      `Request cannot be constructed from a URL that includes credentials: ${url}`,
+      { url },
+    );
+
+    expect(error.message).not.toContain("hunter2");
+    expect(JSON.stringify(error)).not.toContain("hunter2");
+    expect(error.url).toBe(url);
+  });
+});

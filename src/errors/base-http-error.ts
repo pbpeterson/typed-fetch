@@ -1,5 +1,7 @@
 import { brand, httpErrorBrand } from "./brand";
 import { errorBodyOf, type ErrorBody } from "./error-body";
+import { installInspect } from "./inspect";
+import { redactUrl } from "./redact-url";
 
 /**
  * Per-instance body custody, held OUTSIDE the class.
@@ -42,6 +44,37 @@ function bodyOf(error: BaseHttpError): ErrorBody {
 }
 
 /**
+ * Define an own property with the descriptor the platform uses for
+ * `Error.cause`: readable and writable, but NOT enumerable, so it stays out of
+ * `{ ...error }`, `Object.keys(error)`, `for...in`, and any printer that walks
+ * own enumerable properties.
+ */
+function define(target: object, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    enumerable: false,
+    configurable: true,
+  });
+}
+
+/**
+ * Was this object built by THIS copy of the library?
+ *
+ * Guarded: `instanceof` consults the constructor's `Symbol.hasInstance` and the
+ * value's prototype chain, and a hostile object can throw from either. A value
+ * that cannot answer the question is treated as claiming this copy — the
+ * conservative side, since the caller releases the branch on that answer.
+ */
+function claimsThisCopy(value: unknown): boolean {
+  try {
+    return value instanceof BaseHttpError;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Abstract base class for all HTTP error classes (4xx and 5xx).
  *
  * Provides access to the response body via {@link json}, {@link text},
@@ -62,8 +95,18 @@ function bodyOf(error: BaseHttpError): ErrorBody {
  * @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status
  */
 export abstract class BaseHttpError extends Error {
-  /** Response headers from the failed request. */
-  public readonly headers: Headers;
+  /**
+   * Response headers from the failed request.
+   *
+   * NON-ENUMERABLE, defined exactly as the platform defines `Error.cause`.
+   * This holds the raw server values — the session in `set-cookie`, whatever a
+   * custom header carries — and an own ENUMERABLE property puts all of it into
+   * `{ ...error }`, `Object.keys(error)`, `for...in`, and, decisively, Node's
+   * fatal-exception printer, which renders a crashing error with
+   * `customInspect: false` and therefore ignores every hook this library
+   * installs. Reading `error.headers` is unchanged.
+   */
+  declare public readonly headers: Headers;
 
   /** HTTP status code (literal type, e.g. `404`). */
   public abstract readonly status: number;
@@ -76,22 +119,38 @@ export abstract class BaseHttpError extends Error {
    */
   public abstract readonly statusText: string;
 
-  /** The URL of the failed request (from `response.url`). */
-  public readonly url: string;
+  /**
+   * The URL of the failed request (from `response.url`), as the FULL href.
+   *
+   * This is the escape hatch, the way `headers` is the escape hatch for header
+   * values: `message` and the `toJSON()` record carry the redacted form
+   * (origin and path, no query), and this carries everything. Non-enumerable
+   * for the same reason as {@link headers} — a query string routinely holds a
+   * credential.
+   */
+  declare public readonly url: string;
 
   constructor(response: Response) {
     const line = response.statusText
       ? `HTTP ${response.status} ${response.statusText}`
       : `HTTP ${response.status}`;
-    super(response.url ? `${line} (${response.url})` : line);
-    this.url = response.url;
+    // The REDACTED url in the message, the full href on `this.url`. A query
+    // string routinely carries a credential (`?access_token=`, a signed
+    // `?X-Amz-Signature=`), and `message` is the one string every log line,
+    // crash dump, and test failure carries. See `./redact-url`.
+    const safeUrl = redactUrl(response.url);
+    super(safeUrl ? `${line} (${safeUrl})` : line);
+    // `defineProperty`, not an assignment: an assignment creates an ENUMERABLE
+    // own property. See the field docs above, and `./network-error` for the
+    // same decision on `cause`.
+    define(this, "url", response.url);
     // A COPY, not the response's own `Headers`. The error outlives the request
     // and is handed to loggers and retry code; an alias would make
     // `error.headers.set(...)` edit the `Response` a consumer still holds
     // through an injected `fetch`, which the `readonly` here denies. One
     // allocation per error buys that. The copy is faithful: a `Headers` init
     // preserves every duplicate `set-cookie` entry.
-    this.headers = new Headers(response.headers);
+    define(this, "headers", new Headers(response.headers));
     bodies.set(this, errorBodyOf(response));
   }
 
@@ -147,7 +206,10 @@ export abstract class BaseHttpError extends Error {
       message: this.message,
       status: this.status,
       statusText: this.statusText,
-      url: this.url,
+      // Origin and path, never the query: see `./redact-url`. Read
+      // `error.url` for the full href, as you read `error.headers` for the
+      // header values.
+      url: redactUrl(this.url),
       // Iterating a `Headers` yields one name per `set-cookie`, so a repeated
       // header still shows how many times the server sent it.
       headers: [...this.headers.keys()],
@@ -189,8 +251,11 @@ export abstract class BaseHttpError extends Error {
    * ```
    *
    * It resolves when the response carries no body, when the body was already
-   * consumed — including by a consumer holding the `Response` itself — and
-   * when this library already started reading it. A repeated call settles with
+   * consumed — including by a consumer holding the `Response` itself — when
+   * this library already started reading it, and when the body stream FAILED.
+   * A truncated response or a connection reset mid-body errors the stream,
+   * which dropped its source at that moment: nothing is left to release and
+   * nothing about the failure is actionable here. A repeated call settles with
    * the first one.
    *
    * It rejects with a `TypeError` when an EXTERNAL reader holds the stream and
@@ -333,6 +398,26 @@ export abstract class BaseHttpError extends Error {
     // What it refuses is a body we CAN see that took a different response: the
     // callback ignored the branch and built from somewhere else, so the branch
     // has no owner at all.
+    // `undefined` from the table means one of two very different things, and
+    // only one of them is safe. Raw `instanceof` — the single-copy question,
+    // the one case where it is exactly the right tool — separates them: an
+    // object that claims THIS copy's prototype chain was built by this copy's
+    // constructor and MUST be in this copy's table. A Proxy wrapper (the
+    // standard APM instrumentation pattern), an `Object.create` delegate, or a
+    // membrane forwards `getPrototypeOf` and so answers `true` while being
+    // unkeyable in the WeakMap. Accepting it pinned one connection and one
+    // unreleased stream per cloned error, with no recovery path: `cancel()` on
+    // this error waited forever, and the branch could not be released through
+    // the copy either, because `this` inside `cancel` is the wrapper.
+    if (claimsThisCopy(copy) && bodies.get(copy) === undefined) {
+      teed.release();
+      throw new TypeError(
+        `Cannot clone ${this.name}: the new error claims this copy of the library but carries no ` +
+          "body, so the cloned body branch has no owner. A Proxy or delegate wrapped around the " +
+          "error cannot own one — return the instance itself.",
+      );
+    }
+
     if (!teed.adopt(bodies.get(copy))) {
       teed.release();
       throw new TypeError(
@@ -348,3 +433,8 @@ export abstract class BaseHttpError extends Error {
 // classes + UnknownHttpError) inherits it. Keyed by a `Symbol.for`, it is
 // identical across module copies, which is what makes the guards work across package copies.
 brand(BaseHttpError.prototype, httpErrorBrand);
+
+// Stamped for the same reason and in the same way as the brand above: `toJSON`
+// covers `JSON.stringify`, this covers `console.log`/`util.inspect` and Node's
+// fatal-exception printer. See `./inspect`.
+installInspect(BaseHttpError.prototype);

@@ -1,4 +1,6 @@
 import { brand, networkErrorBrand } from "./brand";
+import { installInspect } from "./inspect";
+import { redactUrl, redactUrlInMessage } from "./redact-url";
 
 /**
  * Represents a network-level failure (DNS, connection refused, TLS handshake,
@@ -32,10 +34,15 @@ export class NetworkError extends Error {
    * The requested URL, so concurrent failures are distinguishable in logs.
    * Empty string only if no URL could be resolved from the request input.
    */
-  public readonly url: string = "";
+  declare public readonly url: string;
 
   constructor(message: string = "Network error", options?: { cause?: unknown; url?: string }) {
-    super(message);
+    // The url this error was told about, so the message can be cleaned of it
+    // before it becomes the string every log line carries. undici rejects a
+    // credentialed URL with a TypeError whose message contains the PASSWORD,
+    // and that message is copied here verbatim. See `./redact-url`.
+    const url = options?.url ?? "";
+    super(redactUrlInMessage(message, url));
     if (options && "cause" in options) {
       // `defineProperty`, not `this.cause = ...`. A plain assignment creates an
       // ENUMERABLE own property, while `new Error(message, { cause })` creates
@@ -53,9 +60,17 @@ export class NetworkError extends Error {
         configurable: true,
       });
     }
-    if (options && "url" in options && options.url !== undefined) {
-      this.url = options.url;
-    }
+    // Non-enumerable, exactly like `cause` above: the full href can carry a
+    // credential in its query, and an enumerable property puts it into
+    // `{ ...error }`, `Object.keys(error)`, and Node's fatal-exception
+    // printer, which ignores every inspect hook. The redacted form is in
+    // `message` and in the `toJSON()` record.
+    Object.defineProperty(this, "url", {
+      value: url,
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
   }
 
   /**
@@ -71,8 +86,14 @@ export class NetworkError extends Error {
    * want it.
    */
   toJSON(): { name: string; message: string; url: string } {
-    return { name: this.name, message: this.message, url: this.url };
+    // Origin and path, never the query. `error.url` keeps the full href.
+    return { name: this.name, message: this.message, url: redactUrl(this.url) };
   }
 }
 
 brand(NetworkError.prototype, networkErrorBrand);
+
+// `toJSON` covers `JSON.stringify`; this covers `console.log`/`util.inspect`
+// and Node's fatal-exception printer, which prints `cause` regardless of
+// enumerability. See `./inspect`.
+installInspect(NetworkError.prototype);

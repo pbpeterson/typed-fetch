@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, test, expect } from "vitest";
 import { BaseHttpError, NotFoundError, UnknownHttpError } from "./src/errors";
 
@@ -485,5 +486,83 @@ describe("BaseHttpError.clone()", () => {
     expect(error.clone).toBeDefined();
     expect(() => error.clone()).toThrowError(/its stream is locked/);
     expect(() => error.clone()).toThrowError(TypeError);
+  });
+});
+
+/**
+ * A recreate callback that returns an instance built by ANOTHER loaded copy of
+ * this library. `instanceof` reports false for one, which is the case the
+ * `undefined` body-table lookup was accepted for.
+ */
+const foreign = (response: Response) =>
+  ({
+    name: "NotFoundError",
+    status: 404,
+    statusText: "Not Found",
+    url: response.url,
+    headers: response.headers,
+    async cancel() {
+      await response.body?.cancel();
+    },
+  }) as unknown as NotFoundError;
+
+describe("BaseHttpError.clone() — an owner this copy cannot see", () => {
+  test("a Proxy-wrapped copy is refused, and the branch is released", async () => {
+    const error = new NotFoundError(new Response("payload", { status: 404 }));
+
+    // Wrapping the recreated error in a Proxy is the standard APM
+    // instrumentation pattern. The WeakMap cannot key it, so `bodies.get`
+    // returned `undefined` — indistinguishable from the legitimate
+    // other-package-copy case the `undefined` was accepted for.
+    expect(() =>
+      error.clone((response) => new Proxy(new NotFoundError(response), {})),
+    ).toThrowError(/claims this copy of the library but carries no body/);
+
+    // The regression this pins: the clone used to SUCCEED, and then this
+    // cancel never settled — one pinned connection and one unreleased stream
+    // per cloned error, with no recovery path, because `this` inside the
+    // copy's `cancel` is the Proxy.
+    await expect(error.cancel()).resolves.toBeUndefined();
+  });
+
+  test("an Object.create delegate is refused the same way", async () => {
+    const error = new NotFoundError(new Response("payload", { status: 404 }));
+
+    expect(() =>
+      error.clone((response) => Object.create(new NotFoundError(response))),
+    ).toThrowError(TypeError);
+
+    await expect(error.cancel()).resolves.toBeUndefined();
+  });
+
+  test("an instance from a DIFFERENT package copy is still accepted", async () => {
+    // The case the `undefined` was accepted for, and which must keep working:
+    // a recreate callback may legitimately return an instance whose class —
+    // and whose body table — came from another loaded copy of this library.
+    // Simulated with `foreign` above: an object that does not derive from this
+    // copy's BaseHttpError, which is exactly what `instanceof` reports for one.
+    const error = new NotFoundError(new Response("payload", { status: 404 }));
+
+    const copy = error.clone(foreign);
+    expect(copy).toBeDefined();
+
+    await expect(Promise.all([error.cancel(), copy.cancel()])).resolves.toBeDefined();
+  });
+});
+
+describe("BaseHttpError.cancel() — the shipped JSDoc matches the behavior", () => {
+  test("the resolve list names the errored-stream case", () => {
+    // `cancel()` was changed so an errored body stream RESOLVES rather than
+    // crashing the process. The README and the internal ErrorBody doc were
+    // updated; this block — the one a consumer reads on hover, because it is
+    // emitted into dist/index.d.ts — was missed.
+    const source = readFileSync("src/errors/base-http-error.ts", "utf8");
+    const cancelDoc = source.slice(
+      source.indexOf("Release the error response body without reading it"),
+      source.indexOf("async cancel("),
+    );
+
+    expect(cancelDoc).toMatch(/stream FAILED|body stream failed/i);
+    expect(cancelDoc).toMatch(/truncated|reset/i);
   });
 });
