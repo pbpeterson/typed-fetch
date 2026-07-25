@@ -175,11 +175,11 @@ describe.skipIf(!distExists)("public TYPE surface is frozen", () => {
 //
 // The whole reason branding exists: exercise the guards against errors created
 // by a DIFFERENT copy of the classes than the one that owns the guard. The
-// src/ tests above cannot catch a regression to `instanceof` because every
-// import there resolves to the same module object. These tests import the two
-// ESM entry points (`.` and `./errors`) and the two CJS entry points via
-// createRequire, then cross the wires. On a clean checkout dist/ is absent and
-// this block skips (see distExists rationale above).
+// src/ tests in guards.spec.ts cannot catch a regression to `instanceof`
+// because every import there resolves to the same module object. These tests
+// import the two ESM entry points (`.` and `./errors`) and the two CJS entry
+// points via createRequire, then cross the wires. On a clean checkout dist/ is
+// absent and this block skips (see distExists rationale above).
 describe.skipIf(!distExists)("guards work across module copies (dist)", () => {
   const require = createRequire(import.meta.url);
 

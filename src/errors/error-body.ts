@@ -24,7 +24,8 @@
  *
  * This module is INTERNAL. It must never be re-exported from `./index` or the
  * root barrel: the public surface is frozen by snapshots on both the value and
- * the type axis (see `test.spec.ts`), and nothing here is a consumer concern.
+ * the type axis (see `public-surface.spec.ts`), and nothing here is a consumer
+ * concern.
  */
 
 /**

@@ -6,7 +6,7 @@
 // ---------------
 // Every other test in this repo runs against `src/` or against a single built
 // entry point:
-//   - test.spec.ts imports `./src/index` — never the packed artifact.
+//   - the root *.spec.ts suites import `./src/index` — never the packed artifact.
 //   - the bun/deno smokes import `dist/index.mjs` — the MAIN entry only.
 //   - the API-surface snapshot asserts export NAMES.
 //   - verify-pack asserts the file MANIFEST (which paths ship).

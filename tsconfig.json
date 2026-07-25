@@ -1,6 +1,6 @@
 {
   "include": ["index.ts", "src/**/*"],
-  "exclude": ["test.spec.ts", "test.js", "node_modules", "dist"],
+  "exclude": ["*.spec.ts", "test.js", "node_modules", "dist"],
   "compilerOptions": {
     "rootDir": "./",
     "outDir": "dist",

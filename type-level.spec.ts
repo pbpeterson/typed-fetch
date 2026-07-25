@@ -170,7 +170,7 @@ describe("type-level", () => {
 
   // NOTE: the per-class status/statusText literal coverage that used to
   // live here (3/40 classes) has moved to, and been extended to all 40
-  // classes by, the "roster sync" describe block above.
+  // classes by, the "roster sync" describe block in roster-sync.spec.ts.
 
   test("json<T>() returns Promise<T>", () => {
     const error = new NotFoundError(new Response(JSON.stringify({}), { status: 404 }));
