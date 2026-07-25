@@ -4,74 +4,44 @@
 [![npm version](https://img.shields.io/npm/v/%40pbpeterson%2Ftyped-fetch)](https://www.npmjs.com/package/@pbpeterson/typed-fetch)
 [![license](https://img.shields.io/npm/l/%40pbpeterson%2Ftyped-fetch)](./LICENSE)
 
-`typed-fetch` is a type-safe HTTP client for TypeScript. It returns request errors as values and uses the native Fetch API.
+## Purpose
 
-Its result model follows the Go pattern: errors are values.
+`typed-fetch` is a type-safe HTTP client for TypeScript. It uses the native Fetch API. It has no runtime dependencies.
+
+Native `fetch` does not reject a request for an HTTP error status. The calling code must check `response.ok` after each request.
+
+`typedFetch` checks the status. It resolves with a discriminated union that holds a response or a typed error.
+
+`typedFetch` does not reject for an HTTP status, a network failure, an abort, or a timeout. It resolves with these failures in `error`.
+
+Body readers are separate operations. `json()`, `text()`, `blob()`, and `arrayBuffer()` keep the native Fetch behavior, and they can reject.
 
 > **Upgrade from 0.x:** Version 1.0 has breaking changes. Read [Migrating from 0.x](./CHANGELOG.md#migrating-from-0x).
 
-## Why typed-fetch?
+### Terms
 
-Native `fetch` does not reject a request for an HTTP error status. You must check `response.ok` after each request.
+This document uses these terms with these meanings.
 
-`typedFetch` checks the status for you. It returns a discriminated union with a response or a typed error.
+| Term                  | Meaning                                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------------------- |
+| known HTTP error      | A status code that has a dedicated error class.                                                   |
+| unknown HTTP error    | A status code of 400 or more with no dedicated class. `UnknownHttpError` represents it.           |
+| package copy          | One loaded instance of this package in a process.                                                 |
+| abort the request     | An `AbortSignal` stops a request.                                                                 |
+| cancel the error body | `error.cancel()` releases the body of an HTTP error.                                              |
+| read the error body   | `json()`, `text()`, `blob()`, or `arrayBuffer()` consumes the body.                               |
+| reason phrase         | The status text that the server sends on the wire. It can differ from the library's `statusText`. |
 
-```typescript
-import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
+### Capabilities
 
-type User = { id: number; name: string };
-
-// Native fetch: this example forgets the required raw.ok check.
-const raw = await fetch("/api/users");
-const usersRaw = await raw.json();
-
-// typedFetch: request errors are values.
-const { response, error } = await typedFetch<User[]>("/api/users");
-
-if (error) {
-  if (isHttpError(error)) {
-    console.log(`HTTP ${error.status}: ${error.statusText}`);
-    const errorDetails = await error.json();
-  } else {
-    console.log(`Request failed: ${error.message}`);
-  }
-} else {
-  const users = await response.json(); // User[]
-}
-```
-
-The `<User[]>` type sets the TypeScript result of `response.json()`. It does not validate the response data.
-
-Use a runtime validator when the response data is not trusted. You can use Zod, Valibot, or a Standard Schema validator.
-
-### What never-throws means
-
-`typedFetch` does not reject for HTTP statuses, network failures, aborts, or timeouts. It returns these failures in `error`.
-
-Body readers keep the native Fetch behavior. `json()`, `text()`, and the other body methods can reject.
-
-- Use `try/catch` for a body read when the data can be invalid.
-- Call `.clone()` before the first body read when you must read the body two times.
-
-A custom Fetch implementation is not trusted input. `typedFetch` returns a `NetworkError` when the implementation resolves a value that is not a `Response`.
-
-`typedFetch` treats only statuses of 400 or more as HTTP errors. Thus, a response with status `0` stays on the success branch.
-
-Browsers can produce status `0` for `opaque`, `opaqueredirect`, and `Response.error()` responses. Check `response.ok` or `response.type` for these responses.
-
-Opaque response bodies cannot be read. `Response.error().text()` returns `""`, and its `.json()` rejects because the body is empty.
-
-## Features
-
-- Returns HTTP, network, abort, and timeout errors as values.
-- Gives literal status types for 40 standard HTTP error classes.
-- Returns `UnknownHttpError` for other statuses of 400 or more.
-- Uses the same inputs as native `fetch`.
-- Gives brand-based type guards for all error groups.
+- Resolves with HTTP, network, abort, and timeout errors as values.
+- Gives literal status types for 40 dedicated HTTP error classes.
+- Resolves with `UnknownHttpError` for other statuses of 400 or more.
+- Accepts the same inputs as native `fetch`.
+- Gives brand-based type guards for all error groups. The guards work across package copies.
 - Keeps the original pre-response error in `cause`.
 - Gives typed success and error body readers.
 - Releases an unread error body with `cancel()`.
-- Has no runtime dependencies.
 
 ## Installation
 
@@ -91,40 +61,50 @@ Install the `typed-fetch` skill when you use Claude Code or another compatible a
 npx skills add pbpeterson/typed-fetch --skill typed-fetch
 ```
 
-## Basic usage
+## Basic operation
 
-### GET request
+**Purpose** — send a request and handle a failure.
+
+**Action** — destructure `response` and `error` from the result. Check `error` first.
+
+**Result** — one of the two values is non-null:
+
+- A successful result has `response` and `error: null`.
+- A failed result has `response: null` and `error`.
+
+> WARNING: Read or cancel every HTTP error body. An unread body can keep its connection open.
 
 ```typescript
 import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
 
-interface User {
-  id: number;
-  name: string;
-  email: string;
-}
+type User = { id: number; name: string };
 
 const { response, error } = await typedFetch<User[]>("/api/users");
 
 if (error) {
   if (isHttpError(error)) {
-    console.error(`HTTP ${error.status} ${error.statusText}`);
+    console.log(`HTTP ${error.status} ${error.statusText}`);
+    await error.cancel();
   } else {
-    console.error("Request failed:", error.message);
+    console.log(`Request failed: ${error.message}`);
   }
 } else {
   const users = await response.json(); // User[]
 }
 ```
 
+The `<User[]>` type sets the TypeScript result of `response.json()`. It does not validate the response data.
+
+Use a runtime validator when the response data is not trusted. You can use Zod, Valibot, or a Standard Schema validator.
+
 ### POST request
 
 ```typescript
-import { typedFetch, BadRequestError } from "@pbpeterson/typed-fetch";
+import { typedFetch, isHttpError, BadRequestError } from "@pbpeterson/typed-fetch";
 
 type User = { id: number; name: string; email: string };
 
-const { response, error } = await typedFetch<User>("/api/users", {
+const { error } = await typedFetch<User>("/api/users", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ name: "John", email: "john@example.com" }),
@@ -132,24 +112,128 @@ const { response, error } = await typedFetch<User>("/api/users", {
 
 if (error instanceof BadRequestError) {
   const details = await error.json<{ field: string; message: string }>();
-  console.error("Validation failed:", details);
+  console.log("Validation failed:", details);
+} else if (isHttpError(error)) {
+  await error.cancel();
 }
 ```
 
-## Error handling
+## Request failure decision table
 
-Each result contains one non-null value:
+Use this table to identify a failure and to decide what to do with its body.
 
-- A successful result has `response` and `error: null`.
-- A failed result has `response: null` and `error`.
+| Condition                           | Error type         | Check                | Body action    |
+| ----------------------------------- | ------------------ | -------------------- | -------------- |
+| HTTP status has a dedicated class   | Known HTTP error   | `isKnownHttpError()` | Read or cancel |
+| HTTP status has no dedicated class  | `UnknownHttpError` | `isHttpError()`      | Read or cancel |
+| No HTTP response is available       | `NetworkError`     | `isNetworkError()`   | None           |
+| A signal aborts the request         | `AbortedError`     | `isAbortError()`     | None           |
+| A timeout signal aborts the request | `TimeoutError`     | `isTimeoutError()`   | None           |
 
-### HTTP status errors
+`isKnownHttpError()` matches a subset of `isHttpError()`. Check `isKnownHttpError()` first when the code must narrow to one dedicated class.
 
-Use `instanceof` to check one status when all code uses one package copy. Use a type guard when an error can cross module boundaries.
+`NetworkError`, `AbortedError`, and `TimeoutError` carry no response, so they have no body and no body methods.
 
 ```typescript
 import {
   typedFetch,
+  isKnownHttpError,
+  isHttpError,
+  isNetworkError,
+  isAbortError,
+  isTimeoutError,
+} from "@pbpeterson/typed-fetch";
+
+const { error } = await typedFetch("/api/users/123");
+
+if (isKnownHttpError(error)) {
+  console.log(`Known status ${error.status}`);
+  await error.cancel();
+} else if (isHttpError(error)) {
+  console.log(`Unknown status ${error.status}`);
+  await error.cancel();
+} else if (isNetworkError(error)) {
+  console.log("Connection failed:", error.message);
+} else if (isAbortError(error)) {
+  console.log("Request aborted");
+} else if (isTimeoutError(error)) {
+  console.log("Request timed out");
+}
+```
+
+NOTE: `typedFetch` treats only a status of 400 or more as an HTTP error. A response with status `0` stays on the success branch.
+
+Browsers produce status `0` for an `opaque` response, an `opaqueredirect` response, and `Response.error()`. Check `response.ok` or `response.type` for these responses.
+
+An opaque response body cannot be read. `Response.error().text()` resolves with `""`, and its `json()` rejects because the body is empty.
+
+## HTTP error procedures
+
+All HTTP error classes extend `BaseHttpError`. They give access to the response status, headers, and body.
+
+### Identify a status with a type guard
+
+**Condition** — the code can receive an error from another package copy.
+
+One process can load more than one copy of a class. This occurs when code mixes ESM and CJS, or when code uses two package entry points.
+
+Each package copy has a different class identity. Thus `instanceof` can return `false` for an error that another copy created.
+
+The type guards use a `Symbol.for` brand. The brand works across package copies and module formats. It also works across realms, so a guard identifies an error from an iframe or a worker.
+
+The brand sits on the class prototype and is not enumerable. Thus it never occurs in `JSON.stringify(error)`, in `{ ...error }`, or in a `for...in` loop.
+
+| Check                            | Same package copy | Different package copies |
+| -------------------------------- | ----------------- | ------------------------ |
+| Type guards                      | Yes               | Yes                      |
+| `error instanceof BaseHttpError` | Yes               | No                       |
+| `error instanceof NotFoundError` | Yes               | No                       |
+
+Use `instanceof` in an application that loads one package copy. Use the type guards in a library, or in code that can mix module formats.
+
+The brand is not a security control. A value with a forged brand can pass a guard.
+
+### Narrow a known status
+
+`isHttpError()` narrows an error to `BaseHttpError`. Its `status` stays a `number`, because this group includes `UnknownHttpError`.
+
+`isKnownHttpError()` excludes `UnknownHttpError`. TypeScript can then narrow each status to one dedicated class.
+
+Use `isKnownHttpError()` with `switch (error.status)` to identify a specific status across package copies.
+
+```typescript
+import { typedFetch, isKnownHttpError } from "@pbpeterson/typed-fetch";
+
+type User = { id: number; name: string };
+
+const { error } = await typedFetch<User>("/api/users/123");
+
+if (isKnownHttpError(error)) {
+  switch (error.status) {
+    case 404:
+      console.log("User not found"); // NotFoundError
+      break;
+    case 401:
+      console.log("Log in first"); // UnauthorizedError
+      break;
+    default:
+      // Keep this branch for a different package version.
+      console.log(`HTTP ${error.status}`);
+  }
+  await error.cancel();
+}
+```
+
+`isKnownHttpError()` checks the status map of the current package version. An older package copy rejects a status that only a newer copy knows.
+
+### Identify a status with `instanceof`
+
+**Condition** — the application loads one package copy.
+
+```typescript
+import {
+  typedFetch,
+  isHttpError,
   NotFoundError,
   UnauthorizedError,
   NetworkError,
@@ -163,151 +247,63 @@ const { error } = await typedFetch<User>("/api/users/123");
 
 if (error instanceof NotFoundError) {
   console.log("User not found");
+  await error.cancel();
 } else if (error instanceof UnauthorizedError) {
   console.log("Log in first");
+  await error.cancel();
 } else if (error instanceof NetworkError) {
   console.log("Network error:", error.message);
 } else if (error instanceof AbortedError) {
-  console.log("Request canceled");
+  console.log("Request aborted");
 } else if (error instanceof TimeoutError) {
   console.log("Request timed out");
+} else if (isHttpError(error)) {
+  await error.cancel();
 }
 ```
 
-### Unknown status codes
+### Handle an unknown status
 
 `UnknownHttpError` represents a status of 400 or more when no dedicated class exists. Examples include 420 and 599.
 
+Its `status` and `statusText` are not literal types. They reflect the values that the server sent.
+
 ```typescript
-import { typedFetch, UnknownHttpError } from "@pbpeterson/typed-fetch";
+import { typedFetch, isHttpError, UnknownHttpError } from "@pbpeterson/typed-fetch";
 
 const { error } = await typedFetch("/api/legacy");
 
 if (error instanceof UnknownHttpError) {
   console.log(error.status); // For example, 599.
   const body = await error.text();
+  console.log(body);
+} else if (isHttpError(error)) {
+  await error.cancel();
 }
 ```
 
-### Error type guards
+## Error body procedures
 
-The package gives type guards for each error group:
+Every HTTP error carries a one-use body stream. Every error body needs a read or a cancel.
 
-- `isHttpError()`
-- `isKnownHttpError()`
-- `isNetworkError()`
-- `isAbortError()`
-- `isTimeoutError()`
+An unread body keeps the stream open. The open stream holds the connection open until the runtime collects it.
 
-One process can load more than one copy of a class. This can occur when code mixes ESM and CJS or uses two package entry points.
+Code that logs only `error.message` and drops the error leaks one connection for each failed request.
 
-Each copy has a different class identity. Thus, `instanceof` can return `false` for an error from a different copy.
+### The three body actions
 
-The type guards use a `Symbol.for` brand. The brand works across package copies and module formats.
+| Action                     | Effect on the transfer                    | Effect on the connection                                      |
+| -------------------------- | ----------------------------------------- | ------------------------------------------------------------- |
+| Read the body              | Downloads the remaining bytes.            | The runtime can return the connection to the keep-alive pool. |
+| Cancel the body            | Does not download the remaining bytes.    | The runtime can close the connection instead of returning it. |
+| Release a `clone()` branch | Each branch needs its own read or cancel. | The platform releases the source after the last branch.       |
 
-| Check                            | Same copy | Different copies                     |
-| -------------------------------- | --------- | ------------------------------------ |
-| Type guards                      | Yes       | Yes                                  |
-| `error instanceof BaseHttpError` | Yes       | Yes, if both modules share the class |
-| `error instanceof NotFoundError` | Yes       | Yes, if both modules share the class |
+Read the body with `text()` when connection reuse is more important than the remaining bytes. Cancel the body when the remaining bytes are more important.
 
-Use `instanceof` in an application that has one module graph. Use the type guards in a library or in code that can mix module formats.
-
-Use `isKnownHttpError()` and `switch (error.status)` to identify a specific status across package copies.
+### Read an error body
 
 ```typescript
-import {
-  typedFetch,
-  isHttpError,
-  isNetworkError,
-  isAbortError,
-  isTimeoutError,
-} from "@pbpeterson/typed-fetch";
-
-type User = { id: number; name: string };
-
-const { error } = await typedFetch<User>("/api/users/123");
-
-if (error) {
-  if (isHttpError(error)) {
-    console.log(`HTTP ${error.status}: ${error.statusText}`);
-  } else if (isNetworkError(error)) {
-    console.log("Connection failed:", error.message);
-  } else if (isAbortError(error)) {
-    console.log("Request canceled");
-  } else if (isTimeoutError(error)) {
-    console.log("Request timed out");
-  }
-}
-```
-
-`isNetworkError()` does not match `AbortedError` or `TimeoutError`. Use their type guards.
-
-The brand is not a security control. A value with a forged brand can pass a guard.
-
-#### Known status switch
-
-`isHttpError()` narrows an error to `BaseHttpError`. Its `status` stays a `number` because this group includes `UnknownHttpError`.
-
-`isKnownHttpError()` excludes `UnknownHttpError`. TypeScript can then narrow each status to one dedicated class.
-
-```typescript
-import { typedFetch, isKnownHttpError } from "@pbpeterson/typed-fetch";
-
-type User = { id: number; name: string };
-
-const { error } = await typedFetch<User>("/api/users/123");
-
-if (error && isKnownHttpError(error)) {
-  switch (error.status) {
-    case 404:
-      console.log("User not found"); // NotFoundError
-      break;
-    case 401:
-      console.log("Log in first"); // UnauthorizedError
-      break;
-    default:
-      // Keep this branch for different package versions.
-      console.log(`HTTP ${error.status}`);
-  }
-}
-```
-
-### Error response bodies
-
-All HTTP error classes give access to the response body and headers.
-
-Call `clone()` before the first body read when you must read the body two times.
-
-```typescript
-import { typedFetch, isHttpError, isKnownHttpError } from "@pbpeterson/typed-fetch";
-
-const { error } = await typedFetch("/api/users/123");
-
-if (error && isHttpError(error)) {
-  const forJson = error.clone();
-  const json = await error.json();
-  const text = await forJson.text();
-
-  const retryAfter = error.headers.get("Retry-After");
-  error.status; // number
-  error.statusText; // string
-}
-
-if (error && isKnownHttpError(error)) {
-  switch (error.status) {
-    case 404:
-      error.status; // 404
-      error.statusText; // "Not Found"
-      break;
-  }
-}
-```
-
-The generic type of `error.json<T>()` is an unchecked TypeScript cast. It does not validate the body.
-
-```typescript
-import { typedFetch, BadRequestError } from "@pbpeterson/typed-fetch";
+import { typedFetch, isHttpError, BadRequestError } from "@pbpeterson/typed-fetch";
 
 interface ApiError {
   message: string;
@@ -320,18 +316,22 @@ const { error } = await typedFetch("/api/users");
 if (error instanceof BadRequestError) {
   const details = await error.json<ApiError>();
   console.log(details.message);
+} else if (isHttpError(error)) {
+  await error.cancel();
 }
 ```
 
+The generic type of `error.json<T>()` is an unchecked TypeScript cast. It does not validate the body.
+
 A body is a one-use stream. A second read rejects with `TypeError`. A read also rejects with `TypeError` when a reader holds the stream.
 
-An empty or non-JSON body makes `json()` reject with `SyntaxError`. Use `text()` when the body format is not known.
+An empty or non-JSON body makes `json()` reject with `SyntaxError`. Many servers send an empty body or an HTML page for a 4xx or 5xx status. Use `text()` when the body format is not known.
 
-#### Cancel an unread error body
+Use `try`/`catch` for a body read when the data can be invalid. Do not use `try`/`catch` for the request: `typedFetch` resolves with the failure.
 
-Every error body needs a read or a cancel. An unread body keeps the stream open, and the open stream pins the connection.
+### Cancel an unread error body
 
-Call `cancel()` when the body content is not necessary. This method releases the body without a read of the content.
+**Purpose** — release a body when the content is not necessary.
 
 ```typescript
 import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
@@ -344,29 +344,44 @@ if (isHttpError(error)) {
 }
 ```
 
-Without a `clone()`, `await cancel()` waits for the release of the body. The promise resolves after the release.
+Without a `clone()`, the promise from `cancel()` stays pending until the body is released. It resolves after the release.
 
-`cancel()` does not read the remaining bytes. Thus the runtime can close the connection instead of a return of the connection to the keep-alive pool.
-
-A body read has the opposite trade-off. `text()` downloads the remaining bytes, but it permits connection reuse.
-
-Read the body with `text()` when connection reuse is more important than the transfer. Cancel the body when the transfer is more important.
-
-`cancel()` resolves when the response has no body. It is also safe after a complete body read.
+`cancel()` resolves when the response has no body. It also resolves after a complete body read.
 
 `cancel()` resolves when other code already read the body. This occurs when a custom Fetch implementation gives you its own `Response`.
 
-`cancel()` rejects with `TypeError` when an external reader holds the stream and read nothing from it. Release that reader first.
+`cancel()` rejects with `TypeError` when an external reader holds the stream and read nothing from it. Release that reader first, then cancel through it.
 
-Bun reports a body as used as soon as `getReader()` locks it. On Bun this state is equal to a read body, and `cancel()` resolves.
+A repeated `cancel()` on the same error settles with the same outcome as the first call. It never reports success before the first call settles.
 
-After a `cancel()`, all body readers and `clone()` throw `TypeError`.
+NOTE: Bun reports a body as used as soon as `getReader()` locks the stream. Node, Deno, and workerd keep that state unused until the stream is disturbed. On Bun a bare reader lock is indistinguishable from a consumed body, so `cancel()` resolves instead of rejecting.
 
-##### Cancel a cloned body
+After a `cancel()`, the four body readers reject with `TypeError`. `clone()` is synchronous, and it throws `TypeError`.
+
+### Read one body two times
+
+> CAUTION: Call `clone()` before the first body read.
 
 `clone()` tees the body stream. The platform releases the source only after the release of every branch.
 
-Thus `cancel()` on one branch stays pending until the other branch is also read or cancelled. Release all branches:
+Thus `cancel()` on one branch stays pending until the other branch is also read or cancelled. Release every branch:
+
+```typescript
+import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
+
+const { error } = await typedFetch("/api/users/123");
+
+if (isHttpError(error)) {
+  const copy = error.clone();
+
+  const json = await error.json();
+  const text = await copy.text();
+
+  console.log(json, text);
+}
+```
+
+Cancel both branches when neither content is necessary:
 
 ```typescript
 import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
@@ -380,42 +395,38 @@ if (isHttpError(error)) {
 }
 ```
 
-`cancel()` on one branch never cancels the other branch. You made the copy in order to read it.
+`cancel()` on one branch never cancels the other branch. Each branch has its own owner, and each owner releases its own branch.
 
-A repeated `cancel()` on the same error settles together with the first call. It never reports success before the first call.
+This behavior is the native `ReadableStream` behavior. The library keeps it deliberately: an early resolution would report a release that did not happen.
 
-### Network errors, aborts, and timeouts
+## Network failure, abort, and timeout procedures
 
 Three error classes represent a failure before an HTTP response:
 
 | Class          | Cause                                              | Guard              |
 | -------------- | -------------------------------------------------- | ------------------ |
 | `NetworkError` | DNS failure, refused connection, or redirect error | `isNetworkError()` |
-| `AbortedError` | `AbortController.abort()` canceled the request     | `isAbortError()`   |
-| `TimeoutError` | `AbortSignal.timeout()` stopped the request        | `isTimeoutError()` |
+| `AbortedError` | `AbortController.abort()` aborted the request      | `isAbortError()`   |
+| `TimeoutError` | `AbortSignal.timeout()` aborted the request        | `isTimeoutError()` |
 
-Each class keeps the original Fetch error in `cause`. `AbortedError` and `TimeoutError` do not extend `NetworkError`.
+Each class keeps the original Fetch error in `cause`. `AbortedError` and `TimeoutError` do not extend `NetworkError`, so `isNetworkError()` is `false` for both.
 
-`NetworkError` also represents errors that occur before a network connection. Examples include an invalid URL, a forbidden method, and an invalid header name.
+Each of these errors also has a `url` value. Use this value to identify a failed request among concurrent requests.
 
-These permanent input errors have a `TypeError` in `cause`. Check `cause` before you retry a `NetworkError`.
+### Network failures
 
-The request signal controls abort classification. The name of the rejected error does not control the classification.
+`NetworkError` also represents an error that occurs before a network connection. Examples include an invalid URL, a forbidden method, and an invalid header name.
 
-The signal can be in `options.signal` or in a `Request` input. An options signal has priority over the signal in a `Request`.
-
-An explicit `signal: null` disconnects the signal in a `Request`. An absent or `undefined` signal does not disconnect it.
-
-The classification also covers a custom Fetch implementation. Some implementations reject with their own abort error instead of the signal reason.
-
-`typedFetch` returns `AbortedError` when the signal reports an abort and the rejected error has the name `"AbortError"`.
-
-An error with the name `"AbortError"` stays a `NetworkError` when no signal reports an abort.
-
-The signal reason still decides between an abort and a timeout. A timeout reason gives `TimeoutError`, also for an implementation that rejects with an abort error.
+These input errors are permanent. They have a `TypeError` in `cause`. Check `cause` before you retry a `NetworkError`. A retry loop that ignores `cause` repeats a permanent failure without end.
 
 ```typescript
-import { typedFetch, isNetworkError, isAbortError, isTimeoutError } from "@pbpeterson/typed-fetch";
+import {
+  typedFetch,
+  isNetworkError,
+  isAbortError,
+  isTimeoutError,
+  isHttpError,
+} from "@pbpeterson/typed-fetch";
 
 const { error } = await typedFetch("https://unreachable.example");
 
@@ -423,19 +434,38 @@ if (isNetworkError(error)) {
   console.log("Connection failed:", error.message);
   console.log(error.cause);
 } else if (isAbortError(error)) {
-  console.log("Request canceled");
+  console.log("Request aborted");
   console.log(error.reason);
 } else if (isTimeoutError(error)) {
   console.log("Request timed out");
+} else if (isHttpError(error)) {
+  await error.cancel();
 }
 ```
 
-#### `AbortedError` and the abort reason
+### Abort classification
+
+The request signal controls the abort classification. The name of the rejected error does not control it.
+
+The signal can be in `options.signal` or in a `Request` input. An options signal has priority over the signal in a `Request`.
+
+An explicit `signal: null` detaches the signal in a `Request`. An absent or `undefined` signal does not detach it.
+
+`typedFetch` resolves with an `AbortedError` when the signal reports an abort and one of these conditions is true:
+
+- The rejected value is the signal reason itself. This is the normal path on a spec-compliant runtime, and it holds for any reason value.
+- The rejected value is error-shaped and has the name `"AbortError"` or `"TimeoutError"`. This path covers a custom Fetch implementation that rejects with its own abort error instead of the signal reason.
+
+An aborted signal alone is not sufficient. `typedFetch` resolves with a `NetworkError` when the rejection is unrelated to the abort. A `CONNECT` method or an invalid header name throws a `TypeError` during `Request` construction while the signal already reports an abort.
+
+An error with the name `"AbortError"` stays a `NetworkError` when no signal reports an abort.
+
+### Abort a request and read the reason
 
 You can give a reason to `AbortController.abort()`.
 
 ```typescript
-import { typedFetch, isAbortError } from "@pbpeterson/typed-fetch";
+import { typedFetch, isAbortError, isHttpError } from "@pbpeterson/typed-fetch";
 
 type User = { id: number; name: string };
 
@@ -448,6 +478,8 @@ const { error } = await promise;
 
 if (isAbortError(error) && error.reason instanceof Error) {
   console.log(error.reason.message);
+} else if (isHttpError(error)) {
+  await error.cancel();
 }
 ```
 
@@ -455,12 +487,12 @@ if (isAbortError(error) && error.reason instanceof Error) {
 
 When you call `controller.abort()` without a reason, the platform supplies an `AbortError` `DOMException`.
 
-#### Timeouts
+### Timeouts
 
-Use the standard `AbortSignal.timeout()` API. `typedFetch` returns a `TimeoutError` for this signal.
+Use the standard `AbortSignal.timeout()` API. `typedFetch` resolves with a `TimeoutError` for this signal.
 
 ```typescript
-import { typedFetch, isTimeoutError } from "@pbpeterson/typed-fetch";
+import { typedFetch, isTimeoutError, isHttpError } from "@pbpeterson/typed-fetch";
 
 type User = { id: number; name: string };
 
@@ -470,39 +502,53 @@ const { error } = await typedFetch<User[]>("/api/users", {
 
 if (isTimeoutError(error)) {
   console.log("Request timed out after 5 seconds");
+} else if (isHttpError(error)) {
+  await error.cancel();
 }
 ```
 
-A timeout requires a `DOMException` with the name `"TimeoutError"`. This is the value that `AbortSignal.timeout()` supplies.
+A timeout requires a `DOMException` with the name `"TimeoutError"`. `AbortSignal.timeout()` supplies this value.
 
-A plain `Error` with the same name does not create a timeout. `typedFetch` returns `AbortedError` and keeps that value in `reason`.
+A plain `Error` with the same name does not create a timeout. `typedFetch` resolves with an `AbortedError` and keeps that value in `reason`.
 
-#### Manual cancellation with a deadline
+The library classifies the timeout from the signal reason first, and from the rejection second. Thus `typedFetch` still resolves with a `TimeoutError` for `AbortSignal.timeout()` under a custom Fetch implementation that rejects with its own abort error.
 
-Use `AbortSignal.any()` when the code needs a manual cancellation and a deadline together.
+### Manual abort with a deadline
+
+Use `AbortSignal.any()` when the code needs a manual abort and a deadline together.
 
 ```typescript
-import { typedFetch } from "@pbpeterson/typed-fetch";
+import { typedFetch, isAbortError, isTimeoutError, isHttpError } from "@pbpeterson/typed-fetch";
 
 const controller = new AbortController();
 
 const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]);
 
-const { error } = await typedFetch("/api/users", { signal });
+const promise = typedFetch("/api/users", { signal });
 
 controller.abort(new Error("route change"));
+
+const { error } = await promise;
+
+if (isAbortError(error)) {
+  console.log("Request aborted:", error.reason);
+} else if (isTimeoutError(error)) {
+  console.log("Request timed out");
+} else if (isHttpError(error)) {
+  await error.cancel();
+}
 ```
 
-The first signal that aborts decides the result. A manual abort gives `AbortedError`. The deadline gives `TimeoutError`.
+The first signal that aborts decides the result. A manual abort resolves with `AbortedError`. The deadline resolves with `TimeoutError`.
 
-`AbortSignal.any()` requires Node 20.3 or a later version. The package floor is Node 20, so this recipe is not available on Node 20.0 to 20.2.
+`AbortSignal.any()` requires Node 20.3 or a later version. The package floor is Node 20, so this procedure is not available on Node 20.0 to 20.2.
 
-On those versions, use only one signal. Give `AbortSignal.timeout()` for a deadline, or a controller signal for a manual cancellation.
+On those versions, use one signal. Give `AbortSignal.timeout()` for a deadline, or a controller signal for a manual abort.
 
-You can also do the combination manually. Make one controller and abort it from a timer and from your own code:
+You can also combine the two manually. Make one controller, and abort it from a timer and from your own code:
 
 ```typescript
-import { typedFetch } from "@pbpeterson/typed-fetch";
+import { typedFetch, isAbortError, isHttpError } from "@pbpeterson/typed-fetch";
 
 const controller = new AbortController();
 
@@ -511,16 +557,205 @@ const timer = setTimeout(() => controller.abort(new Error("deadline")), 5000);
 const { error } = await typedFetch("/api/users", { signal: controller.signal });
 
 clearTimeout(timer);
+
+if (isAbortError(error)) {
+  console.log("Request aborted:", error.reason);
+} else if (isHttpError(error)) {
+  await error.cancel();
+}
 ```
 
-This form gives `AbortedError` for both cases. Read `error.reason` to identify the deadline.
+This form resolves with `AbortedError` for both cases. Read `error.reason` to identify the deadline.
 
-Each pre-response error also has a `url` value. Use this value to identify failed concurrent requests.
+## API reference
+
+### `typedFetch<T>(url, options?)`
+
+`T` sets the TypeScript result of `response.json()`. It does not validate the response data.
+
+`url` accepts the same resource input as native `fetch`.
+
+`options` extends `RequestInit`. It gives autocomplete for common headers and methods, and it accepts every string that native Fetch accepts.
+
+The optional `fetch` property sets a custom Fetch implementation. Use it for tests, dependency injection, or a custom agent.
+
+When `options` has no custom `fetch` property, `typedFetch` gives the original object to native `fetch` without a change.
+
+When `options` has a custom `fetch` property, `typedFetch` removes that property before it calls the implementation. It keeps the prototype, the inherited properties, and the WebIDL getters, because `fetch` reads `RequestInit` as a WebIDL dictionary.
+
+A custom Fetch implementation is not trusted input. `typedFetch` inspects the resolved value inside the result envelope. When a read of `status` or `url` on that value throws, `typedFetch` resolves with a `NetworkError` that holds the original error in `cause`.
+
+NOTE: A resolved value that is not a `Response` but answers a `status` read does not become a `NetworkError`. `typedFetch` compares `status` to 400, so a value without a numeric `status` stays on the success branch.
+
+You can give a `Request` in the `url` position. `typedFetch` keeps its method, headers, signal, and Node.js body.
+
+Do not give a body-carrying `Request` in the `options` position. Browsers reject this form because WebIDL requires `duplex`.
+
+An augmented `Request` in the `options` position can carry a `fetch` property. The sanitized view keeps its WebIDL fields and hides the custom property.
+
+`typedFetch` resolves with this union:
+
+```typescript
+import type { TypedResponse, TypedFetchError } from "@pbpeterson/typed-fetch";
+
+type Result<T> = Promise<
+  { response: TypedResponse<T>; error: null } | { response: null; error: TypedFetchError }
+>;
+```
+
+The `error` value has the full `TypedFetchError` union. Use the type guards or `instanceof` to narrow it.
+
+### `isHttpError(error): error is BaseHttpError`
+
+This guard identifies all HTTP errors. It works across package copies and module formats.
+
+It also accepts a consumer subclass of `BaseHttpError`.
+
+### `isKnownHttpError(error): error is ClientErrors | ServerErrors`
+
+This guard identifies the dedicated HTTP error classes of the library. It excludes `UnknownHttpError` and a consumer subclass of `BaseHttpError`.
+
+The guard checks the status map of the current package version. An older package copy rejects a status that only a newer copy knows.
+
+Use this guard before a status switch that must narrow to one dedicated class.
+
+### `isNetworkError(error): error is NetworkError`
+
+This guard identifies a `NetworkError`. It does not identify an `AbortedError` or a `TimeoutError`.
+
+### `isAbortError(error): error is AbortedError`
+
+This guard identifies a request that an `AbortSignal` aborted.
+
+### `isTimeoutError(error): error is TimeoutError`
+
+This guard identifies a request that `AbortSignal.timeout()` aborted.
+
+### Exported types
+
+The package exports public types for a typed wrapper:
+
+```typescript
+import { typedFetch } from "@pbpeterson/typed-fetch";
+import type {
+  TypedResponse,
+  TypedFetchReturnType,
+  TypedFetchOptions,
+  HttpMethods,
+  ClientErrors,
+  ServerErrors,
+  TypedFetchError,
+} from "@pbpeterson/typed-fetch";
+
+async function api<T>(path: string, options?: TypedFetchOptions): Promise<TypedFetchReturnType<T>> {
+  return typedFetch<T>(`https://api.example.com${path}`, options);
+}
+```
+
+- `TypedResponse` gives typed `json()` and `clone()` methods.
+- `TypedFetchReturnType` is the result union from `typedFetch`.
+- `TypedFetchOptions` extends `RequestInit` and adds the Fetch override.
+- `HttpMethods` gives method suggestions. It omits `CONNECT` and `TRACE`, because the Fetch specification forbids them and native `fetch` throws a `TypeError` for them.
+- `ClientErrors` is the union of the dedicated 4xx errors.
+- `ServerErrors` is the union of the dedicated 5xx errors.
+- `TypedFetchError` is the union of all error types that `typedFetch` resolves with.
+
+`api<T>()` resolves with the whole result and transfers it to its caller. The caller then owns the error body, and the caller must read or cancel it.
+
+Import only the error classes from `@pbpeterson/typed-fetch/errors` when you do not need `typedFetch`.
+
+The `headers` and `method` types give autocomplete only. They do not validate a name or a value.
+
+For example, an invalid content type or a misspelled header name still type-checks. The union ends in an open string type, and native Fetch accepts the underlying string record.
+
+### Error class API
+
+All HTTP error classes extend `BaseHttpError`.
+
+A dedicated class uses literal types for `status` and `statusText`.
+
+Instance properties:
+
+- `status`: The HTTP status code.
+- `statusText`: The canonical protocol label from the library.
+- `url`: The response URL.
+- `headers`: The response headers.
+- `name`: The error class name.
+
+`statusText` does not copy the reason phrase from the server. The reason phrase, when the server sends one, occurs in `error.message`.
+
+Instance methods:
+
+- `json<T = unknown>()`: Read the body as JSON.
+- `text()`: Read the body as text.
+- `blob()`: Read the body as a `Blob`.
+- `arrayBuffer()`: Read the body as an `ArrayBuffer`.
+- `cancel(reason?)`: Release the body without a read. After a `clone()`, release every branch.
+- `clone(recreate?)`: Clone the error before the first body read.
+
+The four readers are asynchronous, so a missing body rejects. `clone()` is the deliberate exception: it is synchronous, and it throws.
+
+Do not call `clone()` after you read the body, after you cancel the body, or while a reader holds the stream. The method throws `TypeError`.
+
+A failed `clone()` releases the branch that it made. Thus a later `cancel()` on the original error still completes.
+
+Each dedicated class also has static `status` and `statusText` properties. For example, `NotFoundError.status` is `404`.
+
+#### Clone a consumer subclass
+
+A built-in error does not need a recreation callback. A consumer subclass can also call `clone()` without a callback.
+
+The no-callback form uses only the cloned `Response`. It cannot preserve other constructor state. A subclass constructor that takes more arguments receives `undefined` for them.
+
+Give a callback when a consumer subclass holds other state:
+
+```typescript
+import { BaseHttpError } from "@pbpeterson/typed-fetch";
+
+class TenantHttpError extends BaseHttpError {
+  override readonly name = "TenantHttpError" as const;
+  readonly status = 499 as const;
+  readonly statusText = "Tenant Error" as const;
+
+  constructor(
+    response: Response,
+    readonly tenant: string,
+  ) {
+    super(response);
+  }
+}
+
+const error = new TenantHttpError(new Response("{}", { status: 499 }), "acme");
+
+const copy = error.clone((response) => new TenantHttpError(response, error.tenant));
+
+console.log(copy.tenant); // "acme"
+
+await Promise.all([error.cancel(), copy.cancel()]);
+```
+
+The callback must give a new error. `clone()` throws `TypeError` when the callback gives the same error, because one instance cannot own two branches.
+
+`clone()` wraps a failure of the callback in a `TypeError`. The no-callback form rethrows a failure of the subclass constructor without a change.
+
+### `NetworkError`, `AbortedError`, and `TimeoutError`
+
+These classes represent a failure before an HTTP response. They do not extend `BaseHttpError`, and they have no body methods.
+
+All three classes have `message`, `cause`, and `url`. Thus code can read `error.url` from every member of `TypedFetchError`.
+
+`AbortedError` also has `reason`.
+
+The `url` value is an empty string when `typedFetch` cannot resolve the request URL.
+
+The `reason` value has type `unknown`. Check its type before use.
+
+The default `message` values are `"Network error"`, `"Request aborted"`, and `"Request timed out"`.
 
 ## Available error classes
 
 <details>
-<summary><strong>4xx client errors</strong> (29 classes)</summary>
+<summary><strong>4xx client errors</strong> (29 classes of 40)</summary>
 
 | Class                               | Status | Status text                     |
 | ----------------------------------- | ------ | ------------------------------- |
@@ -557,7 +792,7 @@ Each pre-response error also has a `url` value. Use this value to identify faile
 </details>
 
 <details>
-<summary><strong>5xx server errors</strong> (11 classes of 40 total)</summary>
+<summary><strong>5xx server errors</strong> (11 classes of 40)</summary>
 
 | Class                                | Status | Status text                     |
 | ------------------------------------ | ------ | ------------------------------- |
@@ -581,176 +816,40 @@ Each pre-response error also has a `url` value. Use this value to identify faile
 | ------------------ | ----------------------------------------------- |
 | `UnknownHttpError` | Status of 400 or more without a dedicated class |
 | `NetworkError`     | Network or request-construction failure         |
-| `AbortedError`     | Request canceled by `AbortController.abort()`   |
-| `TimeoutError`     | Request stopped by `AbortSignal.timeout()`      |
+| `AbortedError`     | Request aborted by `AbortController.abort()`    |
+| `TimeoutError`     | Request aborted by `AbortSignal.timeout()`      |
 | `BaseHttpError`    | Abstract base class for HTTP errors             |
 
-## API reference
+## Limitations and non-goals
 
-### `typedFetch<T>(url, options?)`
+### Limitations
 
-`T` sets the TypeScript result of `response.json()`. It does not validate the response data.
+- `instanceof` is reliable only inside one package copy. Use the type guards across a package or format boundary. The library does not solve `instanceof` for a specific subclass across copies.
+- The brand is not a security control. A forged brand passes a guard.
+- `error.json<T>()` and `response.json<T>()` are unchecked compile-time casts. They perform no runtime validation.
+- The `headers` and `method` types give autocomplete only. They validate no name and no value.
+- A status of `0` stays on the success branch. Check `response.ok` or `response.type` for an opaque response.
+- `AbortSignal.any()` requires Node 20.3 or a later version.
+- Body semantics follow the runtime. On Bun a bare reader lock reports the body as used, so `cancel()` resolves instead of rejecting.
 
-`url` accepts the same resource input as native `fetch`.
-
-`options` extends `RequestInit`. It gives autocomplete for common headers and methods, but it accepts all strings that native Fetch accepts.
-
-The optional `fetch` property sets a custom Fetch implementation. Use it for tests, dependency injection, or custom agents.
-
-When `options` has no custom `fetch` property, `typedFetch` gives the original object to native `fetch` without changes.
-
-`typedFetch` removes the custom property before it calls the Fetch implementation. It keeps inherited properties and WebIDL getters.
-
-`typedFetch` also protects the response inspection. A custom implementation that resolves a value that is not a `Response` gives a `NetworkError` with the original `TypeError` in `cause`.
-
-You can give a `Request` in the `url` position. `typedFetch` keeps its method, headers, signal, and Node.js body.
-
-Do not give a body-carrying `Request` in the `options` position. Browsers reject this form because WebIDL requires `duplex`.
-
-An augmented `Request` in the `options` position can contain a `fetch` property. The sanitized view keeps its WebIDL fields and hides the custom property.
-
-The function returns this union:
-
-```typescript no-check
-Promise<{ response: TypedResponse<T>; error: null } | { response: null; error: TypedFetchError }>;
-```
-
-The `error` value has the full `TypedFetchError` union. Use the type guards or `instanceof` to narrow it.
-
-### `isHttpError(error): error is BaseHttpError`
-
-This guard identifies all HTTP errors. It works across package copies and module formats.
-
-### `isKnownHttpError(error): error is ClientErrors | ServerErrors`
-
-This guard identifies dedicated library HTTP errors. It excludes `UnknownHttpError` and consumer subclasses of `BaseHttpError`.
-
-The guard checks the status map of the current package version. An older package copy rejects a status that only a newer copy knows.
-
-Use this guard before a status switch that must narrow to one dedicated class.
-
-### `isNetworkError(error): error is NetworkError`
-
-This guard identifies a `NetworkError`. It does not identify `AbortedError` or `TimeoutError`.
-
-### `isAbortError(error): error is AbortedError`
-
-This guard identifies a request that an abort signal canceled.
-
-### `isTimeoutError(error): error is TimeoutError`
-
-This guard identifies a request that `AbortSignal.timeout()` stopped.
-
-### Exported types
-
-The package exports public types for typed wrappers:
-
-```typescript
-import { typedFetch } from "@pbpeterson/typed-fetch";
-import type {
-  TypedResponse,
-  TypedFetchReturnType,
-  TypedFetchOptions,
-  HttpMethods,
-  ClientErrors,
-  ServerErrors,
-  TypedFetchError,
-} from "@pbpeterson/typed-fetch";
-
-async function api<T>(path: string, options?: TypedFetchOptions): Promise<TypedFetchReturnType<T>> {
-  return typedFetch<T>(`https://api.example.com${path}`, options);
-}
-```
-
-- `TypedResponse` gives typed `json()` and `clone()` methods.
-- `TypedFetchReturnType` is the result union from `typedFetch`.
-- `TypedFetchOptions` extends `RequestInit` and adds the Fetch override.
-- `HttpMethods` gives method suggestions. It omits `CONNECT` and `TRACE`.
-- `ClientErrors` is the union of dedicated 4xx errors.
-- `ServerErrors` is the union of dedicated 5xx errors.
-- `TypedFetchError` is the union of all returned error types.
-
-Import only the error classes from `@pbpeterson/typed-fetch/errors` when you do not need `typedFetch`.
-
-The `headers` and `method` types give autocomplete only. They do not validate a name or a value.
-
-For example, an invalid content type or a misspelled header name can type-check. Native Fetch accepts the underlying string record.
-
-### Error class API
-
-All HTTP error classes extend `BaseHttpError`.
-
-Dedicated classes use literal types for `status` and `statusText`.
-
-Instance properties:
-
-- `status`: The HTTP status code.
-- `statusText`: The canonical protocol label from the library.
-- `url`: The response URL.
-- `headers`: The response headers.
-- `name`: The error class name.
-
-`statusText` does not copy the wire reason phrase from the server. The wire phrase can occur in `error.message`.
-
-Instance methods:
-
-- `json<T = unknown>()`: Read the body as JSON.
-- `text()`: Read the body as text.
-- `blob()`: Read the body as a `Blob`.
-- `arrayBuffer()`: Read the body as an `ArrayBuffer`.
-- `cancel(reason?)`: Release the body without a read. After a `clone()`, release every branch.
-- `clone(recreate?)`: Clone the error before a body read.
-
-Do not call `clone()` after you read the body, cancel the body, or lock its stream. The method throws `TypeError`.
-
-A failed `clone()` releases the branch it made. Thus a later `cancel()` on the original still completes.
-
-The recreation callback must give a new error. `clone()` throws `TypeError` when the callback gives the same error.
-
-Built-in errors do not need a recreation callback. A consumer subclass can also call `clone()` without a callback.
-
-The no-callback form uses only the cloned `Response`. It cannot preserve other constructor or private state.
-
-Give a callback when a consumer subclass has other state:
-
-```typescript no-check
-const copy = error.clone((response) => new CustomHttpError(response, error.context));
-```
-
-Each dedicated class also has static `status` and `statusText` properties.
-
-### `NetworkError`, `AbortedError`, and `TimeoutError`
-
-These classes represent failures that occur before an HTTP response. They do not extend `BaseHttpError` and do not have body methods.
-
-All three classes have `cause` and `url`. Thus, code can read `error.url` from every member of `TypedFetchError`.
-
-The `url` value is an empty string when `typedFetch` cannot get the request URL.
-
-- `NetworkError` has `message`, `cause`, and `url`.
-- `TimeoutError` has `cause` and `url`.
-- `AbortedError` has `cause`, `reason`, and `url`.
-
-The `reason` value has type `unknown`. Check its type before use.
-
-## Non-goals
+### Non-goals
 
 This library does not include these features:
 
-- Retries. Put retry policy in a separate layer.
+- Retries. Put the retry policy in a separate layer.
 - Interceptors, hooks, or middleware. Wrap `typedFetch` in your code.
 - Base URL or instance configuration. Write a small wrapper function.
 - A query-string builder. Use `URL` and `URLSearchParams`.
 - Request-body serialization. Give `body` and `headers` as native Fetch inputs.
 - Response caching. Use a cache layer.
-- Necessary runtime validation. The package can add an optional Standard Schema hook in a later release.
-- A `rawStatusText` field. Read the wire phrase from `error.message`.
-- Eager body buffering. Body readers keep native streaming behavior.
+- Required runtime validation. The package can add an optional Standard Schema hook in a later release.
+- A `rawStatusText` field. Read the reason phrase from `error.message`.
+- Eager body buffering. Body readers keep the native streaming behavior.
 
 ## Semantic version contract
 
-1. A new dedicated class in `ClientErrors` or `ServerErrors` requires a major release. It replaces `UnknownHttpError` and widens the error union.
-2. Human-readable `error.message` text is diagnostic and can change in any release.
+1. A new dedicated class in `ClientErrors` or `ServerErrors` requires a major release. It replaces `UnknownHttpError` for that status and widens the error union.
+2. The human-readable `error.message` text is diagnostic. It can change in any release.
 3. The canonical `statusText` value is public API. A change to it requires a major release.
 4. Status 418 keeps `"I'm a teapot"`. Status 510 keeps `"Not Extended"`.
 5. A removed or renamed export requires a major release.
@@ -758,16 +857,14 @@ This library does not include these features:
 7. A matching `vX.Y.Z` Git tag must start each npm release.
 8. Node.js 20 is the minimum version. A higher minimum requires a major release.
 
-Keep a `default` branch in a known-status switch. This helps code that uses different package versions.
+Keep a `default` branch in a known-status switch. A newer package version can move a status from `UnknownHttpError` to a dedicated class, and the `default` branch keeps that code correct.
 
 Read [`RELEASING.md`](./RELEASING.md) for the release procedure.
 
-## Contribution
+## Contribution and license
 
 Read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before you make a pull request.
 
-That document gives setup instructions, necessary checks, and the procedure to add an HTTP status class.
+That document gives the setup instructions, the required checks, and the procedure to add an HTTP status class.
 
-## License
-
-MIT
+The license is MIT. Read [`LICENSE`](./LICENSE).
