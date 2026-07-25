@@ -16,66 +16,72 @@ type ContentType =
 
 type Canonical<T extends string> = T | Lowercase<T>;
 
-type CacheControlDirective =
+/**
+ * The `Cache-Control` directives a request can carry (RFC 9111, section
+ * 5.2.1).
+ *
+ * `public`, `private`, and `must-revalidate` are response directives (RFC 9111,
+ * section 5.2.2). No specification defines a response directive on a request,
+ * so this union omits them.
+ */
+type CacheControlRequestDirective =
   | "no-cache"
   | "no-store"
-  | "max-age=0"
-  | "public"
-  | "private"
-  | "must-revalidate";
+  | "no-transform"
+  | "only-if-cached"
+  | "max-age=0";
 
-/** HTTP headers with IntelliSense for common header names and typed values. */
+/**
+ * The header names this type suggests on a request, and a value union for each
+ * name that has a small set of meaningful values.
+ *
+ * Every name here is a name a client sends. A response-only name is absent. A
+ * server sends `Set-Cookie`, `ETag`, `Last-Modified`, `Location`,
+ * `WWW-Authenticate`, `Content-Security-Policy`, `Access-Control-Allow-*`,
+ * `X-Frame-Options`, `X-Content-Type-Options`, and `Strict-Transport-Security`.
+ * No specification defines any of them on a request, so this type must not
+ * suggest one.
+ *
+ * Three request-side names are also absent, because the platform owns them:
+ *
+ * - `Content-Length`. `fetch` computes the value from the body. On Node a
+ *   value that does not match the body makes the request throw
+ *   (`Request body length does not match content-length header`).
+ * - `Host`. Undici replaces the value with the real authority of the URL.
+ * - `Connection`. The Fetch Standard forbids it, and the connection pool owns
+ *   the lifetime it describes.
+ *
+ * NOTE: The Fetch Standard calls `Accept-Encoding`, `Cookie`, `Origin`, and
+ * `Referer` a forbidden request-header name. A browser drops the value the
+ * caller sets and supplies its own. Node sends the value as written. These
+ * four names stay listed because the no-DOM profile is this library's primary
+ * target.
+ *
+ * The value unions suggest a value. They validate no value. {@link Named}
+ * adds an open `(string & {})` arm to every name, so any string type-checks
+ * (README, "Limitations").
+ *
+ * The `[key: string]` index signature keeps a custom name assignable.
+ * {@link Named} drops it, and {@link TypedHeaders} restores custom names
+ * through a `Record<string, string>` intersection that rejects `undefined`.
+ */
 export type StrictHeaders = {
   "Content-Type"?: ContentType;
   Authorization?: `${string} ${string}`;
   Accept?: ContentType | "*/*";
   "Accept-Encoding"?: "gzip" | "deflate" | "br" | "identity" | "*" | (string & {});
   "Accept-Language"?: "en" | "en-US" | "en-GB" | "fr" | "de" | "es" | "*" | (string & {});
-  "Cache-Control"?:
-    | CacheControlDirective
-    | `${CacheControlDirective}, ${CacheControlDirective}`
-    | (string & {});
-  Connection?: "keep-alive" | "close" | "upgrade";
+  "Cache-Control"?: CacheControlRequestDirective | (string & {});
   "Content-Encoding"?: "gzip" | "deflate" | "br" | "identity";
-  "Content-Length"?: `${number}` | (string & {});
   Cookie?: string;
-  "Set-Cookie"?: string;
-  ETag?: `"${string}"` | `W/"${string}"` | (string & {});
-  Host?: string;
+  "If-Match"?: `"${string}"` | `W/"${string}"` | "*" | (string & {});
   "If-Modified-Since"?: string;
   "If-None-Match"?: `"${string}"` | `W/"${string}"` | "*" | (string & {});
-  "Last-Modified"?: string;
-  Location?: string;
   Origin?: string;
   Range?: `bytes=${string}` | (string & {});
   Referer?: string;
   "User-Agent"?: string;
-  "WWW-Authenticate"?: `Bearer realm="${string}"` | `Basic realm="${string}"` | (string & {});
   "X-Requested-With"?: "XMLHttpRequest";
-  "Access-Control-Allow-Origin"?: "*" | (string & {});
-  "Access-Control-Allow-Methods"?:
-    | "GET"
-    | "POST"
-    | "PUT"
-    | "DELETE"
-    | "OPTIONS"
-    | "PATCH"
-    | "HEAD"
-    | (string & {});
-  "Access-Control-Allow-Headers"?:
-    | "Content-Type"
-    | "Authorization"
-    | "X-Requested-With"
-    | "*"
-    | (string & {});
-  "Access-Control-Allow-Credentials"?: "true" | "false";
-  "Content-Security-Policy"?: string;
-  "X-Frame-Options"?: "DENY" | "SAMEORIGIN" | `ALLOW-FROM ${string}`;
-  "X-Content-Type-Options"?: "nosniff";
-  "Strict-Transport-Security"?:
-    | `max-age=${number}`
-    | `max-age=${number}; includeSubDomains`
-    | (string & {});
   [key: string]: string | undefined;
 };
 

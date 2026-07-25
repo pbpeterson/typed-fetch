@@ -215,9 +215,113 @@ describe("type-level", () => {
 
   test("headers validate no value — autocomplete only", () => {
     expectTypeOf<{ Authorization: "nospaces" }>().toExtend<TypedHeaders>();
-    expectTypeOf<{ "X-Content-Type-Options": "banana" }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "X-Requested-With": "banana" }>().toExtend<TypedHeaders>();
     expectTypeOf<{ "Content-Type": string }>().toExtend<TypedHeaders>();
     expectTypeOf<{ Authorization: "nospaces" }>().toExtend<HeaderInput>();
+  });
+
+  // ── declared header names: request-side only ───────────────────────
+  // The declared names are the autocomplete list for a REQUEST, so the list
+  // must hold no response-only name. `TypedHeaders` accepts any string under
+  // any name, so a name dropped from the list stays assignable and the change
+  // is not visible there. `DeclaredHeaderNames` recovers the DECLARED names by
+  // dropping `StrictHeaders`'s index signature, the same way `Named` does
+  // inside src/headers.ts. That is the surface the tests below pin.
+  type DeclaredHeaderNames = keyof {
+    [K in keyof StrictHeaders as string extends K ? never : K]: unknown;
+  };
+
+  test("the declared names cover every request-side name they should", () => {
+    expectTypeOf<"Content-Type">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Authorization">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Accept">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Accept-Encoding">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Accept-Language">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Cache-Control">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Content-Encoding">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Cookie">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"If-Match">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"If-Modified-Since">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"If-None-Match">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Origin">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Range">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Referer">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"User-Agent">().toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"X-Requested-With">().toExtend<DeclaredHeaderNames>();
+  });
+
+  test("the declared names hold no response-only name", () => {
+    expectTypeOf<"Set-Cookie">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"ETag">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Last-Modified">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Location">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"WWW-Authenticate">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Content-Security-Policy">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Access-Control-Allow-Origin">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Access-Control-Allow-Methods">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Access-Control-Allow-Headers">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Access-Control-Allow-Credentials">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"X-Frame-Options">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"X-Content-Type-Options">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Strict-Transport-Security">().not.toExtend<DeclaredHeaderNames>();
+  });
+
+  test("the declared names hold no name the platform owns", () => {
+    // `fetch` computes Content-Length from the body. On Node a value that
+    // does not match the body makes the request throw. Undici replaces Host
+    // with the URL's authority. The Fetch Standard forbids Connection, and
+    // the connection pool owns the lifetime it describes.
+    expectTypeOf<"Content-Length">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Host">().not.toExtend<DeclaredHeaderNames>();
+    expectTypeOf<"Connection">().not.toExtend<DeclaredHeaderNames>();
+  });
+
+  test("an undeclared header name still accepts a string value", () => {
+    // Dropping a name drops a SUGGESTION, not a capability. The name still
+    // reaches `fetch` through TypedHeaders's `Record<string, string>` arm,
+    // so code written against the previous name list keeps compiling.
+    expectTypeOf<{ "X-Frame-Options": "DENY" }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "Set-Cookie": string }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ ETag: '"abc"' }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "Content-Length": "12" }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ Host: string }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "Access-Control-Allow-Origin": "*" }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "x-frame-options": "DENY" }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "X-Frame-Options": "DENY" }>().toExtend<HeaderInput>();
+    expectTypeOf<{ "Set-Cookie": string }>().toExtend<HeaderInput>();
+  });
+
+  test("an undeclared header name still rejects undefined", () => {
+    expectTypeOf<{ "X-Frame-Options": undefined }>().not.toExtend<TypedHeaders>();
+    expectTypeOf<{ ETag: string | undefined }>().not.toExtend<TypedHeaders>();
+    expectTypeOf<{ "X-Frame-Options": undefined }>().not.toExtend<HeaderInput>();
+  });
+
+  test("If-Match accepts an entity tag, a weak tag, a wildcard, and any string", () => {
+    expectTypeOf<{ "If-Match": '"v1"' }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "If-Match": 'W/"v1"' }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "If-Match": "*" }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "if-match": '"v1"' }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "If-Match": "anything" }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "If-Match": '"v1"' }>().toExtend<HeaderInput>();
+    expectTypeOf<{ "If-Match": undefined }>().not.toExtend<TypedHeaders>();
+  });
+
+  test("Cache-Control suggests request directives, not response directives", () => {
+    // RFC 9111 section 5.2.1 lists the request directives. `public`,
+    // `private`, and `must-revalidate` are response directives (section
+    // 5.2.2). The union stays open, so a response directive still compiles;
+    // this assertion pins what the type SUGGESTS, not what it accepts.
+    expectTypeOf<StrictHeaders["Cache-Control"]>().toEqualTypeOf<
+      | "no-cache"
+      | "no-store"
+      | "no-transform"
+      | "only-if-cached"
+      | "max-age=0"
+      | (string & {})
+      | undefined
+    >();
+    expectTypeOf<{ "Cache-Control": "public" }>().toExtend<TypedHeaders>();
   });
 
   test("json<T>() returns Promise<T>", () => {
