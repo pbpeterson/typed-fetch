@@ -42,6 +42,7 @@ This document uses these terms with these meanings.
 | cancel the error body | `error.cancel()` releases the body of an HTTP error.                                              |
 | read the error body   | `json()`, `text()`, `blob()`, or `arrayBuffer()` consumes the body.                               |
 | reason phrase         | The status text that the server sends on the wire. It can differ from the library's `statusText`. |
+| error record          | The plain object that `error.toJSON()` returns and `JSON.stringify(error)` writes.                |
 
 ### Capabilities
 
@@ -434,7 +435,11 @@ Each of these errors also has a `url` value. Use this value to identify a failed
 
 `NetworkError` also represents an error that occurs before a network connection. Examples include an invalid URL, a forbidden method, and an invalid header name.
 
-These input errors are permanent. They have a `TypeError` in `cause`. Check `cause` before you retry a `NetworkError`. A retry loop that ignores `cause` repeats a permanent failure without end.
+These input errors are permanent. A DNS failure, a refused connection, and a reset connection are transient. `NetworkError` covers both kinds, and it does not tell you which one you hold.
+
+No portable test separates them. `error.cause` holds the rejection that `fetch` produced, and that rejection is a `TypeError` for every kind of failure, so a `cause instanceof TypeError` check answers `true` in all of them. The platforms diverge further: on Deno every failure in this section arrives as a bare `TypeError` that carries no `cause` and no error code.
+
+Put the retry policy in a layer that knows the request. That layer knows whether the URL is a constant of the program or a value that a user supplied, which is the fact that decides a retry.
 
 ```typescript
 import {
@@ -592,7 +597,7 @@ This form resolves with `AbortedError` for both cases. Read `error.reason` to id
 
 `url` accepts the same resource input as native `fetch`.
 
-`options` extends `RequestInit`. It gives autocomplete for common headers and methods, and it accepts every string that native Fetch accepts.
+`options` extends `RequestInit`. It gives autocomplete for common request headers and methods, and it accepts every string that native Fetch accepts.
 
 The optional `fetch` property sets a custom Fetch implementation. Use it for tests, dependency injection, or a custom agent.
 
@@ -696,10 +701,12 @@ Instance properties:
 - `status`: The HTTP status code.
 - `statusText`: The canonical protocol label from the library.
 - `url`: The response URL.
-- `headers`: The response headers.
+- `headers`: A copy of the response headers.
 - `name`: The error class name.
 
 `statusText` does not copy the reason phrase from the server. The reason phrase, when the server sends one, occurs in `error.message`.
+
+`headers` is a copy, not the `Headers` object of the response. A write through `error.headers` never reaches the response. The copy keeps every header, including a repeated `set-cookie`.
 
 Instance methods:
 
@@ -709,6 +716,7 @@ Instance methods:
 - `arrayBuffer()`: Read the body as an `ArrayBuffer`.
 - `cancel(reason?)`: Release the body without a read. After a `clone()`, release every branch.
 - `clone(recreate?)`: Clone the error before the first body read.
+- `toJSON()`: The record that `JSON.stringify(error)` produces.
 
 The four readers are asynchronous, so a missing body rejects. `clone()` is the deliberate exception: it is synchronous, and it throws.
 
@@ -717,6 +725,30 @@ Do not call `clone()` after you read the body, after you cancel the body, or whi
 A failed `clone()` releases the branch that it made. Thus a later `cancel()` on the original error still completes.
 
 Each dedicated class also has static `status` and `statusText` properties. For example, `NotFoundError.status` is `404`.
+
+#### Serialize an error
+
+An `Error` keeps `message` and `stack` as non-enumerable properties. A structured logger that serializes one therefore records everything except the message line. `toJSON()` supplies the record instead, so `JSON.stringify(error)` is complete.
+
+The record of an HTTP error is `{ name, message, status, statusText, url, headers }`:
+
+```typescript
+import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
+
+const { error } = await typedFetch("https://example.test/users/1");
+
+if (isHttpError(error)) {
+  console.log(JSON.stringify(error));
+  // {"name":"NotFoundError","message":"HTTP 404 Not Found (https://example.test/users/1)",
+  //  "status":404,"statusText":"Not Found","url":"https://example.test/users/1",
+  //  "headers":[["content-type","application/json"]]}
+  await error.cancel();
+}
+```
+
+`headers` is a list of `[name, value]` pairs, not an object. A response can carry more than one `set-cookie` header, and an object keeps only the last one. The pair list is also a valid `HeadersInit`, so `new Headers(record.headers)` rebuilds the same headers.
+
+The body and the stack are absent on purpose. The body is a single-use stream, and a read of it is asynchronous. The stack can carry local file paths of the process. Read `error.stack` when you want it.
 
 #### Clone a consumer subclass
 
@@ -768,6 +800,12 @@ The `url` value is an empty string when `typedFetch` cannot resolve the request 
 The `reason` value has type `unknown`. Check its type before use.
 
 The default `message` values are `"Network error"`, `"Request aborted"`, and `"Request timed out"`.
+
+All three classes define `toJSON()`. The record is `{ name, message, url }`.
+
+`cause` and `reason` are absent from the record on purpose. The cause holds the platform error that failed the request, and its chain carries transport detail, such as local and remote addresses and ports. The reason is the value that the caller passed to `controller.abort(reason)`, and it can be any value. Read either one from the error when you want it.
+
+`cause` and `reason` are not enumerable, which matches `new Error(message, { cause })`. They do not occur in `JSON.stringify(error)`, in `{ ...error }`, or in `Object.keys(error)`. Reading `error.cause`, `error.reason`, and `"cause" in error` is unchanged, and both properties stay writable.
 
 ## Available error classes
 
