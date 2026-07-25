@@ -15,13 +15,18 @@ SemVer governs regardless of how small the diff is.
   that names the failure — and `headers` serialized as `{}`, which reads as "no
   headers were sent". HTTP errors emit
   `{ name, message, status, statusText, url, headers }`; `NetworkError`,
-  `AbortedError`, and `TimeoutError` emit `{ name, message, url }`. `headers` is
-  a list of `[name, value]` pairs rather than an object, because
-  `Object.fromEntries` keeps only the last of a repeated `set-cookie`; the pair
-  list is lossless and is a valid `HeadersInit`. The body and the stack are
-  absent on purpose — the body is a single-use asynchronous stream, and the
-  stack carries local file paths. This also fixes a case where
-  `JSON.stringify(error)` threw: an abort reason holding a cycle.
+  `AbortedError`, and `TimeoutError` emit `{ name, message, url }`. `headers`
+  holds header NAMES, never values: a response carries the session in
+  `set-cookie` and arbitrary secrets in custom headers, and a logger calls
+  `toJSON()` on whatever it is handed, so the record must not carry a value that
+  nobody judged. A deny list does not solve this, because the dangerous name is
+  the one this library has never heard of. A repeated header appears once per
+  arrival, and `error.headers` still holds every value. The body and the stack
+  are absent for a neighboring reason — the body is a single-use asynchronous
+  stream, and the stack carries local file paths. This also fixes a case where
+  `JSON.stringify(error)` threw: an abort reason holding a cycle. A consumer
+  subclass inherits `toJSON()`, so a field it adds needs an override to reach
+  `JSON.stringify`.
 - `"./package.json"` in the `exports` map. Tooling that reads a dependency's
   manifest through the resolver received `ERR_PACKAGE_PATH_NOT_EXPORTED`.
 - `errors/package.json`, a redirect stub for resolvers that ignore `exports`

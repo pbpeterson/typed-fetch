@@ -741,14 +741,18 @@ if (isHttpError(error)) {
   console.log(JSON.stringify(error));
   // {"name":"NotFoundError","message":"HTTP 404 Not Found (https://example.test/users/1)",
   //  "status":404,"statusText":"Not Found","url":"https://example.test/users/1",
-  //  "headers":[["content-type","application/json"]]}
+  //  "headers":["content-type"]}
   await error.cancel();
 }
 ```
 
-`headers` is a list of `[name, value]` pairs, not an object. A response can carry more than one `set-cookie` header, and an object keeps only the last one. The pair list is also a valid `HeadersInit`, so `new Headers(record.headers)` rebuilds the same headers.
+`headers` holds header names, never values. A response carries values a log must not keep: `set-cookie` holds the session, and a custom header holds whatever the server chose to put there. A logger calls `toJSON()` on whatever it is handed, so the record cannot carry a value that nobody judged. A deny list does not solve this, because the dangerous name is the one this library has never heard of.
 
-The body and the stack are absent on purpose. The body is a single-use stream, and a read of it is asynchronous. The stack can carry local file paths of the process. Read `error.stack` when you want it.
+A repeated header appears once per arrival, so `["set-cookie", "set-cookie"]` tells you the server sent two. Read `error.headers` for the values.
+
+The body and the stack are absent for a neighboring reason. The body is a single-use stream, and a read of it is asynchronous. The stack can carry local file paths of the process. Read either one deliberately when you want it.
+
+A consumer subclass inherits `toJSON()`, so a field the subclass adds does not reach `JSON.stringify(error)`. Override `toJSON()` in the subclass to add it.
 
 #### Clone a consumer subclass
 

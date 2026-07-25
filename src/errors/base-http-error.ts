@@ -103,15 +103,21 @@ export abstract class BaseHttpError extends Error {
    * a structured logger that serializes one records everything EXCEPT the line
    * a reader looks for first. This method supplies the record instead.
    *
-   * `headers` is a list of `[name, value]` pairs, not an object. A response can
-   * carry more than one `set-cookie` header, and an object keeps only the last
-   * one. The list is also a valid `HeadersInit`, so `new Headers(pairs)`
-   * rebuilds the same headers.
+   * `headers` holds header NAMES, never values. A response carries the values a
+   * log must not keep: `set-cookie` holds the session, and a custom header
+   * holds whatever the server chose to put there. This method exists to be
+   * called by a logger that serializes whatever it is handed, so it cannot emit
+   * a value it has not judged. A deny list does not work here, because the
+   * dangerous name is the one this library has never heard of. Read
+   * `error.headers` for the values.
    *
-   * Two members are absent on purpose. The body is a single-use stream and
-   * reading it is asynchronous — read it, or cancel it, separately. The stack
-   * can carry local file paths of the process that produced it, so log
-   * `error.stack` deliberately when you want it.
+   * Three members are absent for the same reason or a neighboring one. The body
+   * is a single-use stream and reading it is asynchronous — read it, or cancel
+   * it, separately. The stack can carry local file paths of the process that
+   * produced it. Log either one deliberately when you want it.
+   *
+   * A consumer subclass inherits this method, so a field the subclass adds does
+   * not reach `JSON.stringify`. Override `toJSON` to add it.
    *
    * @example
    * ```ts
@@ -123,7 +129,7 @@ export abstract class BaseHttpError extends Error {
    *   console.log(JSON.stringify(error));
    *   // {"name":"NotFoundError","message":"HTTP 404 Not Found (https://example.test/users/1)",
    *   //  "status":404,"statusText":"Not Found","url":"https://example.test/users/1",
-   *   //  "headers":[["content-type","application/json"]]}
+   *   //  "headers":["content-type"]}
    *   await error.cancel();
    * }
    * ```
@@ -134,7 +140,7 @@ export abstract class BaseHttpError extends Error {
     status: number;
     statusText: string;
     url: string;
-    headers: [string, string][];
+    headers: string[];
   } {
     return {
       name: this.name,
@@ -142,9 +148,9 @@ export abstract class BaseHttpError extends Error {
       status: this.status,
       statusText: this.statusText,
       url: this.url,
-      // Iterating a `Headers` yields one entry per `set-cookie`, so the pair
-      // list keeps every one of them.
-      headers: [...this.headers],
+      // Iterating a `Headers` yields one name per `set-cookie`, so a repeated
+      // header still shows how many times the server sent it.
+      headers: [...this.headers.keys()],
     };
   }
 

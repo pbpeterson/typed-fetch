@@ -83,33 +83,40 @@ describe("BaseHttpError.toJSON() — the record JSON.stringify produces", () => 
       status: 404,
       statusText: "Not Found",
       url: "",
-      headers: [["content-type", "text/plain"]],
+      headers: ["content-type"],
     });
 
     await error.cancel();
   });
 
-  test("headers are pairs, so a repeated set-cookie survives", () => {
+  test("the record names the headers and keeps none of their values", () => {
     const error = new NotFoundError(
       new Response(null, {
         status: 404,
         headers: [
-          ["set-cookie", "a=1"],
-          ["set-cookie", "b=2"],
+          ["set-cookie", "session=SECRET"],
+          ["set-cookie", "csrf=ALSO_SECRET"],
+          ["x-internal-token", "sk_live_SECRET"],
+          ["content-type", "application/json"],
         ],
       }),
     );
 
     const { headers } = error.toJSON();
 
-    expect(headers).toEqual([
-      ["set-cookie", "a=1"],
-      ["set-cookie", "b=2"],
-    ]);
-    // The shape this rejects: an object keeps only the last cookie.
-    expect(Object.fromEntries(headers)).toEqual({ "set-cookie": "b=2" });
-    // The pair list is a HeadersInit, so the record rebuilds the original.
-    expect(new Headers(headers).getSetCookie()).toEqual(["a=1", "b=2"]);
+    // One name per header the server sent, so a repeated `set-cookie` still
+    // shows how many times it arrived.
+    expect(headers).toEqual(["content-type", "set-cookie", "set-cookie", "x-internal-token"]);
+
+    // The regression this pins: a logger calls toJSON on whatever it is handed,
+    // so a value in the record reaches the log without anyone judging it. A
+    // deny list would not have caught `x-internal-token`.
+    const record = JSON.stringify(error);
+    expect(record).not.toContain("SECRET");
+    expect(record).not.toContain("sk_live");
+
+    // The values are still on the error for a caller who asks for them.
+    expect(error.headers.getSetCookie()).toEqual(["session=SECRET", "csrf=ALSO_SECRET"]);
   });
 
   test("neither the stack nor the body reaches the record", async () => {
