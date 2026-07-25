@@ -186,6 +186,58 @@ the library brands its root error kinds and tells consumers to prefer
 `isHttpError(...)` (and the other `is*` guards) over `instanceof`. Those guards
 _are_ asserted to work across entries and formats.
 
+### How a release gate is shaped
+
+Every gate under `scripts/` is **one file** with three parts and exactly one
+seam:
+
+```
+        ┌── adapter ──┐   ┌─ pure decision ─┐   ┌── thin main ──┐
+ world →│ gather facts│ → │ facts → verdict │ → │ render + exit │→ world
+        └─────────────┘   └─────────────────┘   └───────────────┘
+                        ↑ THE SEAM ↑
+                    the spec attaches here
+```
+
+- **The pure decision** is `export`ed and takes plain data — arrays, strings,
+  records — that a test can write down as a literal. No `node:fs`, no
+  `node:child_process`, no `process.*`, no `console.*`. This is what
+  `scripts/<gate>.spec.mjs` calls. Exporting is safe: `files: ["dist"]` means
+  `scripts/` never ships, and `verify-pack` asserts exactly that.
+- **The adapter** does all the I/O and **may not contain a branch that decides
+  pass/fail.** Branching on "the subprocess crashed" is an I/O outcome and is
+  fine; branching on "the manifest is wrong" is policy and belongs across the
+  seam. If this line drifts, the spec starts asserting a mock while the real
+  gate goes untested — the worst outcome available, because the suite is green.
+- **The thin main** owns every `console.log`, every exit code, and is fenced
+  behind an `isMain` guard so importing the module does nothing.
+
+The verdict's shape follows the gate's failure arity, and this part is
+deliberately **not** uniform:
+
+- A **fail-fast** gate stops at the first violation and prints one message, so
+  its decision **throws an `Error`** whose message is verbatim what the report
+  prints. `validate-release` and `verify-pack` are these.
+- An **accumulating** gate must print every failure, so its decision **returns a
+  verdict record**. Throwing would truncate the report to the first failure.
+  `check-docs` and `check-consumer` are these.
+
+Uniformity of _purity_ is the invariant; uniformity of _error protocol_ is not.
+
+Two things deliberately absent: there is **no shared gate harness** (the genuine
+overlap between the five gates is about six lines, and a shared module would
+make one file a single point of failure for every release check while destroying
+the locality that lets you read a gate top to bottom), and `scripts/lib/` holds
+only _plumbing_ — scratch directories and npm pack/install — never policy.
+
+`check-deno-consumer.mjs` is the deliberate exception: its pass/fail verdict is
+`deno check`'s exit code, which the gate does not compute. There is no decision
+in it, so there is no interface to give it. Leave it alone.
+
+Note that `pnpm typecheck` does **not** cover `scripts/`: `tsconfig.test.json`
+has no `allowJs`/`checkJs`. The `// @ts-check` comments and JSDoc types in these
+files are for editors and readers; do not rely on them for CI enforcement.
+
 ## Adding a new HTTP status code
 
 The 40 concrete error classes are plain, hand-written source. There is no
