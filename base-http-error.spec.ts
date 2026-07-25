@@ -54,6 +54,32 @@ describe("BaseHttpError — response is not an own enumerable property (B1)", ()
   });
 });
 
+describe("BaseHttpError — an instance the constructor never initialized", () => {
+  // The accepted cost of carrying no `#private` member: the classes are purely
+  // structural, so an object with the right shape is ASSIGNABLE to
+  // BaseHttpError. The runtime consequence lands here — it has no entry in the
+  // body table, and every body method rejects it by name.
+  test("the readers reject rather than throwing synchronously", async () => {
+    const impostor = Object.create(NotFoundError.prototype) as NotFoundError;
+
+    // Rejects, never throws out of the call: the documented shape is
+    // `await expect(error.text()).rejects.toThrow(...)`.
+    await expect(impostor.text()).rejects.toThrowError(TypeError);
+    await expect(impostor.text()).rejects.toThrowError(/A subclass must call super\(response\)/);
+    await expect(impostor.json()).rejects.toThrowError(/carries no response/);
+    await expect(impostor.blob()).rejects.toThrowError(/carries no response/);
+    await expect(impostor.arrayBuffer()).rejects.toThrowError(/carries no response/);
+    await expect(impostor.cancel()).rejects.toThrowError(/carries no response/);
+  });
+
+  test("clone() throws synchronously, the deliberate exception", () => {
+    const impostor = Object.create(NotFoundError.prototype) as NotFoundError;
+
+    expect(() => impostor.clone()).toThrowError(TypeError);
+    expect(() => impostor.clone()).toThrowError(/A subclass must call super\(response\)/);
+  });
+});
+
 /**
  * A response whose body records whether it was cancelled and whether anything
  * ever pulled from it. `cancel()` must reach the stream WITHOUT buffering, so
