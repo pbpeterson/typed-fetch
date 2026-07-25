@@ -100,11 +100,25 @@ Commit the snapshot diff alongside the code change so the reviewer sees exactly
 which names entered or left the public API. Never hand-edit the `.snap` file to
 make a test pass — regenerate it from a real build.
 
+### How to write the documentation
+
+Read [`docs/writing-standard.md`](./docs/writing-standard.md) before you edit a
+document. It defines the language rules, the normative words (`must`, `must
+not`, `should`, `can`, `may`), the controlled vocabulary, and the
+WARNING / CAUTION / NOTE markers.
+
+Two rules from that standard cause most review comments:
+
+- A request is **aborted**. An error body is **canceled**. The two words are
+  not interchangeable.
+- Every example that obtains an HTTP error must read, cancel, or transfer its
+  body.
+
 ### Documentation examples are typechecked (`pnpm check-docs`)
 
 `scripts/check-docs.mjs` extracts every fenced ` ```ts ` / ` ```typescript `
 block from `README.md`, `CONTRIBUTING.md`, both `SKILL.md` files, and the public
-JSDoc examples in `src/index.ts`. It rewrites the
+JSDoc examples in **every `.ts` file under `src/`**. It rewrites the
 `@pbpeterson/typed-fetch` import to point at the **built `dist/`**, then
 typechecks each block with the project's `tsc`. This is why it must run **after
 `pnpm build`** — `dist/` is the compile target. If `dist/` is missing the guard
@@ -115,9 +129,10 @@ rounds of "verify the examples" review never actually ran `tsc`.
 
 **Skipping a block.** Some blocks legitimately cannot compile on their own — an
 isolated body fragment that assumes `error` from a previous snippet, a bare type
-expression, or a maintainer template full of placeholders (`NNN`, `XxxError`)
-that imports a relative `./base-http-error` path. Mark the fence with the
-`no-check` marker and the guard skips it:
+expression, a contributor template full of placeholders (`NNN`, `XxxError`), or
+the maintainer template, which imports the internal `./known-http-error` module
+that consumers cannot reach. Mark the fence with the `no-check` marker and the
+guard skips it:
 
 ````markdown
 ```ts no-check
