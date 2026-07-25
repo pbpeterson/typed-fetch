@@ -48,11 +48,14 @@ try {
   // emitted .mjs, where the optionality lives in the .d.mts only.
   await (error as { cancel: (reason?: unknown) => Promise<void> }).cancel("smoke");
 
-  // The mirror of the Bun case: Deno keeps `bodyUsed` false while a reader
-  // holds the stream, so the SAME decision order has to reach the lock check
-  // on both runtimes and reject rather than silently report success.
+  // The mirror of the Bun case. Deno keeps `bodyUsed` false while a reader
+  // holds the stream, so here the lock IS distinguishable from a consumed body
+  // and cancel() must reject rather than silently report success.
   const locked = new Response("payload", { status: 404 });
   locked.body!.getReader();
+  if (locked.bodyUsed !== false) {
+    throw new Error("expected Deno to keep bodyUsed false for a bare getReader()");
+  }
   const lockedError = new NotFoundError(locked);
 
   let cancelFailure: unknown = null;

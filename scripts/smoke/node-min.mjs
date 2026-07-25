@@ -30,13 +30,19 @@ if (major < MINIMUM[0]) {
   process.exit(1);
 }
 if (major > MINIMUM[0] || minor > MINIMUM[1]) {
-  // Not a failure — the smoke is still meaningful, it just is not testing the
-  // floor. Say so loudly so a green run on a newer Node is never mistaken for
-  // floor coverage.
-  console.warn(
-    `node-min smoke: WARNING — running on Node ${process.versions.node}, ` +
-      `not the ${MINIMUM.join(".")} floor. This run does NOT prove floor support.`,
-  );
+  const notice =
+    `node-min smoke: running on Node ${process.versions.node}, not the ` +
+    `${MINIMUM.join(".")} floor. This run does NOT prove floor support.`;
+  if (process.env.CI) {
+    // In CI the whole point of this job is the floor. If the runtime is not
+    // 20.0.0, the setup-node step is misconfigured and a green run would be a
+    // lie — fail rather than warn.
+    console.error(`${notice} Refusing to report a pass in CI.`);
+    process.exit(1);
+  }
+  // Locally, a developer may not have a 20.0.0 binary. Say so loudly instead
+  // of failing, so the smoke stays runnable during development.
+  console.warn(`${notice}`);
 }
 
 const server = http.createServer((req, res) => {

@@ -34,31 +34,32 @@ try {
   // Releasing an unread error body must work here too.
   await error.cancel();
 
-  // Bun-specific, and the reason this case is smoked on the real runtime:
   // Bun reports `Response.bodyUsed` as soon as `getReader()` locks the stream,
-  // while Node, Deno, and workerd keep it false. A `cancel()` that read
-  // `bodyUsed` to mean "already released" therefore returned SUCCESS here
-  // without ever releasing the stream, and then blocked every reader.
+  // while Node, Deno, and workerd keep it false. Pin that divergence here so a
+  // Bun change is noticed: it is the reason `cancel()` cannot reject on a
+  // locked body without also rejecting on a CONSUMED one, which measures
+  // identically (locked AND bodyUsed) on every runtime.
   const locked = new Response("payload", { status: 404 });
   locked.body.getReader();
-  const lockedError = new NotFoundError(locked);
-
-  let cancelFailure = null;
-  try {
-    await lockedError.cancel();
-  } catch (err) {
-    cancelFailure = err;
-  }
-  if (!(cancelFailure instanceof TypeError)) {
+  if (locked.bodyUsed !== true) {
     throw new Error(
-      `expected cancel() on an externally locked body to reject with a TypeError, got ${cancelFailure}`,
+      "expected Bun to report bodyUsed for a bare getReader(); the cancel() decision order " +
+        "documents this divergence and should be revisited if it changed",
     );
   }
-  if (!/locked/.test(cancelFailure.message)) {
-    throw new Error(`expected the lock to be named in the message, got ${cancelFailure.message}`);
-  }
 
-  console.log(`bun smoke: OK (NotFoundError, status 404; locked-body cancel rejects)`);
+  // So on Bun this resolves, by the documented rule "believe the runtime".
+  const lockedError = new NotFoundError(locked);
+  await lockedError.cancel();
+
+  // A body the consumer read themselves must resolve on every runtime — the
+  // common case whenever an injected fetch hands back its own Response.
+  const consumed = new Response("payload", { status: 404 });
+  const consumedError = new NotFoundError(consumed);
+  await consumed.text();
+  await consumedError.cancel();
+
+  console.log(`bun smoke: OK (NotFoundError, status 404; cancel on locked + consumed bodies)`);
 } finally {
   server.stop(true);
 }
