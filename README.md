@@ -364,7 +364,7 @@ After a `cancel()`, the four body readers reject with `TypeError`. `clone()` is 
 
 `clone()` tees the body stream. The platform releases the source only after the release of every branch.
 
-Thus `cancel()` on one branch stays pending until the other branch is also read or cancelled. Release every branch:
+Thus `cancel()` on one branch stays pending until the other branch is also read or canceled. Release every branch:
 
 ```typescript
 import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";

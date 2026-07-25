@@ -71,7 +71,7 @@ Use these terms exactly. Each names one thing.
 Two rules follow from that table, and both are load-bearing:
 
 - Do not write "cancel the request". A request is aborted. A body is canceled.
-- Do not write "stop the request" or "the request was cancelled" for an abort.
+- Do not write "stop the request" or "the request was canceled" for an abort.
 
 `typedFetch` never rejects for a request failure, so never describe a request
 failure with "throws" or "rejects". It **resolves with** an error value. Body

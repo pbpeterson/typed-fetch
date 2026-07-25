@@ -40,7 +40,7 @@ export interface TeedErrorBody {
   readonly branch: Response;
   /**
    * Release a branch nobody took. The platform frees the teed source only once
-   * EVERY branch is read or cancelled, so a dropped branch leaves `cancel()`
+   * EVERY branch is read or canceled, so a dropped branch leaves `cancel()`
    * on the surviving side waiting forever for an owner that never existed.
    */
   release(): void;
@@ -50,7 +50,7 @@ export interface TeedErrorBody {
    * `sibling` is the body of whoever took {@link branch}. It is `undefined`
    * when that owner was built by a DIFFERENT copy of this library — a
    * `recreate` callback may return an instance whose class, and whose body
-   * table, came from another module graph. Marking what we can see is the
+   * table, came from another loaded package copy. Marking what we can see is the
    * honest outcome; the flag is bookkeeping, never a guard.
    */
   adopt(sibling: ErrorBody | undefined): void;
@@ -61,7 +61,7 @@ export interface ErrorBody {
   /**
    * Set on BOTH branches by {@link TeedErrorBody.adopt}: cloning tees the body
    * stream. Recorded so the documented contract — every branch of a teed body
-   * must be read or cancelled before the source is released — is inspectable.
+   * must be read or canceled before the source is released — is inspectable.
    * Written only by `adopt`; nothing in this module branches on it.
    */
   teed: boolean;
@@ -103,7 +103,7 @@ export function errorBodyOf(response: Response): ErrorBody {
   /**
    * The in-flight `cancel()`, so a repeated call settles WITH the first one
    * instead of reporting success while the first is still waiting. Cleared
-   * once it settles; `cancelled` then carries the state.
+   * once it settles; `canceled` then carries the state.
    */
   let cancelling: Promise<void> | undefined;
 
@@ -111,7 +111,7 @@ export function errorBodyOf(response: Response): ErrorBody {
    * Is the body still ours to take?
    *
    * A `Response` body is a one-shot stream; a second read otherwise throws the
-   * platform's opaque `TypeError: Body is unusable`. A cancelled body and a
+   * platform's opaque `TypeError: Body is unusable`. A canceled body and a
    * locked stream both count as unavailable. A locked stream is the case a
    * `bodyUsed`-only guard misses: a reader holds it while `bodyUsed` can still
    * be `false`.
@@ -145,7 +145,7 @@ export function errorBodyOf(response: Response): ErrorBody {
     if (cancelling) return cancelling;
     if (cancelled) return;
 
-    // 2. This library already started the read, so the body is spoken for.
+    // 2. This library already started the read, so the body is no longer available.
     //    Checked before the lock test because a completed read leaves the
     //    stream locked on some runtimes.
     if (readStarted) {

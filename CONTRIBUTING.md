@@ -443,7 +443,7 @@ one line, with no error class — that is why the seam is here.
 These invariants hold below the seam, in `error-body.ts`:
 
 - One predicate, `claimable()`, decides availability for both the readers and
-  `tee()`. It refuses a body that this library cancelled or read
+  `tee()`. It refuses a body that this library canceled or read
   (`readStarted`), that the platform reports as consumed (`bodyUsed`), or whose
   stream is `locked`. The two callers share the predicate and differ only in
   the message they raise, so the guards cannot drift apart. A reader raises the

@@ -223,7 +223,7 @@ export function classifyRequestFailure(
     // an object tagged "DOMException") is opting into timeout classification,
     // the same documented honesty as forging any platform-shaped value.
     //
-    // The `name` check stays load-bearing: a bare `controller.abort()` also
+    // The `name` check is required: a bare `controller.abort()` also
     // produces a `DOMException`, but named "AbortError" — it must remain an
     // AbortedError.
     //

@@ -51,7 +51,7 @@ Words this codebase already uses, some of them only implicitly until now.
 - **Claim** — to take the body for a read. Claiming succeeds once; afterwards
   every reader and `tee()` refuse.
 - **Available / unavailable** — one predicate (`claimable()`), four disjuncts:
-  cancelled by us, read by us (`readStarted`), consumed (`bodyUsed`), or
+  canceled by us, read by us (`readStarted`), consumed (`bodyUsed`), or
   `body.locked`. It is written **once**; the reader guard and the tee guard
   differ only in the message they raise. An earlier version wrote the predicate
   out twice, and the two copies disagreed about what "unusable" meant.
@@ -61,7 +61,7 @@ Words this codebase already uses, some of them only implicitly until now.
   platform's opinion.
 - **Tee / branch / source / orphan** — `Response.clone()` tees the body stream
   into two **branches** over one **source**. The platform releases the source
-  only once EVERY branch is read or cancelled, so a lone `cancel()` stays
+  only once EVERY branch is read or canceled, so a lone `cancel()` stays
   pending. That is native semantics, and the library keeps it: resolving early
   would report a release that did not happen. A branch whose owner never came
   into existence is an **orphan**. Release an orphan, or the source is never

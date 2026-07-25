@@ -11,7 +11,7 @@
  * from `./errors`. Those are two distinct class objects, so a raw
  * `error instanceof BaseHttpError` is `false` even though the value *is* one.
  * The same hazard appears across the CJS/ESM boundary (the dual-package
- * hazard): `require()` and `import()` produce independent module graphs.
+ * hazard): `require()` and `import()` load independent package copies.
  *
  * `Symbol.for(key)` returns the *same* symbol for the same key across every
  * module copy and every realm in the process. Stamping a brand keyed by such a
@@ -31,7 +31,7 @@
  * Discriminating a *specific* HTTP subclass across copies (e.g.
  * `error instanceof NotFoundError` when the two came from different copies) is
  * deliberately NOT solved here — see the README. Use `isKnownHttpError` then
- * `switch (error.status)`, which is copy-proof. `isKnownHttpError` also checks
+ * `switch (error.status)`, which works across package copies. `isKnownHttpError` also checks
  * the receiving copy's status map so a newer version's newly added status cannot
  * be narrowed to an older copy's union.
  */

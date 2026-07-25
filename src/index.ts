@@ -124,7 +124,7 @@ export function isTimeoutError(error: unknown): error is TimeoutError {
  * version — works across entry points and module formats without accepting a
  * dedicated status introduced by a newer copy. Narrowing on `error.status`
  * after this guard is exhaustive over this version's mapped codes, and is the
- * copy-proof way to reach a specific subclass (a raw
+ * way to reach a specific subclass that works across package copies (a raw
  * `error instanceof NotFoundError` is NOT reliable across copies).
  *
  * @example
@@ -242,7 +242,7 @@ export type TypedFetchOptions = FetchParams[1] & {
  *   `{ response: null, error }` on failure. `error` is the full
  *   {@link TypedFetchError} union — narrow it with {@link isKnownHttpError}
  *   and `switch (error.status)`. Raw `instanceof` is only reliable when the
- *   producer and consumer share one module graph; use the brand-based guards
+ *   producer and consumer share one loaded package copy; use the brand-based guards
  *   across duplicate package copies or ESM/CJS boundaries.
  *
  * @example

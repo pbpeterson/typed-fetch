@@ -71,7 +71,7 @@ export abstract class BaseHttpError extends Error {
   /**
    * The library's canonical protocol label for {@link status} (normally the
    * current IANA phrase; literal-typed, e.g. `"Not Found"`) - not the server's
-   * wire value. The server's wire phrase, when present, is in
+   * wire value. The status text received from the server, when present, is in
    * {@link Error.message | message}.
    */
   public abstract readonly statusText: string;
@@ -104,10 +104,10 @@ export abstract class BaseHttpError extends Error {
    * the bytes.
    *
    * AFTER {@link clone}, the body stream is teed, and the platform releases the
-   * source only once EVERY branch is read or cancelled. The promise returned
+   * source only once EVERY branch is read or canceled. The promise returned
    * here therefore stays pending until the sibling branch is released too.
    * That is native `ReadableStream` behavior, kept deliberately rather than
-   * papered over: resolving early would report a release that did not happen.
+   * hidden: resolving early would report a release that did not happen.
    * Cancelling one branch never cancels the other — the consumer cloned it in
    * order to read it.
    *
@@ -175,7 +175,7 @@ export abstract class BaseHttpError extends Error {
   /**
    * Clone the error so the response body can be read multiple times.
    *
-   * Must be called BEFORE the body is read, cancelled, or locked — cloning
+   * Must be called BEFORE the body is read, canceled, or locked — cloning
    * duplicates the response body stream, which is impossible once it has been
    * consumed or a reader has been acquired. Calling it after
    * `json()`/`text()`/`blob()`/`arrayBuffer()`/{@link cancel}, or while a
@@ -183,7 +183,7 @@ export abstract class BaseHttpError extends Error {
    * (instead of the platform's opaque "Body is unusable").
    *
    * Cloning tees the body stream. Both branches must then be read or
-   * cancelled: the platform releases the underlying source only once the last
+   * canceled: the platform releases the underlying source only once the last
    * one is done. See {@link cancel}.
    *
    * Built-in errors need no callback. Consumer subclasses can pass a
@@ -223,7 +223,7 @@ export abstract class BaseHttpError extends Error {
    * ```
    */
   clone(recreate?: (response: Response) => this): this {
-    // Throws before anything is teed when the body is already spoken for.
+    // Throws before anything is teed when the body is no longer available.
     const teed = bodyOf(this).tee();
 
     let copy: this;
@@ -267,5 +267,5 @@ export abstract class BaseHttpError extends Error {
 
 // Stamp the cross-copy brand on the prototype so every subclass (all 40 status
 // classes + UnknownHttpError) inherits it. Keyed by a `Symbol.for`, it is
-// identical across module copies, which is what makes the guards copy-proof.
+// identical across module copies, which is what makes the guards work across package copies.
 brand(BaseHttpError.prototype, httpErrorBrand);
