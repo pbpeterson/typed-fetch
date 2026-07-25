@@ -323,6 +323,96 @@ describe("typedFetch", () => {
     expect(result.error?.cause).toBe(cause);
   });
 
+  // The status reads were the last two response reads OUTSIDE a release guard.
+  // A `status` getter that throws never reaches the error-class construction,
+  // so the throw escapes to the envelope with the body still open and `res`
+  // already out of scope. The same two lines read `status` twice, so a getter
+  // that shifts could pick a class for a status the branch was never taken on.
+
+  test("a live body is released when the status getter throws", async () => {
+    const cause = new Error("status getter exploded");
+    let cancelCalls = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("payload-that-is-still-open"));
+      },
+      cancel() {
+        cancelCalls += 1;
+      },
+    });
+    const hostileResponse = new Response(stream, { status: 404 });
+    Object.defineProperty(hostileResponse, "status", {
+      get() {
+        throw cause;
+      },
+    });
+    const stubFetch = vi.fn(async () => hostileResponse) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/hostile-status-live-body", {
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+
+    // Nobody can reach this body any more, so typedFetch must have released it.
+    // `bodyUsed` proves the stream was disturbed; the counter proves the
+    // release reached the underlying source as a cancel. Both settle before
+    // typedFetch resolves, so neither needs a timer.
+    expect(hostileResponse.bodyUsed).toBe(true);
+    expect(cancelCalls).toBe(1);
+  });
+
+  test("the error class keys on the status the branch was taken on", async () => {
+    let reads = 0;
+    const hostileResponse = new Response(null, { status: 404 });
+    Object.defineProperty(hostileResponse, "status", {
+      get() {
+        reads += 1;
+        return reads === 1 ? 404 : 500;
+      },
+    });
+    const stubFetch = vi.fn(async () => hostileResponse) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/shifting-status", {
+      fetch: stubFetch,
+    });
+
+    // The 400 branch was taken because the first read said 404. Selecting the
+    // class from a later read would answer 500, a status this call never saw.
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NotFoundError);
+    expect(result.error).not.toBeInstanceOf(InternalServerError);
+  });
+
+  test("a failed release does not replace the original cause", async () => {
+    const cause = new Error("headers getter exploded");
+    const releaseCause = new Error("body getter exploded");
+    const hostileResponse = new Response("payload-that-is-still-open", { status: 404 });
+    Object.defineProperty(hostileResponse, "headers", {
+      get() {
+        throw cause;
+      },
+    });
+    Object.defineProperty(hostileResponse, "body", {
+      get() {
+        throw releaseCause;
+      },
+    });
+    const stubFetch = vi.fn(async () => hostileResponse) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/hostile-body-getter", {
+      fetch: stubFetch,
+    });
+
+    // `body` is one more getter on the same untrusted object. Releasing is best
+    // effort, so its failure must not become the reported cause.
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+  });
+
   test("hardened response inspection keeps normal classification intact", async () => {
     const notFound = await typedFetch(url({ status: 404 }));
     expect(notFound.error).toBeInstanceOf(NotFoundError);
@@ -664,7 +754,21 @@ describe("typedFetch", () => {
   // AXIS 7: AbortSignal.any() composing a user signal and a timeout signal —
   // whichever fires first wins, and classification must follow the actual
   // winner's reason (a DOMException "TimeoutError" vs the user's reason).
-  test("AbortSignal.any(): timeout wins → TimeoutError", async () => {
+  //
+  // These two tests are gated because AbortSignal.any() landed in Node 20.3.0
+  // and `engines.node` is `>=20`. The floor is correct and stays: nothing in
+  // src/ calls AbortSignal.any(), and the newest platform API the library
+  // depends on is ReadableStream.cancel(). Only the TEST needs 20.3.0, so the
+  // test declares that requirement instead of the package narrowing what
+  // consumers may run. On Node 20.0 to 20.2 the API under test does not exist,
+  // so there is nothing to assert; vitest reports the two as skipped, not
+  // passed. Do not remove the gate without also raising `engines.node` —
+  // ungated, the suite throws `TypeError: AbortSignal.any is not a function`
+  // on the declared floor. The check reads the capability, never the version
+  // number, so it stays correct if the availability of the API changes.
+  const hasSignalAny = typeof AbortSignal.any === "function";
+
+  test.skipIf(!hasSignalAny)("AbortSignal.any(): timeout wins → TimeoutError", async () => {
     const userController = new AbortController();
     const combined = AbortSignal.any([userController.signal, AbortSignal.timeout(1)]);
 
@@ -677,24 +781,27 @@ describe("typedFetch", () => {
     expect(isTimeoutError(result.error)).toBe(true);
   });
 
-  test("AbortSignal.any(): user abort wins → AbortedError with the user's reason", async () => {
-    const userController = new AbortController();
-    const reason = new Error("user navigated away");
-    const combined = AbortSignal.any([userController.signal, AbortSignal.timeout(10_000)]);
-    userController.abort(reason);
+  test.skipIf(!hasSignalAny)(
+    "AbortSignal.any(): user abort wins → AbortedError with the user's reason",
+    async () => {
+      const userController = new AbortController();
+      const reason = new Error("user navigated away");
+      const combined = AbortSignal.any([userController.signal, AbortSignal.timeout(10_000)]);
+      userController.abort(reason);
 
-    const result = await typedFetch(url({ status: 200, delay: 200 }), {
-      signal: combined,
-    });
+      const result = await typedFetch(url({ status: 200, delay: 200 }), {
+        signal: combined,
+      });
 
-    expect(result.response).toBe(null);
-    expect(result.error).toBeInstanceOf(AbortedError);
-    expect(isAbortError(result.error)).toBe(true);
-    expect(isTimeoutError(result.error)).toBe(false);
-    if (isAbortError(result.error)) {
-      expect(result.error.reason).toBe(reason);
-    }
-  });
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(AbortedError);
+      expect(isAbortError(result.error)).toBe(true);
+      expect(isTimeoutError(result.error)).toBe(false);
+      if (isAbortError(result.error)) {
+        expect(result.error.reason).toBe(reason);
+      }
+    },
+  );
 
   // ── Fix 1b: aborted signal is necessary but NOT sufficient ─────────────
   // A rejection that merely COINCIDES with an already-aborted signal but is not

@@ -217,6 +217,24 @@ function requestUrl(input: FetchInput): string {
   }
 }
 
+/**
+ * Release a response body that no caller can reach any more. Best effort.
+ *
+ * Called only from a failure path, where `res` leaves scope with an open body
+ * and no owner. Every step is guarded: `res` can be a partial test double
+ * instead of a `Response`, `body` is one more getter on the same untrusted
+ * object, and `cancel()` can throw or return a non-promise. A failure to
+ * release must never replace the cause the caller is waiting for.
+ */
+function releaseBody(res: Response): void {
+  try {
+    res.body?.cancel().catch(() => {});
+  } catch {
+    // Nothing further can be done here, and the original cause is the one to
+    // report.
+  }
+}
+
 /** Request options accepted by {@link typedFetch} — `RequestInit` with typed `headers` and `method`. */
 export type TypedFetchOptions = FetchParams[1] & {
   headers?: TypedHeaders;
@@ -296,26 +314,34 @@ export async function typedFetch<JsonReturnType>(
     // double resolves a non-Response, and a hostile `status`/`url` getter
     // throws while being read. Both must surface as an error VALUE, which is
     // the contract this function exists to keep, instead of rejecting.
-    if (res.status >= 400) {
-      const ErrorClass = statusCodeErrorMap.get(res.status);
-      try {
+    //
+    // `status` is read ONCE, into a local, INSIDE the block below. Once,
+    // because a getter is free to report a different value on a second read,
+    // and selecting the error class from a second read answers a status this
+    // branch was never taken on. Inside, because the read itself can throw, and
+    // a throw here strands the body — see the catch.
+    try {
+      const status = res.status;
+      if (status >= 400) {
+        const ErrorClass = statusCodeErrorMap.get(status);
         return {
           response: null,
           error: ErrorClass ? new ErrorClass(res) : new UnknownHttpError(res),
         };
-      } catch (cause) {
-        // The error class reads `statusText`, `url`, and `headers` off the
-        // response, and any of those can throw for an injected implementation.
-        // The catch below turns that into a NetworkError, but `res` is scoped
-        // to this block: the caller receives `response: null` and never gets a
-        // handle to the body the network already opened. Release it here, or it
-        // stays open with no owner. Best effort — a failure to release must not
-        // replace the original cause.
-        res.body?.cancel().catch(() => {});
-        throw cause;
       }
+    } catch (cause) {
+      // The line above reads `status`, and the error class reads `statusText`,
+      // `url`, and `headers`; any of them can throw for an injected
+      // implementation. The catch below turns that into a NetworkError, but
+      // `res` lives in the outer try block: the caller gets `response: null`
+      // and never gets a handle to the body the network already opened.
+      // Release it here, or it stays open with no owner.
+      releaseBody(res);
+      throw cause;
     }
 
+    // The success path releases nothing. `res` IS the returned response, and
+    // the caller owns its body.
     return {
       response: res as TypedResponse<JsonReturnType>,
       error: null,
