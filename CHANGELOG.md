@@ -8,8 +8,54 @@ values, and code that compiled against `1.1.0` on a Node consumer without
 depends on it — but it removes types that used to be accepted, which conventional
 SemVer governs regardless of how small the diff is.
 
+### Added
+
+- `toJSON()` on every error class. An `Error` keeps `message` and `stack`
+  non-enumerable, so a structured logger recorded every field except the one
+  that names the failure — and `headers` serialized as `{}`, which reads as "no
+  headers were sent". HTTP errors emit
+  `{ name, message, status, statusText, url, headers }`; `NetworkError`,
+  `AbortedError`, and `TimeoutError` emit `{ name, message, url }`. `headers` is
+  a list of `[name, value]` pairs rather than an object, because
+  `Object.fromEntries` keeps only the last of a repeated `set-cookie`; the pair
+  list is lossless and is a valid `HeadersInit`. The body and the stack are
+  absent on purpose — the body is a single-use asynchronous stream, and the
+  stack carries local file paths. This also fixes a case where
+  `JSON.stringify(error)` threw: an abort reason holding a cycle.
+- `"./package.json"` in the `exports` map. Tooling that reads a dependency's
+  manifest through the resolver received `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+- `errors/package.json`, a redirect stub for resolvers that ignore `exports`
+  (Jest 27 and older, webpack 4, Metro before 0.72). `typesVersions` pointed
+  those consumers at `./errors` types that type-checked and then failed to load,
+  because the tarball shipped no runtime file they could reach. `typesVersions`
+  is removed, since the stub supersedes it.
+
 ### Changed
 
+- The declared header names are request-side only. Sixteen of the thirty-one
+  were wrong: thirteen are response headers a client never sends (`Set-Cookie`,
+  `ETag`, `Last-Modified`, `Location`, `WWW-Authenticate`,
+  `Content-Security-Policy`, the four `Access-Control-Allow-*`,
+  `X-Frame-Options`, `X-Content-Type-Options`, `Strict-Transport-Security`), and
+  three belong to the platform: `Content-Length` makes `fetch` throw when it
+  disagrees with the body, `Host` is silently overwritten, and `Connection` is
+  hop-by-hop. `If-Match` is added, without which dropping `ETag` leaves no way
+  to send a read validator. `Cache-Control` no longer suggests `public`,
+  `private`, or `must-revalidate`, which are response directives. Removing a
+  name is not breaking: it still type-checks as a custom name with a string
+  value, verified under both the DOM and the no-DOM profile.
+- `error.headers` is a copy of the response headers, not the same object. A
+  write through it no longer reaches the response.
+- `cause` and `reason` are no longer enumerable, which matches
+  `new Error(message, { cause })`. They stop appearing in
+  `JSON.stringify(error)`, in `{ ...error }`, and in `Object.keys(error)`, so a
+  deep structured log no longer records undici's transport detail — local and
+  remote addresses and ports. Reading them is unchanged and both stay writable.
+- `clone(recreate?)` rejects a callback that builds from a response other than
+  the one it receives. Only `copy === this` was caught before, so a callback
+  that ignored its argument orphaned the teed branch: the platform never freed
+  the source and `cancel()` on the original never settled. The orphan is
+  released before the `TypeError` is thrown.
 - `TypedFetchOptions["headers"]` no longer accepts `undefined` as a header value.
   A header set from an optional variable — `{ Authorization: token }` where
   `token` is `string | undefined` — reached the platform as the literal string
@@ -48,8 +94,28 @@ SemVer governs regardless of how small the diff is.
   wrapped, so a throwing `body` getter can no longer replace the cause being
   reported.
 
+### Documentation
+
+- The retry guidance for `NetworkError` no longer states a test that does not
+  work. It said permanent input errors "have a `TypeError` in `cause`" and told
+  the reader to check `cause` before retrying. Measured across six failure
+  modes, `error.cause instanceof TypeError` answers `true` in every one,
+  including a DNS failure and a refused connection — so the documented rule told
+  callers never to retry the two most retryable failures there are. The cause is
+  the rejection `fetch` produced, and that is always a `TypeError`. No portable
+  test separates the two kinds: on Deno every failure in that section arrives as
+  a bare `TypeError` with no `cause` and no error code, so the section now says
+  to put the retry policy in a layer that knows the request.
+
 ### Internal
 
+- Three wire-level tests prove that a header passed through the `headers` option
+  reaches the server, for the record, `Headers`, and pair-list forms. Nothing
+  proved it before: removing the forwarding on the path every consumer takes
+  left the whole suite green. Two further tests were strengthened — the 407 case
+  now drives `statusCodeErrorMap` instead of asserting its own literal, and
+  `forwards request options to fetch` echoes the method, a header, and the body
+  rather than asserting a 200.
 - The release gates (`validate-release`, `verify-pack`, `check-docs`,
   `check-consumer`) compared `resolve(process.argv[1])` against
   `fileURLToPath(import.meta.url)` to decide whether they were the entry point.
