@@ -18,7 +18,7 @@ import {
   UnknownHttpError,
 } from "./src/errors";
 import type { ClientErrors, ServerErrors, TypedFetchError } from "./src/errors";
-import type { StrictHeaders } from "./src/headers";
+import type { StrictHeaders, TypedHeaders } from "./src/headers";
 import type { HttpMethods } from "./src/methods";
 import type { TypedFetchOptions, TypedFetchReturnType, TypedResponse } from "./index";
 
@@ -171,6 +171,54 @@ describe("type-level", () => {
   // NOTE: the per-class status/statusText literal coverage that used to
   // live here (3/40 classes) has moved to, and been extended to all 40
   // classes by, the "roster sync" describe block in roster-sync.spec.ts.
+
+  // ── header values ──────────────────────────────────────────────────
+  // Two surfaces, deliberately both: `TypedHeaders` is the library's own
+  // layer, and `TypedFetchOptions["headers"]` is what a consumer annotates
+  // against (TypedHeaders itself stopped being exported in v1.1.0). The
+  // consumer slot intersects the platform's own `headers` type, which under
+  // `lib.dom` already rejects `undefined` — so only the `TypedHeaders`
+  // assertions below distinguish the fixed type from the leaky one in THIS
+  // repo's lib profile. See scripts/check-consumer.mjs for the no-DOM pass.
+  type HeaderInput = NonNullable<TypedFetchOptions["headers"]>;
+
+  test("header values accept a string on a declared and on a custom name", () => {
+    expectTypeOf<{ Authorization: "Bearer t" }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "Content-Type": "application/json" }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "content-type": "application/json" }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "X-Request-Id": string }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ Authorization: "Bearer t" }>().toExtend<HeaderInput>();
+    expectTypeOf<{ "X-Request-Id": string }>().toExtend<HeaderInput>();
+  });
+
+  test("header values reject undefined on a declared name", () => {
+    expectTypeOf<{ Authorization: undefined }>().not.toExtend<TypedHeaders>();
+    expectTypeOf<{ "Content-Type": undefined }>().not.toExtend<TypedHeaders>();
+    expectTypeOf<{ Authorization: string | undefined }>().not.toExtend<TypedHeaders>();
+    expectTypeOf<{ Authorization: undefined }>().not.toExtend<HeaderInput>();
+  });
+
+  test("header values reject undefined on a custom name", () => {
+    expectTypeOf<{ "X-Request-Id": undefined }>().not.toExtend<TypedHeaders>();
+    expectTypeOf<{ "X-Request-Id": string | undefined }>().not.toExtend<TypedHeaders>();
+    expectTypeOf<Record<string, string | undefined>>().not.toExtend<TypedHeaders>();
+    expectTypeOf<{ "X-Request-Id": string | undefined }>().not.toExtend<HeaderInput>();
+  });
+
+  test("headers still accept every native input shape", () => {
+    expectTypeOf<Headers>().toExtend<TypedHeaders>();
+    expectTypeOf<[string, string][]>().toExtend<TypedHeaders>();
+    expectTypeOf<Record<string, string>>().toExtend<TypedHeaders>();
+    expectTypeOf<Headers>().toExtend<HeaderInput>();
+    expectTypeOf<[string, string][]>().toExtend<HeaderInput>();
+  });
+
+  test("headers validate no value — autocomplete only", () => {
+    expectTypeOf<{ Authorization: "nospaces" }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "X-Content-Type-Options": "banana" }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ "Content-Type": string }>().toExtend<TypedHeaders>();
+    expectTypeOf<{ Authorization: "nospaces" }>().toExtend<HeaderInput>();
+  });
 
   test("json<T>() returns Promise<T>", () => {
     const error = new NotFoundError(new Response(JSON.stringify({}), { status: 404 }));

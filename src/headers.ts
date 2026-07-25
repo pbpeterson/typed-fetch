@@ -94,11 +94,47 @@ export type StrictHeaders = {
 type NativeFetchHeaders = NonNullable<NonNullable<Parameters<typeof fetch>[1]>["headers"]>;
 
 /**
- * Headers type that accepts both {@link StrictHeaders} (with IntelliSense) and
- * whatever raw headers input the platform's `fetch` accepts.
+ * The constituents of {@link NativeFetchHeaders} that are not a plain string
+ * record: a `Headers` instance, and an array of name/value pairs.
+ *
+ * The record constituent is dropped here and re-supplied by
+ * {@link TypedHeaders}, because neither platform's record type rejects an
+ * `undefined` value on its own. Under `lib.dom` it happens to
+ * (`Record<string, string>`); under `@types/node` without DOM it does not —
+ * undici's `HeaderRecord` is an all-optional mapped type, so
+ * `{ Authorization: undefined }` type-checks and `fetch` then sends the
+ * literal string `"undefined"`. The no-DOM profile is this library's primary
+ * target, so the record shape has to be ours.
  */
-export type TypedHeaders =
-  | {
-      [K in keyof StrictHeaders as Canonical<K & string>]?: StrictHeaders[K];
-    }
-  | NativeFetchHeaders;
+type HeaderContainers = Exclude<NativeFetchHeaders, Record<string, string | undefined>>;
+
+/**
+ * The declared header names, in both their canonical and lowercase spellings.
+ *
+ * The `string extends K ? never` arm drops {@link StrictHeaders}'s
+ * `[key: string]: string | undefined` index signature. This mapped type is
+ * homomorphic and would otherwise inherit it, which reintroduces exactly the
+ * `undefined` this type exists to reject. Custom names come back through the
+ * `Record<string, string>` intersection in {@link TypedHeaders}.
+ *
+ * Each value keeps its literal union — that is the value IntelliSense — and
+ * adds `(string & {})` so the union stays open. The open arm is required, not
+ * cosmetic: intersecting a closed union with `Record<string, string>` would
+ * start REJECTING a value that misses the union, and these types autocomplete
+ * without validating (README, "Limitations"). It also keeps a plain
+ * `string`-typed variable assignable to a declared name.
+ */
+type Named = {
+  [K in keyof StrictHeaders as string extends K ? never : Canonical<K & string>]?:
+    | StrictHeaders[K]
+    | (string & {});
+};
+
+/**
+ * Headers type that accepts {@link StrictHeaders}'s names (with IntelliSense)
+ * and the container shapes the platform's `fetch` accepts.
+ *
+ * A header value is always a `string`. `undefined` is rejected on every name,
+ * declared or custom, under every lib profile.
+ */
+export type TypedHeaders = (Named & Record<string, string>) | HeaderContainers;
