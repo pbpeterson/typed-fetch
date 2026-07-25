@@ -47,7 +47,7 @@ const repoRoot = resolve(scriptDir, "..");
 // so the published `clone()` example in `src/errors/base-http-error.ts` shipped
 // with four TS errors (undefined `CustomHttpError`, undefined `error`, an
 // implicit `any`) that this guard exists to catch and never looked at.
-const DOC_MARKDOWN_SOURCES = [
+export const DOC_MARKDOWN_SOURCES = [
   "README.md",
   "CONTRIBUTING.md",
   "skills/typed-fetch/SKILL.md",
@@ -75,32 +75,31 @@ function collectSourceFiles(dir, prefix) {
   return found.toSorted();
 }
 
-const DOC_SOURCES = [
-  ...DOC_MARKDOWN_SOURCES.map((file) => ({ file, format: "markdown" })),
-  ...collectSourceFiles(join(repoRoot, "src"), "src").map((file) => ({ file, format: "jsdoc" })),
-];
+// The roster of doc sources used to be built HERE, at module scope, which meant
+// importing this file hit the disk. It is now assembled by gatherDocSources()
+// inside main(), so a spec can import the decisions below for free.
 
 // The package's public entry points, as written in the docs.
-const PKG_ROOT = "@pbpeterson/typed-fetch";
-const PKG_ERRORS = "@pbpeterson/typed-fetch/errors";
+export const PKG_ROOT = "@pbpeterson/typed-fetch";
+export const PKG_ERRORS = "@pbpeterson/typed-fetch/errors";
 
 // Skip convention: a block is skipped ONLY if its opening fence info-string
 // carries the `no-check` marker, i.e. ```ts no-check  or  ```typescript no-check
 // Every skip is counted and printed so a broken block can never be silenced
 // invisibly (see the skip summary + ratio guard at the bottom).
-const SKIP_MARKER = "no-check";
+export const SKIP_MARKER = "no-check";
 
 // If more than this fraction of TypeScript blocks are skipped, the guard fails:
 // the whole point is that examples compile, and a marker that everyone reaches
 // for is a marker that rots. Tune deliberately, not to make a red run go green.
-const MAX_SKIP_RATIO = 0.5;
+export const MAX_SKIP_RATIO = 0.5;
 
 /**
  * Extract fenced ts/typescript blocks from markdown.
  * @param {string} md
  * @returns {{ line: number, info: string, code: string, skip: boolean }[]}
  */
-function extractBlocks(md) {
+export function extractBlocks(md) {
   const lines = md.split("\n");
   const blocks = [];
   let i = 0;
@@ -144,7 +143,7 @@ function extractBlocks(md) {
  * locations.
  * @param {string} source
  */
-function jsdocToMarkdown(source) {
+export function jsdocToMarkdown(source) {
   return source
     .split("\n")
     .map((line) => line.replace(/^\s*\* ?/, ""))
@@ -157,7 +156,7 @@ function jsdocToMarkdown(source) {
  * @param {string} code
  * @param {string} distDir absolute path to dist/
  */
-function rewriteImports(code, distDir) {
+export function rewriteImports(code, distDir) {
   // Point at the IMPLEMENTATION files (.js), not the .d.ts. With
   // `moduleResolution: bundler`, tsc resolves types from the sibling
   // `index.d.ts` automatically, while value imports (`typedFetch`,
@@ -175,20 +174,164 @@ function rewriteImports(code, distDir) {
     .replaceAll(`'${PKG_ROOT}'`, rootSpec);
 }
 
+// ---------------------------------------------------------------------------
+// THE DECISION, part 1 of 2: what gets compiled.
+// Pure. The caller reads the sources off disk and writes the plan to disk;
+// nothing here touches fs, so a spec can hand it string literals and check the
+// block roster, the names, and the line attribution exactly.
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {{ file: string, format: "markdown" | "jsdoc", source: string }} DocSource
+ * @typedef {{ name: string, file: string, line: number, content: string }} PlannedBlock
+ * @typedef {{
+ *   blocks: PlannedBlock[],
+ *   skipped: { file: string, line: number }[],
+ *   totalTsBlocks: number,
+ * }} DocPlan
+ */
+
+/**
+ * @param {DocSource[]} docs
+ * @param {string} distDir absolute path to dist/, for the import rewrite
+ * @returns {DocPlan}
+ */
+export function planDocBlocks(docs, distDir) {
+  /** @type {PlannedBlock[]} */
+  const blocks = [];
+  /** @type {{ file: string, line: number }[]} */
+  const skipped = [];
+  let totalTsBlocks = 0;
+
+  for (const { file, format, source } of docs) {
+    const md = format === "jsdoc" ? jsdocToMarkdown(source) : source;
+    for (const block of extractBlocks(md)) {
+      totalTsBlocks += 1;
+      if (block.skip) {
+        skipped.push({ file, line: block.line });
+        continue;
+      }
+      blocks.push({
+        name: `${file.replace(/[^a-zA-Z0-9]/g, "_")}__L${block.line}`,
+        file,
+        line: block.line,
+        content: wrapBlock(rewriteImports(block.code, distDir)),
+      });
+    }
+  }
+  return { blocks, skipped, totalTsBlocks };
+}
+
+/**
+ * Attribute raw tsc diagnostics back to the doc file + fence line that produced
+ * them, dropping duplicates. tsc prints e.g.
+ *   blocks/README_md__L13.ts(4,20): error TS2339: ...
+ * @param {string} tscOutput
+ * @param {PlannedBlock[]} blocks
+ * @returns {{ file: string, line: number, msg: string }[]}
+ */
+export function attributeDiagnostics(tscOutput, blocks) {
+  const index = new Map(blocks.map((b) => [b.name, b]));
+  const seen = new Set();
+  const failures = [];
+  for (const rawLine of tscOutput.split("\n")) {
+    const m = rawLine.match(/blocks\/([A-Za-z0-9_]+)\.ts\((\d+),(\d+)\): (error TS\d+.*)$/);
+    if (!m) continue;
+    const info = index.get(m[1]);
+    if (!info) continue;
+    const key = `${m[1]}:${m[2]}:${m[3]}:${m[4]}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    failures.push({ file: info.file, line: info.line, msg: m[4] });
+  }
+  return failures;
+}
+
+// ---------------------------------------------------------------------------
+// THE DECISION, part 2 of 2: the verdict.
+// This gate ACCUMULATES failures, so the verdict is a returned record, not a
+// thrown Error: an exception can carry one message and this report must print
+// every failing block. Precedence is exactly the old control flow —
+// TS5112 > unattributable > block failures > skip ratio > ok.
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {
+ *   | { kind: "tsc-config-regression" }
+ *   | { kind: "unattributable" }
+ *   | { kind: "block-failures", failures: { file: string, line: number, msg: string }[] }
+ *   | { kind: "skip-ratio", skipRatio: number }
+ *   | { kind: "ok" }
+ * } DocsVerdict
+ */
+
+/**
+ * @param {{ plan: DocPlan, tscOutput: string | null }} run
+ *   tscOutput is null when tsc exited 0.
+ * @returns {DocsVerdict}
+ */
+export function judgeDocs({ plan, tscOutput }) {
+  if (tscOutput !== null) {
+    const failures = attributeDiagnostics(tscOutput, plan.blocks);
+    // TS5112 must never appear — if it does, our config strategy regressed. It
+    // masks real errors, so it outranks any diagnostic we did manage to parse.
+    if (/TS5112/.test(tscOutput)) return { kind: "tsc-config-regression" };
+    // tsc failed but we could not attribute a single diagnostic: surface raw
+    // output rather than silently "passing".
+    if (failures.length === 0) return { kind: "unattributable" };
+    return { kind: "block-failures", failures };
+  }
+
+  const skipRatio = plan.totalTsBlocks === 0 ? 0 : plan.skipped.length / plan.totalTsBlocks;
+  if (skipRatio > MAX_SKIP_RATIO) return { kind: "skip-ratio", skipRatio };
+  return { kind: "ok" };
+}
+
+// The entry points a usable dist/ must contain, relative to dist/. Both the
+// implementation (.js) and the types (.d.ts) for both entry points: value
+// imports resolve against the former, type info against the latter. A
+// half-built dist/ must fail, not silently under-check.
+export const REQUIRED_DIST_ENTRIES = [
+  "index.js",
+  "index.d.ts",
+  "errors/index.js",
+  "errors/index.d.ts",
+];
+
+// ---------------------------------------------------------------------------
+// Adapter. All fs/subprocess access. No pass/fail branch lives here except the
+// two I/O preconditions (dist/ and tsc must exist) whose messages are fixed.
+// ---------------------------------------------------------------------------
+
+/** @returns {DocSource[]} */
+function gatherDocSources() {
+  /** @type {DocSource[]} */
+  const docs = [];
+  const roster = [
+    ...DOC_MARKDOWN_SOURCES.map((file) => ({ file, format: /** @type {const} */ ("markdown") })),
+    ...collectSourceFiles(join(repoRoot, "src"), "src").map((file) => ({
+      file,
+      format: /** @type {const} */ ("jsdoc"),
+    })),
+  ];
+  for (const { file, format } of roster) {
+    const abs = join(repoRoot, file);
+    if (!existsSync(abs)) {
+      console.error(`check-docs: doc file not found: ${file}`);
+      process.exit(1);
+    }
+    docs.push({ file, format, source: readFileSync(abs, "utf8") });
+  }
+  return docs;
+}
+
 function main() {
   const distDir = join(repoRoot, "dist");
 
   // (c) dist/ may be stale or absent. FAIL LOUDLY — never skip.
-  // Require BOTH the implementation (.js) and the types (.d.ts) for each entry
-  // point: value imports resolve against the former, type info against the
-  // latter. A half-built dist/ must fail, not silently under-check.
-  const required = [
-    join(distDir, "index.js"),
-    join(distDir, "index.d.ts"),
-    join(distDir, "errors", "index.js"),
-    join(distDir, "errors", "index.d.ts"),
-  ];
-  const missing = required.filter((p) => !existsSync(p));
+  const missing = REQUIRED_DIST_ENTRIES.map((rel) => join(distDir, rel)).filter(
+    (p) => !existsSync(p),
+  );
   if (missing.length > 0) {
     console.error("check-docs: dist/ is missing or incomplete.");
     for (const p of missing) console.error(`  expected: ${p}`);
@@ -208,11 +351,6 @@ function main() {
     console.error(`check-docs: tsc not found at ${tscBin}. Run \`pnpm install\`.`);
     process.exit(1);
   }
-
-  let totalTsBlocks = 0;
-  let checked = 0;
-  const skipped = [];
-  const failures = [];
 
   // Scratch tmp dir for the per-block .ts files + a dedicated tsconfig.
   // createScratchDir removes it on exit as well as on demand: this script has
@@ -250,38 +388,18 @@ function main() {
   };
   writeFileSync(join(workDir, "tsconfig.json"), JSON.stringify(tsconfig, null, 2));
 
-  // Map "blocks/<name>.ts" -> { file, line } for error attribution.
-  const blockIndex = new Map();
-
   const blocksDir = join(workDir, "blocks");
   mkdirSync(blocksDir, { recursive: true });
 
-  for (const { file: rel, format } of DOC_SOURCES) {
-    const abs = join(repoRoot, rel);
-    if (!existsSync(abs)) {
-      console.error(`check-docs: doc file not found: ${rel}`);
-      process.exit(1);
-    }
-    const source = readFileSync(abs, "utf8");
-    const md = format === "jsdoc" ? jsdocToMarkdown(source) : source;
-    const blocks = extractBlocks(md);
-    for (const block of blocks) {
-      totalTsBlocks += 1;
-      if (block.skip) {
-        skipped.push({ file: rel, line: block.line });
-        continue;
-      }
-      const name = `${rel.replace(/[^a-zA-Z0-9]/g, "_")}__L${block.line}`;
-      const wrapped = wrapBlock(rewriteImports(block.code, distDir));
-      writeFileSync(join(blocksDir, `${name}.ts`), wrapped);
-      blockIndex.set(name, { file: rel, line: block.line });
-      checked += 1;
-    }
+  const docs = gatherDocSources();
+  const plan = planDocBlocks(docs, distDir);
+  for (const block of plan.blocks) {
+    writeFileSync(join(blocksDir, `${block.name}.ts`), block.content);
   }
 
   // Run tsc ONCE over all block files via the scratch tsconfig.
-  let tscOutput = "";
-  let tscFailed = false;
+  /** @type {string | null} */
+  let tscOutput = null;
   try {
     execFileSync(tscBin, ["--noEmit", "-p", join(workDir, "tsconfig.json")], {
       cwd: workDir,
@@ -289,61 +407,44 @@ function main() {
       encoding: "utf8",
     });
   } catch (err) {
-    tscFailed = true;
     tscOutput = `${err.stdout ?? ""}${err.stderr ?? ""}`;
   }
 
-  if (tscFailed) {
-    // Attribute each diagnostic line back to its doc file + fence line.
-    // tsc prints e.g.  blocks/README_md__L13.ts(4,20): error TS2339: ...
-    const seen = new Set();
-    for (const rawLine of tscOutput.split("\n")) {
-      const m = rawLine.match(/blocks\/([A-Za-z0-9_]+)\.ts\((\d+),(\d+)\): (error TS\d+.*)$/);
-      if (!m) continue;
-      const info = blockIndex.get(m[1]);
-      if (!info) continue;
-      const key = `${m[1]}:${m[2]}:${m[3]}:${m[4]}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      failures.push({ file: info.file, line: info.line, msg: m[4] });
-    }
-    // TS5112 must never appear — if it does, our config strategy regressed.
-    if (/TS5112/.test(tscOutput)) {
-      console.error("check-docs: tsc emitted TS5112 (root tsconfig leaked in). This masks real");
-      console.error("  errors and is a bug in this script. Aborting.\n");
-      console.error(tscOutput);
-      process.exit(1);
-    }
-    // If tsc failed but we could not attribute a single diagnostic, surface raw
-    // output rather than silently "passing".
-    if (failures.length === 0) {
-      console.error("check-docs: tsc failed but no block diagnostics were parsed. Raw output:\n");
-      console.error(tscOutput);
-      scratch.dispose();
-      process.exit(1);
-    }
+  const verdict = judgeDocs({ plan, tscOutput });
+
+  if (verdict.kind === "tsc-config-regression") {
+    console.error("check-docs: tsc emitted TS5112 (root tsconfig leaked in). This masks real");
+    console.error("  errors and is a bug in this script. Aborting.\n");
+    console.error(tscOutput);
+    process.exit(1);
+  }
+  if (verdict.kind === "unattributable") {
+    console.error("check-docs: tsc failed but no block diagnostics were parsed. Raw output:\n");
+    console.error(tscOutput);
+    scratch.dispose();
+    process.exit(1);
   }
 
   scratch.dispose();
 
   // ----- Report -----------------------------------------------------------
-  console.log(`check-docs: scanned ${DOC_SOURCES.length} documentation sources`);
-  console.log(`  TypeScript blocks found : ${totalTsBlocks}`);
-  console.log(`  checked against dist/    : ${checked}`);
-  console.log(`  skipped (\`${SKIP_MARKER}\`)      : ${skipped.length}`);
+  console.log(`check-docs: scanned ${docs.length} documentation sources`);
+  console.log(`  TypeScript blocks found : ${plan.totalTsBlocks}`);
+  console.log(`  checked against dist/    : ${plan.blocks.length}`);
+  console.log(`  skipped (\`${SKIP_MARKER}\`)      : ${plan.skipped.length}`);
 
-  if (skipped.length > 0) {
+  if (plan.skipped.length > 0) {
     console.log("\n  Skipped blocks (must be fragments/templates that cannot compile standalone):");
-    for (const s of skipped) {
+    for (const s of plan.skipped) {
       console.log(`    - ${s.file}:${s.line}`);
     }
   }
 
-  const skipRatio = totalTsBlocks === 0 ? 0 : skipped.length / totalTsBlocks;
-
-  if (failures.length > 0) {
-    console.error(`\ncheck-docs: ${failures.length} documentation block(s) FAILED to typecheck:\n`);
-    for (const f of failures) {
+  if (verdict.kind === "block-failures") {
+    console.error(
+      `\ncheck-docs: ${verdict.failures.length} documentation block(s) FAILED to typecheck:\n`,
+    );
+    for (const f of verdict.failures) {
       console.error(`  ${f.file} (fence at line ${f.line}): ${f.msg}`);
     }
     console.error("\nFix the doc example, or — only if it is a genuine non-compilable fragment —");
@@ -351,16 +452,18 @@ function main() {
     process.exit(1);
   }
 
-  if (skipRatio > MAX_SKIP_RATIO) {
+  if (verdict.kind === "skip-ratio") {
     console.error(
-      `\ncheck-docs: skip ratio ${(skipRatio * 100).toFixed(0)}% exceeds ` +
+      `\ncheck-docs: skip ratio ${(verdict.skipRatio * 100).toFixed(0)}% exceeds ` +
         `${(MAX_SKIP_RATIO * 100).toFixed(0)}% — too many blocks are marked \`${SKIP_MARKER}\`.`,
     );
     console.error("  The guard only protects blocks it actually compiles. Reduce the skips.");
     process.exit(1);
   }
 
-  console.log(`\ncheck-docs: OK — all ${checked} checked block(s) typecheck against dist/.`);
+  console.log(
+    `\ncheck-docs: OK — all ${plan.blocks.length} checked block(s) typecheck against dist/.`,
+  );
 }
 
 /**
@@ -371,8 +474,13 @@ function main() {
  * `export {}` forces module (not script) semantics even for import-less blocks.
  * @param {string} code
  */
-function wrapBlock(code) {
+export function wrapBlock(code) {
   return `${code}\nexport {};\n`;
 }
 
-main();
+// Importing this module must do nothing at all; only `node scripts/check-docs.mjs`
+// runs the gate. Note the guard is lexical — it does not resolve symlinks, while
+// Node's ESM loader realpaths import.meta.url — so a symlinked checkout would
+// make it false and this gate would print nothing and exit 0.
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) main();
