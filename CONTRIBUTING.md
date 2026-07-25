@@ -64,7 +64,7 @@ re-check.
 
 ### The public surface is frozen — both axes (`pnpm test`)
 
-`test.spec.ts` snapshots the exact public export surface of the **built**
+`public-surface.spec.ts` snapshots the exact public export surface of the **built**
 package so any addition or removal is a red test and a reviewable snapshot
 diff, never a silent minor/major. It freezes **two independent axes**, because
 one snapshot cannot see the other:
@@ -93,7 +93,7 @@ _or_ type — is a deliberate, reviewed act. After you change the code, rebuild
 and update the snapshots:
 
 ```bash
-pnpm build && pnpm test -u   # rewrites __snapshots__/test.spec.ts.snap
+pnpm build && pnpm test -u   # rewrites __snapshots__/public-surface.spec.ts.snap
 ```
 
 Commit the snapshot diff alongside the code change so the reviewer sees exactly
@@ -147,8 +147,9 @@ only proves the TypeScript example is well-formed.
 ### The packed tarball is consumed as a real user (`pnpm check-consumer`)
 
 `scripts/check-consumer.mjs` closes a hole that no other test covers: **every
-other test runs against `src/` or a single built entry point.** `test.spec.ts`
-imports `./src/index`; the bun/deno smokes import `dist/index.mjs` (the main
+other test runs against `src/` or a single built entry point.** The root
+`*.spec.ts` suites import `./src/index`; the bun/deno smokes import
+`dist/index.mjs` (the main
 entry only); the API-surface snapshot checks export _names_; `verify-pack`
 checks file _paths_. None of them ever installs the artifact and runs it the
 way a downstream user does. A whole class of packaging bugs is therefore
@@ -242,7 +243,7 @@ files are for editors and readers; do not rely on them for CI enforcement.
 
 The 40 concrete error classes are plain, hand-written source. There is no
 code generator — adding a status code is a mechanical edit across a fixed set
-of files. It's a chore, but the **roster tests in `test.spec.ts` are the
+of files. It's a chore, but the **roster tests in `roster-sync.spec.ts` are the
 safety net**: miss a step and one of them goes red (see the end of this
 section for exactly which). Follow the existing 404 (`NotFoundError`) as a
 template.
@@ -283,14 +284,18 @@ error — do all of the following:
    `[NNN, XxxError],` entry to `statusCodeErrorMap` (entries are in
    ascending status-code order).
 
-5. **Update `test.spec.ts`**:
-   - add `{ Class: XxxError, status: NNN },` to the `allErrors` table (in
-     status-code order);
-   - bump the cardinality counts from `40` to `41` in the "roster cardinality
-     is exactly 40" test, the "httpErrors contains all 40 error classes" test,
-     and the "statusCodeErrorMap contains all 40 status codes" test;
-   - add an explicit per-class assertion pair inside the "every class's status
-     and statusText are their own literal type" test:
+5. **Update the tests**:
+   - in `fixtures/error-roster.ts`, add `{ Class: XxxError, status: NNN },` to
+     the `allErrors` table (in status-code order). Write the row by hand from
+     the RFC — never derive it from `src/`, or the table stops being an
+     independent second source of truth;
+   - in `roster-sync.spec.ts`, bump the cardinality counts from `40` to `41`
+     in the "roster cardinality is exactly 40" test, the "httpErrors contains
+     all 40 error classes" test, and the "statusCodeErrorMap contains all 40
+     status codes" test;
+   - in `roster-sync.spec.ts`, add an explicit per-class assertion pair inside
+     the "every class's status and statusText are their own literal type"
+     test:
      ```typescript no-check
      expectTypeOf<XxxError["status"]>().toEqualTypeOf<NNN>();
      expectTypeOf<XxxError["statusText"]>().toEqualTypeOf<"<Status Text>">();
@@ -300,8 +305,8 @@ error — do all of the following:
 
 ### The safety net
 
-If you miss a step, the `test.spec.ts` roster tests fail — that is the whole
-point of them:
+If you miss a step, the `roster-sync.spec.ts` roster tests fail — that is the
+whole point of them:
 
 - Forgetting to add the class to a `ClientErrors`/`ServerErrors` union (but
   leaving it in `httpErrors`) fails **typecheck** via the

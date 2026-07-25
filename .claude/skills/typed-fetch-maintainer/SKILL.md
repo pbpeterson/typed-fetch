@@ -104,7 +104,7 @@ The roster is hand-maintained. To add a dedicated class for status code `NNN`:
 2. **Export** it from `src/errors/index.ts` (`export { NnnError } from "./nnn-error";`).
 3. In `src/errors/helpers.ts`, add it in **two** spots: the `ClientErrors` or `ServerErrors` union AND the `httpErrors` array.
 4. In `src/http-status-codes.ts`, add the import at the top AND the `[NNN, NnnError]` entry to the `statusCodeErrorMap` Map literal.
-5. In `test.spec.ts`, add a row to **both** the `errorCases` table and the `allErrors` table, and bump the cardinality assertions — currently **40** (the `expect(httpErrors).toHaveLength(40)` / `statusCodeErrorMap.size` checks in the `httpErrors & statusCodeErrorMap` block, and the `roster.length` / `size` checks in the `roster sync` block).
+5. Add a row to **both** roster tables: the `errorCases` table in `typed-fetch.spec.ts` and the `allErrors` table in `fixtures/error-roster.ts` (write the latter by hand from the RFC — it is a deliberate second source of truth and must never be derived from `src/`). Then bump the cardinality assertions in `roster-sync.spec.ts` — currently **40** (the `expect(httpErrors).toHaveLength(40)` / `statusCodeErrorMap.size` checks in the `httpErrors & statusCodeErrorMap` block, and the `roster.length` / `size` checks in the `roster sync` block).
 
 Adding a class also changes the public API surface, so update the snapshot (see below): `pnpm build && pnpm test -u`.
 
@@ -137,12 +137,12 @@ both sides `teed`; the platform releases the source only when every branch is
 released, so a lone `cancel()` stays pending — keep that, do not resolve early,
 and never auto-cancel the sibling.
 
-## Guardrail tests (test.spec.ts)
+## Guardrail tests (roster-sync.spec.ts, public-surface.spec.ts)
 
 These are what keep the hand-edited roster honest — run and read them when touching errors:
 
-- **Roster sync** (`describe("roster sync")`): compile-time `InstanceType<HttpErrors>` vs `ClientErrors | ServerErrors` exhaustiveness; runtime cardinality (exactly 40) and `httpErrors` ↔ `statusCodeErrorMap` agreement; and 40 explicit per-class `expectTypeOf<XError["status"]>().toEqualTypeOf<NNN>()` assertions (the array/union checks do NOT catch a single class's literal being widened — only the per-class ones do).
-- **API-surface snapshot + barrel completeness** (`describe("public API surface is frozen")`): snapshots the sorted named exports of the BUILT `dist/index.mjs` and `dist/errors/index.mjs`, then compares the internal `httpErrors` names/statuses with both entry points so a registered class cannot ship without being importable. It is `describe.skipIf(!distExists)` — it only runs after `pnpm build` because `dist/` is gitignored. CI deliberately builds first. Any intentional export add/remove needs `pnpm build && pnpm test -u` to refresh the snapshot.
+- **Roster sync** (`describe("roster sync")` in `roster-sync.spec.ts`): compile-time `InstanceType<HttpErrors>` vs `ClientErrors | ServerErrors` exhaustiveness; runtime cardinality (exactly 40) and `httpErrors` ↔ `statusCodeErrorMap` agreement; and 40 explicit per-class `expectTypeOf<XError["status"]>().toEqualTypeOf<NNN>()` assertions (the array/union checks do NOT catch a single class's literal being widened — only the per-class ones do).
+- **API-surface snapshot + barrel completeness** (`describe("public API surface is frozen")` in `public-surface.spec.ts`): snapshots the sorted named exports of the BUILT `dist/index.mjs` and `dist/errors/index.mjs`, then compares the internal `httpErrors` names/statuses with both entry points so a registered class cannot ship without being importable. It is `describe.skipIf(!distExists)` — it only runs after `pnpm build` because `dist/` is gitignored. CI deliberately builds first. Any intentional export add/remove needs `pnpm build && pnpm test -u` to refresh the snapshot.
 
 ## Verification (run all before commit)
 
@@ -164,7 +164,7 @@ The manual `node_modules` mode requires Deno 2. CI always runs the gate against
 an installed packed artifact and its public types.
 
 - Build BEFORE test so the API-surface snapshot tests actually run (they skip when `dist/` is absent).
-- `pnpm typecheck` uses `tsconfig.test.json` — includes `test.spec.ts` so `expectTypeOf` assertions are real. Plain `tsc --noEmit` skips them.
+- `pnpm typecheck` uses `tsconfig.test.json` — includes the root `*.spec.ts` files so `expectTypeOf` assertions are real. Plain `tsc --noEmit` skips them. Spec files must stay at the repo root: the include glob is root-only, and one test reads `src/errors/base-http-error.ts` via a CWD-relative path.
 - Tests hit a real local HTTP server (no mocks). Query params drive responses: `?status=`, `?body=`, `?header=Key:Value`.
 - 407 can't go through Node's fetch (rejected at network level) — tested via direct construction.
 - Abort/timeout are exercised against the live server (`controller.abort()` and `AbortSignal.timeout()`), asserting `AbortedError`/`TimeoutError` and that `isNetworkError` is false for both.
