@@ -1,12 +1,12 @@
 import { brand, abortedErrorBrand } from "./brand";
 
 /**
- * Represents a request that was cancelled via `AbortSignal` (e.g.
+ * Represents a request that was aborted via `AbortSignal` (e.g.
  * `controller.abort()` or `controller.abort(reason)`).
  *
  * Unlike HTTP errors, an `AbortedError` has no status code or response body
  * because the request never completed. The original error thrown by `fetch`
- * is preserved on {@link cause}, the signal's cancellation reason on
+ * is preserved on {@link cause}, the signal's abort reason on
  * {@link reason}, and the requested URL on {@link url}.
  *
  * Carries a cross-copy brand so `isAbortError` works across module copies —

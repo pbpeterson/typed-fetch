@@ -28,7 +28,7 @@ import { TimeoutError } from "./errors/timeout-error";
  *
  * - Total: every input produces an error value. It never throws and never
  *   returns `undefined`, whatever the inputs do when read.
- * - The `AbortSignal` is the authority on cancellation, never the rejection's
+ * - The `AbortSignal` is the authority on an abort, never the rejection's
  *   `.name`.
  * - `url` arrives already resolved. This module never touches the request
  *   input (`string | URL | Request`); resolving it is the caller's job,
@@ -126,7 +126,7 @@ function isDOMExceptionNamed(value: unknown, ...names: string[]): value is DOMEx
  * shapes are accepted here.
  *
  * Restricted to error-shaped values so an arbitrary object carrying a `name`
- * property cannot claim a cancellation. This is only ever consulted while the
+ * property cannot claim an abort. This is only ever consulted while the
  * governing signal reports `aborted`, which is what keeps an unrelated failure
  * (a `TypeError` from Request construction, a `SecurityError`) out of the abort
  * path.
@@ -143,7 +143,7 @@ function isAbortShapedRejection(value: unknown): boolean {
  * `aborted` and `reason` are read inside ONE `try` on purpose: a signal that
  * reports `aborted` but throws while its `reason` is read has told us nothing
  * trustworthy, and half a snapshot is worse than none — it would let an
- * abort-shaped rejection claim a cancellation the signal never confirmed.
+ * abort-shaped rejection claim an abort the signal never confirmed.
  */
 function abortState(signal: AbortSignal | undefined): {
   readonly aborted: boolean;
@@ -157,13 +157,13 @@ function abortState(signal: AbortSignal | undefined): {
   } catch {
     // A hostile/polyfilled signal must not make the request envelope reject.
     // Without a trustworthy state snapshot, treat the original rejection as a
-    // network/request-construction failure instead of guessing cancellation.
+    // network/request-construction failure instead of guessing an abort.
     return { aborted: false, reason: undefined };
   }
 }
 
 /**
- * Classify a rejected request attempt as a timeout, a cancellation, or a
+ * Classify a rejected request attempt as a timeout, an abort, or a
  * network/request-construction failure.
  *
  * @param rejection - The value `fetch` (or an injected implementation) rejected
@@ -182,11 +182,11 @@ export function classifyRequestFailure(
   url: string,
 ): NetworkError | AbortedError | TimeoutError {
   const { aborted, reason } = abortState(signal);
-  // The AbortSignal is the authority on cancellation — NOT the rejected
+  // The AbortSignal is the authority on an abort — NOT the rejected
   // error's `.name`. A caller can pass any reason to `controller.abort(reason)`
   // (a documented Web API pattern), and fetch rejects with THAT reason, whose
   // `.name` is rarely "AbortError". Conversely, an unrelated error that merely
-  // happens to be named "AbortError" must NOT be treated as a cancellation.
+  // happens to be named "AbortError" must NOT be treated as an abort.
   //
   // The signal being aborted is necessary but NOT sufficient: fetch can
   // reject for an unrelated reason even while the signal is already aborted
@@ -204,11 +204,11 @@ export function classifyRequestFailure(
   // obligation to reject with `signal.reason`: `whatwg-fetch` builds a fresh
   // DOMException, `node-fetch@3` throws its own `AbortError` class, and an
   // exotic signal can report `aborted` while leaving `reason` undefined. When
-  // the governing signal says the call was cancelled AND the rejection
-  // carries a platform abort name, this IS that cancellation. The name check
+  // the governing signal says the call was aborted AND the rejection
+  // carries a platform abort name, this IS that abort. The name check
   // keeps an unrelated failure (a "SecurityError", a Request-construction
   // TypeError) OUT of the abort path, and the value must be error-shaped so a
-  // bare object cannot claim a cancellation.
+  // bare object cannot claim an abort.
   //
   // Anything else falls through to NetworkError with the real cause.
   if (aborted && (rejection === reason || isAbortShapedRejection(rejection))) {

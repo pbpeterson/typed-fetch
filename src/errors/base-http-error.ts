@@ -215,6 +215,11 @@ export abstract class BaseHttpError extends Error {
    * const copy = error.clone((response) => new TenantHttpError(response, error.tenant));
    *
    * console.log(copy.tenant); // "acme"
+   *
+   * // `clone()` tees the body. Release BOTH branches, or the source stays
+   * // pinned. Release them together: one `cancel()` alone stays pending until
+   * // the sibling branch is released too.
+   * await Promise.all([error.cancel(), copy.cancel()]);
    * ```
    */
   clone(recreate?: (response: Response) => this): this {

@@ -45,6 +45,8 @@ function isRequest(value: unknown): value is Request {
  * declare const error: unknown;
  * if (isHttpError(error)) {
  *   console.log(error.status, error.statusText);
+ *   // This example does not read the body, so it must cancel the body.
+ *   await error.cancel();
  * }
  * ```
  */
@@ -85,7 +87,7 @@ export function isNetworkError(error: unknown): error is NetworkError {
  *
  * declare const error: unknown;
  * if (isAbortError(error)) {
- *   console.log("Request was cancelled");
+ *   console.log("Request was aborted");
  * }
  * ```
  */
@@ -139,6 +141,8 @@ export function isTimeoutError(error: unknown): error is TimeoutError {
  *       // Keep a default for forward compatibility and mixed package versions.
  *       break;
  *   }
+ *   // No branch reads the body, so cancel the body once after the switch.
+ *   await error.cancel();
  * }
  * ```
  */
@@ -243,7 +247,7 @@ export type TypedFetchOptions = FetchParams[1] & {
  *
  * @example
  * ```ts
- * import { typedFetch } from "@pbpeterson/typed-fetch";
+ * import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
  *
  * interface User {
  *   id: number;
@@ -252,6 +256,9 @@ export type TypedFetchOptions = FetchParams[1] & {
  * const { response, error } = await typedFetch<User>("/api/users/1");
  * if (error) {
  *   console.log(error.name);
+ *   // An HTTP error carries a body. This example does not read it, so it
+ *   // cancels it. An unread body keeps its connection open.
+ *   if (isHttpError(error)) await error.cancel();
  * } else {
  *   const user = await response.json();
  * }
@@ -314,7 +321,7 @@ export async function typedFetch<JsonReturnType>(
     // getter that threw is one of the reasons this catch runs at all. Reading
     // it again would rethrow and break the envelope's promise.
     //
-    // Which failure this is — timeout, cancellation, or network — is decided by
+    // Which failure this is — timeout, abort, or network — is decided by
     // `classifyRequestFailure`. The governing signal is the authority there,
     // never the rejection's `.name`.
     return {
