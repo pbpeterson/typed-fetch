@@ -444,12 +444,18 @@ describe("import hygiene", () => {
           import { readdirSync } from "node:fs";
           import { tmpdir } from "node:os";
           const before = readdirSync(tmpdir()).filter((n) => n.startsWith("tf-consumer-")).length;
+          // Deltas, not absolute counts: Node registers an \`exit\` listener of
+          // its own on some versions, so an absolute 0 asserts something about
+          // the runtime rather than about this module.
+          const beforeExit = process.listenerCount("exit");
+          const beforeSigint = process.listenerCount("SIGINT");
+          const beforeSigterm = process.listenerCount("SIGTERM");
           await import(${JSON.stringify(MODULE_URL)});
           console.log(JSON.stringify({
             leaked: readdirSync(tmpdir()).filter((n) => n.startsWith("tf-consumer-")).length - before,
-            exit: process.listenerCount("exit"),
-            sigint: process.listenerCount("SIGINT"),
-            sigterm: process.listenerCount("SIGTERM"),
+            exit: process.listenerCount("exit") - beforeExit,
+            sigint: process.listenerCount("SIGINT") - beforeSigint,
+            sigterm: process.listenerCount("SIGTERM") - beforeSigterm,
           }));
           `,
         ],

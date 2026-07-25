@@ -108,7 +108,20 @@ function runChild(body, options = {}) {
   const script = join(dir, "child.mjs");
   writeFileSync(
     script,
-    `import { createScratchDir } from ${JSON.stringify(MODULE_URL)};\n${body}\n`,
+    // The baseline is captured BEFORE the import so a test can assert the
+    // DELTA. Node itself registers an `exit` listener on some versions, so an
+    // absolute count of 0 is a claim about the runtime, not about this module.
+    `const __before = {\n` +
+      `  exit: process.listenerCount("exit"),\n` +
+      `  sigint: process.listenerCount("SIGINT"),\n` +
+      `  sigterm: process.listenerCount("SIGTERM"),\n` +
+      `};\n` +
+      `const __added = () => ({\n` +
+      `  exit: process.listenerCount("exit") - __before.exit,\n` +
+      `  sigint: process.listenerCount("SIGINT") - __before.sigint,\n` +
+      `  sigterm: process.listenerCount("SIGTERM") - __before.sigterm,\n` +
+      `});\n` +
+      `const { createScratchDir } = await import(${JSON.stringify(MODULE_URL)});\n${body}\n`,
   );
 
   return new Promise((resolvePromise, reject) => {
@@ -224,11 +237,7 @@ describe("import hygiene", () => {
     // If this regresses, every vitest worker that touches a release gate starts
     // leaving temp directories behind and intercepting Ctrl-C.
     const { code, stdout } = await runChild(`
-      console.log(JSON.stringify({
-        exit: process.listenerCount("exit"),
-        sigint: process.listenerCount("SIGINT"),
-        sigterm: process.listenerCount("SIGTERM"),
-      }));
+      console.log(JSON.stringify(__added()));
       void createScratchDir;
     `);
     expect(code).toBe(0);
@@ -238,11 +247,7 @@ describe("import hygiene", () => {
   test("handlers are installed once, however many directories are opened", async () => {
     const { code, stdout } = await runChild(`
       for (let i = 0; i < 5; i += 1) createScratchDir("tf-spec-child-scratch-");
-      console.log(JSON.stringify({
-        exit: process.listenerCount("exit"),
-        sigint: process.listenerCount("SIGINT"),
-        sigterm: process.listenerCount("SIGTERM"),
-      }));
+      console.log(JSON.stringify(__added()));
     `);
     expect(code).toBe(0);
     expect(JSON.parse(stdout.trim())).toEqual({ exit: 1, sigint: 1, sigterm: 1 });
