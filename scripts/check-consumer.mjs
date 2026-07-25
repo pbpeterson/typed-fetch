@@ -369,6 +369,22 @@ export async function optionalHeader(): Promise<void> {
 }
 `;
 
+// The DI seam under `exactOptionalPropertyTypes`. The README presents `fetch`
+// as the way to inject a test double, and the value a project actually holds is
+// often `typeof fetch | undefined` (a config field, an optional constructor
+// argument). Under EOPT an optional property whose type does not NAME
+// `undefined` rejects that value with TS2379, so the documented pattern did not
+// compile for the whole class of projects that enable the flag.
+const CONSUMER_EOPT_TS = `
+import { typedFetch } from "${PKG_NAME}";
+
+declare const maybeFetch: typeof fetch | undefined;
+
+export async function di(): Promise<void> {
+  await typedFetch("https://example.test/x", { fetch: maybeFetch });
+}
+`;
+
 // Cross-format assignability. A CJS-typed middle package hands an error to an
 // ESM app: with a `#private` field in the declarations these are two nominal
 // types and the assignment needs a cast (`TS2741: Property '#private' is
@@ -432,6 +448,15 @@ export const TYPECHECK_PASSES = [
     lib: ["ES2023", "DOM"],
     types: ["node"],
     files: ["consumer.nodom.ts"],
+  },
+  // The documented DI seam, compiled with exactOptionalPropertyTypes on.
+  {
+    id: "node-eopt",
+    moduleResolution: "nodenext",
+    lib: ["ES2023"],
+    types: ["node"],
+    exactOptionalPropertyTypes: true,
+    files: ["consumer.eopt.ts"],
   },
   // CJS -> ESM assignability across the two declaration files.
   {
@@ -659,10 +684,13 @@ export function typecheckAssertion(pass, outcome) {
  * The tsconfig a consumer typecheck pass runs under. Pure config building,
  * lifted out of the adapter so the policy in it is assertable.
  *
- * @param {{ moduleResolution: string, lib: string[], types: string[], files: string[] }} pass
+ * @param {{ moduleResolution: string, lib: string[], types: string[], files: string[], exactOptionalPropertyTypes?: boolean }} pass
  * @param {string[]} typeRoots
  */
-export function consumerTsconfig({ moduleResolution, lib, types, files }, typeRoots) {
+export function consumerTsconfig(
+  { moduleResolution, lib, types, files, exactOptionalPropertyTypes },
+  typeRoots,
+) {
   const moduleKind = moduleResolution === "nodenext" ? "nodenext" : "esnext";
   return {
     compilerOptions: {
@@ -675,6 +703,7 @@ export function consumerTsconfig({ moduleResolution, lib, types, files }, typeRo
       // skipLibCheck:false so a broken .d.ts in the package surfaces.
       skipLibCheck: false,
       types,
+      ...(exactOptionalPropertyTypes ? { exactOptionalPropertyTypes: true } : {}),
       ...(types.length > 0 ? { typeRoots } : {}),
     },
     files,
@@ -901,6 +930,7 @@ function main() {
 
   writeFileSync(join(consumer, "consumer.api.ts"), CONSUMER_TS);
   writeFileSync(join(consumer, "consumer.nodom.ts"), CONSUMER_NO_DOM_TS);
+  writeFileSync(join(consumer, "consumer.eopt.ts"), CONSUMER_EOPT_TS);
   writeFileSync(join(consumer, "cross-format.cts"), CONSUMER_CJS_CTS);
   writeFileSync(join(consumer, "cross-format.mts"), CONSUMER_ESM_MTS);
 

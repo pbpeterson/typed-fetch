@@ -441,6 +441,14 @@ describe("consumerTsconfig", () => {
     }
   });
 
+  test("exactOptionalPropertyTypes appears only when the pass asks for it", () => {
+    expect(consumerTsconfig(basePass, TYPE_ROOTS).compilerOptions).not.toHaveProperty(
+      "exactOptionalPropertyTypes",
+    );
+    const eopt = consumerTsconfig({ ...basePass, exactOptionalPropertyTypes: true }, TYPE_ROOTS);
+    expect(eopt.compilerOptions.exactOptionalPropertyTypes).toBe(true);
+  });
+
   test("typeRoots appear only when types are requested", () => {
     expect(consumerTsconfig(basePass, TYPE_ROOTS).compilerOptions).not.toHaveProperty("typeRoots");
     const withTypes = consumerTsconfig({ ...basePass, types: ["node"] }, TYPE_ROOTS);
@@ -465,14 +473,23 @@ describe("consumerTsconfig", () => {
 // ---------------------------------------------------------------------------
 
 describe("TYPECHECK_PASSES", () => {
-  test("covers the five consumer configurations", () => {
+  test("covers the six consumer configurations", () => {
     expect(TYPECHECK_PASSES.map((p) => p.id)).toEqual([
       "bundler",
       "nodenext",
       "node-without-dom",
       "node-with-dom",
+      "node-eopt",
       "cross-format-cjs-esm",
     ]);
+  });
+
+  test("the node-eopt pass really turns exactOptionalPropertyTypes on", () => {
+    // That pass exists because an optional property that does not NAME
+    // `undefined` rejects one under EOPT. With the flag off it compiles either
+    // way and the pass proves nothing.
+    const eopt = TYPECHECK_PASSES.find((p) => p.id === "node-eopt");
+    expect(eopt.exactOptionalPropertyTypes).toBe(true);
   });
 
   test("the node-without-dom pass really has no DOM lib", () => {

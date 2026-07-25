@@ -101,6 +101,51 @@ describe("type-level", () => {
     }>();
   });
 
+  // ── the options slots: replaced, not intersected ───────────────────
+  // `RequestInit["method"]` is `string`. Intersecting it with the open union
+  // collapsed the whole slot to bare `string` — `string & (HttpMethods | (string
+  // & {}))` reduces — and a slot typed `string` offers ZERO completions. The
+  // native slot is now removed with `Omit` and REPLACED, which is the only
+  // reason `method: "…"` suggests anything at all.
+
+  test("the method slot keeps its union instead of collapsing to string", () => {
+    expectTypeOf<TypedFetchOptions["method"]>().toEqualTypeOf<
+      HttpMethods | (string & {}) | undefined
+    >();
+    expectTypeOf<TypedFetchOptions["method"]>().not.toEqualTypeOf<string | undefined>();
+    // Still open: fetch accepts any method string, and this type validates none.
+    expectTypeOf<"REPORT">().toExtend<NonNullable<TypedFetchOptions["method"]>>();
+    expectTypeOf<string>().toExtend<NonNullable<TypedFetchOptions["method"]>>();
+  });
+
+  test("the headers slot is this library's type, not an intersection", () => {
+    // The intersection also dragged in the PLATFORM's declared header names.
+    // Under `@types/node` (no DOM) that is undici's full list, which put every
+    // response-only name — `Set-Cookie`, `ETag`, `Content-Length`, `Host` —
+    // back into the suggestion list that this library deliberately narrowed to
+    // request-side names.
+    expectTypeOf<NonNullable<TypedFetchOptions["headers"]>>().toEqualTypeOf<TypedHeaders>();
+  });
+
+  test("replacing two slots removes no other RequestInit member", () => {
+    expectTypeOf<TypedFetchOptions>().toExtend<RequestInit>();
+    type Native = NonNullable<Parameters<typeof fetch>[1]>;
+    // Nothing the platform declares may go missing. This catches a mistyped
+    // key in the `Omit`, which would silently delete a real option instead.
+    expectTypeOf<Exclude<keyof Native, keyof TypedFetchOptions>>().toEqualTypeOf<never>();
+    expectTypeOf<{ body: string; redirect: "manual" }>().toExtend<TypedFetchOptions>();
+  });
+
+  test("the fetch seam names undefined so a DI value assigns under EOPT", () => {
+    // `fetch?: typeof fetch` REJECTS `typeof fetch | undefined` under
+    // `exactOptionalPropertyTypes` (TS2379), which is the value a DI seam
+    // actually holds. This repo does not compile with that flag, so the
+    // assertion below cannot fail here: the gate that can is
+    // `typecheck:node-eopt` in scripts/check-consumer.mjs, which compiles a
+    // consumer against the PUBLISHED declarations with EOPT on.
+    expectTypeOf<TypedFetchOptions["fetch"]>().toEqualTypeOf<typeof fetch | undefined>();
+  });
+
   test("isHttpError narrows to BaseHttpError", () => {
     const error: unknown = {};
     if (isHttpError(error)) {

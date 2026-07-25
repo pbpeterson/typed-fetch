@@ -58,6 +58,9 @@ import {
 
 const { url } = useTestServer();
 
+/** An injected fetch that resolves an arbitrary value, `Response` or not. */
+const respondingWith = (value: unknown) => (async () => value) as unknown as typeof fetch;
+
 // ── typedFetch ───────────────────────────────────────────────────────
 
 describe("typedFetch", () => {
@@ -166,16 +169,75 @@ describe("typedFetch", () => {
     expect(init && "fetch" in init).toBe(false);
   });
 
-  test("uses an inherited fetch override without forwarding it", async () => {
+  // The transport override is read as an OWN property only. `fetch` is this
+  // library's own extension, not a WebIDL dictionary member, so the platform's
+  // rule for inherited members (which the test above pins for `method`) is not
+  // the rule for this one. An inherited `fetch` is neither used nor stripped:
+  // it stays on the object, and the platform ignores it.
+  test("ignores an inherited fetch override and sends the request itself", async () => {
     const stubFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
     const options = Object.create({ fetch: stubFetch, method: "POST" }) as TypedFetchOptions;
 
-    await typedFetch("https://example.invalid/inherited-fetch", options);
+    const result = await typedFetch(url({ status: 200 }), options);
 
-    expect(stubFetch).toHaveBeenCalledTimes(1);
-    const [, init] = stubFetch.mock.calls[0] ?? [];
-    expect(init?.method).toBe("POST");
-    expect(init && "fetch" in init).toBe(false);
+    expect(stubFetch).not.toHaveBeenCalled();
+    // The request really went out over the global fetch — and the inherited
+    // `method` still reached it, because THAT one is a WebIDL member.
+    expect(result.error).toBe(null);
+    expect(result.response?.headers.get("X-Echo-Method")).toBe("POST");
+  });
+
+  test("an own fetch override wins over an inherited one", async () => {
+    const inherited = vi.fn<typeof fetch>(async () => new Response(null, { status: 500 }));
+    const own = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+    const options = Object.assign(Object.create({ fetch: inherited }) as TypedFetchOptions, {
+      fetch: own,
+    });
+
+    const result = await typedFetch("https://example.invalid/own-wins", options);
+
+    expect(own).toHaveBeenCalledTimes(1);
+    expect(inherited).not.toHaveBeenCalled();
+    expect(result.error).toBe(null);
+  });
+
+  // A single prototype-pollution write anywhere in the process must not be able
+  // to choose who performs the request. Reading the override off the prototype
+  // chain made `Object.prototype.fetch = attacker` redirect EVERY call in the
+  // process — including one that passes no options object at all, whose default
+  // `{}` inherits the property — and hand the attacker the caller's headers.
+  // `defineProperty` with `enumerable: false` keeps the polluted property out of
+  // every `for…in` in the worker; the gadget itself is a plain property read, so
+  // the enumerability changes nothing about what is being tested.
+  test("a polluted Object.prototype.fetch cannot hijack a request", async () => {
+    const attacker = vi.fn<typeof fetch>(
+      async () => new Response(JSON.stringify({ forged: true }), { status: 200 }),
+    );
+    // oxlint-disable-next-line no-extend-native -- polluting it IS the test
+    Object.defineProperty(Object.prototype, "fetch", {
+      value: attacker,
+      writable: true,
+      configurable: true,
+      enumerable: false,
+    });
+
+    try {
+      const real = JSON.stringify({ real: true });
+      const noOptions = await typedFetch<{ real: boolean }>(url({ status: 200, body: real }));
+      const withCredentials = await typedFetch<{ real: boolean }>(
+        url({ status: 200, body: real }),
+        { headers: { Authorization: "Bearer VICTIM_SESSION_TOKEN" } },
+      );
+
+      expect(attacker).not.toHaveBeenCalled();
+      expect(noOptions.error).toBe(null);
+      expect(withCredentials.error).toBe(null);
+      // Read both bodies: the real server answered, and nothing leaks.
+      expect(await noOptions.response?.json()).toEqual({ real: true });
+      expect(await withCredentials.response?.json()).toEqual({ real: true });
+    } finally {
+      delete (Object.prototype as unknown as Record<string, unknown>).fetch;
+    }
   });
 
   test("preserves prototype getters backed by private state with an own fetch override", async () => {
@@ -303,6 +365,40 @@ describe("typedFetch", () => {
     expect(result.error).toBeInstanceOf(NetworkError);
     expect(isNetworkError(result.error)).toBe(true);
     expect(result.error?.cause).toBeInstanceOf(TypeError);
+  });
+
+  // The comment above `res.status` in src/index.ts states exactly this split,
+  // so the cases below are what makes that comment checkable. They pass
+  // before and after the comment was corrected — the behavior is deliberate and
+  // documented (README, "API reference"); only the comment was wrong.
+  test("a non-Response stays on the branch its status selects", async () => {
+    // A read that reports >= 400 → the matching HTTP error VALUE.
+    const mapped = await typedFetch("https://example.invalid/double-404", {
+      fetch: respondingWith({ status: 404 }),
+    });
+    expect(mapped.response).toBe(null);
+    expect(mapped.error).toBeInstanceOf(NotFoundError);
+
+    // A read that reports nothing → SUCCESS, and the double reaches the caller.
+    const stringy = await typedFetch("https://example.invalid/double-string", {
+      fetch: respondingWith("not a response"),
+    });
+    expect(stringy.error).toBe(null);
+    expect(stringy.response as unknown).toBe("not a response");
+
+    const bare = await typedFetch("https://example.invalid/double-bare", {
+      fetch: respondingWith({}),
+    });
+    expect(bare.error).toBe(null);
+    expect((bare.response as unknown as { status?: unknown }).status).toBeUndefined();
+
+    // Only a read that THROWS becomes a NetworkError. That is the whole of the
+    // envelope's promise about an injected implementation.
+    const nothing = await typedFetch("https://example.invalid/double-undefined", {
+      fetch: respondingWith(undefined),
+    });
+    expect(nothing.response).toBe(null);
+    expect(nothing.error).toBeInstanceOf(NetworkError);
   });
 
   test("a Response whose url getter throws → NetworkError value, no rejection", async () => {

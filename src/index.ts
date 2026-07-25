@@ -235,14 +235,37 @@ function releaseBody(res: Response): void {
   }
 }
 
+/**
+ * The options the ambient `fetch` accepts, minus the two slots this library
+ * retypes.
+ *
+ * The slots are REMOVED and replaced, never intersected. An intersection makes
+ * both types apply, and for `method` that erases the whole point: the platform
+ * types it `string`, and `string & (HttpMethods | (string & {}))` reduces to
+ * plain `string`, so `method: "…"` offered ZERO completions while the README
+ * promised them. For `headers` the intersection dragged the PLATFORM's declared
+ * header names into the suggestion list — under `@types/node` without DOM that
+ * is undici's `HeaderRecord`, which reintroduced every response-only name this
+ * library deliberately dropped (`Set-Cookie`, `ETag`) plus the three the
+ * platform owns (`Content-Length`, `Host`, `Connection`).
+ *
+ * Derived from `fetch`'s own signature rather than written as
+ * `Omit<RequestInit, …>`, for the same reason `NativeFetchHeaders` exists in
+ * `src/headers.ts`: a `lib.dom` type name in the published declarations breaks
+ * a Node consumer without DOM. `Omit` keeps every other member, including the
+ * ones only one platform declares (`duplex`, `dispatcher`, `priority`,
+ * `window`).
+ */
+type NativeRequestOptions = Omit<NonNullable<FetchParams[1]>, "headers" | "method">;
+
 /** Request options accepted by {@link typedFetch} — `RequestInit` with typed `headers` and `method`. */
-export type TypedFetchOptions = FetchParams[1] & {
+export type TypedFetchOptions = NativeRequestOptions & {
   headers?: TypedHeaders;
   // fetch accepts any method string (and normalizes case); the union only
   // drives IntelliSense.
   method?: HttpMethods | (string & {});
   /** Override the fetch implementation (testing, DI, custom agents). */
-  fetch?: typeof fetch;
+  fetch?: typeof fetch | undefined;
 };
 
 /**
@@ -288,8 +311,18 @@ export async function typedFetch<JsonReturnType>(
 ): Promise<TypedFetchReturnType<JsonReturnType>> {
   let signal: AbortSignal | undefined;
   try {
-    const hasFetchOverride = "fetch" in options;
-    const fetchImpl = options.fetch ?? fetch;
+    // OWN property only. `fetch` is this library's own extension, not a WebIDL
+    // dictionary member, and reading it off the prototype chain turns a single
+    // `Object.prototype.fetch = ...` write anywhere in the process into a
+    // redirect of every request — including a `typedFetch(url)` call that
+    // passes no options object at all, whose default `{}` inherits it. The
+    // whole transport, with the caller's credentials, is not a field a
+    // polluted prototype gets to choose. The read below is guarded by the same
+    // predicate, so an inherited `fetch` is neither used NOR stripped: it stays
+    // on the object and the platform ignores it, because WebIDL reads only the
+    // members it declares.
+    const hasFetchOverride = Object.hasOwn(options, "fetch");
+    const fetchImpl = (hasFetchOverride ? options.fetch : undefined) ?? fetch;
     // Fetch reads RequestInit as a WebIDL dictionary, so inherited properties
     // and prototype getters are part of the input. Preserve its prototype and
     // descriptors when removing this library's `fetch` extension; an object
@@ -310,10 +343,20 @@ export async function typedFetch<JsonReturnType>(
     const res = await fetchImpl(url, init);
 
     // Inside the envelope on purpose. `fetchImpl` can be an injected
-    // implementation, so the resolved value is untrusted input: a partial test
-    // double resolves a non-Response, and a hostile `status`/`url` getter
-    // throws while being read. Both must surface as an error VALUE, which is
+    // implementation, so the resolved value is untrusted input: a hostile
+    // `status`/`url` getter throws while being read, and a partial test double
+    // resolves a non-Response. A THROW must surface as an error VALUE, which is
     // the contract this function exists to keep, instead of rejecting.
+    //
+    // A non-Response that answers the read is a different case, and it is NOT
+    // forced into an error: `status` is the only thing consulted, so a double
+    // reporting `>= 400` becomes the matching HTTP error, and one reporting
+    // anything else — including `undefined` — stays on the success branch and
+    // reaches the caller through the cast below. Measured: `{ status: 404 }`
+    // resolves as `NotFoundError`, `"a string"` resolves as
+    // `{ response: "a string", error: null }`, and `undefined` resolves as
+    // `NetworkError` only because reading `.status` off it throws. README,
+    // "API reference", states the same rule for consumers.
     //
     // `status` is read ONCE, into a local, INSIDE the block below. Once,
     // because a getter is free to report a different value on a second read,
