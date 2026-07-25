@@ -1,7 +1,8 @@
 import { brand, httpErrorBrand } from "./brand";
+import { errorBodyOf, type ErrorBody } from "./error-body";
 
 /**
- * Per-instance state, held OUTSIDE the class.
+ * Per-instance body custody, held OUTSIDE the class.
  *
  * ECMAScript `#private` fields would be the natural home, but TypeScript emits
  * a `#private;` marker into the declaration file for any class that has one,
@@ -10,11 +11,12 @@ import { brand, httpErrorBrand } from "./brand";
  * brands: a CJS-typed wrapper package could not hand an error to an ESM app
  * without a cast (`TS2741: Property '#private' is missing`). That is the same
  * dual-package boundary the runtime `Symbol.for` brands exist to cross, so the
- * type layer must not reintroduce it.
+ * type layer must not reintroduce it. The same rule binds `./error-body`: it is
+ * a factory over closures, not a class, for exactly this reason.
  *
  * A module-scoped `WeakMap` keyed by the instance gives the same guarantees the
- * `#private` fields gave — the response is not an own property, so it stays out
- * of `JSON.stringify(err)`, `{...err}`, `Object.keys(err)`, and structured
+ * `#private` fields gave — the body is not an own property, so it stays out of
+ * `JSON.stringify(err)`, `{...err}`, `Object.keys(err)`, and structured
  * loggers — while emitting nothing into the declarations.
  *
  * TRADEOFF, accepted deliberately: without `#private` the classes are purely
@@ -23,70 +25,20 @@ import { brand, httpErrorBrand } from "./brand";
  * already documents the brand guards (`isHttpError`) — not `instanceof`, and
  * certainly not assignability — as the authority on "did this library make
  * this?". Cross-format assignability is worth more than nominal typing here.
+ * The runtime consequence lands in {@link bodyOf}: a structurally-assignable
+ * impostor has no entry here and every body method rejects it by name.
  */
-type BaseHttpErrorState = {
-  /** The failed response. Reachable only through this module. */
-  readonly response: Response;
-  /** Set by {@link BaseHttpError.cancel}. */
-  cancelled: boolean;
-  /**
-   * Set by this library's own body readers. Tracked separately from
-   * `response.bodyUsed` because that flag is runtime-specific: Bun reports it
-   * as soon as `getReader()` locks the stream, while Node, Deno, and workerd
-   * keep it `false` until the stream is disturbed. Keying "we already consumed
-   * this" on `bodyUsed` therefore misreads an EXTERNAL reader as our own.
-   */
-  readStarted: boolean;
-  /**
-   * Set on BOTH sides by {@link BaseHttpError.clone}: cloning tees the body
-   * stream. Recorded so the documented contract — every branch of a teed body
-   * must be read or cancelled before the source is released — is inspectable.
-   */
-  teed: boolean;
-  /**
-   * The in-flight `cancel()`, so a repeated call settles WITH the first one
-   * instead of reporting success while the first is still waiting. Cleared
-   * once it settles; `cancelled` then carries the state.
-   */
-  cancelling: Promise<void> | undefined;
-};
+const bodies = new WeakMap<BaseHttpError, ErrorBody>();
 
-const states = new WeakMap<BaseHttpError, BaseHttpErrorState>();
-
-function stateOf(error: BaseHttpError): BaseHttpErrorState {
-  const state = states.get(error);
-  if (!state) {
+function bodyOf(error: BaseHttpError): ErrorBody {
+  const body = bodies.get(error);
+  if (!body) {
     throw new TypeError(
       "This error carries no response: it was not initialized by the BaseHttpError constructor. " +
         "A subclass must call super(response).",
     );
   }
-  return state;
-}
-
-/**
- * Guard the single-use body readers with a clear message, mirroring
- * {@link BaseHttpError.clone}. A `Response` body is a one-shot stream; a second
- * read otherwise throws the platform's opaque `TypeError: Body is unusable`.
- *
- * A cancelled body and a locked stream both count as unavailable. A locked
- * stream is the case a `bodyUsed`-only guard misses: a reader holds it while
- * `bodyUsed` can still be `false`.
- */
-function assertBodyReadable(state: BaseHttpErrorState, method: string): void {
-  if (
-    state.cancelled ||
-    state.readStarted ||
-    state.response.bodyUsed ||
-    state.response.body?.locked
-  ) {
-    throw new TypeError(
-      `Cannot read this error's body with ${method}(): its response body has already been read, ` +
-        "cancelled, or its stream is locked. Response bodies are single-use — call clone() BEFORE " +
-        "the first read to read it more than once.",
-    );
-  }
-  state.readStarted = true;
+  return body;
 }
 
 /**
@@ -95,6 +47,11 @@ function assertBodyReadable(state: BaseHttpErrorState, method: string): void {
  * Provides access to the response body via {@link json}, {@link text},
  * {@link blob}, and {@link arrayBuffer}, as well as response {@link headers}.
  * Release a body you do not need with {@link cancel}.
+ *
+ * This class owns HTTP error IDENTITY — status, statusText, url, headers, and
+ * the message line. The body's lifecycle — the single-use guard, the cancel
+ * decision order, and the tee bookkeeping behind {@link clone} — lives in
+ * `./error-body`; every method below is a delegation to it.
  *
  * Carries a cross-copy brand (see `./brand`) so `isHttpError` recognizes
  * instances even when they were created by a different copy of this class
@@ -129,13 +86,7 @@ export abstract class BaseHttpError extends Error {
     super(response.url ? `${line} (${response.url})` : line);
     this.url = response.url;
     this.headers = response.headers;
-    states.set(this, {
-      response,
-      cancelled: false,
-      readStarted: false,
-      teed: false,
-      cancelling: undefined,
-    });
+    bodies.set(this, errorBodyOf(response));
   }
 
   /**
@@ -186,66 +137,7 @@ export abstract class BaseHttpError extends Error {
    * @param reason - Passed to the underlying stream's `cancel()`.
    */
   async cancel(reason?: unknown): Promise<void> {
-    const state = stateOf(this);
-
-    // 1. A repeated cancel settles WITH the in-flight one. Returning early
-    //    here would report success while the first call is still waiting for
-    //    a teed sibling branch.
-    if (state.cancelling) return state.cancelling;
-    if (state.cancelled) return;
-
-    // 2. This library already started the read, so the body is spoken for.
-    //    Checked before the lock test because a completed read leaves the
-    //    stream locked on some runtimes.
-    if (state.readStarted) {
-      state.cancelled = true;
-      return;
-    }
-
-    const body = state.response.body;
-
-    // 3. An EXTERNAL reader holds the stream and has read nothing through it.
-    //    Not ours to release.
-    //
-    //    `bodyUsed` is what separates this from a body the consumer already
-    //    READ (step 4). Measured on Node 20/24, Bun 1.3, and Deno: a completed
-    //    external `text()` leaves the stream `locked` AND `bodyUsed`, exactly
-    //    like a bare `getReader()` does on Bun. So a `locked`-only test would
-    //    reject on a body that is simply gone — the common case whenever a
-    //    consumer holds the `Response` through an injected `fetch`.
-    //
-    //    DOCUMENTED DIVERGENCE: on a runtime that reports `bodyUsed` for a mere
-    //    reader lock (Bun today), the two states are indistinguishable, and
-    //    this call resolves via step 4 instead of rejecting. Resolving on the
-    //    runtime that says the body is used beats rejecting on every runtime
-    //    for a case that is far more common.
-    if (body?.locked && !state.response.bodyUsed) {
-      throw new TypeError(
-        "Cannot cancel this error's body: its stream is locked by a reader. " +
-          "Release the reader with reader.releaseLock(), or cancel the reader itself.",
-      );
-    }
-
-    // 4. Nothing to release: no body, or it was consumed elsewhere.
-    if (!body || state.response.bodyUsed) {
-      state.cancelled = true;
-      return;
-    }
-
-    // 5. Release it.
-    state.cancelled = true;
-    const cancelling = body.cancel(reason);
-    // A teed branch can settle long after this call returns, and the repeated
-    // call path hands the same promise to a caller who may not await it. Keep
-    // a rejection from ever becoming an unhandled rejection; the awaiting
-    // caller below still receives it.
-    cancelling.catch(() => {});
-    state.cancelling = cancelling;
-    try {
-      await cancelling;
-    } finally {
-      state.cancelling = undefined;
-    }
+    return bodyOf(this).cancel(reason);
   }
 
   /**
@@ -255,31 +147,29 @@ export abstract class BaseHttpError extends Error {
    * servers send an empty body or an HTML page — still rejects with the
    * platform's `SyntaxError`. Use {@link text} when the body may not be JSON.
    */
+  // The four readers and `cancel` stay `async` even though every body method
+  // already returns a promise. A missing body entry (a structural impostor, or
+  // a subclass that never ran this constructor) must REJECT, not throw
+  // synchronously out of `error.text()` — the documented shape is
+  // `await expect(error.text()).rejects.toThrow(...)`. `clone()` is the
+  // deliberate exception: it is synchronous and throws.
   async json<T = unknown>(): Promise<T> {
-    const state = stateOf(this);
-    assertBodyReadable(state, "json");
-    return state.response.json();
+    return bodyOf(this).json<T>();
   }
 
   /** Parse the error response body as text. */
   async text(): Promise<string> {
-    const state = stateOf(this);
-    assertBodyReadable(state, "text");
-    return state.response.text();
+    return bodyOf(this).text();
   }
 
   /** Parse the error response body as a Blob. */
   async blob(): Promise<Blob> {
-    const state = stateOf(this);
-    assertBodyReadable(state, "blob");
-    return state.response.blob();
+    return bodyOf(this).blob();
   }
 
   /** Parse the error response body as an ArrayBuffer. */
   async arrayBuffer(): Promise<ArrayBuffer> {
-    const state = stateOf(this);
-    assertBodyReadable(state, "arrayBuffer");
-    return state.response.arrayBuffer();
+    return bodyOf(this).arrayBuffer();
   }
 
   /**
@@ -328,45 +218,25 @@ export abstract class BaseHttpError extends Error {
    * ```
    */
   clone(recreate?: (response: Response) => this): this {
-    const state = stateOf(this);
-    if (
-      state.cancelled ||
-      state.readStarted ||
-      state.response.bodyUsed ||
-      state.response.body?.locked
-    ) {
-      throw new TypeError(
-        "Cannot clone this error: its response body has already been read, cancelled, or its stream " +
-          "is locked. Call clone() before json()/text()/blob()/arrayBuffer()/cancel().",
-      );
-    }
-    // From here the body is TEED: two branches exist, and the platform frees
-    // the source only once BOTH are released. Every failure path below must
-    // therefore release the branch it is about to drop, or `cancel()` on this
-    // error would wait forever for an owner that never existed.
-    const clonedResponse = state.response.clone();
-    const releaseOrphan = (): void => {
-      // Nobody can await this: the caller is receiving an exception, not a
-      // copy. Swallow the rejection so it cannot surface as unhandled.
-      clonedResponse.body?.cancel().catch(() => {});
-    };
+    // Throws before anything is teed when the body is already spoken for.
+    const teed = bodyOf(this).tee();
 
     let copy: this;
     if (!recreate) {
       const Ctor = this.constructor as new (response: Response) => this;
       try {
-        copy = new Ctor(clonedResponse);
+        copy = new Ctor(teed.branch);
       } catch (cause) {
-        releaseOrphan();
+        teed.release();
         // Deliberately NOT wrapped: a consumer subclass constructor's own
         // error must reach the caller verbatim.
         throw cause;
       }
     } else {
       try {
-        copy = recreate(clonedResponse);
+        copy = recreate(teed.branch);
       } catch (cause) {
-        releaseOrphan();
+        teed.release();
         throw new TypeError(`Cannot clone ${this.name}: the recreate callback failed.`, { cause });
       }
     }
@@ -374,17 +244,18 @@ export abstract class BaseHttpError extends Error {
     // One instance cannot own two branches: releasing it would release only
     // one, and the source would stay pinned.
     if (copy === (this as unknown)) {
-      releaseOrphan();
+      teed.release();
       throw new TypeError(
         `Cannot clone ${this.name}: the recreate callback returned the same error instead of a ` +
           "new one. Build a new instance from the response it receives.",
       );
     }
 
-    // Both sides now share one teed source, and both must be released.
-    state.teed = true;
-    const copyState = states.get(copy);
-    if (copyState) copyState.teed = true;
+    // `bodies.get`, NOT `bodyOf`: a `recreate` callback may legitimately return
+    // an instance built by a different copy of this library, whose body lives
+    // in that copy's table. There is nothing to mark here and nothing to fail
+    // over — the branch has an owner either way.
+    teed.adopt(bodies.get(copy));
     return copy;
   }
 }
