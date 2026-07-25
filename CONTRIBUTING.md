@@ -52,7 +52,7 @@ pnpm audit:prod     # fail on any known runtime-dependency vulnerability
 pnpm audit          # fail on high/critical vulnerabilities in the full toolchain
 ```
 
-Run them all locally; CI runs the same checks and will fail the PR otherwise.
+Run them all locally. CI runs the same checks and fails the PR otherwise.
 CI additionally runs Bun and Deno runtime smokes. Its Deno job runs
 `pnpm check-deno-consumer` after the build, installing the packed artifact and
 typechecking the package's public `.d.mts` declarations by bare package name.
@@ -81,7 +81,7 @@ one snapshot cannot see the other:
   meaning). Type-only exports (`export type { … }`, re-exported interfaces and
   type aliases) never exist at runtime, so `Object.keys()` is structurally
   blind to them. Deleting `export type { HttpMethods }` from the barrel once
-  passed every gate at the time — this axis exists to close that hole. Both entry
+  passed every gate at the time — this axis exists to detect that case. Both entry
   points (`.` and `./errors`) are covered.
 
 Both blocks read from `dist/`, so run them **after `pnpm build`** (e.g.
@@ -114,6 +114,22 @@ Two rules from that standard cause most review comments:
 - Every example that obtains an HTTP error must read, cancel, or transfer its
   body.
 
+#### Documentation review checklist
+
+Work through this list before you request a review of a documentation change.
+
+- [ ] Every TypeScript example compiles.
+- [ ] Every HTTP error body is read, canceled, or transferred.
+- [ ] abort refers to a request.
+- [ ] cancel refers to an error body.
+- [ ] Promise behavior uses resolves or rejects.
+- [ ] Synchronous behavior uses throws.
+- [ ] Conditions appear before conditional actions.
+- [ ] New terminology is defined on first use.
+- [ ] README, public skill, and JSDoc describe the same behavior.
+- [ ] No internal export is presented as public.
+- [ ] Warnings describe a concrete consequence.
+
 ### Documentation examples are typechecked (`pnpm check-docs`)
 
 `scripts/check-docs.mjs` extracts every fenced ` ```ts ` / ` ```typescript `
@@ -123,9 +139,9 @@ JSDoc examples in **every `.ts` file under `src/`**. It rewrites the
 typechecks each block with the project's `tsc`. This is why it must run **after
 `pnpm build`** — `dist/` is the compile target. If `dist/` is missing the guard
 **fails loudly** rather than skipping. It exists because the README's headline
-example once shipped broken (`error.status` read on the raw `TypedFetchError`
-union, which includes `NetworkError` — a class with no `.status`) and three
-rounds of "verify the examples" review never actually ran `tsc`.
+example was published with a type error (`error.status` read on the raw
+`TypedFetchError` union, which includes `NetworkError` — a class with no
+`.status`) and three rounds of "verify the examples" review never ran `tsc`.
 
 **Skipping a block.** Some blocks legitimately cannot compile on their own — an
 isolated body fragment that assumes `error` from a previous snippet, a bare type
@@ -144,31 +160,32 @@ if (error instanceof BadRequestError) {
 ````
 
 Every skip is **counted and printed** in the CI log, and the guard **fails if
-more than half of all TS blocks are skipped** — a marker that everyone reaches
-for is a marker that rots. Prefer making a block self-contained (add the missing
+more than half of all TS blocks are skipped**. A marker that every block carries
+stops proving anything. Prefer making a block self-contained (add the missing
 `type User` / import) over skipping it. Do not use `no-check` to silence a real
-error; a newly-skipped headline block is glaringly visible in the printed skip
-list.
+error. The printed skip list names every skipped block, so a newly-skipped
+headline block is visible to a reviewer.
 
 **Limitation — compilation is necessary, not sufficient.** A block can typecheck
 and still be wrong, so a green `check-docs` is not proof the docs are correct.
 A class template can, for example, compile while omitting
 `override readonly name = "..."`. Under minification the constructor name may
 then be mangled and the error's `.name` becomes incorrect — a runtime contract
-this guard will **never** prove. When you edit an error-class example, verify
-`override readonly name` and the intended literal values by eye; `check-docs`
-only proves the TypeScript example is well-formed.
+this guard will **never** prove. When you edit an error-class example, read
+`override readonly name` and the intended literal values and confirm them
+manually. `check-docs` only proves the TypeScript example is well-formed.
 
 ### The packed tarball is consumed as a real user (`pnpm check-consumer`)
 
-`scripts/check-consumer.mjs` closes a hole that no other test covers: **every
+`scripts/check-consumer.mjs` covers a case no other test reaches: **every
 other test runs against `src/` or a single built entry point.** The root
 `*.spec.ts` suites import `./src/index`; the bun/deno smokes import
 `dist/index.mjs` (the main
 entry only); the API-surface snapshot checks export _names_; `verify-pack`
-checks file _paths_. None of them ever installs the artifact and runs it the
+checks file _paths_. None of them installs the artifact and runs it the
 way a downstream user does. A whole class of packaging bugs is therefore
-invisible to the 300+ test suite.
+invisible to every other suite in this repository, however many tests those
+suites contain.
 
 This gate (zero deps, plain Node, runs **after `pnpm build`**):
 
@@ -187,16 +204,17 @@ It cleans up all temp dirs and exits non-zero with a per-assertion report.
 the top for staging a fix: when an assertion encodes a contract the artifact
 does not yet satisfy (e.g. cross-entry `instanceof` under a dual-bundle build),
 put its id there and it is reported but does not fail CI, so the gate can land
-green while the fix is in flight. The set is **self-policing** — if a
+green while the fix is still in progress. The set **polices itself** — if a
 `KNOWN_FAILING` assertion starts **passing**, the gate fails with "KNOWN_FAILING
-is stale", forcing you to delete the id. It is currently empty: every assertion
-is enforced strictly. Never add an id to paper over a real regression, and never
-leave a fixed bug's id behind.
+is stale", which requires you to delete the id. It is currently empty: every
+assertion is enforced strictly. Never add an id to hide a real regression, and
+never leave a fixed bug's id behind.
 
 **Contracts vs. limitations.** A handful of checks are _informational_ (`note`,
 printed with `·`) rather than assertions — they document a limitation the
 library deliberately does not promise to fix. The clearest is cross-**format**
-`instanceof` (an ESM-minted error is never `instanceof` the CJS class copy):
+`instanceof` (an error created by the ESM copy is never `instanceof` the CJS
+class copy):
 that is an inherent property of the dual-package boundary, which is exactly why
 the library brands its root error kinds and tells consumers to prefer
 `isHttpError(...)` (and the other `is*` guards) over `instanceof`. Those guards
@@ -223,8 +241,8 @@ seam:
 - **The adapter** does all the I/O and **may not contain a branch that decides
   pass/fail.** Branching on "the subprocess crashed" is an I/O outcome and is
   fine; branching on "the manifest is wrong" is policy and belongs across the
-  seam. If this line drifts, the spec starts asserting a mock while the real
-  gate goes untested — the worst outcome available, because the suite is green.
+  seam. If this line moves, the spec asserts against a mock while the real gate
+  runs untested, and the suite still reports success.
 - **The thin main** owns every `console.log`, every exit code, and is fenced
   behind an `isMain` guard so importing the module does nothing.
 
@@ -240,15 +258,16 @@ deliberately **not** uniform:
 
 Uniformity of _purity_ is the invariant; uniformity of _error protocol_ is not.
 
-Two things deliberately absent: there is **no shared gate harness** (the genuine
-overlap between the five gates is about six lines, and a shared module would
-make one file a single point of failure for every release check while destroying
-the locality that lets you read a gate top to bottom), and `scripts/lib/` holds
-only _plumbing_ — scratch directories and npm pack/install — never policy.
+Two things are deliberately absent: there is **no shared gate harness** (the
+genuine overlap between the five gates is about six lines, and a shared module
+would make one file a common failure point for every release check, and would
+split each gate across two files instead of one readable file), and
+`scripts/lib/` holds only _plumbing_ — scratch directories and npm
+pack/install — never policy.
 
 `check-deno-consumer.mjs` is the deliberate exception: its pass/fail verdict is
 `deno check`'s exit code, which the gate does not compute. There is no decision
-in it, so there is no interface to give it. Leave it alone.
+in it, so there is no interface to give it. Do not restructure it.
 
 Note that `pnpm typecheck` does **not** cover `scripts/`: `tsconfig.test.json`
 has no `allowJs`/`checkJs`. The `// @ts-check` comments and JSDoc types in these
@@ -258,10 +277,11 @@ files are for editors and readers; do not rely on them for CI enforcement.
 
 The 40 concrete error classes are plain, hand-written source. There is no
 code generator — adding a status code is a mechanical edit across a fixed set
-of files. It's a chore, but the **roster tests in `roster-sync.spec.ts` are the
-safety net**: miss a step and one of them goes red (see the end of this
-section for exactly which). Follow the existing 404 (`NotFoundError`) as a
-template.
+of files. The work is repetitive. The **roster tests in `roster-sync.spec.ts`
+catch most omissions**, but they do not catch every one. See
+"What the roster tests catch" at the end of this section for the test that
+covers each step, and for the one step no test covers. Follow the existing 404
+(`NotFoundError`) as a template.
 
 To add a new status code — say `NNN <Status Text>` as an `XxxError` client
 error — do all of the following:
@@ -303,9 +323,18 @@ error — do all of the following:
      the `allErrors` table (in status-code order). Write the row by hand from
      the RFC — never derive it from `src/`, or the table stops being an
      independent second source of truth;
+   - in `typed-fetch.spec.ts`, add `{ status: NNN, Class: XxxError },` to the
+     `errorCases` table (in status-code order). That table drives the
+     `test.each` that sends one live request per status code and asserts the
+     class `typedFetch` resolves with.
+
+     CAUTION: No test enforces this row. If you omit it, `test.each` runs one
+     case fewer and the suite still passes, so the new status code never goes
+     through a real request.
+
    - the cardinality assertions in `roster-sync.spec.ts` count
      `allErrors.length`, so there are no magic numbers to bump. The test
-     **titles** still say "40" and are worth updating for readability;
+     **titles** still say "40" and should be updated for readability;
    - in `roster-sync.spec.ts`, add an explicit per-class assertion pair inside
      the "every class's status and statusText are their own literal type"
      test:
@@ -316,10 +345,10 @@ error — do all of the following:
 
 6. Run `pnpm format` to normalise the new files, then run the gates (above).
 
-### The safety net
+### What the roster tests catch
 
-If you miss a step, the `roster-sync.spec.ts` roster tests fail — that is the
-whole point of them:
+Most steps above are enforced by a test. Each entry names the omission and the
+test that fails for it:
 
 - Forgetting to add the class to a `ClientErrors`/`ServerErrors` union (but
   leaving it in `httpErrors`) fails **typecheck** via the
@@ -339,9 +368,13 @@ number/string"`.
   `"exports every dedicated class in the internal roster"` checks for `.` and
   `./errors`.
 
+**One step is not enforced.** Omitting the `errorCases` row in
+`typed-fetch.spec.ts` (step 5) fails no test. `test.each` runs one case fewer
+and the suite stays green. Check that row by hand when you review the change.
+
 So the invariant that the roster is complete and every class carries its exact
 literal `status`/`statusText` is enforced by the test suite, not by a
-generator.
+generator. Coverage of the new status code by a live request is not.
 
 Registering a new error class this way is a `major` release — see the semver
 policy below.
@@ -363,8 +396,8 @@ opening an issue or PR for it. The four facts that settle it:
    `tsc --declaration`, `clone()`'s polymorphic `this` collapses to `any`, the
    named `declare class` becomes an anonymous object type, `extends
 KnownHttpError` disappears, and the whole `BaseHttpError` surface inlines
-   into all 40 declarations (about +520 lines). The duplication buys precisely
-   the thing the factory removes.
+   into all 40 declarations (about +520 lines). The duplication produces the
+   declaration quality that the factory removes.
 3. **It was already built, and reverted the same day.** Commit `31fa896` added
    a 431-line `scripts/generate-errors.ts`; `6cc8c56` deleted it 84 minutes
    later because it could not actually add a status code (it crashed on a
@@ -372,7 +405,8 @@ KnownHttpError` disappears, and the whole `BaseHttpError` surface inlines
    orphaned files, and relocated the parallel lists into four hidden ones
    inside itself. Read both commit messages.
 4. **Drift is already impossible past CI.** The `roster sync` tests are an
-   independently authored second source of truth — see "The safety net" above.
+   independently authored second source of truth — see "What the roster tests
+   catch" above.
    The duplication is checked, not trusted.
 
 One argument that is **not** a reason to keep things hand-written: "a factory
@@ -386,29 +420,53 @@ section is genuinely welcome; one that re-runs the arguments above is not.
 
 ### Error response bodies
 
-`BaseHttpError` keeps the failed `Response` in a private field, so the body is
-only reachable through `json()`/`text()`/`blob()`/`arrayBuffer()`,
-`cancel()`, and `clone()`. Two invariants hold there:
+The body lifecycle is a seam between two modules. `src/errors/base-http-error.ts`
+owns HTTP error identity — `status`, `statusText`, `url`, `headers`, and the
+message line. `src/errors/error-body.ts` owns the single-use body.
 
-- The shared reader guard rejects a body that is consumed, cancelled, or
-  locked by a reader, and it must stay in sync with the `clone()` guard.
-  Both throw the library's `TypeError` instead of the platform's opaque
-  "Body is unusable".
+`BaseHttpError` never stores the failed `Response`. The constructor passes the
+response to `errorBodyOf(response)`, which captures it in a **closure** and
+returns an `ErrorBody` handle. A module-scoped
+`WeakMap<BaseHttpError, ErrorBody>` in `base-http-error.ts` maps each instance
+to its handle, and `bodyOf(error)` reads it. Every body method on the error —
+`json()`, `text()`, `blob()`, `arrayBuffer()`, `cancel()`, and `clone()` — is a
+delegation across that seam.
+
+Two consequences follow. The `Response` is not reachable from the error a
+consumer holds, so nothing can route around the guards. The handle is not an
+own property, so it stays out of `JSON.stringify(err)`, `{...err}`,
+`Object.keys(err)`, and structured loggers.
+
+Test the lifecycle against `errorBodyOf` directly. A body is constructible in
+one line, with no error class — that is why the seam is here.
+
+These invariants hold below the seam, in `error-body.ts`:
+
+- One predicate, `claimable()`, decides availability for both the readers and
+  `tee()`. It refuses a body that this library cancelled or read
+  (`readStarted`), that the platform reports as consumed (`bodyUsed`), or whose
+  stream is `locked`. The two callers share the predicate and differ only in
+  the message they raise, so the guards cannot drift apart. A reader raises the
+  library's `TypeError` inside `claim()`, and because the readers are `async`
+  the caller receives a **rejection**. `tee()` is synchronous, so `clone()`
+  **throws**. Either way the caller sees the library's message rather than the
+  platform's opaque "Body is unusable".
 - `cancel()` never buffers. Test it with a `ReadableStream` whose `cancel()`
   callback records the call and whose `pull()` records buffering — a passing
   test asserts the cancel callback ran and `pull` never did.
 - Never infer "we already read this body" from `response.bodyUsed`. That flag
   is runtime-specific: Bun sets it when `getReader()` locks the stream, Node,
-  Deno, and workerd do not. The state carries its own `readStarted`, and
-  `cancel()` decides in a fixed order — repeated cancel, library read, external
-  lock, consumed body, releasable body.
+  Deno, and workerd do not. `errorBodyOf` tracks its own `readStarted` in a
+  closure variable, and `cancel()` decides in a fixed order — repeated cancel,
+  library read, external lock, consumed body, releasable body.
 - `clone()` tees the stream, so a `cancel()` on one branch stays pending until
   the sibling is released. Keep that native semantics; do not resolve early.
-- The per-instance state lives in a module-scoped `WeakMap`, not in `#private`
-  fields. `#private` emits a nominal `#private;` marker into the declarations,
-  which makes the `.d.ts` and `.d.mts` copies of every error class mutually
-  unassignable. Do not reintroduce `#private`, `private`, or `protected` on any
-  publicly exported class.
+- Neither module uses a class with a `#private` field, and `error-body.ts` uses
+  no class at all. `#private` emits a nominal `#private;` marker into the
+  declarations, which makes the `.d.ts` and `.d.mts` copies of every error class
+  mutually unassignable. Do not reintroduce `#private`, `private`, or
+  `protected` on any publicly exported class, and prefer a factory over closures
+  to a class with private fields in an internal module.
 
 ### Consumer subclasses and cloning
 

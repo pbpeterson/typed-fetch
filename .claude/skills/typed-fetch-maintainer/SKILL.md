@@ -5,28 +5,32 @@ description: Maintainer guide for @pbpeterson/typed-fetch — a zero-dependency,
 
 # typed-fetch Maintainer Guide
 
-Type-safe `fetch` wrapper that resolves request failures through a `{ response, error }` discriminated union. Native body readers remain throwing operations. Zero runtime dependencies. Published to npm as `@pbpeterson/typed-fetch` via OIDC trusted publishing.
+Type-safe `fetch` wrapper that resolves request failures through a
+`{ response, error }` discriminated union. Body readers are separate operations
+and can reject. Zero runtime dependencies. Published to npm via OIDC trusted
+publishing.
+
+Three companion documents are authoritative; follow them at the source rather
+than a copy. **CONTEXT.md** — design vocabulary, module map, seams.
+**CONTRIBUTING.md** — the gates and every mechanical procedure.
+**RELEASING.md** — semver policy and the release process.
 
 ## Architecture
 
+CONTEXT.md holds the module map. This tree adds only `src/errors/`:
+
 ```
-index.ts                  → intentionally small public barrel (functions, errors, public types)
-src/index.ts              → typedFetch core + type guards + TypedResponse/Options types
-src/headers.ts            → internal StrictHeaders / TypedHeaders (IntelliSense headers)
-src/methods.ts            → internal HttpMethods (no CONNECT/TRACE — fetch forbids them)
-src/http-status-codes.ts  → internal statusCodeErrorMap: ReadonlyMap<number, HttpErrors>
-src/errors/
-  base-http-error.ts      → abstract base: message "HTTP 404 Not Found (<url>)",
-                            url, headers, json<T>()/text()/blob()/arrayBuffer(),
-                            cancel(reason?): Promise<void>, clone(recreate?): this
-  known-http-error.ts     → internal branded base for the 40 dedicated classes
-  network-error.ts        → NetworkError with cause (original fetch rejection)
-  aborted-error.ts        → AbortedError (controller.abort()); extends Error, NOT NetworkError
-  timeout-error.ts        → TimeoutError (AbortSignal.timeout()); extends Error, NOT NetworkError
-  unknown-http-error.ts   → any status >= 400 not in the map (non-literal status)
-  helpers.ts              → public unions + internal HttpErrors/httpErrors registry
-  index.ts                → re-export barrel for the ./errors subpath
-  <40 status files>       → dedicated classes, see pattern below
+base-http-error.ts      → HTTP error IDENTITY (status, statusText, url,
+                          headers, message); body methods delegate
+error-body.ts           → internal single-use body lifecycle (see below)
+known-http-error.ts     → internal branded base for the 40 dedicated classes
+network-error.ts        → NetworkError with cause (original fetch rejection)
+aborted-error.ts        → AbortedError (controller.abort()); NOT NetworkError
+timeout-error.ts        → TimeoutError (AbortSignal.timeout()); NOT NetworkError
+unknown-http-error.ts   → any status >= 400 not in the map (non-literal status)
+helpers.ts              → public unions + internal HttpErrors/httpErrors roster
+index.ts                → re-export barrel for the ./errors subpath
+<40 status files>       → dedicated classes, see pattern below
 ```
 
 ## Core flow (src/index.ts)
@@ -37,16 +41,14 @@ src/errors/
    otherwise forward `options` unchanged. Resolve the effective abort signal
    with realm-safe `Request` detection.
 2. `const res = await fetchImpl(url, init)` inside the `try`, which also covers
-   option getters and normalization, then classifies any failure:
-   - an abort → `AbortedError` (with the original rejection as `cause`),
-   - a timeout (from `AbortSignal.timeout()`) → `TimeoutError`,
-   - anything else → `NetworkError`.
-     Never rethrows.
-     Abort classification takes the abort path when `err === signal.reason` OR the
-     governing signal reports `aborted` and the rejection is error-shaped and named
-     `"AbortError"`/`"TimeoutError"` — an injected fetch (whatwg-fetch,
-     node-fetch@3) builds its own abort error. `reason ?? err` then decides
-     timeout vs abort. An aborted signal alone is never sufficient.
+   option getters and normalization. `src/request-failure.ts` then classifies
+   any failure as `AbortedError` (original rejection as `cause`), `TimeoutError`
+   (from `AbortSignal.timeout()`), or `NetworkError`. It never rethrows. The
+   abort path is taken when `err === signal.reason` OR the governing signal
+   reports `aborted` and the rejection is error-shaped and named
+   `"AbortError"`/`"TimeoutError"` — an injected fetch (whatwg-fetch,
+   node-fetch@3) builds its own abort error. `reason ?? err` then decides
+   timeout vs abort. An aborted signal alone is never sufficient.
 3. `res.status >= 400` → mapped class from `statusCodeErrorMap`, else
    `UnknownHttpError`. This runs INSIDE the same `try`: an injected fetch can
    resolve a non-`Response` or a hostile getter, and that must stay an error
@@ -54,25 +56,25 @@ src/errors/
 4. Otherwise success — body NOT parsed; consumer calls `response.json()`. 3xx with `redirect: "manual"` is success.
 
 No broad internal throw/catch control flow beyond the single `fetch` envelope.
-Narrow defensive readers may catch hostile property/prototype access solely to
-keep a rejected custom-fetch value inside that envelope; they must not drive
+Narrow defensive readers may catch hostile property/prototype access only to
+keep a rejected custom-fetch value inside that envelope. They must not drive
 normal request control flow.
 
 ### The error contract (consumer-facing — keep it stable)
 
-- `AbortedError` and `TimeoutError` do NOT extend `NetworkError`. `isNetworkError()` returns **false** for both aborts and timeouts. This is deliberate — consumers discriminate with `isAbortError(e)` / `isTimeoutError(e)`, never by inspecting `error.cause.name`.
+- `AbortedError` and `TimeoutError` do NOT extend `NetworkError`, so `isNetworkError()` returns **false** for both. Consumers discriminate with `isAbortError` / `isTimeoutError`, never by inspecting `error.cause.name`.
 - `AbortedError` carries the abort reason as `error.reason` (plus the original rejection as `cause`); `TimeoutError` is the sub-case produced by `AbortSignal.timeout()`.
-- HTTP errors carry `error.url` (from `response.url`) and fold the server's wire reason phrase into `error.message`. `error.message` is NOT part of the semver contract (see RELEASING.md). Consumer-facing behavior tests should assert on `.status`/`.name`/`.statusText`; narrowly scoped constructor regression tests may characterize message branches without promoting the text to a public guarantee.
+- HTTP errors carry `error.url` and fold the server's wire reason phrase into `error.message`. `error.message` is NOT part of the semver contract. Assert on `.status`/`.name`/`.statusText` in behavior tests; a narrow constructor regression test may characterize a message branch without promoting the text to a guarantee.
 
 ## Type guards (src/index.ts)
 
-Exported from the main entry: `isHttpError` (any `BaseHttpError`),
-`isKnownHttpError` (one of the library's dedicated classes), `isNetworkError`,
-`isAbortError`, and `isTimeoutError`. A consumer-defined `BaseHttpError`
-subclass passes `isHttpError` but not `isKnownHttpError`; the latter requires
-the separate internal known-error brand and a status present in the receiving
-copy's map. Its `ClientErrors | ServerErrors` predicate therefore remains sound
-across duplicate copies, ESM/CJS entries, and mixed package versions.
+Five, from the main entry: `isHttpError`, `isKnownHttpError`, `isNetworkError`,
+`isAbortError`, `isTimeoutError`. The constraint to preserve: a consumer-defined
+`BaseHttpError` subclass passes `isHttpError` but must NOT pass
+`isKnownHttpError`, which requires the internal known-error brand AND a status
+in the receiving copy's map. That second condition keeps `ClientErrors |
+ServerErrors` sound across copies, entries, and mixed versions — a newer copy's
+status cannot narrow into an older copy's union.
 
 ## Error class pattern
 
@@ -89,125 +91,122 @@ export class NotFoundError extends KnownHttpError {
 }
 ```
 
-Rules: extend the internal `KnownHttpError`; set an explicit literal `name`;
-use `as const` (oxlint prefer-as-const); provide instance AND static status
-properties; and add no constructor or `clone()` — the base class provides both.
-The file is kebab-case matching the class name. `statusText` is the library's
-canonical protocol label (normally the current IANA phrase), not the server's
-wire value. The documented historical exceptions are 418 and 510.
+Extend the internal `KnownHttpError`; set an explicit literal `name`; use
+`as const`; provide instance AND static status properties; add no constructor
+and no `clone()`. `statusText` is the library's canonical protocol label, never
+the server's wire value — documented exceptions are 418 and 510.
 
-### Adding a new status code (5 hand-edited places)
+### Adding a new status code
 
-The roster is hand-maintained. To add a dedicated class for status code `NNN`:
+**CONTRIBUTING.md, "Adding a new HTTP status code", is the authoritative
+procedure. Follow it there, not a copy.** The roster is hand-maintained in
+`src/errors/helpers.ts` — the `httpErrors` array and the
+`ClientErrors`/`ServerErrors` unions. Three points are read wrong most often:
 
-1. **Create** `src/errors/<kebab>-error.ts` (pattern above).
-2. **Export** it from `src/errors/index.ts` (`export { NnnError } from "./nnn-error";`).
-3. In `src/errors/helpers.ts`, add it in **two** spots: the `ClientErrors` or `ServerErrors` union AND the `httpErrors` array.
-4. In `src/http-status-codes.ts`, add the import at the top AND the `[NNN, NnnError]` entry to the `statusCodeErrorMap` Map literal.
-5. Add a row to **both** roster tables: the `errorCases` table in `typed-fetch.spec.ts` and the `allErrors` table in `fixtures/error-roster.ts` (write the latter by hand from the RFC — it is a deliberate second source of truth and must never be derived from `src/`). Then bump the cardinality assertions in `roster-sync.spec.ts` — currently **40** (the `expect(httpErrors).toHaveLength(40)` / `statusCodeErrorMap.size` checks in the `httpErrors & statusCodeErrorMap` block, and the `roster.length` / `size` checks in the `roster sync` block).
+- `statusCodeErrorMap` in `src/http-status-codes.ts` is **derived** from
+  `httpErrors`, which reads each class's own `static status`. There is no Map
+  literal and no import block. A hand-written `[NNN, NnnError]` entry is not
+  possible, and the file needs no edit at all. The map is a projection of the
+  roster, not a second source of truth.
+- There are **no cardinality numbers to change**. `roster-sync.spec.ts` asserts
+  against `allErrors.length`. The literal `40` survives only in test titles.
+- The `errorCases` table in `typed-fetch.spec.ts` is enforced by **no test**.
+  If you omit the row, `test.each` runs one case fewer, the suite still passes,
+  and the new status code never goes through a live request.
 
-Adding a class also changes the public API surface, so update the snapshot (see below): `pnpm build && pnpm test -u`.
+Adding a class changes the public API surface, so refresh the snapshot with
+`pnpm build && pnpm test -u`. It is a `major`; see RELEASING.md. For `clone()`
+on consumer subclasses, see CONTRIBUTING.md, "Consumer subclasses and cloning".
 
-Built-in classes clone through their `Response`-only constructors.
-Consumer-defined subclasses keep the response-only `clone()` behavior for
-compatibility. It cannot preserve additional constructor or private state, so
-subclasses with such state should pass
-`clone(response => new Custom(...))`.
+## Error body lifecycle (`src/errors/error-body.ts`)
 
-## Error body lifecycle (src/errors/base-http-error.ts)
+**CONTRIBUTING.md, "Error response bodies", holds the invariants** — the
+`claimable()` predicate, the fixed `cancel()` order, the `bodyUsed` rule, and
+the tee contract. Three facts about the seam, because they are read wrong most
+often:
 
-Per-instance state lives in a module-scoped `WeakMap<BaseHttpError, State>`
-(`{ response, cancelled, readStarted, teed, cancelling }`), NOT in `#private`
-fields. `#private` emits a nominal `#private;` marker into the declarations,
-making `.d.ts` and `.d.mts` copies of every error class mutually unassignable —
-the same dual-package boundary the runtime brands exist to cross. Never
-reintroduce `#private`/`private`/`protected` on an exported class; the accepted
-cost is that the classes are structural.
+- The lifecycle is NOT in `base-http-error.ts`. That file owns HTTP error
+  identity (status, statusText, url, headers, message); its body methods delegate.
+- `errorBodyOf(response)` captures the `Response` in a **closure**, never as a
+  property, so it is unreachable from the error a consumer holds.
+  `base-http-error.ts` keys one `ErrorBody` handle per instance in a
+  `WeakMap<BaseHttpError, ErrorBody>`, read through `bodyOf(error)` — which also
+  rejects a structurally-assignable impostor and any subclass that skipped
+  `super(response)`.
+- State inside `errorBodyOf` is closure variables (`cancelled`, `readStarted`,
+  `cancelling`); `teed` is the only property on the returned object. There is no
+  `State` record and no `response` field.
 
-Keep the shared reader guard and the `clone()` guard in sync — both reject a
-body that is cancelled, read by this library (`readStarted`), consumed
-(`bodyUsed`), or `body.locked`, and both throw the library's `TypeError` rather
-than the platform's "Body is unusable".
-
-`cancel()` never buffers and decides in a FIXED order: repeated cancel (returns
-the in-flight promise) → library read → external lock (throws) → consumed body
-→ release. `bodyUsed` must never stand in for "we read it": Bun sets it on
-`getReader()`, Node/Deno/workerd do not. `clone()` tees the stream and marks
-both sides `teed`; the platform releases the source only when every branch is
-released, so a lone `cancel()` stays pending — keep that, do not resolve early,
-and never auto-cancel the sibling.
+A refused read **rejects** (the readers are `async`); a refused `clone()`
+**throws** (`tee()` is synchronous). Keep that split. Never resolve a teed
+`cancel()` early, and never auto-cancel the sibling branch.
 
 ## Guardrail tests (roster-sync.spec.ts, public-surface.spec.ts)
 
-These are what keep the hand-edited roster honest — run and read them when touching errors:
+Run and read these when touching errors. They make the hand-written roster
+checkable rather than trusted.
 
-- **Roster sync** (`describe("roster sync")` in `roster-sync.spec.ts`): compile-time `InstanceType<HttpErrors>` vs `ClientErrors | ServerErrors` exhaustiveness; runtime cardinality (exactly 40) and `httpErrors` ↔ `statusCodeErrorMap` agreement; and 40 explicit per-class `expectTypeOf<XError["status"]>().toEqualTypeOf<NNN>()` assertions (the array/union checks do NOT catch a single class's literal being widened — only the per-class ones do).
-- **API-surface snapshot + barrel completeness** (`describe("public API surface is frozen")` in `public-surface.spec.ts`): snapshots the sorted named exports of the BUILT `dist/index.mjs` and `dist/errors/index.mjs`, then compares the internal `httpErrors` names/statuses with both entry points so a registered class cannot ship without being importable. It is `describe.skipIf(!distExists)` — it only runs after `pnpm build` because `dist/` is gitignored. CI deliberately builds first. Any intentional export add/remove needs `pnpm build && pnpm test -u` to refresh the snapshot.
+- **Roster sync** (`roster-sync.spec.ts`): compile-time `InstanceType<HttpErrors>`
+  vs `ClientErrors | ServerErrors` exhaustiveness; runtime cardinality asserted
+  against the independently authored `allErrors.length` (no literal count);
+  `httpErrors` ↔ `statusCodeErrorMap` agreement; and 40 per-class
+  `expectTypeOf<XError["status"]>().toEqualTypeOf<NNN>()` assertions — the
+  array/union checks do NOT catch a single class's literal being widened.
+- **Frozen public surface** (`public-surface.spec.ts`): THREE
+  `describe.skipIf(!distExists)` blocks, not one — `"public API surface is
+frozen"` (runtime named exports), `"public TYPE surface is frozen"` (type-only
+  exports read from the built `.d.mts` with the TypeScript compiler API), and
+  `"guards work across module copies (dist)"`. The value and type axes are
+  independent: `Object.keys()` is blind to type-only exports. See
+  CONTRIBUTING.md, "The public surface is frozen — both axes".
 
-## Verification (run all before commit)
+Both read `dist/`, so build BEFORE test or they silently skip. An intentional
+export change needs `pnpm build && pnpm test -u`.
 
-```bash
-pnpm lint
-pnpm format:check
-pnpm typecheck
-pnpm build
-pnpm test
-pnpm check-docs
-pnpm verify-pack
-pnpm check-consumer
-pnpm audit:prod
-pnpm audit
-```
+## Verification
 
-With Deno 2 installed, also run `pnpm check-deno-consumer` after `pnpm build`.
-The manual `node_modules` mode requires Deno 2. CI always runs the gate against
-an installed packed artifact and its public types.
+**CONTRIBUTING.md, "The gates", is the authoritative list and run order.** Run
+every gate before you commit. With Deno 2 installed, also run
+`pnpm check-deno-consumer` after `pnpm build` — the manual `node_modules` mode
+requires Deno 2. Facts that live only here:
 
-- Build BEFORE test so the API-surface snapshot tests actually run (they skip when `dist/` is absent).
-- `pnpm typecheck` uses `tsconfig.test.json` — includes the root `*.spec.ts` files so `expectTypeOf` assertions are real. Plain `tsc --noEmit` skips them. Spec files must stay at the repo root: the include glob is root-only, and one test reads `src/errors/base-http-error.ts` via a CWD-relative path.
+- `pnpm typecheck` uses `tsconfig.test.json` — it includes the root `*.spec.ts` files so `expectTypeOf` assertions are real. Plain `tsc --noEmit` skips them. Spec files must stay at the repo root: the include glob is root-only, and one test reads `src/errors/base-http-error.ts` via a CWD-relative path.
 - Tests hit a real local HTTP server (no mocks). Query params drive responses: `?status=`, `?body=`, `?header=Key:Value`.
-- 407 can't go through Node's fetch (rejected at network level) — tested via direct construction.
+- 407 cannot go through Node's fetch (rejected at the network level) — tested via direct construction, and deliberately excluded from `errorCases`.
 - Abort/timeout are exercised against the live server (`controller.abort()` and `AbortSignal.timeout()`), asserting `AbortedError`/`TimeoutError` and that `isNetworkError` is false for both.
 
 ## Gotchas
 
-- `tsconfig.json` needs `"lib": ["ES2022", "DOM"]` — DOM supplies `HeadersInit`; dropping it breaks headers.ts.
+- `tsconfig.json` sets `"lib": ["ES2022", "DOM"]` for THIS repository's own
+  build. It is not a consumer requirement, and it is NOT what makes `headers.ts`
+  work: `src/headers.ts` deliberately REFUSES to name `HeadersInit`. That name
+  lives only in `lib.dom.d.ts`, so naming it made the published declarations
+  fail for a Node consumer without DOM (`TS2304`), or — with `skipLibCheck` —
+  collapse `TypedHeaders` to `any`. `NativeFetchHeaders` derives from
+  `Parameters<typeof fetch>` instead. Never put a `lib.dom` type name into the
+  published surface.
 - `tsup.config.ts` carries `ignoreDeprecations: "6.0"` in dts compilerOptions — tsup injects deprecated `baseUrl`; remove when tsup fixes it.
-- oxfmt formats and sorts `package.json` — don't fight it.
-- `statusCodeErrorMap` is `ReadonlyMap` by type; never mutate.
-- `options.fetch` is stripped before the init reaches the underlying fetch.
-  The sanitized facade/proxy preserves reflection while reading getters against
-  the original receiver. Do not replace this with object spread:
-  inherited/WebIDL properties, private-backed getters, and cross-realm
-  `Request` behavior must survive, and accessor failures must stay inside the
-  error envelope.
-- CI verifies Node 20, 22, and 24 plus Bun and Deno. Browser and edge support
-  follows from the Web-standard-only runtime implementation, but a runtime is
-  not called verified until its smoke test exists. Keep Node APIs outside
-  production source.
+- oxfmt formats and sorts `package.json`. Accept its output rather than reverting it.
+- `statusCodeErrorMap` is `ReadonlyMap` by type; never mutate. It iterates in
+  `httpErrors` order (alphabetical by class name), not ascending status; nothing
+  depends on that, because both call sites are key lookups.
+- `options.fetch` is stripped before the init reaches the underlying fetch, via
+  a sanitized facade/proxy that reads getters against the original receiver.
+  Never replace it with an object spread: inherited/WebIDL properties,
+  private-backed getters, and cross-realm `Request` behavior must survive, and
+  accessor failures must stay inside the error envelope.
+- CI verifies Node 20, 22, and 24, a Node-floor job pinned to 20.0.0, plus Bun
+  and Deno. The floor job runs `pnpm smoke:node-min`, which proves nothing
+  unless it runs on a real Node 20.0.0 binary — on a newer runtime it warns
+  instead of failing. Browser and edge support follows from the Web-standard-only
+  implementation, but a runtime is not verified until its smoke test exists.
+  Keep Node APIs outside production source.
 
 ## Release
 
-Releases are PR-reviewed and tag-driven — the full, binding process is in
-**RELEASING.md**; follow it exactly. In short:
-
-1. Open a release PR against `main` with the chosen version and dated changelog;
-   all required checks above must pass.
-2. Merge the PR and verify the exact release commit is the current
-   `origin/main` tip.
-3. Create and push the matching `vX.Y.Z` tag on that commit. The tag-triggered
-   workflow first requires the reusable Node/Bun/Deno/security CI matrix, then
-   revalidates the version, commit, full publish gate set, tarball, and consumer
-   install before `npm publish --provenance` through OIDC, with no repository
-   npm token.
-4. Verify the npm version, dist-tag, provenance attestation, source commit, and
-   workflow run after publication. Never retry by moving or reusing a published
-   tag.
-
-Semver highlights (RELEASING.md is authoritative):
-
-- **Registering a dedicated error class in `ClientErrors`/`ServerErrors` is a
-  `major`**: it widens the returned union and changes that status from
-  `UnknownHttpError` to the dedicated runtime class. Consumers should still
-  keep a `default:` for forward compatibility and mixed package versions.
-- Removing/renaming an export, or changing a class's `status`/`statusText` literal, is a `major`. Node engines stay `>=20`; dropping a Node major is a `major`.
+Releases are PR-reviewed and tag-driven. **RELEASING.md is the binding process
+and the authoritative semver policy — follow it exactly.** Nothing publishes
+except a pushed `vX.Y.Z` tag on a merged, reviewed commit. Never retry a release
+by moving or reusing a published tag. The semver rule most often missed:
+**registering a dedicated error class is a `major`**, because it widens the
+returned union and moves that status off `UnknownHttpError`.
