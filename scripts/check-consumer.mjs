@@ -24,7 +24,7 @@
 // Exits non-zero with a per-assertion report if any consumer contract breaks.
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { installTarball, NPM_ENV, packTarball } from "./lib/npm-pack.mjs";
@@ -449,7 +449,21 @@ console.log(JSON.stringify(out));
 //    masquerade that `attw` would flag as FalseCJS/FalseESM.
 // ---------------------------------------------------------------------------
 console.log("\n▸ Consumer typecheck (resolution modes, lib matrix, cross-format) …");
-const tscBin = join(REPO_ROOT, "node_modules", ".bin", "tsc");
+// On Windows the shim is `tsc.cmd`; execFileSync does not resolve the
+// extension for you, so a bare "tsc" is an ENOENT there. check-docs.mjs has
+// always had this branch and the existsSync preflight below — this gate had
+// neither, so a missing install surfaced as five identical `typecheck:*`
+// assertion failures full of spawn errors instead of one honest line.
+const tscBin = join(
+  REPO_ROOT,
+  "node_modules",
+  ".bin",
+  process.platform === "win32" ? "tsc.cmd" : "tsc",
+);
+if (!existsSync(tscBin)) {
+  console.error(`check-consumer: tsc not found at ${tscBin}. Run \`pnpm install\`.`);
+  process.exit(1);
+}
 const CONSUMER_TS = `
 import { typedFetch, isHttpError, isKnownHttpError, NotFoundError } from "${PKG_NAME}";
 import { NotFoundError as SubpathNotFound } from "${PKG_NAME}/errors";
