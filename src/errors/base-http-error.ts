@@ -173,9 +173,15 @@ export abstract class BaseHttpError extends Error {
    * ```
    *
    * It resolves when the response carries no body, when the body was already
-   * consumed, and when this library already read it. A repeated call settles
-   * with the first one. It rejects with a `TypeError` when an EXTERNAL reader
-   * holds the stream — release that reader and cancel through it instead.
+   * consumed — including by a consumer holding the `Response` itself — and
+   * when this library already started reading it. A repeated call settles with
+   * the first one.
+   *
+   * It rejects with a `TypeError` when an EXTERNAL reader holds the stream and
+   * has read nothing through it; release that reader and cancel through it
+   * instead. On a runtime that reports `bodyUsed` for a bare `getReader()`
+   * (Bun today), that state is indistinguishable from a consumed body, so this
+   * call resolves rather than rejecting.
    *
    * @param reason - Passed to the underlying stream's `cancel()`.
    */
@@ -198,10 +204,22 @@ export abstract class BaseHttpError extends Error {
 
     const body = state.response.body;
 
-    // 3. An EXTERNAL reader holds the stream. Not ours to release — and not
-    //    detectable through `bodyUsed`, which Bun already reports for this
-    //    case while Node, Deno, and workerd do not.
-    if (body?.locked) {
+    // 3. An EXTERNAL reader holds the stream and has read nothing through it.
+    //    Not ours to release.
+    //
+    //    `bodyUsed` is what separates this from a body the consumer already
+    //    READ (step 4). Measured on Node 20/24, Bun 1.3, and Deno: a completed
+    //    external `text()` leaves the stream `locked` AND `bodyUsed`, exactly
+    //    like a bare `getReader()` does on Bun. So a `locked`-only test would
+    //    reject on a body that is simply gone — the common case whenever a
+    //    consumer holds the `Response` through an injected `fetch`.
+    //
+    //    DOCUMENTED DIVERGENCE: on a runtime that reports `bodyUsed` for a mere
+    //    reader lock (Bun today), the two states are indistinguishable, and
+    //    this call resolves via step 4 instead of rejecting. Resolving on the
+    //    runtime that says the body is used beats rejecting on every runtime
+    //    for a case that is far more common.
+    if (body?.locked && !state.response.bodyUsed) {
       throw new TypeError(
         "Cannot cancel this error's body: its stream is locked by a reader. " +
           "Release the reader with reader.releaseLock(), or cancel the reader itself.",
@@ -322,18 +340,47 @@ export abstract class BaseHttpError extends Error {
           "is locked. Call clone() before json()/text()/blob()/arrayBuffer()/cancel().",
       );
     }
+    // From here the body is TEED: two branches exist, and the platform frees
+    // the source only once BOTH are released. Every failure path below must
+    // therefore release the branch it is about to drop, or `cancel()` on this
+    // error would wait forever for an owner that never existed.
     const clonedResponse = state.response.clone();
+    const releaseOrphan = (): void => {
+      // Nobody can await this: the caller is receiving an exception, not a
+      // copy. Swallow the rejection so it cannot surface as unhandled.
+      clonedResponse.body?.cancel().catch(() => {});
+    };
+
     let copy: this;
     if (!recreate) {
       const Ctor = this.constructor as new (response: Response) => this;
-      copy = new Ctor(clonedResponse);
+      try {
+        copy = new Ctor(clonedResponse);
+      } catch (cause) {
+        releaseOrphan();
+        // Deliberately NOT wrapped: a consumer subclass constructor's own
+        // error must reach the caller verbatim.
+        throw cause;
+      }
     } else {
       try {
         copy = recreate(clonedResponse);
       } catch (cause) {
+        releaseOrphan();
         throw new TypeError(`Cannot clone ${this.name}: the recreate callback failed.`, { cause });
       }
     }
+
+    // One instance cannot own two branches: releasing it would release only
+    // one, and the source would stay pinned.
+    if (copy === (this as unknown)) {
+      releaseOrphan();
+      throw new TypeError(
+        `Cannot clone ${this.name}: the recreate callback returned the same error instead of a ` +
+          "new one. Build a new instance from the response it receives.",
+      );
+    }
+
     // Both sides now share one teed source, and both must be released.
     state.teed = true;
     const copyState = states.get(copy);

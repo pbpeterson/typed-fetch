@@ -259,15 +259,34 @@ describe("BaseHttpError.cancel() — decision order does not rely on bodyUsed", 
     expect(() => error.clone()).toThrowError(/cancelled/);
   });
 
-  test("a reader lock still rejects on a runtime that reports bodyUsed for it", async () => {
+  test("an unread reader lock rejects while the runtime keeps bodyUsed false", async () => {
+    // Node, Deno, and workerd: a bare getReader() locks the stream and leaves
+    // bodyUsed false. That pair is what identifies a body someone else holds
+    // but has NOT consumed, and cancel() must refuse it.
+    const response = new Response("payload", { status: 404 });
+    response.body?.getReader();
+    const error = new NotFoundError(response);
+
+    expect(response.bodyUsed).toBe(false);
+    expect(response.body?.locked).toBe(true);
+    await expect(error.cancel()).rejects.toThrowError(/locked/);
+  });
+
+  // DOCUMENTED DIVERGENCE, characterised rather than guaranteed. Bun reports
+  // bodyUsed for a mere getReader(), which makes an unread lock
+  // indistinguishable from a body the consumer already read — measured
+  // identical on Node 20/24, Bun 1.3, and Deno for a completed external
+  // text(). Rejecting on that shape would reject the far more common consumed
+  // case on EVERY runtime, so the library believes the runtime and resolves.
+  test("a reader lock resolves on a runtime that reports bodyUsed for it", async () => {
     const { response, state } = bunShapedResponse();
     response.body?.getReader();
     const error = new NotFoundError(response);
 
-    // The Bun shape: locked AND bodyUsed at the same time. A bodyUsed-first
-    // check would report success and silently leave the stream held.
     expect(response.bodyUsed).toBe(true);
-    await expect(error.cancel()).rejects.toThrowError(/locked/);
+    await expect(error.cancel()).resolves.toBeUndefined();
+    // Nothing was released: the external reader still owns the stream, and
+    // releasing it is that owner's job.
     expect(state.cancelled).toBe(false);
   });
 
@@ -277,6 +296,82 @@ describe("BaseHttpError.cancel() — decision order does not rely on bodyUsed", 
 
     // `text()` leaves the stream locked on some runtimes. The library knows it
     // started that read, so cancel() must resolve rather than claim a lock.
+    await expect(error.cancel()).resolves.toBeUndefined();
+  });
+});
+
+describe("BaseHttpError.cancel() — a failed clone must not strand the body", () => {
+  // clone() tees the body BEFORE it can know the copy will exist. If the
+  // recreate callback or the subclass constructor throws, that branch has no
+  // owner — and the platform releases the source only once EVERY branch is
+  // released, so cancel() on the survivor would wait forever.
+  test("cancel() still settles after a throwing recreate callback", async () => {
+    const error = new NotFoundError(new Response("payload", { status: 404 }));
+
+    expect(() =>
+      error.clone(() => {
+        throw new Error("recreate exploded");
+      }),
+    ).toThrowError(/recreate callback failed/);
+
+    await expect(error.cancel()).resolves.toBeUndefined();
+  });
+
+  test("cancel() still settles after a response-only clone failure", async () => {
+    // ContextHttpError's constructor rejects an empty context, so the
+    // no-callback clone path throws — the case base-http-error.spec already
+    // covers, now followed by the cleanup that used to hang.
+    const error = new ContextHttpError(new Response("payload", { status: 499 }), "tenant-42");
+
+    expect(() => error.clone()).toThrowError("context is required");
+
+    await expect(error.cancel()).resolves.toBeUndefined();
+  });
+
+  test("a read still works after a failed clone", async () => {
+    const error = new NotFoundError(new Response("payload", { status: 404 }));
+
+    expect(() =>
+      error.clone(() => {
+        throw new Error("recreate exploded");
+      }),
+    ).toThrowError(TypeError);
+
+    expect(await error.text()).toBe("payload");
+  });
+
+  test("a recreate callback that returns the same error is rejected", async () => {
+    const error = new NotFoundError(new Response("payload", { status: 404 }));
+
+    // Returning `this` yields one instance owning two teed branches, so
+    // releasing it can never release both.
+    expect(() => error.clone(() => error)).toThrowError(/returned the same error/);
+
+    await expect(error.cancel()).resolves.toBeUndefined();
+  });
+});
+
+describe("BaseHttpError.cancel() — a body consumed outside the library", () => {
+  test("resolves when an external reader already consumed the body", async () => {
+    const response = new Response("payload", { status: 404 });
+    const error = new NotFoundError(response);
+
+    // A consumer holding the Response — the ordinary case with an injected
+    // fetch — reads it themselves. On every runtime that leaves the stream
+    // BOTH bodyUsed and locked, so a lock-first check would reject here.
+    expect(await response.text()).toBe("payload");
+    expect(response.bodyUsed).toBe(true);
+
+    await expect(error.cancel()).resolves.toBeUndefined();
+  });
+
+  test("resolves when a released reader already drained the body", async () => {
+    const response = new Response("payload", { status: 404 });
+    const error = new NotFoundError(response);
+    const reader = response.body!.getReader();
+    await reader.read();
+    reader.releaseLock();
+
     await expect(error.cancel()).resolves.toBeUndefined();
   });
 });
@@ -329,16 +424,17 @@ describe("BaseHttpError.cancel() — cloned (teed) bodies", () => {
     await Promise.all([first, second, copy.cancel()]);
   });
 
-  test("clone() does not cancel the sibling branch", async () => {
+  test("cancelling one branch leaves the sibling readable", async () => {
     const { response } = trackedResponse();
     const error = new NotFoundError(response);
     const copy = error.clone();
 
-    await Promise.all([error.cancel(), copy.text().catch(() => {})]);
+    // The copy exists in order to be read. Cancelling the original releases
+    // only its own branch — asserting the payload is what proves that; a
+    // swallowed `.catch()` here would pass even if the read failed.
+    const [, text] = await Promise.all([error.cancel(), copy.text()]);
 
-    // The copy was created to be read; cancelling the original must not take
-    // that away.
-    expect(true).toBe(true);
+    expect(text).toBe("payload");
   });
 });
 
@@ -353,10 +449,23 @@ describe("BaseHttpError — readers detect a locked body (B7)", () => {
       const error = new NotFoundError(response);
 
       expect(response.bodyUsed).toBe(false);
-      await expect((error[reader] as () => Promise<unknown>)()).rejects.toThrowError(TypeError);
-      await expect((error[reader] as () => Promise<unknown>)()).rejects.toThrowError(
-        /stream is locked/,
-      );
+
+      // Exactly ONE call. Calling twice would let the FIRST take the platform
+      // error — the very thing this guard replaces — and set readStarted, so
+      // the second would trip that disjunct instead of `body.locked` while
+      // still matching /stream is locked/. The lock branch would go untested.
+      let thrown: unknown;
+      try {
+        await (error[reader] as () => Promise<unknown>)();
+      } catch (caught) {
+        thrown = caught;
+      }
+
+      expect(thrown).toBeInstanceOf(TypeError);
+      expect((thrown as Error).message).toMatch(/stream is locked/);
+      expect((thrown as Error).message).toContain(`with ${reader}()`);
+      // The platform's opaque message must never reach the consumer here.
+      expect((thrown as Error).message).not.toMatch(/Body is unusable/);
     }
   });
 
