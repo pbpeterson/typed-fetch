@@ -1,9 +1,10 @@
-import http from "node:http";
 import { readFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { describe, test, expect, beforeAll, afterAll, expectTypeOf, vi } from "vitest";
+import { describe, test, expect, expectTypeOf, vi } from "vitest";
+import { useTestServer } from "./fixtures/http-server";
+import { allErrors } from "./fixtures/error-roster";
 import {
   typedFetch,
   isHttpError,
@@ -91,90 +92,7 @@ function responseWithStatus(status: number): Response {
   return new Response(null, { status });
 }
 
-// ── Test HTTP server ─────────────────────────────────────────────────
-// Spins up a real server on a random port. Query params control the response:
-//   ?status=404          → respond with that status code
-//   ?body={"err":"..."}  → respond with that body (sets Content-Type: application/json)
-//   ?header=Key:Value    → set a response header (repeatable)
-// The server also always echoes the received request method back via an
-// X-Echo-Method response header, so tests can assert an arbitrary method
-// (e.g. "REPORT") actually reached the server unchanged.
-//   ?echoHeader=Name     → echo request header `Name` back as X-Echo-Header
-//                           (proves an arbitrary request header reached the server)
-//   ?delay=<ms>          → wait this many milliseconds before responding
-//                           (used to reliably trigger AbortSignal.timeout())
-// The received request body is always echoed back via an X-Echo-Body
-// response header, so tests can assert the body actually reached the server.
-
-let baseURL: string;
-let server: http.Server;
-
-beforeAll(async () => {
-  server = http.createServer((req, res) => {
-    const requestUrl = new URL(req.url!, `http://${req.headers.host}`);
-    const status = Number(requestUrl.searchParams.get("status") ?? 200);
-    const body = requestUrl.searchParams.get("body");
-    const headerEntries = requestUrl.searchParams.getAll("header");
-    const delay = Number(requestUrl.searchParams.get("delay") ?? 0);
-    const echoHeader = requestUrl.searchParams.get("echoHeader");
-
-    for (const entry of headerEntries) {
-      const [key = "", value = ""] = entry.split(":");
-      res.setHeader(key.trim(), value.trim());
-    }
-
-    res.setHeader("X-Echo-Method", req.method ?? "");
-
-    if (echoHeader) {
-      const received = req.headers[echoHeader.toLowerCase()];
-      res.setHeader("X-Echo-Header", typeof received === "string" ? received : "");
-    }
-
-    if (!res.getHeader("content-type") && body) {
-      res.setHeader("Content-Type", "application/json");
-    }
-
-    // Buffer the request body so tests can assert it reached the server. The
-    // body is echoed back via a response header (URL-encoded to stay a valid
-    // header value regardless of the payload's bytes).
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => {
-      const received = Buffer.concat(chunks).toString("utf8");
-      res.setHeader("X-Echo-Body", encodeURIComponent(received));
-
-      const respond = () => {
-        res.writeHead(status);
-        res.end(body ?? null);
-      };
-
-      if (delay > 0) {
-        setTimeout(respond, delay);
-      } else {
-        respond();
-      }
-    });
-  });
-
-  await new Promise<void>((resolve) => {
-    server.listen(0, () => resolve());
-  });
-
-  const address = server.address() as { port: number };
-  baseURL = `http://localhost:${address.port}`;
-});
-
-afterAll(() => {
-  server.close();
-});
-
-function url(params: Record<string, string | number> = {}): string {
-  const search = new URLSearchParams();
-  for (const [key, value] of Object.entries(params)) {
-    search.append(key, String(value));
-  }
-  return `${baseURL}?${search}`;
-}
+const { url } = useTestServer();
 
 // ── typedFetch ───────────────────────────────────────────────────────
 
@@ -1677,53 +1595,6 @@ describe("NetworkError / AbortedError / TimeoutError — cause & reason presence
 });
 
 // ── Error class invariants ───────────────────────────────────────────
-
-// Shared by "error class consistency" and "roster sync" — one row per
-// concrete HTTP error class. This table is authored independently of the
-// hand-written error classes and their registries in src/, so it acts as a
-// second source of truth to diff the roster against.
-const allErrors = [
-  { Class: BadRequestError, status: 400 },
-  { Class: UnauthorizedError, status: 401 },
-  { Class: PaymentRequiredError, status: 402 },
-  { Class: ForbiddenError, status: 403 },
-  { Class: NotFoundError, status: 404 },
-  { Class: MethodNotAllowedError, status: 405 },
-  { Class: NotAcceptableError, status: 406 },
-  { Class: ProxyAuthenticationRequiredError, status: 407 },
-  { Class: RequestTimeoutError, status: 408 },
-  { Class: ConflictError, status: 409 },
-  { Class: GoneError, status: 410 },
-  { Class: LengthRequiredError, status: 411 },
-  { Class: PreconditionFailedError, status: 412 },
-  { Class: RequestTooLongError, status: 413 },
-  { Class: RequestUriTooLongError, status: 414 },
-  { Class: UnsupportedMediaTypeError, status: 415 },
-  { Class: RequestedRangeNotSatisfiableError, status: 416 },
-  { Class: ExpectationFailedError, status: 417 },
-  { Class: ImATeapotError, status: 418 },
-  { Class: MisdirectedRequestError, status: 421 },
-  { Class: UnprocessableEntityError, status: 422 },
-  { Class: LockedError, status: 423 },
-  { Class: FailedDependencyError, status: 424 },
-  { Class: TooEarlyError, status: 425 },
-  { Class: UpgradeRequiredError, status: 426 },
-  { Class: PreconditionRequiredError, status: 428 },
-  { Class: TooManyRequestsError, status: 429 },
-  { Class: RequestHeaderFieldsTooLargeError, status: 431 },
-  { Class: UnavailableForLegalReasonsError, status: 451 },
-  { Class: InternalServerError, status: 500 },
-  { Class: NotImplementedError, status: 501 },
-  { Class: BadGatewayError, status: 502 },
-  { Class: ServiceUnavailableError, status: 503 },
-  { Class: GatewayTimeoutError, status: 504 },
-  { Class: HttpVersionNotSupportedError, status: 505 },
-  { Class: VariantAlsoNegotiatesError, status: 506 },
-  { Class: InsufficientStorageError, status: 507 },
-  { Class: LoopDetectedError, status: 508 },
-  { Class: NotExtendedError, status: 510 },
-  { Class: NetworkAuthenticationRequiredError, status: 511 },
-] as const;
 
 describe("error class consistency", () => {
   test.each(allErrors)(
