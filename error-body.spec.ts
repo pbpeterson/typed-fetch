@@ -67,6 +67,33 @@ function bunShapedResponse(): { response: Response; state: { cancelled: boolean 
   return { response, state };
 }
 
+/**
+ * A `Response` whose body stream is ALREADY errored — the shape of a truncated
+ * response. When a connection drops mid-body, undici errors the body stream
+ * with `TypeError: terminated`, and `stream.cancel()` then rejects with that
+ * stored error instead of resolving.
+ *
+ * `start` errors the stream, NOT `pull`. `start` runs synchronously inside the
+ * `ReadableStream` constructor, so the stream is errored before `errorBodyOf`
+ * ever sees it. `pull` runs only when the stream is asked for data, which makes
+ * the errored state depend on microtask timing.
+ *
+ * Measured on Node 20.15: the errored stream reports neither `bodyUsed` nor
+ * `locked`, so `cancel()` reaches step 5 and calls `stream.cancel()`.
+ */
+function erroredBodyResponse(): { response: Response; state: { cancelled: boolean } } {
+  const state = { cancelled: false };
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(new TypeError("terminated"));
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { response: new Response(body), state };
+}
+
 describe("errorBodyOf — the readers are single-use", () => {
   test("second read throws a clear TypeError, not the platform's opaque one", async () => {
     const body = errorBodyOf(new Response('{"a":1}'));
@@ -183,10 +210,10 @@ describe("errorBodyOf — cancel() releases without buffering", () => {
     await expect(body.cancel()).resolves.toBeUndefined();
   });
 
-  test("a rejected cancel clears the in-flight promise instead of pinning it", async () => {
-    // `finally { cancelling = undefined }`. Without it the second call would
-    // hit `if (cancelling) return cancelling` and hand back the settled
-    // rejected promise forever.
+  test("a stream whose own cancel() fails still resolves", async () => {
+    // The source failed to tear itself down. The caller asked to DISCARD these
+    // bytes, so that failure carries nothing they can act on, and the stream is
+    // released by the platform either way.
     const stream = new ReadableStream<Uint8Array>({
       cancel() {
         throw new Error("cancel failed");
@@ -194,8 +221,90 @@ describe("errorBodyOf — cancel() releases without buffering", () => {
     });
     const body = errorBodyOf(new Response(stream));
 
-    await expect(body.cancel()).rejects.toThrowError(/cancel failed/);
     await expect(body.cancel()).resolves.toBeUndefined();
+    await expect(body.cancel()).resolves.toBeUndefined();
+  });
+});
+
+describe("errorBodyOf — cancel() on a body whose stream already failed", () => {
+  test("resolves instead of rejecting with the stream's stored error", async () => {
+    const { response, state } = erroredBodyResponse();
+    expect(response.bodyUsed).toBe(false);
+    expect(response.body?.locked).toBe(false);
+    const body = errorBodyOf(response);
+
+    await expect(body.cancel()).resolves.toBeUndefined();
+
+    // The errored stream dropped its source when it errored, so the platform
+    // never reaches the underlying cancel algorithm. There was nothing left to
+    // release, which is why the rejection carries no information.
+    expect(state.cancelled).toBe(false);
+  });
+
+  test("a dropped cancel() raises no unhandled rejection", async () => {
+    // THE REGRESSION. `cancel` is an async function, so a rejection reaches the
+    // caller through a promise the caller may never handle. Under Node's
+    // default `--unhandled-rejections=throw` that ends the process with exit 1
+    // — a cleanup call must never do that.
+    const seen: unknown[] = [];
+    const record = (reason: unknown): void => {
+      seen.push(reason);
+    };
+    process.on("unhandledRejection", record);
+    try {
+      const { response } = erroredBodyResponse();
+      const body = errorBodyOf(response);
+
+      // No await and no .catch(): the shape of every fire-and-forget cleanup.
+      // TWO calls, because the repeated one takes the `if (cancelling)` path
+      // and receives a DERIVED promise that the swallow inside `cancel()` does
+      // not cover.
+      void body.cancel();
+      void body.cancel();
+
+      // Node reports an unhandled rejection at the end of a turn, so let two
+      // macrotasks pass before reading the record.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      process.off("unhandledRejection", record);
+    }
+
+    expect(seen).toEqual([]);
+  });
+
+  test("a repeated cancel() resolves with the first one", async () => {
+    const { response } = erroredBodyResponse();
+    const body = errorBodyOf(response);
+
+    const first = body.cancel();
+    const second = body.cancel();
+
+    await expect(first).resolves.toBeUndefined();
+    await expect(second).resolves.toBeUndefined();
+  });
+
+  test("the readers and tee() still refuse the body afterwards", async () => {
+    // `cancelled = true` is set BEFORE the await, so the body is claimed from
+    // the moment the stream is handed over, whatever the stream then does.
+    const { response } = erroredBodyResponse();
+    const body = errorBodyOf(response);
+    await body.cancel();
+
+    await expect(body.text()).rejects.toThrowError(/cancelled/);
+    expect(() => body.tee()).toThrowError(/cancelled/);
+  });
+
+  test("an external reader lock still rejects on a failed stream", async () => {
+    // The swallow must cover the STREAM's rejection only. Step 3 is a mistake
+    // the caller can correct, so it must still reach them.
+    const { response } = erroredBodyResponse();
+    response.body?.getReader();
+    const body = errorBodyOf(response);
+
+    expect(response.bodyUsed).toBe(false);
+    await expect(body.cancel()).rejects.toThrowError(/locked/);
+    await expect(body.cancel()).rejects.toThrowError(TypeError);
   });
 });
 

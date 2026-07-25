@@ -75,7 +75,8 @@ export interface ErrorBody {
   arrayBuffer(): Promise<ArrayBuffer>;
   /**
    * Release the body without reading it. Never buffers. Rejects only when an
-   * EXTERNAL reader holds the stream and has read nothing through it. After a
+   * EXTERNAL reader holds the stream and has read nothing through it — a
+   * stream-level failure, such as a truncated response, resolves. After a
    * {@link tee}, stays pending until the sibling branch is released too.
    */
   cancel(reason?: unknown): Promise<void>;
@@ -183,20 +184,28 @@ export function errorBodyOf(response: Response): ErrorBody {
       return;
     }
 
-    // 5. Release it.
+    // 5. Release it. The body is claimed from here on, whatever the stream does
+    //    next: this await lasts as long as a teed sibling is held, and a reader
+    //    admitted during that window would take a stream already going away.
     cancelled = true;
-    const pending = stream.cancel(reason);
-    // A teed branch can settle long after this call returns, and the repeated
-    // call path hands the same promise to a caller who may not await it. Keep
-    // a rejection from ever becoming an unhandled rejection; the awaiting
-    // caller below still receives it.
-    pending.catch(() => {});
+    // Swallow a stream-level failure, the same as `tee().release()` below. A
+    // truncated response or a connection reset mid-body errors the body stream,
+    // and `stream.cancel()` then rejects with that stored error. The caller
+    // asked to DISCARD these bytes, and an errored stream dropped its source
+    // when it errored — nothing is left to release, and nothing here is
+    // actionable.
+    //
+    // Swallow at the SOURCE, not around the `await`. `cancel` is an async
+    // function, so the promise it returns and the derived promise the repeated
+    // call gets from `return cancelling` are both distinct objects from
+    // `pending`; a `.catch()` on `pending` alone leaves those two unhandled.
+    // Under Node's default `--unhandled-rejections=throw`, one dropped cleanup
+    // call then ends the process.
+    const pending = stream.cancel(reason).catch(() => {});
     cancelling = pending;
-    try {
-      await pending;
-    } finally {
-      cancelling = undefined;
-    }
+    await pending;
+    // `cancelling` names the IN-FLIGHT cancellation; a settled one is `cancelled`.
+    cancelling = undefined;
   }
 
   function tee(): TeedErrorBody {

@@ -365,7 +365,9 @@ Without a `clone()`, the promise from `cancel()` stays pending until the body is
 
 `cancel()` resolves when other code already read the body. This occurs when a custom Fetch implementation gives you its own `Response`.
 
-`cancel()` rejects with `TypeError` when an external reader holds the stream and read nothing from it. Release that reader first, then cancel through it.
+`cancel()` resolves when the body stream failed. A truncated response, or a connection reset during the body transfer, puts the stream in a failed state. The stream released its source at that moment, so nothing remains to release. The failure gives you no information that you can act on.
+
+`cancel()` rejects with `TypeError` when an external reader holds the stream and read nothing from it. Release that reader first, then cancel through it. This is the only condition that makes `cancel()` reject.
 
 A repeated `cancel()` on the same error settles with the same outcome as the first call. It never reports success before the first call settles.
 
