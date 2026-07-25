@@ -2,7 +2,13 @@
 
 ## [Unreleased]
 
-## [1.0.1] - 2026-07-22
+## [1.1.0] - 2026-07-24
+
+This release is a **minor**, not the patch it was originally numbered. Nothing
+is removed or narrowed and no error class changes, but two public additions —
+`BaseHttpError.cancel()` and the optional `clone(recreate?)` callback — grow the
+API surface, and the repo's semver policy is silent on additions, so
+conventional SemVer governs. Everything else here is a fix.
 
 ### Added
 
@@ -10,18 +16,28 @@
   buffering it. An unread error body keeps its stream open and pins the
   underlying connection, which defeats keep-alive for code that logs
   `error.message` and drops the error. It resolves when the response carries no
-  body, when the body was already consumed, and when this library already read
-  it; a repeated call settles with the first one; and it rejects with a
-  `TypeError` when an EXTERNAL reader holds the stream. Cancelling does not
-  download the remaining bytes, so the runtime may close the connection instead
-  of returning it to the keep-alive pool — read the body with `text()` when
-  connection reuse matters more than the transfer.
+  body, when the body was already consumed — including by a consumer holding
+  the `Response` — and when this library already started reading it; a repeated
+  call settles with the first one; and it rejects with a `TypeError` when an
+  EXTERNAL reader holds the stream and has read nothing through it. Cancelling
+  does not download the remaining bytes, so the runtime may close the connection
+  instead of returning it to the keep-alive pool — read the body with `text()`
+  when connection reuse matters more than the transfer.
+- `BaseHttpError.clone()` accepts an optional recreation callback, so
+  consumer-defined subclasses can preserve custom constructor and private state.
+  Calling `clone()` without a callback keeps the response-only behavior from
+  `1.0.0`. A callback that returns the same error instead of a new one is
+  rejected with a `TypeError`: one instance cannot own both branches of a teed
+  body, so releasing it could never release the source.
 - A minimum-runtime smoke (`scripts/smoke/node-min.mjs`, wired as the
   `node-min-smoke` CI job) executes the built artifact on Node **20.0.0**, the
   declared `engines` floor. The existing matrix uses `node-version: 20`, which
   resolves to the latest 20.x, so the floor itself was never run. The toolchain
   is not installed there: CI builds on Node 22 and switches to 20.0.0 for the
-  smoke alone.
+  smoke alone. Under `CI` the script FAILS rather than warns when the runtime is
+  not the floor, so a misconfigured setup-node step cannot report a green run
+  that proved nothing. Locally it warns, so it stays runnable without a 20.0.0
+  binary on hand.
 
 ### Fixed
 
@@ -88,10 +104,22 @@
   `Symbol.toStringTag`, to a tight structural test. A bare object literal named
   `"AbortError"` is still never an error, and an abort name with no aborted
   signal is still a `NetworkError`.
-- `BaseHttpError.clone()` now accepts an optional recreation callback so
-  consumer-defined subclasses can preserve custom constructor and private
-  state. Calling `clone()` without a callback keeps the response-only behavior
-  from `1.0.0` for backward compatibility.
+- A `clone()` that FAILS no longer strands the body. `clone()` tees the stream
+  before it can know the copy will exist, so a throwing recreate callback — or a
+  subclass constructor that rejects a response-only call — left a branch with no
+  owner. Since the platform frees the source only once every branch is released,
+  `cancel()` on the surviving error then never settled, and the error was
+  unusable in both directions. Every failure path now releases the branch it
+  drops.
+- `cancel()` no longer rejects on a body someone else already read. The
+  external-lock check ran before the consumed-body check, and a completed
+  external `text()` leaves the stream both `locked` and `bodyUsed` on Node 20/24,
+  Bun 1.3, and Deno — so the common case, a consumer reading the `Response` its
+  own injected `fetch` returned, rejected instead of resolving as documented.
+  The lock check now also requires `bodyUsed` to be false. Documented
+  divergence: on a runtime that reports `bodyUsed` for a bare `getReader()`
+  (Bun today), an unread lock is indistinguishable from a consumed body and
+  `cancel()` resolves.
 - `typedFetch` now preserves inherited `RequestInit` properties, WebIDL
   getters, proxied/cross-realm `Request` objects, and abort signals while
   removing its `fetch` override. Errors thrown while reading or
@@ -537,6 +565,6 @@ header input from `TypedFetchOptions["headers"]` instead of importing
 
 See the [commit history](https://github.com/pbpeterson/typed-fetch/commits/main).
 
-[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.1...HEAD
-[1.0.1]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.0...v1.0.1
+[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v0.8.1...v1.0.0

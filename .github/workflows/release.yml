@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   checks:
-    # Run the exact same Node 20/22/24, security, Bun, and Deno jobs as CI.
+    # Run the exact same Node 20/22/24, security, Bun, Deno, and Node-floor jobs as CI.
     # `publish` cannot start unless every job in this reusable workflow passes.
     uses: ./.github/workflows/ci.yml
 

@@ -20,8 +20,8 @@ attestation.
 - `.github/workflows/release.yml` triggers on `push: tags: ["v*"]` — nothing
   else publishes.
 - The tag workflow first calls `.github/workflows/ci.yml` as a reusable
-  workflow. Its Node 20/22/24, security, Bun, and Deno jobs must all pass before
-  the publish job can start. The Deno job installs the packed package by its
+  workflow. Its Node 20/22/24, security, Bun, Deno, and Node-floor (20.0.0) jobs
+  must all pass before the publish job can start. The Deno job installs the packed package by its
   bare npm name and typechecks its public `.d.mts` declarations in addition to
   the direct-dist runtime smoke.
 - After the shared checks pass and before publish dependencies are installed,
@@ -112,6 +112,10 @@ Run every step, in order, for every release:
    gate needs Deno 2 to resolve the unpublished local tarball from
    `node_modules`. The tag workflow enforces it regardless of local runtime
    availability.
+   For parity with the `node-min-smoke` job, also run
+   `pnpm smoke:node-min` — but ONLY with a real Node **20.0.0** binary. The
+   script warns instead of failing on a newer runtime, so running it on your
+   default Node proves nothing about the `engines` floor.
 3. **Commit the release candidate and open a PR:**
    ```bash
    git commit -m "chore: release X.Y.Z"

@@ -354,7 +354,11 @@ Read the body with `text()` when connection reuse is more important than the tra
 
 `cancel()` resolves when the response has no body. It is also safe after a complete body read.
 
-`cancel()` rejects with `TypeError` when an external reader holds the stream. Release that reader first.
+`cancel()` resolves when other code already read the body. This occurs when a custom Fetch implementation gives you its own `Response`.
+
+`cancel()` rejects with `TypeError` when an external reader holds the stream and read nothing from it. Release that reader first.
+
+Bun reports a body as used as soon as `getReader()` locks it. On Bun this state is equal to a read body, and `cancel()` resolves.
 
 After a `cancel()`, all body readers and `clone()` throw `TypeError`.
 
@@ -698,6 +702,10 @@ Instance methods:
 - `clone(recreate?)`: Clone the error before a body read.
 
 Do not call `clone()` after you read the body, cancel the body, or lock its stream. The method throws `TypeError`.
+
+A failed `clone()` releases the branch it made. Thus a later `cancel()` on the original still completes.
+
+The recreation callback must give a new error. `clone()` throws `TypeError` when the callback gives the same error.
 
 Built-in errors do not need a recreation callback. A consumer subclass can also call `clone()` without a callback.
 
