@@ -9,6 +9,7 @@ import {
   esmAssertions,
   indent,
   judgeConsumer,
+  resolutionAssertions,
   subpathAssertions,
   typecheckAssertion,
   TYPECHECK_PASSES,
@@ -16,7 +17,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // Probe fixtures: the exact record shape a GREEN run produces. Copied from a
-// real transcript (28 assertions + 1 note), so a mapper that stops matching the
+// real transcript (34 assertions + 1 note), so a mapper that stops matching the
 // probes it is paired with shows up here.
 // ---------------------------------------------------------------------------
 
@@ -61,6 +62,16 @@ const GREEN_CROSSFORMAT = {
   cjsKnownGuardOnEsmError: true,
   // Genuinely false in a green run: cross-format instanceof cannot work.
   cjsInstanceofOnEsmError: false,
+};
+
+const GREEN_RESOLUTION = {
+  pkgJsonResolves: true,
+  pkgJsonName: "@pbpeterson/typed-fetch",
+  stubExists: true,
+  stubFields: ["main", "module", "types"],
+  stubTargetsExist: true,
+  node10Loads: true,
+  node10SameFileAsExports: true,
 };
 
 const ids = (verdict) => verdict.results.map((a) => a.id);
@@ -208,6 +219,87 @@ describe("crossformatAssertions", () => {
     const verdict = crossformatAssertions({});
     expect(failing(verdict)).toHaveLength(2);
     expect(verdict.notes).toHaveLength(1);
+  });
+});
+
+describe("resolutionAssertions", () => {
+  test("emits 6 assertions in the printed order", () => {
+    expect(ids(resolutionAssertions(GREEN_RESOLUTION))).toEqual([
+      "resolve:package-json-subpath",
+      "resolve:package-json-is-the-manifest",
+      "resolve:node10-errors-stub-present",
+      "resolve:node10-errors-targets-exist",
+      "resolve:node10-errors-loads",
+      "resolve:node10-errors-same-file-as-exports",
+    ]);
+  });
+
+  test("a green probe record passes every assertion and emits no note", () => {
+    const verdict = resolutionAssertions(GREEN_RESOLUTION);
+    expect(failing(verdict)).toEqual([]);
+    expect(verdict.notes).toEqual([]);
+  });
+
+  test("a missing ./package.json export names the resolver's own error code", () => {
+    // The symptom a consumer reports is the code, so the detail has to carry it.
+    const verdict = resolutionAssertions({
+      ...GREEN_RESOLUTION,
+      pkgJsonResolves: false,
+      pkgJsonName: undefined,
+      pkgJsonError: "ERR_PACKAGE_PATH_NOT_EXPORTED",
+    });
+    expect(failing(verdict)).toEqual([
+      "resolve:package-json-subpath",
+      "resolve:package-json-is-the-manifest",
+    ]);
+    expect(verdict.results[0].detail).toContain("ERR_PACKAGE_PATH_NOT_EXPORTED");
+    expect(verdict.results[0].detail).toContain("exports map");
+  });
+
+  test("a manifest resolving to some OTHER package fails", () => {
+    // A stray hoisted node_modules entry would resolve and look green.
+    const verdict = resolutionAssertions({ ...GREEN_RESOLUTION, pkgJsonName: "typed-fetch" });
+    expect(failing(verdict)).toEqual(["resolve:package-json-is-the-manifest"]);
+  });
+
+  test("a missing stub explains which resolvers break", () => {
+    const verdict = resolutionAssertions({
+      ...GREEN_RESOLUTION,
+      stubExists: false,
+      stubFields: undefined,
+      stubTargetsExist: undefined,
+      node10Loads: undefined,
+      node10SameFileAsExports: undefined,
+    });
+    expect(failing(verdict)).toEqual([
+      "resolve:node10-errors-stub-present",
+      "resolve:node10-errors-targets-exist",
+      "resolve:node10-errors-loads",
+      "resolve:node10-errors-same-file-as-exports",
+    ]);
+    expect(verdict.results[2].detail).toContain("webpack 4");
+  });
+
+  test("a stub pointing at a file the tarball does not ship fails", () => {
+    const verdict = resolutionAssertions({ ...GREEN_RESOLUTION, stubTargetsExist: false });
+    expect(failing(verdict)).toEqual(["resolve:node10-errors-targets-exist"]);
+  });
+
+  test("a node10 redirect landing on a DIFFERENT file than exports fails", () => {
+    // Two files means two copies of every error class for a node10 consumer,
+    // which is the dual-package hazard this package already fought once.
+    const verdict = resolutionAssertions({
+      ...GREEN_RESOLUTION,
+      node10SameFileAsExports: false,
+    });
+    expect(failing(verdict)).toEqual(["resolve:node10-errors-same-file-as-exports"]);
+    expect(verdict.results[5].detail).toContain("second copy");
+  });
+
+  test("a truncated probe record fails all 6 without throwing", () => {
+    const verdict = resolutionAssertions({});
+    expect(verdict.results).toHaveLength(6);
+    expect(failing(verdict)).toHaveLength(6);
   });
 });
 

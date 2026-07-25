@@ -8,7 +8,8 @@ import { createScratchDir } from "./lib/scratch-dir.mjs";
 import { readPackManifest, verifyPackManifest } from "./verify-pack.mjs";
 
 // The exact manifest a clean `pnpm build` + `npm pack` produces: package.json +
-// LICENSE + README + 8 entry points + one chunk per format = 13.
+// LICENSE + README + 8 entry points + one chunk per format + the node10
+// redirect stub = 14.
 const CLEAN = [
   "package.json",
   "LICENSE",
@@ -23,6 +24,9 @@ const CLEAN = [
   "dist/errors/index.d.mts",
   "dist/chunk-Q3VCRU7W.mjs",
   "dist/chunk-VT2QTF3N.js",
+  // Hand-written and tracked, not emitted by tsup: it is what makes the
+  // `./errors` subpath resolvable for a consumer that ignores `exports`.
+  "errors/package.json",
 ];
 
 const without = (f) => CLEAN.filter((p) => p !== f);
@@ -30,14 +34,14 @@ const plus = (...f) => [...CLEAN, ...f];
 
 describe("verifyPackManifest — a clean build", () => {
   test("accepts the exact manifest tsup + npm pack produce", () => {
-    expect(verifyPackManifest(CLEAN)).toEqual({ fileCount: 13 });
+    expect(verifyPackManifest(CLEAN)).toEqual({ fileCount: 14 });
   });
 
   test("accepts differently hashed build chunks", () => {
     // The chunk hash changes every build, so the pattern must stay permissive
     // about the hash while staying exact about everything else.
     const rehashed = without("dist/chunk-Q3VCRU7W.mjs").concat("dist/chunk-AAAA1111.mjs");
-    expect(verifyPackManifest(rehashed)).toEqual({ fileCount: 13 });
+    expect(verifyPackManifest(rehashed)).toEqual({ fileCount: 14 });
   });
 
   test("defaults the file count to the manifest length", () => {
@@ -47,7 +51,7 @@ describe("verifyPackManifest — a clean build", () => {
   test("prefers npm's own entryCount over the manifest length", () => {
     // npm reports entryCount separately; the two can disagree, and the count
     // guard must trust npm. Unreachable through an on-disk fixture.
-    expect(() => verifyPackManifest(CLEAN, 14)).toThrow("expected at most 13");
+    expect(() => verifyPackManifest(CLEAN, 15)).toThrow("expected at most 14");
   });
 });
 
@@ -64,6 +68,12 @@ describe("verifyPackManifest — required files", () => {
   ])("rejects a build missing %s", (entry) => {
     expect(() => verifyPackManifest(without(entry))).toThrow(
       `tarball is missing required compiled file(s):\n    - ${entry}`,
+    );
+  });
+
+  test("rejects a tarball missing the node10 redirect stub", () => {
+    expect(() => verifyPackManifest(without("errors/package.json"))).toThrow(
+      "tarball is missing the node10 redirect stub(s):\n    - errors/package.json",
     );
   });
 
@@ -137,10 +147,10 @@ describe("verifyPackManifest — leak rules", () => {
 describe("verifyPackManifest — file count", () => {
   test("rejects a partial build below the floor", () => {
     // Unreachable through an on-disk fixture: every file you could remove to
-    // get under 13 is itself required, so the earlier guards fire first. The
+    // get under 14 is itself required, so the earlier guards fire first. The
     // floor guard is dead code as far as any shell-out test can tell.
-    expect(() => verifyPackManifest(CLEAN, 12)).toThrow(
-      "tarball has 12 file(s), expected at least 13. Build output looks incomplete.",
+    expect(() => verifyPackManifest(CLEAN, 13)).toThrow(
+      "tarball has 13 file(s), expected at least 14. Build output looks incomplete.",
     );
   });
 
@@ -148,7 +158,7 @@ describe("verifyPackManifest — file count", () => {
     // Extra files that are individually allow-listed must still trip the
     // ceiling, so a future build change is looked at rather than absorbed.
     const extra = plus("dist/chunk-BBBB2222.mjs", "dist/chunk-CCCC3333.js");
-    expect(() => verifyPackManifest(extra)).toThrow("expected at most 13");
+    expect(() => verifyPackManifest(extra)).toThrow("expected at most 14");
     expect(() => verifyPackManifest(extra)).toThrow("dist/chunk-BBBB2222.mjs");
   });
 });

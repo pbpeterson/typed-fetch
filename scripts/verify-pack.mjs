@@ -43,6 +43,13 @@ const REQUIRED_DIST_FILES = [
   "dist/errors/index.d.mts", // ./errors import types
 ];
 
+// The node10 redirect stub. `exports` is invisible to resolvers that predate it
+// (Jest <=27, webpack 4, Metro <0.72), so `<pkg>/errors` has to be resolvable as
+// a DIRECTORY too. This one file is what makes that true; without it the
+// `./errors` subpath type-checks and then throws "Cannot find module" at
+// runtime. It is hand-written and tracked, NOT emitted by tsup.
+const REQUIRED_STUB_FILES = ["errors/package.json"];
+
 // Metadata files consumers rely on. npm always includes package.json; LICENSE
 // and README.md must be present for the package page and license to be intact.
 const REQUIRED_META_FILES = ["LICENSE", "README.md"];
@@ -63,6 +70,7 @@ const ALLOWED_EXACT = new Set([
   "LICENSE",
   "README.md",
   ...REQUIRED_DIST_FILES,
+  ...REQUIRED_STUB_FILES,
 ]);
 
 // tsup emits shared code as `chunk-<HASH>.<js|mjs>` next to the entry points.
@@ -84,12 +92,13 @@ const LEAK_RULES = [
   { label: "snapshot directory", test: (f) => /(^|\/)__snapshots__\//.test(f) },
 ];
 
-// Full build emits exactly 13 files: 8 required entry points + 2 chunks (one
-// per format) + LICENSE + README.md + package.json. MIN catches a partial
-// build; MAX catches anything extra that the allowlist somehow admits, so a
-// future build change has to be looked at rather than absorbed silently.
-const MIN_FILE_COUNT = 13;
-const MAX_FILE_COUNT = 13;
+// Full build emits exactly 14 files: 8 required entry points + 2 chunks (one
+// per format) + the errors/package.json node10 stub + LICENSE + README.md +
+// package.json. MIN catches a partial build; MAX catches anything extra that
+// the allowlist somehow admits, so a future build change has to be looked at
+// rather than absorbed silently.
+const MIN_FILE_COUNT = 14;
+const MAX_FILE_COUNT = 14;
 
 // ---------------------------------------------------------------------------
 // THE DECISION. Pure: plain data in, plain data out, or a thrown Error whose
@@ -142,6 +151,19 @@ export function verifyPackManifest(packedFiles, fileCount = packedFiles.length) 
   if (missingDist.length > 0) {
     throw new Error(
       `tarball is missing required compiled file(s):\n    - ${missingDist.join("\n    - ")}`,
+    );
+  }
+
+  // 2a. The node10 redirect stub must ship. It is tracked, not built, so the
+  //     way it goes missing is an edit to `files` — exactly what this catches.
+  const missingStub = REQUIRED_STUB_FILES.filter((f) => !packedSet.has(f));
+  if (missingStub.length > 0) {
+    throw new Error(
+      "tarball is missing the node10 redirect stub(s):\n" +
+        `    - ${missingStub.join("\n    - ")}\n` +
+        "Without it the `./errors` subpath is unresolvable for any consumer whose " +
+        "resolver ignores `exports` (Jest <=27, webpack 4, Metro <0.72). Check the " +
+        "`files` allow-list in package.json.",
     );
   }
 
@@ -246,7 +268,7 @@ function main() {
       `all ${REQUIRED_DIST_FILES.length} required entry points + LICENSE/README present, ` +
       "every packed path on the allow-list.",
   );
-  for (const f of [...REQUIRED_DIST_FILES, ...REQUIRED_META_FILES]) {
+  for (const f of [...REQUIRED_DIST_FILES, ...REQUIRED_META_FILES, ...REQUIRED_STUB_FILES]) {
     console.log(`    ✓ ${f}`);
   }
 }

@@ -260,6 +260,59 @@ try {
 console.log(JSON.stringify(out));
 `;
 
+// --- Resolution probe: the two packaging promises a resolver has to keep -----
+// (1) `<pkg>/package.json` must be reachable THROUGH the resolver. Tooling that
+//     reads a dependency's manifest (bundler plugins, monorepo linters, version
+//     gates) does `require.resolve("<pkg>/package.json")` rather than guessing a
+//     path on disk; without a `./package.json` entry in the exports map Node
+//     answers ERR_PACKAGE_PATH_NOT_EXPORTED.
+// (2) `<pkg>/errors` must ALSO resolve the pre-`exports` way. Jest <=27,
+//     webpack 4 and Metro <0.72 never read `exports`; they walk node10's
+//     LOAD_AS_DIRECTORY. That path is emulated here by hand — deliberately NOT
+//     via require.resolve, which honors `exports` and would prove nothing —
+//     and it must land on the very same file the exports map serves, or the
+//     package would hand those consumers a second copy of every error class.
+const PROBE_RESOLUTION = `
+const { existsSync, readFileSync } = require("node:fs");
+const { join, resolve: resolvePath } = require("node:path");
+
+const out = {};
+
+// (1) the manifest, through the resolver.
+try {
+  const p = require.resolve("${PKG_NAME}/package.json");
+  out.pkgJsonResolves = true;
+  out.pkgJsonName = JSON.parse(readFileSync(p, "utf8")).name;
+} catch (err) {
+  out.pkgJsonResolves = false;
+  out.pkgJsonError = err.code || err.message;
+}
+
+// (2) node10 LOAD_AS_DIRECTORY on <pkg>/errors, by hand.
+const pkgDir = join(process.cwd(), "node_modules", ...${JSON.stringify(PKG_NAME)}.split("/"));
+const stubPath = join(pkgDir, "errors", "package.json");
+out.stubExists = existsSync(stubPath);
+if (out.stubExists) {
+  const stub = JSON.parse(readFileSync(stubPath, "utf8"));
+  out.stubFields = ["main", "module", "types"].filter((f) => typeof stub[f] === "string");
+  const targets = {};
+  for (const field of out.stubFields) {
+    targets[field] = resolvePath(join(pkgDir, "errors"), stub[field]);
+  }
+  out.stubTargetsExist = out.stubFields.every((f) => existsSync(targets[f]));
+  // A node10 runtime loads the \`main\` target. It must be real code.
+  try {
+    out.node10Loads = typeof require(targets.main).NotFoundError === "function";
+  } catch (err) {
+    out.node10Loads = false;
+    out.node10Error = err.code || err.message;
+  }
+  // …and it must be the SAME file \`exports\` serves, not a second copy.
+  out.node10SameFileAsExports = targets.main === require.resolve("${PKG_NAME}/errors");
+}
+console.log(JSON.stringify(out));
+`;
+
 const CONSUMER_TS = `
 import { typedFetch, isHttpError, isKnownHttpError, NotFoundError } from "${PKG_NAME}";
 import { NotFoundError as SubpathNotFound } from "${PKG_NAME}/errors";
@@ -533,6 +586,52 @@ export function crossformatAssertions(r) {
 }
 
 /**
+ * Six assertions from the resolution probe: two for the `./package.json`
+ * subpath, four for the node10 directory redirect. These are MANIFEST
+ * promises, not behavior — but they are only observable against a real
+ * install, which is why they live here and not in verify-pack.
+ * @param {any} r parsed JSON line from probe-resolution.cjs
+ * @returns {ProbeVerdict}
+ */
+export function resolutionAssertions(r) {
+  return {
+    results: [
+      assert(
+        "resolve:package-json-subpath",
+        r.pkgJsonResolves,
+        `require.resolve("${PKG_NAME}/package.json") failed with ${r.pkgJsonError} — add "./package.json" to the exports map`,
+      ),
+      assert(
+        "resolve:package-json-is-the-manifest",
+        r.pkgJsonName === PKG_NAME,
+        `resolved manifest declares name=${r.pkgJsonName}, expected ${PKG_NAME}`,
+      ),
+      assert(
+        "resolve:node10-errors-stub-present",
+        r.stubExists,
+        `errors/package.json is missing — the ./errors subpath is unresolvable for any consumer whose resolver ignores "exports" (Jest <=27, webpack 4, Metro <0.72)`,
+      ),
+      assert(
+        "resolve:node10-errors-targets-exist",
+        r.stubExists && r.stubTargetsExist,
+        `errors/package.json declares ${JSON.stringify(r.stubFields ?? [])} but not every target exists in the tarball`,
+      ),
+      assert(
+        "resolve:node10-errors-loads",
+        r.node10Loads,
+        `loading the stub's main target the node10 way failed: ${r.node10Error} (must expose NotFoundError)`,
+      ),
+      assert(
+        "resolve:node10-errors-same-file-as-exports",
+        r.node10SameFileAsExports,
+        `the node10 path and the "exports" path must land on ONE file, or a node10 consumer gets a second copy of every error class`,
+      ),
+    ],
+    notes: [],
+  };
+}
+
+/**
  * Indent captured compiler output so it reads as a block under its assertion.
  * @param {string} s
  */
@@ -774,6 +873,13 @@ function main() {
     emit(crossformatAssertions(runProbe(consumer, "probe-crossformat.mjs", PROBE_CROSSFORMAT)));
   } catch (err) {
     record(assert("crossformat:probe", false, `cross-format probe crashed: ${err.message}`));
+  }
+
+  console.log("\n▸ Resolution (./package.json subpath, node10 ./errors redirect) probes …");
+  try {
+    emit(resolutionAssertions(runProbe(consumer, "probe-resolution.cjs", PROBE_RESOLUTION)));
+  } catch (err) {
+    record(assert("resolve:probe", false, `resolution probe crashed: ${err.message}`));
   }
 
   // -------------------------------------------------------------------------

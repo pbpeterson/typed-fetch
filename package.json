@@ -30,19 +30,13 @@
     "url": "git+https://github.com/pbpeterson/typed-fetch.git"
   },
   "files": [
-    "dist"
+    "dist",
+    "errors/package.json"
   ],
   "sideEffects": false,
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
-  "typesVersions": {
-    "*": {
-      "errors": [
-        "dist/errors/index.d.ts"
-      ]
-    }
-  },
   "exports": {
     ".": {
       "import": {
@@ -63,7 +57,8 @@
         "types": "./dist/errors/index.d.ts",
         "default": "./dist/errors/index.js"
       }
-    }
+    },
+    "./package.json": "./package.json"
   },
   "publishConfig": {
     "access": "public",
