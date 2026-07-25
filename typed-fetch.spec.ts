@@ -99,14 +99,21 @@ describe("typedFetch", () => {
   });
 
   test("forwards request options to fetch", async () => {
-    const result = await typedFetch(url({ status: 200 }), {
+    const body = JSON.stringify({ name: "test" });
+    const result = await typedFetch(url({ status: 200, echoHeader: "Content-Type" }), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "test" }),
+      body,
     });
 
     expect(result.error).toBe(null);
     expect(result.response?.status).toBe(200);
+    // The server echoes all three options back, so assert each one arrived. A
+    // 200 alone is also what a request that dropped every option receives.
+    expect(result.response?.headers.get("X-Echo-Method")).toBe("POST");
+    expect(result.response?.headers.get("X-Echo-Header")).toBe("application/json");
+    const echoedBody = result.response?.headers.get("X-Echo-Body");
+    expect(echoedBody && decodeURIComponent(echoedBody)).toBe(body);
   });
 
   test("accepts a custom fetch implementation, bypassing the global fetch", async () => {
@@ -195,6 +202,13 @@ describe("typedFetch", () => {
     expect(init && "fetch" in init).toBe(false);
   });
 
+  // The `method` getter runs inside the platform's fetch, not inside this
+  // library. Fetch converts `init` as a WebIDL dictionary, and WebIDL
+  // propagates an exception thrown by a member getter out of that conversion.
+  // `fetch()` then rejects with that exact value, so `cause` holds `cause` by
+  // identity under any conforming runtime. `toBe` pins the specification here,
+  // not undici. If a runtime ever wraps the value, that wrapping is the
+  // finding, and this assertion must report it.
   test("turns a throwing RequestInit getter into a NetworkError value", async () => {
     const cause = new Error("method getter exploded");
     const options = Object.defineProperty({}, "method", {
@@ -253,6 +267,12 @@ describe("typedFetch", () => {
     expect(result.error?.cause).toBe(cause);
   });
 
+  // The `Symbol.toPrimitive` trap runs inside the platform's fetch, which
+  // converts the request input as a USVString. WebIDL propagates an exception
+  // thrown by that conversion, and `fetch()` rejects with the exact value, so
+  // `toBe` pins the specification here too, not undici. `url` is this
+  // library's own answer: `requestUrl` catches the second throw and returns
+  // the empty string.
   test("does not reject while resolving the URL for a NetworkError", async () => {
     const cause = new Error("URL coercion exploded");
     const hostileInput = {
@@ -521,12 +541,26 @@ describe("typedFetch", () => {
     }
   });
 
-  test("407 → ProxyAuthenticationRequiredError (constructed directly, Node rejects 407 at network level)", async () => {
-    const error = new ProxyAuthenticationRequiredError(new Response(null, { status: 407 }));
+  // Node's fetch rejects a 407 at the network level, so 407 is the one roster
+  // status no live request can reach. An injected fetch supplies the response
+  // instead, which keeps the assertion on the same `statusCodeErrorMap` lookup
+  // that every other `errorCases` row exercises. Constructing the class by hand
+  // proves only what error-classes.spec.ts already proves for all 40 classes,
+  // and proves nothing about the lookup.
+  test("407 → ProxyAuthenticationRequiredError (injected fetch; Node rejects a live 407)", async () => {
+    const stubFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 407 }));
 
-    expect(error.status).toBe(407);
-    expect(error).toBeInstanceOf(BaseHttpError);
-    expect(isHttpError(error)).toBe(true);
+    const result = await typedFetch("https://example.invalid/proxy-authentication", {
+      fetch: stubFetch as unknown as typeof fetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(ProxyAuthenticationRequiredError);
+    expect(isHttpError(result.error)).toBe(true);
+
+    if (isHttpError(result.error)) {
+      expect(result.error.status).toBe(407);
+    }
   });
 
   test("unmapped 2xx status codes pass through as a successful response", async () => {
@@ -555,21 +589,20 @@ describe("typedFetch", () => {
     }
   });
 
-  test("status-0 Response.error() stays on the success branch with native body behavior", async () => {
+  test("status-0 Response.error() stays on the success branch", async () => {
     const errorResponse = Response.error();
     const result = await typedFetch("https://example.test/status-zero", {
       fetch: async () => errorResponse,
     });
 
+    // Status 0 is below 400, so the call takes the success branch and the
+    // caller receives the SAME Response object. Identity is the whole
+    // assertion. A further read would read the object this test built, and
+    // would report on `Response.error()` instead of on this library. The 204
+    // test above covers native empty-body behavior, on a response that did
+    // travel through typedFetch.
     expect(result.error).toBe(null);
     expect(result.response).toBe(errorResponse);
-
-    if (result.response) {
-      expect(result.response.status).toBe(0);
-      expect(result.response.type).toBe("error");
-      expect(await result.response.clone().text()).toBe("");
-      await expect(result.response.json()).rejects.toBeInstanceOf(SyntaxError);
-    }
   });
 
   test("unmapped 4xx status → UnknownHttpError", async () => {
@@ -605,7 +638,13 @@ describe("typedFetch", () => {
     expect(result.response?.status).toBe(302);
   });
 
-  test("connection refused → NetworkError with original error as cause", async () => {
+  // Integration check for a real transport failure. It proves the
+  // classification — a refused connection is a NetworkError, not an abort and
+  // not a timeout — and that a cause survives the trip. It cannot prove WHICH
+  // cause: the runtime owns the rejection, so no assertion here can hold a
+  // reference to it. `cause` identity is proven at the classifier's own seam in
+  // request-failure.spec.ts, and through an injected fetch above.
+  test("connection refused → NetworkError carrying a cause", async () => {
     const result = await typedFetch("http://localhost:1");
 
     expect(result.response).toBe(null);
@@ -1128,29 +1167,70 @@ describe("typedFetch", () => {
     expect(init).toMatchObject({ method: "REPORT" });
   });
 
-  test("TypedHeaders accepts a Headers instance and sends it", async () => {
+  // ── The `headers` option reaches the wire ──────────────────────────────
+  // This library never reads, normalizes, or rebuilds `headers`. The value of
+  // that is that whatever the caller passes arrives at the server unchanged,
+  // and only a real server can prove it. Each test below asks the fixture to
+  // echo the received header back. An assertion on the init object handed to an
+  // injected fetch cannot prove it, because that fetch opens no connection.
+  //
+  // Three forms, because `RequestInit.headers` is a union and fetch converts
+  // each form on its own path: a record, a `Headers` instance, and an array of
+  // name/value tuple pairs.
+
+  test("TypedHeaders accepts a record and it reaches the server", async () => {
+    const headers = { "X-Custom-Header": "from-a-record" };
+
+    const result = await typedFetch(url({ status: 200, echoHeader: "X-Custom-Header" }), {
+      headers,
+    });
+
+    expect(result.error).toBe(null);
+    expect(result.response?.headers.get("X-Echo-Header")).toBe("from-a-record");
+    expectTypeOf(headers).toExtend<TypedFetchOptions["headers"]>();
+  });
+
+  test("TypedHeaders accepts a Headers instance and it reaches the server", async () => {
     const headers = new Headers();
-    headers.set("X-Custom-Header", "headers-instance");
+    headers.set("X-Custom-Header", "from-a-headers-instance");
 
-    const result = await typedFetch(url({ status: 200 }), { headers });
+    const result = await typedFetch(url({ status: 200, echoHeader: "X-Custom-Header" }), {
+      headers,
+    });
 
     expect(result.error).toBe(null);
+    expect(result.response?.headers.get("X-Echo-Header")).toBe("from-a-headers-instance");
     expectTypeOf(headers).toExtend<TypedFetchOptions["headers"]>();
   });
 
-  test("TypedHeaders accepts tuple pairs and sends them", async () => {
-    const headers: [string, string][] = [["X-Custom-Header", "tuple-pairs"]];
+  test("TypedHeaders accepts tuple pairs and they reach the server", async () => {
+    const headers: [string, string][] = [["X-Custom-Header", "from-tuple-pairs"]];
 
-    const result = await typedFetch(url({ status: 200 }), { headers });
+    const result = await typedFetch(url({ status: 200, echoHeader: "X-Custom-Header" }), {
+      headers,
+    });
 
     expect(result.error).toBe(null);
+    expect(result.response?.headers.get("X-Echo-Header")).toBe("from-tuple-pairs");
     expectTypeOf(headers).toExtend<TypedFetchOptions["headers"]>();
   });
 
-  test("TypedHeaders (Headers instance and tuple pairs) actually reach the server", async () => {
+  // The fetch override is the ONE path that does not hand `options` to fetch
+  // untouched: `withoutFetchOverride` rebuilds it as a proxy over a descriptor
+  // clone. Every header form must survive that rebuild BY IDENTITY, because the
+  // proxy delegates the read to the original object instead of copying it. A
+  // server observes nothing here — the injected fetch performs no request — so
+  // this is the one header test that reads the init object.
+  test("the fetch override rebuild forwards every headers form by identity", async () => {
     const stubFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
 
-    const headersInstance = new Headers({ "X-Custom-Header": "from-headers-instance" });
+    const record = { "X-Custom-Header": "from-a-record" };
+    await typedFetch("https://example.invalid/headers-record", {
+      headers: record,
+      fetch: stubFetch as unknown as typeof fetch,
+    });
+
+    const headersInstance = new Headers({ "X-Custom-Header": "from-a-headers-instance" });
     await typedFetch("https://example.invalid/headers-instance", {
       headers: headersInstance,
       fetch: stubFetch as unknown as typeof fetch,
@@ -1162,12 +1242,15 @@ describe("typedFetch", () => {
       fetch: stubFetch as unknown as typeof fetch,
     });
 
-    expect(stubFetch).toHaveBeenCalledTimes(2);
+    expect(stubFetch).toHaveBeenCalledTimes(3);
 
-    const [, initFromHeadersInstance] = stubFetch.mock.calls[0] ?? [];
+    const [, initFromRecord] = stubFetch.mock.calls[0] ?? [];
+    expect(initFromRecord?.headers).toBe(record);
+
+    const [, initFromHeadersInstance] = stubFetch.mock.calls[1] ?? [];
     expect(initFromHeadersInstance?.headers).toBe(headersInstance);
 
-    const [, initFromTuples] = stubFetch.mock.calls[1] ?? [];
+    const [, initFromTuples] = stubFetch.mock.calls[2] ?? [];
     expect(initFromTuples?.headers).toBe(tuplePairs);
   });
 
