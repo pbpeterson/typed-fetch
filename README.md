@@ -16,7 +16,18 @@ Native `fetch` does not reject a request for an HTTP error status. The calling c
 
 Body readers are separate operations. `json()`, `text()`, `blob()`, and `arrayBuffer()` keep the native Fetch behavior, and they can reject.
 
-> **Upgrade from 0.x:** Version 1.0 has breaking changes. Read [Migrating from 0.x](https://github.com/pbpeterson/typed-fetch/blob/main/CHANGELOG.md#migrating-from-0x).
+### Upgrade from 0.x
+
+Version 1.0 has breaking changes. Four of them need a code change:
+
+- **The type guards identify errors by a `Symbol.for` brand, not by `instanceof`.** They now work across package copies. A value that forges the brand passes a guard.
+- **`typedFetch<T, E>` lost its second type parameter.** Use `typedFetch<T>`. `error` is always the complete `TypedFetchError` union. Narrow it with a guard.
+- **An abort resolves with `AbortedError`, and a timeout with `TimeoutError`.** Neither extends `NetworkError`, so `isNetworkError()` resolves to `false` for both. Use `isAbortError()` and `isTimeoutError()`.
+- **Abort detection reads the request's `AbortSignal`, not the rejected error's `name`.** `controller.abort(reason)` now classifies correctly.
+
+`statusCodeErrorMap`, `httpErrors`, `HttpErrors`, `TypedHeaders`, and `StrictHeaders` are no longer exported. `TypedFetchOptions["headers"]` still gives header-name autocomplete.
+
+The full list is in [CHANGELOG.md](https://github.com/pbpeterson/typed-fetch/blob/main/CHANGELOG.md#migrating-from-0x).
 
 ### Terms
 

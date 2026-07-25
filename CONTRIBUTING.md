@@ -127,6 +127,8 @@ Work through this list before you request a review of a documentation change.
 - [ ] Conditions appear before conditional actions.
 - [ ] New terminology is defined on first use.
 - [ ] README, public skill, and JSDoc describe the same behavior.
+- [ ] The README Terms table matches the controlled vocabulary in
+      `docs/writing-standard.md`.
 - [ ] No internal export is presented as public.
 - [ ] Warnings describe a concrete consequence.
 

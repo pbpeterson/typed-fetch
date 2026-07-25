@@ -18,8 +18,10 @@ Two limits on that scope:
 - A code identifier keeps the spelling the code uses, even when the code
   disagrees with this standard. `` `cancelled` `` names a variable in
   `src/errors/error-body.ts`; the prose around it says "canceled".
-- A runtime message string is program output, not documentation. Changing one
-  is a behavior change, not an editorial change.
+- A runtime message string is program output, not documentation. Editing one
+  changes program output and the tests that assert on it, so it does not belong
+  in a documentation change. It is not forbidden: `README.md` states that
+  `error.message` text can change in any release. Land it as its own patch.
 
 `README.md` is the only document in the npm tarball. A link from it to any
 other repository file must be an absolute URL, or a reader who opens it from
