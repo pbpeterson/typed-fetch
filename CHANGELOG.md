@@ -2,11 +2,108 @@
 
 ## [Unreleased]
 
-This is a **major**. The `headers` option is narrowed to reject `undefined`
-values, and code that compiled against `1.1.0` on a Node consumer without
-`lib.dom` no longer does. The change is compile-time only — no runtime behavior
-depends on it — but it removes types that used to be accepted, which conventional
-SemVer governs regardless of how small the diff is.
+This is a **major**, and most of the breaks are in runtime behavior. Six
+runtime changes remove behavior that `1.1.0` had.
+
+1. `error.headers` and `error.url` are no longer enumerable. A spread, an
+   `Object.keys(error)` walk, and a `for...in` loop no longer reach them.
+2. `error.cause` and `AbortedError.reason` are no longer enumerable either.
+3. `error.headers` is a copy of the response headers. A write through it no
+   longer reaches the response.
+4. `clone(recreate)` refuses two more callback results: a copy built from a
+   different response, and a Proxy or a delegate wrapped around the new error.
+5. A custom Fetch implementation that resolves a response whose `headers` is
+   `null` yields a `NetworkError` instead of an HTTP error.
+6. `typedFetch` reads the `fetch` override as an own property of `options`. An
+   override that arrives through the prototype chain is ignored.
+
+One break is compile-time. `TypedFetchOptions["headers"]` rejects `undefined`
+as a header value, so code that compiled against `1.1.0` on a Node consumer
+without `lib.dom` no longer compiles.
+
+Read the migration table before you upgrade.
+
+### Migration
+
+| What changed                            | How it shows up                                       | What to do                                                             |
+| --------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------- |
+| `headers` and `url` are not enumerable  | A log built from `{ ...error }` loses both fields     | Call `error.toJSON()`, or read `error.headers` and `error.url` by name |
+| `cause` and `reason` are not enumerable | A deep log loses the transport detail                 | Read `error.cause` and `error.reason` by name                          |
+| `error.headers` is a copy               | `error.headers.set(...)` no longer edits the response | Edit the `Response` you hold                                           |
+| `clone(recreate)` refuses a wrapper     | A `TypeError` names the wrapper                       | Return the new error itself, never a Proxy around it                   |
+| `headers: null` from a custom Fetch     | The result is a `NetworkError`                        | Give the response a real `Headers` value                               |
+| `fetch` must be an own property         | The request goes to the global `fetch`                | Write `{ ...options, fetch }` or `Object.assign(options, { fetch })`   |
+| `headers` rejects `undefined`           | TS2322 or TS2375 on a Node consumer without `lib.dom` | Write `...(token ? { Authorization: token } : {})`                     |
+
+### Breaking
+
+- `error.headers` and `error.url` are no longer enumerable own properties. They
+  now carry the descriptor the platform gives `Error.cause`: readable and
+  writable, never enumerable. They no longer appear in `{ ...error }`, in
+  `Object.keys(error)`, in `Object.entries(error)`, or in a `for...in` loop.
+  Reading `error.headers` and `error.url` is unchanged. A logger that walked an
+  error's own enumerable properties instead of calling `toJSON()` recorded every
+  header value and the full request URL. Node's output for an uncaught error
+  walks exactly those properties with every formatting hook disabled. A crash
+  dump therefore printed undici's internal header list, including its cookie
+  array. That path accepts no hook. Enumerability is the only control over it.
+- `cause` and `reason` are no longer enumerable, which matches
+  `new Error(message, { cause })`. They no longer appear in
+  `JSON.stringify(error)`, in `{ ...error }`, or in `Object.keys(error)`, so a
+  deep structured log no longer records undici's transport detail — local and
+  remote addresses and ports. Reading them is unchanged and both stay writable.
+- `error.headers` is a copy of the response headers, not the same object. A
+  write through it no longer reaches the response. The copy is faithful: it
+  keeps every repeated `set-cookie` entry.
+- `clone(recreate)` rejects a callback that builds from a response other than
+  the one it receives. Only `copy === this` was caught before, so a callback
+  that ignored its argument orphaned the teed branch: the platform never freed
+  the source and `cancel()` on the original never settled. The orphan is
+  released before the `TypeError` is thrown.
+- `clone(recreate)` also rejects a copy that claims this package copy but
+  carries no body. The callback's return value used to be accepted when the body
+  table had no entry for it. The reasoning was that the owner can live in
+  another package copy's table, which is sound for a real second copy. An empty
+  result is also what the table returns for any object it cannot key: a Proxy
+  wrapper, an `Object.create` delegate, or a membrane. Instrumentation libraries
+  install a Proxy wrapper routinely. The clone then succeeded and `cancel()` on
+  the original never settled. The branch could not be released through the copy
+  either, because `this` inside its `cancel` is the wrapper. That cost one
+  pinned connection and one unreleased stream per cloned error, with no recovery
+  path. A copy that claims this package copy's prototype chain must be
+  registered in this copy's table. It is now refused with a `TypeError` that
+  releases the branch first. An instance built by a genuinely different package
+  copy is still accepted.
+- A custom Fetch implementation that resolves a response whose `headers` is
+  `null` now yields a `NetworkError` instead of an HTTP error. The error
+  constructor copies the response headers, and `new Headers(null)` throws. The
+  throw happens inside the envelope, so `typedFetch` still resolves rather than
+  rejecting, and the response body is released before the error is built. A test
+  double that returns a partial response must give `headers` a real value.
+- `typedFetch` reads the `fetch` override as an own property of `options`. An
+  override that arrives through the prototype chain is ignored, and the request
+  goes to the global `fetch`. Reading it off the prototype made a single
+  `Object.prototype.fetch = …` write anywhere in the process redirect every
+  request in it. That includes a call that passes no options object at all,
+  because its default `{}` inherits the write. The write also handed the
+  caller's headers to whoever performed it. Verified before the change: an
+  injected prototype `fetch` captured an `Authorization` header and returned a
+  forged 200. Every other option keeps the platform's rule. `fetch` reads
+  `RequestInit` as a WebIDL dictionary, and an inherited member is part of that
+  input. Migration: set `fetch` as an own property, with `{ ...options, fetch }`
+  or `Object.assign(options, { fetch })`.
+- `TypedFetchOptions["headers"]` no longer accepts `undefined` as a header
+  value. A header set from an optional variable — `{ Authorization: token }`
+  where `token` is `string | undefined` — reached the platform as the literal
+  string `"undefined"` and was sent on the wire. Two separate leaks admitted it:
+  the index signature on the internal `StrictHeaders`, and undici's
+  `HeaderRecord`, an all-optional mapped type reached through the native branch
+  of the union. Narrowing only the first is a no-op, because the type is a union
+  and the native branch still accepts the value. Both had to close. A consumer
+  with `lib.dom` was already protected by the platform's own `HeadersInit`, so
+  this affects the no-DOM Node profile, which is the one the library targets.
+  The option is now deliberately stricter than the platform there. Write
+  `...(token ? { Authorization: token } : {})` rather than passing `undefined`.
 
 ### Added
 
@@ -20,13 +117,30 @@ SemVer governs regardless of how small the diff is.
   `set-cookie` and arbitrary secrets in custom headers, and a logger calls
   `toJSON()` on whatever it is handed, so the record must not carry a value that
   nobody judged. A deny list does not solve this, because the dangerous name is
-  the one this library has never heard of. A repeated header appears once per
-  arrival, and `error.headers` still holds every value. The body and the stack
-  are absent for a neighboring reason — the body is a single-use asynchronous
+  the one this library has never heard of. `error.headers` still holds every
+  value. `url` is redacted the same way: the record keeps the origin and the
+  path, and `error.url` still holds the full href. The body and the stack are
+  absent for a neighboring reason — the body is a single-use asynchronous
   stream, and the stack carries local file paths. This also fixes a case where
   `JSON.stringify(error)` threw: an abort reason holding a cycle. A consumer
   subclass inherits `toJSON()`, so a field it adds needs an override to reach
   `JSON.stringify`.
+- `util.inspect.custom` on every error class. `console.log(error)`,
+  `console.error(error)`, `util.inspect`, and a test runner's failure output
+  never call `toJSON()`, so the record's redaction did not reach them. They
+  printed the live `Headers` with the session cookie and every custom header
+  value, and the full request URL. They also printed the platform cause chain,
+  with undici's local and remote addresses and ports, because Node
+  special-cases `cause` on an error regardless of enumerability.
+  `AbortedError.reason` carries the identical defense as `cause`. It stayed
+  hidden only because Node has no special case for it: the same defense, two
+  members, one leaked. These calls now print the stack followed by the
+  `toJSON()` record, so the two channels cannot drift. A consumer subclass that
+  overrides `toJSON()` fixes both with one override. `cause` and `reason` are
+  replaced by a marker that names
+  the property that holds them. The hook is registered under
+  `Symbol.for("nodejs.util.inspect.custom")`, which is what `util.inspect.custom`
+  is. It needs no Node import, so it works on Node, Deno, and Bun.
 - `"./package.json"` in the `exports` map. Tooling that reads a dependency's
   manifest through the resolver received `ERR_PACKAGE_PATH_NOT_EXPORTED`.
 - `errors/package.json`, a redirect stub for resolvers that ignore `exports`
@@ -44,35 +158,37 @@ SemVer governs regardless of how small the diff is.
   `X-Frame-Options`, `X-Content-Type-Options`, `Strict-Transport-Security`), and
   three belong to the platform: `Content-Length` makes `fetch` throw when it
   disagrees with the body, `Host` is silently overwritten, and `Connection` is
-  hop-by-hop. `If-Match` is added, without which dropping `ETag` leaves no way
-  to send a read validator. `Cache-Control` no longer suggests `public`,
+  hop-by-hop. `If-Match` is added because it is the write validator. RFC 9110
+  section 13.1.1 defines it as the precondition on a state-changing request, so
+  it prevents a lost update, and no declared name covered that. It does not
+  replace `ETag`: `ETag` is a response header that a client never sends. The two
+  read validators, `If-None-Match` and `If-Modified-Since`, were already
+  declared and are unchanged. `Cache-Control` no longer suggests `public`,
   `private`, or `must-revalidate`, which are response directives. Removing a
   name is not breaking: it still type-checks as a custom name with a string
   value, verified under both the DOM and the no-DOM profile.
-- `error.headers` is a copy of the response headers, not the same object. A
-  write through it no longer reaches the response.
-- `cause` and `reason` are no longer enumerable, which matches
-  `new Error(message, { cause })`. They stop appearing in
-  `JSON.stringify(error)`, in `{ ...error }`, and in `Object.keys(error)`, so a
-  deep structured log no longer records undici's transport detail — local and
-  remote addresses and ports. Reading them is unchanged and both stay writable.
-- `clone(recreate?)` rejects a callback that builds from a response other than
-  the one it receives. Only `copy === this` was caught before, so a callback
-  that ignored its argument orphaned the teed branch: the platform never freed
-  the source and `cancel()` on the original never settled. The orphan is
-  released before the `TypeError` is thrown.
-- `TypedFetchOptions["headers"]` no longer accepts `undefined` as a header value.
-  A header set from an optional variable — `{ Authorization: token }` where
-  `token` is `string | undefined` — reached the platform as the literal string
-  `"undefined"` and was sent on the wire. Two separate leaks admitted it: the
-  index signature on the internal `StrictHeaders`, and undici's `HeaderRecord`,
-  an all-optional mapped type reached through the native branch of the union.
-  Narrowing only the first is a no-op, because the type is a union and the
-  native branch still accepts the value; both had to close. A consumer with
-  `lib.dom` was already protected by the platform's own `HeadersInit`, so this
-  affects the no-DOM Node profile, which is the one the library targets. The
-  option is now deliberately stricter than the platform there — write
-  `...(token ? { Authorization: token } : {})` rather than passing `undefined`.
+- `error.message` and the `toJSON()` record hold a redacted URL: the origin and
+  the path, with the userinfo, the query string, and the fragment removed. A
+  query string routinely carries a credential, and `message` is the string every
+  log line, crash dump, and test failure carries. A deny list of sensitive query
+  keys fails for the reason it failed for header names. The dangerous key is the
+  one this library has never heard of. The whole query is dropped instead.
+  `error.url` still holds the full href, exactly as `error.headers` still holds
+  every header value. A URL with no userinfo, query, or fragment produces a
+  byte-identical message. A secret in a path segment still reaches the message
+  and the record. Dropping the path would reduce `url` to the origin and remove
+  the only thing the field is for. This is not a break. The semver
+  contract already states that `error.message` text can change in any release,
+  and `toJSON()` ships for the first time in this release.
+- `TypedFetchOptions` replaces the native `method` and `headers` slots instead
+  of intersecting with them. An intersection with `RequestInit["method"]`
+  (`string`) collapses the union, so `method: "…"` offered zero completions
+  while the README promised them. It now offers seven. Header-name completions
+  on a Node consumer without `lib.dom` went from 116 to 42. That drops the 74
+  names the platform contributed: every response-only name, plus
+  `Content-Length`, `Host`, and `Connection`. The list is now the same 42 in
+  both lib profiles. This is compile-time only, and both slots accept strictly
+  more than before, so no consumer type stops compiling.
 - `BaseHttpError.cancel()` resolves, rather than rejecting, when the body stream
   itself failed — a truncated response or a connection reset mid-body. The
   caller asked to discard these bytes, and a stream that errored already dropped
@@ -98,6 +214,30 @@ SemVer governs regardless of how small the diff is.
   answers a status the branch was never taken on; and the release itself is
   wrapped, so a throwing `body` getter can no longer replace the cause being
   reported.
+- `NetworkError` no longer copies a password into `message`. undici rejects a
+  URL that carries credentials with a `TypeError` whose message contains the URL
+  verbatim. That message was copied into `message`, and from there into the
+  record, so
+  `{"name":"NetworkError","message":"Request cannot be constructed from a URL that includes credentials: http://alice:hunter2@host/x","url":"http://alice:hunter2@host/x"}`
+  was a normal log line. The URL the error was told about is now removed from
+  the message before the error is built. The replacement is exact-string, so it
+  is best effort. The userinfo is stripped separately wherever it survives.
+- `fetch?: typeof fetch | undefined`. The dependency-injection pattern the
+  README recommends failed with TS2379 under `exactOptionalPropertyTypes`. Under
+  that flag an optional property whose type does not name `undefined` rejects a
+  `typeof fetch | undefined` value. The other optional members still do not name
+  `undefined`. `{ method: maybeString }` and `{ body: maybeBody }` continue to
+  fail, and the second is native `RequestInit` behavior.
+- The published JSDoc for `cancel()` listed the conditions under which it
+  resolves and omitted the errored body stream. `cancel()` was changed to
+  resolve rather than crash the process on a truncated response or a connection
+  reset mid-body. The README and the internal documentation were updated, and
+  this block was not. It is what a consumer sees on hover, because it ships in
+  `dist/index.d.ts`.
+- The `README.md` examples used browser-relative URLs such as `/api/users`,
+  which reject on Node with `TypeError: Failed to parse URL`. Installation names
+  Node 20 as the target. The first example therefore could not run on the
+  runtime the document recommends. Every example URL is now absolute.
 
 ### Documentation
 
@@ -111,6 +251,29 @@ SemVer governs regardless of how small the diff is.
   test separates the two kinds: on Deno every failure in that section arrives as
   a bare `TypeError` with no `cause` and no error code, so the section now says
   to put the retry policy in a layer that knows the request.
+- A documentation pass verified every prose claim in `README.md` against the
+  code and corrected four false statements. "A repeated header appears once per
+  arrival" held only for `set-cookie`. `Headers` combines duplicates of every
+  other name, so two `warning` headers produce one record entry. "This is the
+  only condition that makes `cancel()` reject" missed a second condition, an
+  instance that the constructor never initialized. The `If-Match` rationale was
+  inverted; it is the write validator, and the two read validators were kept.
+  The examples used browser-relative URLs.
+- `README.md` documents that a success body carries the same obligation as an
+  error body. `typedFetch` hands the caller the `Response` and never reads it,
+  so a result that the caller discards holds its connection. Measured on Node
+  20.15.0 with ten sequential requests: an unread 1 MB body pins ten
+  connections on a 200. It pins the same ten on a 500. The obligation is
+  invisible in development, because a small body is fully buffered and releases
+  its connection on its own. The threshold is an internal buffer size.
+- `README.md` documents the constructors of `NetworkError`, `AbortedError`, and
+  `TimeoutError`. Their properties were documented and their signatures were
+  not, so a consumer who fabricated one in a test had to read
+  `dist/errors/index.d.ts`.
+- `README.md` shows how a wrapper merges headers. The previous wrapper example
+  passed `options` straight through. The naive `{ ...options?.headers }` spread
+  type-checks, and it silently drops every entry of a `Headers` instance.
+  `new Headers(options?.headers)` compiles with no cast in both lib profiles.
 
 ### Internal
 
@@ -146,6 +309,20 @@ SemVer governs regardless of how small the diff is.
   not exist on Node 20.0 to 20.2, which `engines.node` claims to support. Nothing
   in `src/` calls it, so the published artifact genuinely runs on the floor and
   the declared range stays honest; only the suite needed the gate.
+- `disclosure-channels.spec.ts` holds one test per channel an error's data can
+  reach: `JSON.stringify`, `util.inspect` and `console.*`, the fatal-exception
+  printer, `toString`, `structuredClone`, a test runner's assertion output, and
+  `Object.keys` with the spread. Each plants a sentinel and asserts that it does
+  not appear. Three channels cannot be closed, and each is asserted as a
+  residual. `cause` survives `structuredClone` and the fatal-exception printer.
+  vitest's assertion-message stringifier reads non-enumerable own property
+  names. A secret in a URL path segment survives redaction by design.
+- `scripts/check-consumer.mjs` gains a sixth typecheck pass, `node-eopt`: no
+  DOM, `@types/node`, and `exactOptionalPropertyTypes: true`, compiling
+  `typedFetch(url, { fetch: maybeFetch })` against the published declarations.
+  It is the only executable gate for that contract, because this repository does
+  not compile its own sources with the flag. The suite now runs 35 consumer
+  assertions.
 
 ## [1.1.0] - 2026-07-24
 

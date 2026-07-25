@@ -457,7 +457,7 @@ Make the release process trustworthy and prove the runtime claims before the 1.0
   - **Recommendation:** B for a solo maintainer. Changesets is overhead you'll fight.
 - **Verify:** `RELEASING.md` exists (or changesets configured); the tag → publish path
   is documented; a dry run `npm pack --dry-run` matches the live tarball file list
-  (13 files today).
+  (14 files today).
 - **Breaking:** No.
 - **Effort:** S (B) / M (A).
 

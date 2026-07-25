@@ -21,9 +21,10 @@ defined term is correct here.
   nothing and throws" is part of an interface.
 - **Depth** — leverage at the interface: how much behavior a caller can reach
   per unit of interface it must learn. `error-body` is deep — the `ErrorBody`
-  interface has seven members (`teed`, the four readers, `cancel`, `tee`) over
-  roughly 250 lines of platform-divergence handling. A module is **shallow**
-  when its interface is nearly as complicated as its implementation.
+  interface has eight members (`teed`, `owns`, the four readers, `cancel`,
+  `tee`) over roughly 290 lines of platform-divergence handling. A module is
+  **shallow** when its interface is nearly as complicated as its
+  implementation.
 - **Seam** — the place where a module's interface lives; where behavior can be
   altered without editing in that place. Say seam, never "boundary" (overloaded)
   and never "layer".
@@ -103,12 +104,49 @@ Words this codebase already uses, some of them only implicitly until now.
 - **Frozen surface** — the public export set, snapshotted on two axes (runtime
   values, and type-only exports read from the built `.d.mts`). Changing it is a
   deliberate, reviewed act.
+- **Channel** — one mechanism through which an error's data reaches a reader.
+  Seven exist: `JSON.stringify` with `toJSON`, `util.inspect` with `console.*`,
+  the fatal-exception printer, `toString`, `structuredClone`, a test runner's
+  diff and assertion output, and `Object.keys` with the spread.
+  **A disclosure decision applies to the channel set, never to one channel.**
+  `toJSON()` was fixed to withhold header values while `util.inspect` printed
+  them in full, because only one of the two had been considered. The inventory
+  lives in `disclosure-channels.spec.ts` as executable tests, one per channel,
+  each asserting that a planted sentinel does not appear. Add a channel there
+  before adding a member anywhere.
+
+  Three corollaries are load-bearing.
+  - The inspect hook renders the `toJSON()` record rather than its own member
+    list, so the two channels cannot drift and one subclass override fixes both.
+  - Node's fatal-exception printer disables every formatting hook. Property
+    **enumerability** is the only control over that channel.
+  - Symbol-keyed behavior is stamped onto the prototype with `defineProperty`,
+    never declared as a computed class member. A computed member emits a
+    `unique symbol` into both declaration files and reintroduces the `#private`
+    cross-format assignability hazard (`TS2741`).
+
+- **Residual** — a disclosure a channel keeps, stated rather than left
+  undiscovered. Three exist. `cause` survives `structuredClone` and the
+  fatal-exception printer, because both are platform algorithms with no hook.
+  vitest's assertion-message stringifier reads own property names including
+  non-enumerable ones, and it short-circuits errors before its custom-inspect
+  branch. A secret in a URL path segment survives redaction by design, because
+  dropping the path would reduce `url` to the origin.
+
+- **Structure and value** — the rule that decides what a channel may carry.
+  `headers` emits names, never values. `url` emits the origin and the path,
+  never the userinfo, the query, or the fragment. Every redaction names the
+  property that holds the full thing. Read `error.headers` for header values,
+  `error.url` for the full href, and `error.cause` or `error.reason` for the
+  platform detail.
 
 ## The modules
 
 ```
 index.ts                    public barrel — deliberately small
-src/index.ts                typedFetch + the guards; owns the envelope
+src/index.ts                typedFetch + the guards; owns the envelope and the
+                            transport seam. The `fetch` override is read as an
+                            OWN property, never through the prototype chain.
 src/request-failure.ts      classifies a rejected request attempt as an abort,
                             a timeout, or a network failure. The AbortSignal is
                             the authority, never the rejection's name.
@@ -142,3 +180,10 @@ a tee branch left without an owner, and a body consumed outside the library) and
 for the test surface (a body is constructible in one line, with no error class).
 It does not exist because anything varies across it. There is one caller and
 there will never be a second implementation.
+
+One follow-up is open and deliberately not done. `headers` and `url` could stop
+being own properties, and prototype getters backed by a `WeakMap` could serve
+them, in the way `bodies` already works. That would also close vitest's
+assertion-message channel, which reads non-enumerable own property names. It is
+rejected for now. It refactors two released public properties for the
+lowest-value sink in the inventory.
