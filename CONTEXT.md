@@ -1,15 +1,15 @@
 # CONTEXT
 
-How this codebase is _shaped_, and the words it uses. `README.md` is for
-consumers, `CONTRIBUTING.md` is for the gates and the mechanical chores, and
-`RELEASING.md` is for the semver policy. This file is for the vocabulary — read
-it before designing anything here, so a change lands using the words already in
-play instead of inventing new ones.
+The structure of this codebase, and the words it uses. `README.md` is for
+consumers, `CONTRIBUTING.md` is for the gates and the mechanical procedures, and
+`RELEASING.md` is for the semver policy. This file is for the vocabulary. Read
+it before you design anything here, so that a change uses the existing terms
+instead of new ones.
 
 ## Design vocabulary
 
-These terms are used exactly, and nothing substitutes for them. Consistency is
-the point.
+These terms are used exactly, and nothing substitutes for them. Repetition of a
+defined term is correct here.
 
 - **Module** — anything with an interface and an implementation. Scale-agnostic:
   a function, a file, an entry point. Not "component", not "service", not
@@ -20,9 +20,10 @@ the point.
   repository, "the four readers claim the body and reject; `tee()` claims
   nothing and throws" is part of an interface.
 - **Depth** — leverage at the interface: how much behaviour a caller can reach
-  per unit of interface it must learn. `error-body` is deep — six members over
-  ~200 lines of platform-divergence handling. A module is **shallow** when its
-  interface is nearly as complicated as its implementation.
+  per unit of interface it must learn. `error-body` is deep — the `ErrorBody`
+  interface has seven members (`teed`, the four readers, `cancel`, `tee`) over
+  roughly 250 lines of platform-divergence handling. A module is **shallow**
+  when its interface is nearly as complicated as its implementation.
 - **Seam** — the place where a module's interface lives; where behaviour can be
   altered without editing in that place. Say seam, never "boundary" (overloaded)
   and never "layer".
@@ -31,27 +32,29 @@ the point.
 - **Leverage** — what callers get from depth. **Locality** — what maintainers
   get from depth: a change, a bug, and its test land in one place.
 - **The deletion test** — imagine the module deleted. If complexity vanishes, it
-  was a pass-through and should go. If complexity reappears across callers, it
-  earns its keep. Apply this before adding any file.
+  was a pass-through and should go. If complexity reappears across callers, the
+  module is worth keeping. Apply this before adding any file.
 - **The interface is the test surface.** Callers and tests cross the same seam.
   Needing to test _past_ an interface means the module is the wrong shape. The
-  body-lifecycle extraction happened because 23 tests were minting a
-  `NotFoundError` to reach something that was not about `NotFoundError`.
+  body-lifecycle extraction happened because a large group of tests constructed
+  a `NotFoundError` to reach behaviour that was not about `NotFoundError`.
+  Those tests now call `errorBodyOf` directly.
 
 ## Domain vocabulary
 
 Words this codebase already uses, some of them only implicitly until now.
 
 - **Error body** — the body of the `Response` that produced an HTTP error. A
-  single-use stream owned by `src/errors/error-body.ts`. Every error body needs
-  a read or a cancel; an unread one pins a connection.
+  single-use stream owned by `src/errors/error-body.ts`. Every error body must
+  be read or canceled. An unread body keeps its stream open, and the open stream
+  holds the underlying connection until the runtime collects it.
 - **Claim** — to take the body for a read. Claiming succeeds once; afterwards
   every reader and `tee()` refuse.
 - **Available / unavailable** — one predicate (`claimable()`), four disjuncts:
   cancelled by us, read by us (`readStarted`), consumed (`bodyUsed`), or
   `body.locked`. It is written **once**; the reader guard and the tee guard
-  differ only in the message they throw. They were written twice, once, and
-  drifted.
+  differ only in the message they raise. An earlier version wrote the predicate
+  out twice, and the two copies disagreed about what "unusable" meant.
 - **`readStarted` vs `bodyUsed`** — never infer "we read this" from
   `response.bodyUsed`. Bun sets it when `getReader()` locks the stream; Node,
   Deno, and workerd do not. `readStarted` is _our_ read; `bodyUsed` is the
@@ -59,15 +62,16 @@ Words this codebase already uses, some of them only implicitly until now.
 - **Tee / branch / source / orphan** — `Response.clone()` tees the body stream
   into two **branches** over one **source**. The platform releases the source
   only once EVERY branch is read or cancelled, so a lone `cancel()` stays
-  pending — that is native semantics and is kept, never papered over. A branch
-  whose owner never came into existence is an **orphan** and must be released,
-  or the source is pinned forever.
+  pending. That is native semantics, and the library keeps it: resolving early
+  would report a release that did not happen. A branch whose owner never came
+  into existence is an **orphan**. Release an orphan, or the source is never
+  freed.
 - **Decision order** — `cancel()` decides in a fixed sequence: repeated cancel →
   our own read → external lock (throws) → consumed body → release. The order is
-  load-bearing; a completed read leaves the stream locked on some runtimes, so
-  the lock test cannot come first.
-- **Documented divergence** — a runtime difference the library characterises
-  rather than papers over, choosing the behaviour that is right on the runtime
+  required: a completed read leaves the stream locked on some runtimes, so the
+  lock test cannot come first.
+- **Documented divergence** — a runtime difference the library describes and
+  handles explicitly, choosing the behaviour that is correct on the runtime
   reporting the state. Bun's `bodyUsed`-on-lock is the standing example.
 - **Copy** — one instance of this library's classes in a process. Two entry
   points (`.`, `./errors`) × two formats (ESM, CJS) means a consumer can hold
@@ -85,12 +89,17 @@ Words this codebase already uses, some of them only implicitly until now.
 - **Envelope** — the `{ response, error }` discriminated union `typedFetch`
   returns. Anything that could throw inside a request goes inside the envelope
   and comes out as an error value.
-- **Roster** — the internal `httpErrors` array plus `statusCodeErrorMap`; the
-  source of truth for the 40 dedicated classes, kept honest by the roster tests
-  rather than by a generator.
+- **Roster** — the internal `httpErrors` array and the `ClientErrors` /
+  `ServerErrors` unions: the source of truth for the 40 dedicated classes, kept
+  correct by the roster tests rather than by a generator. `statusCodeErrorMap`
+  is **not** part of the roster. It is a **projection** of it, derived in
+  `src/http-status-codes.ts` from each class's own `static status`, so a map
+  entry can no longer disagree with the class it names.
 - **Gate** — a check that must pass before a PR merges (`pnpm lint`,
   `format:check`, `typecheck`, `build`, `test`, `check-docs`, `verify-pack`,
-  `check-consumer`, `audit`). See CONTRIBUTING.
+  `check-consumer`, `audit:prod`, `audit`). CI adds `check-deno-consumer` and
+  `smoke:node-min`. CONTRIBUTING holds the authoritative list and the order to
+  run them in.
 - **Frozen surface** — the public export set, snapshotted on two axes (runtime
   values, and type-only exports read from the built `.d.mts`). Changing it is a
   deliberate, reviewed act.
@@ -100,17 +109,36 @@ Words this codebase already uses, some of them only implicitly until now.
 ```
 index.ts                    public barrel — deliberately small
 src/index.ts                typedFetch + the guards; owns the envelope
+src/request-failure.ts      classifies a rejected request attempt as an abort,
+                            a timeout, or a network failure. The AbortSignal is
+                            the authority, never the rejection's name.
+                            INTERNAL.
+src/headers.ts              StrictHeaders / TypedHeaders — autocomplete only,
+                            no validation. INTERNAL.
+src/methods.ts              HttpMethods; excludes CONNECT and TRACE, which the
+                            Fetch spec forbids. INTERNAL.
+src/http-status-codes.ts    statusCodeErrorMap — a ReadonlyMap DERIVED from the
+                            roster, not a source of truth. INTERNAL.
 src/errors/base-http-error  HTTP error IDENTITY: status, statusText, url,
                             headers, message. Delegates the body.
 src/errors/error-body       the response-body lifecycle: claim, cancel, tee.
                             INTERNAL — never export it from a barrel.
+src/errors/known-http-error the branded base the 40 dedicated classes extend.
+                            INTERNAL — it is what isKnownHttpError requires,
+                            and what a consumer subclass cannot obtain.
 src/errors/brand            cross-copy identity
 src/errors/helpers          the roster and the public unions
 ```
 
 `base-http-error` and `error-body` are one seam, drawn where the two concerns
-meet: identity above it, a single-use stream below it. The seam exists for
-locality (three consecutive rounds of defects lived in the lifecycle) and for
-the test surface (a body is constructible in one line, with no error class),
-not because anything varies across it. There is one caller and there will
-never be a second implementation.
+meet: identity above it, a single-use stream below it. `base-http-error` holds
+an `ErrorBody` handle per instance in a module-scoped `WeakMap` and delegates
+every body method to it. The `Response` itself stays captured in a closure
+inside `error-body`, so it is not reachable from the error a consumer holds.
+
+The seam exists for locality (successive rounds of defects all landed in the
+lifecycle: a locked-body guard the readers missed, Bun's `bodyUsed` divergence,
+a tee branch left without an owner, and a body consumed outside the library) and
+for the test surface (a body is constructible in one line, with no error class).
+It does not exist because anything varies across it. There is one caller and
+there will never be a second implementation.
