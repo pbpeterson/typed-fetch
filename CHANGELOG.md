@@ -2,6 +2,80 @@
 
 ## [Unreleased]
 
+This is a **major**. The `headers` option is narrowed to reject `undefined`
+values, and code that compiled against `1.1.0` on a Node consumer without
+`lib.dom` no longer does. The change is compile-time only — no runtime behavior
+depends on it — but it removes types that used to be accepted, which conventional
+SemVer governs regardless of how small the diff is.
+
+### Changed
+
+- `TypedFetchOptions["headers"]` no longer accepts `undefined` as a header value.
+  A header set from an optional variable — `{ Authorization: token }` where
+  `token` is `string | undefined` — reached the platform as the literal string
+  `"undefined"` and was sent on the wire. Two separate leaks admitted it: the
+  index signature on the internal `StrictHeaders`, and undici's `HeaderRecord`,
+  an all-optional mapped type reached through the native branch of the union.
+  Narrowing only the first is a no-op, because the type is a union and the
+  native branch still accepts the value; both had to close. A consumer with
+  `lib.dom` was already protected by the platform's own `HeadersInit`, so this
+  affects the no-DOM Node profile, which is the one the library targets. The
+  option is now deliberately stricter than the platform there — write
+  `...(token ? { Authorization: token } : {})` rather than passing `undefined`.
+- `BaseHttpError.cancel()` resolves, rather than rejecting, when the body stream
+  itself failed — a truncated response or a connection reset mid-body. The
+  caller asked to discard these bytes, and a stream that errored already dropped
+  its source, so there is nothing left to release and nothing actionable to
+  report. The `TypeError` for the case that IS actionable — an external reader
+  holds the stream and has read nothing through it — still rejects. The `1.1.0`
+  notes described the rejection condition as exhaustive; it was not.
+
+### Fixed
+
+- `BaseHttpError.cancel()` no longer ends the process when the body stream is in
+  an errored state. `cancel` is an async function, so the promise it returns and
+  the promise a repeated call derives from it are both distinct objects from the
+  one the `.catch()` was attached to; a single dropped cleanup call left a
+  rejection unhandled, and Node's default `--unhandled-rejections=throw` turns
+  that into an exit-1 crash. The failure is now swallowed at the source.
+- `typedFetch` releases the response body when reading `status` off an injected
+  `fetch` implementation throws. The guard added in `1.1.0` started below the
+  status read, so a hostile getter stranded a live body with no owner — the
+  caller receives `response: null` and never gets a handle to it. Related, on
+  the same lines: `status` is now read once into a local, so a getter reporting
+  a different value on a second read can no longer select an error class that
+  answers a status the branch was never taken on; and the release itself is
+  wrapped, so a throwing `body` getter can no longer replace the cause being
+  reported.
+
+### Internal
+
+- The release gates (`validate-release`, `verify-pack`, `check-docs`,
+  `check-consumer`) compared `resolve(process.argv[1])` against
+  `fileURLToPath(import.meta.url)` to decide whether they were the entry point.
+  Node realpaths the module URL but leaves `argv[1]` as typed, so any symlink in
+  the invocation path made every gate print nothing and exit 0. Since
+  `validate-release` is the only validation gating the publish job, a skipped run
+  sent an unvalidated tag to `npm publish`. The guard now resolves both sides —
+  resolving only `argv[1]` still fails under `--preserve-symlinks-main`, which
+  keeps `import.meta.url` on the symlink — and lives in one place,
+  `scripts/lib/is-main-module.mjs`, instead of four copies that had already
+  drifted.
+- The publish step passes the dist-tag through the environment and refuses an
+  empty value, so a gate that did not run stops the publish by name instead of
+  handing npm a bare `--tag`.
+- `scripts/smoke/node-min.mjs` compares all three version components. Both its
+  warning guard and its refusal guard compared major and minor only, so with a
+  non-zero minor floor a runtime below the floor passed both and reported `OK` —
+  in the one script whose entire purpose is proving the declared floor ran.
+- `scripts/validate-release.spec.mjs` pins the three places that must agree
+  about the supported floor: `engines.node`, the CI test matrix, and the smoke
+  script's `MINIMUM`. Dropping `20` from the matrix previously broke no test.
+- The two `AbortSignal.any` tests are gated on the method being present. It does
+  not exist on Node 20.0 to 20.2, which `engines.node` claims to support. Nothing
+  in `src/` calls it, so the published artifact genuinely runs on the floor and
+  the declared range stays honest; only the suite needed the gate.
+
 ## [1.1.0] - 2026-07-24
 
 This release is a **minor**, not the patch it was originally numbered. Nothing
