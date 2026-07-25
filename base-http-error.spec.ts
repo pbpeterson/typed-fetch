@@ -155,6 +155,25 @@ describe("BaseHttpError.cancel() — a failed clone must not strand the body", (
     expect(await error.text()).toBe("payload");
   });
 
+  test("cancel() still settles after a hostile constructor getter throws mid-clone", async () => {
+    const error = new NotFoundError(new Response("payload", { status: 404 }));
+
+    // `this.constructor` is a property read like any other. An own accessor on
+    // the instance — or a Proxy `get` trap, which instrumentation wrappers
+    // install routinely — intercepts it exactly like a hostile `name` getter.
+    // clone()'s no-callback path read it OUTSIDE the try that releases the
+    // teed branch, so the branch was stranded and cancel() never settled.
+    Object.defineProperty(error, "constructor", {
+      get() {
+        throw new Error("constructor getter failed");
+      },
+    });
+
+    expect(() => error.clone()).toThrowError(/constructor getter failed/);
+
+    await expect(error.cancel()).resolves.toBeUndefined();
+  });
+
   test("a recreate callback that returns the same error is rejected", async () => {
     const error = new NotFoundError(new Response("payload", { status: 404 }));
 

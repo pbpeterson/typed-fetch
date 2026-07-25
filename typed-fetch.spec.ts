@@ -1,5 +1,6 @@
 import { describe, test, expect, expectTypeOf, vi } from "vitest";
 import { useTestServer } from "./fixtures/http-server";
+import { allErrors } from "./fixtures/error-roster";
 import { typedFetch, isHttpError, isNetworkError, isAbortError, isTimeoutError } from "./src/index";
 import {
   AbortedError,
@@ -210,6 +211,33 @@ describe("typedFetch", () => {
     expect(result.error?.cause).toBe(cause);
   });
 
+  // Every hostile-response test above uses a NULL body, so none of them can
+  // observe what happens to a live one. The envelope catches the throw and
+  // reclassifies it, but `res` is scoped to the try — the caller receives
+  // `response: null` and never gets a handle to release the body that the
+  // network already opened.
+  test("a live body is released when constructing the HTTP error throws", async () => {
+    const cause = new Error("headers getter exploded");
+    const hostileResponse = new Response("payload-that-is-still-open", { status: 404 });
+    Object.defineProperty(hostileResponse, "headers", {
+      get() {
+        throw cause;
+      },
+    });
+    const stubFetch = vi.fn(async () => hostileResponse) as unknown as typeof fetch;
+
+    const result = await typedFetch("https://example.invalid/hostile-headers", {
+      fetch: stubFetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+
+    // Nobody can reach this body any more, so typedFetch must have released it.
+    expect(hostileResponse.bodyUsed).toBe(true);
+  });
+
   test("turns a throwing fetch-override getter into a NetworkError value", async () => {
     const cause = new Error("fetch getter exploded");
     const options = Object.defineProperty({}, "fetch", {
@@ -365,6 +393,41 @@ describe("typedFetch", () => {
 
     if (isHttpError(result.error)) {
       expect(result.error.status).toBe(status);
+    }
+  });
+
+  // CONTRIBUTING.md said outright: "Omitting the errorCases row fails no test."
+  // This is that enforcement. `allErrors` is the independently hand-authored
+  // roster, so this compares two sources of truth rather than deriving one from
+  // the other.
+  test("errorCases covers the whole roster, except the documented 407 exception", () => {
+    // Node's fetch rejects a 407 at the network level, so it can never reach a
+    // live test.each request. It is covered by direct construction below.
+    // Exactly ONE exception exists today. A second one must be added here
+    // deliberately, not by loosening this filter.
+    const PROXY_AUTHENTICATION_REQUIRED = 407;
+
+    const covered = new Map(errorCases.map((row) => [row.status, row.Class]));
+    const missing = allErrors
+      .map((row) => row.status)
+      .filter((status) => status !== PROXY_AUTHENTICATION_REQUIRED && !covered.has(status));
+
+    expect(
+      missing,
+      `errorCases is missing status ${missing.join(", ")}. Add the row to the errorCases ` +
+        `table above — see CONTRIBUTING.md, "Adding a new HTTP status code".`,
+    ).toEqual([]);
+
+    // Catches a STALE row too: one left behind after a class left the roster.
+    expect(covered.size + 1).toBe(allErrors.length);
+
+    // Status alone is not enough — catch a row that pairs a status with the
+    // wrong class.
+    for (const { status, Class } of allErrors) {
+      if (status === PROXY_AUTHENTICATION_REQUIRED) continue;
+      expect(covered.get(status), `errorCases maps status ${status} to the wrong class`).toBe(
+        Class,
+      );
     }
   });
 

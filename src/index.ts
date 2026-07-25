@@ -17,7 +17,7 @@ import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
 import { classifyRequestFailure } from "./request-failure";
 
-/** Realm-safe Request detection for iframe, worker, and duplicated-runtime inputs. */
+/** Realm-safe Request detection for iframe, node:vm, and duplicated-runtime inputs. */
 function isRequest(value: unknown): value is Request {
   try {
     return (
@@ -298,10 +298,22 @@ export async function typedFetch<JsonReturnType>(
     // the contract this function exists to keep, instead of rejecting.
     if (res.status >= 400) {
       const ErrorClass = statusCodeErrorMap.get(res.status);
-      return {
-        response: null,
-        error: ErrorClass ? new ErrorClass(res) : new UnknownHttpError(res),
-      };
+      try {
+        return {
+          response: null,
+          error: ErrorClass ? new ErrorClass(res) : new UnknownHttpError(res),
+        };
+      } catch (cause) {
+        // The error class reads `statusText`, `url`, and `headers` off the
+        // response, and any of those can throw for an injected implementation.
+        // The catch below turns that into a NetworkError, but `res` is scoped
+        // to this block: the caller receives `response: null` and never gets a
+        // handle to the body the network already opened. Release it here, or it
+        // stays open with no owner. Best effort — a failure to release must not
+        // replace the original cause.
+        res.body?.cancel().catch(() => {});
+        throw cause;
+      }
     }
 
     return {

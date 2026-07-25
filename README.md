@@ -22,7 +22,7 @@ Version 1.0 has breaking changes. Four of them need a code change:
 
 - **The type guards identify errors by a `Symbol.for` brand, not by `instanceof`.** They now work across package copies. A value that forges the brand passes a guard.
 - **`typedFetch<T, E>` lost its second type parameter.** Use `typedFetch<T>`. `error` is always the complete `TypedFetchError` union. Narrow it with a guard.
-- **An abort resolves with `AbortedError`, and a timeout with `TimeoutError`.** Neither extends `NetworkError`, so `isNetworkError()` resolves to `false` for both. Use `isAbortError()` and `isTimeoutError()`.
+- **An abort resolves with `AbortedError`, and a timeout with `TimeoutError`.** Neither extends `NetworkError`, so `isNetworkError()` returns `false` for both. Use `isAbortError()` and `isTimeoutError()`.
 - **Abort detection reads the request's `AbortSignal`, not the rejected error's `name`.** `controller.abort(reason)` now classifies correctly.
 
 `statusCodeErrorMap`, `httpErrors`, `HttpErrors`, `TypedHeaders`, and `StrictHeaders` are no longer exported. `TypedFetchOptions["headers"]` still gives header-name autocomplete.
@@ -190,7 +190,11 @@ One process can load more than one copy of a class. This occurs when code mixes 
 
 Each package copy has a different class identity. Thus `instanceof` can return `false` for an error that another copy created.
 
-The type guards use a `Symbol.for` brand. The brand works across package copies and module formats. It also works across realms, so a guard identifies an error from an iframe or a worker.
+The type guards use a `Symbol.for` brand. The brand works across package copies and module formats.
+
+It also works across a realm that shares the original object, such as a same-origin `iframe` or a `node:vm` context. The object crosses by reference, so its prototype and its brand stay intact.
+
+WARNING: The brand does not survive structured cloning. `structuredClone()` and `postMessage()` to a Worker rebuild the value as a plain `Error`. The subclass, the status, and the brand are all lost, so every guard returns `false`.
 
 The brand sits on the class prototype and is not enumerable. Thus it never occurs in `JSON.stringify(error)`, in `{ ...error }`, or in a `for...in` loop.
 
@@ -309,7 +313,7 @@ Code that logs only `error.message` and drops the error leaks one connection for
 | Cancel the body            | Does not download the remaining bytes.    | The runtime can close the connection instead of returning it. |
 | Release a `clone()` branch | Each branch needs its own read or cancel. | The platform releases the source after the last branch.       |
 
-Read the body with `text()` when connection reuse is more important than the remaining bytes. Cancel the body when the remaining bytes are more important.
+Read the body with `text()` when connection reuse is more important than the transfer. Cancel the body when avoiding the remaining transfer is more important than connection reuse.
 
 ### Read an error body
 

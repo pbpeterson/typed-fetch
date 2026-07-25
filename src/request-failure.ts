@@ -48,7 +48,7 @@ function readStringProperty(value: object, property: "message" | "name"): string
  * Realm-safe error detection.
  *
  * `instanceof Error` is bound to the current realm's constructor, so an error
- * built in a `node:vm` context, an iframe, or a worker fails it — and an
+ * built in a `node:vm` context or an iframe fails it — and an
  * injected fetch implementation is exactly the kind of code that can live in
  * another realm. Three layers, narrowest first:
  *

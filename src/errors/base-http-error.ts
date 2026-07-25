@@ -228,8 +228,12 @@ export abstract class BaseHttpError extends Error {
 
     let copy: this;
     if (!recreate) {
-      const Ctor = this.constructor as new (response: Response) => this;
       try {
+        // Read INSIDE the try. `this.constructor` is a property read like any
+        // other: an own accessor, or a Proxy `get` trap from an instrumentation
+        // wrapper, can throw here — and the branch above is already teed, so a
+        // throw outside this block strands it and `cancel()` never settles.
+        const Ctor = this.constructor as new (response: Response) => this;
         copy = new Ctor(teed.branch);
       } catch (cause) {
         teed.release();

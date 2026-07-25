@@ -370,9 +370,12 @@ number/string"`.
   `"exports every dedicated class in the internal roster"` checks for `.` and
   `./errors`.
 
-**One step is not enforced.** Omitting the `errorCases` row in
-`typed-fetch.spec.ts` (step 5) fails no test. `test.each` runs one case fewer
-and the suite stays green. Check that row by hand when you review the change.
+**Every step is enforced.** Omitting the `errorCases` row in
+`typed-fetch.spec.ts` used to fail no test: `test.each` ran one case fewer and
+the suite stayed green. The test named "errorCases covers the whole roster"
+now compares that table against `allErrors` and names the missing status. Status
+407 is the one documented exception, because Node's fetch rejects a 407 at the
+network level before a response exists; it has its own direct-construction test.
 
 So the invariant that the roster is complete and every class carries its exact
 literal `status`/`statusText` is enforced by the test suite, not by a
