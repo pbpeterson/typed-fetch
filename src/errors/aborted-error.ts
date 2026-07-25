@@ -47,14 +47,47 @@ export class AbortedError extends Error {
   ) {
     super(message);
     if (options && "cause" in options) {
-      this.cause = options.cause;
+      // `defineProperty`, not an assignment: `cause` must be non-enumerable,
+      // exactly as `new Error(message, { cause })` defines it. See
+      // `./network-error` for what an enumerable one leaks.
+      Object.defineProperty(this, "cause", {
+        value: options.cause,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
     }
     if (options && "reason" in options) {
-      this.reason = options.reason;
+      // Non-enumerable for the same reason, plus one of its own: the reason is
+      // whatever the caller passed to `controller.abort(reason)`. It can be a
+      // cyclic object, and an enumerable one makes `JSON.stringify(error)`
+      // throw inside whatever logger reached for it.
+      Object.defineProperty(this, "reason", {
+        value: options.reason,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
     }
     if (options && "url" in options && options.url !== undefined) {
       this.url = options.url;
     }
+  }
+
+  /**
+   * The record `JSON.stringify(error)` produces.
+   *
+   * `message` and `stack` are not enumerable own properties of an `Error`, so
+   * a structured logger that serializes one records everything EXCEPT the line
+   * a reader looks for first. This method supplies the record instead.
+   *
+   * `cause` and `reason` are absent on purpose. The cause holds the platform
+   * error that failed the request, whose chain carries transport detail. The
+   * reason is whatever the caller passed to `controller.abort(reason)`, and it
+   * can be any value, including a cyclic one. Log either one deliberately.
+   */
+  toJSON(): { name: string; message: string; url: string } {
+    return { name: this.name, message: this.message, url: this.url };
   }
 }
 

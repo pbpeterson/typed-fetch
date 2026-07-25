@@ -85,8 +85,67 @@ export abstract class BaseHttpError extends Error {
       : `HTTP ${response.status}`;
     super(response.url ? `${line} (${response.url})` : line);
     this.url = response.url;
-    this.headers = response.headers;
+    // A COPY, not the response's own `Headers`. The error outlives the request
+    // and is handed to loggers and retry code; an alias would make
+    // `error.headers.set(...)` edit the `Response` a consumer still holds
+    // through an injected `fetch`, which the `readonly` here denies. One
+    // allocation per error buys that. The copy is faithful: a `Headers` init
+    // preserves every duplicate `set-cookie` entry.
+    this.headers = new Headers(response.headers);
     bodies.set(this, errorBodyOf(response));
+  }
+
+  /**
+   * The record `JSON.stringify(error)` produces: this error's identity, as
+   * plain JSON data.
+   *
+   * `message` and `stack` are not enumerable own properties of an `Error`, so
+   * a structured logger that serializes one records everything EXCEPT the line
+   * a reader looks for first. This method supplies the record instead.
+   *
+   * `headers` is a list of `[name, value]` pairs, not an object. A response can
+   * carry more than one `set-cookie` header, and an object keeps only the last
+   * one. The list is also a valid `HeadersInit`, so `new Headers(pairs)`
+   * rebuilds the same headers.
+   *
+   * Two members are absent on purpose. The body is a single-use stream and
+   * reading it is asynchronous — read it, or cancel it, separately. The stack
+   * can carry local file paths of the process that produced it, so log
+   * `error.stack` deliberately when you want it.
+   *
+   * @example
+   * ```ts
+   * import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
+   *
+   * const { error } = await typedFetch("https://example.test/users/1");
+   *
+   * if (isHttpError(error)) {
+   *   console.log(JSON.stringify(error));
+   *   // {"name":"NotFoundError","message":"HTTP 404 Not Found (https://example.test/users/1)",
+   *   //  "status":404,"statusText":"Not Found","url":"https://example.test/users/1",
+   *   //  "headers":[["content-type","application/json"]]}
+   *   await error.cancel();
+   * }
+   * ```
+   */
+  toJSON(): {
+    name: string;
+    message: string;
+    status: number;
+    statusText: string;
+    url: string;
+    headers: [string, string][];
+  } {
+    return {
+      name: this.name,
+      message: this.message,
+      status: this.status,
+      statusText: this.statusText,
+      url: this.url,
+      // Iterating a `Headers` yields one entry per `set-cookie`, so the pair
+      // list keeps every one of them.
+      headers: [...this.headers],
+    };
   }
 
   /**
@@ -262,9 +321,19 @@ export abstract class BaseHttpError extends Error {
 
     // `bodies.get`, NOT `bodyOf`: a `recreate` callback may legitimately return
     // an instance built by a different copy of this library, whose body lives
-    // in that copy's table. There is nothing to mark here and nothing to fail
-    // over — the branch has an owner either way.
-    teed.adopt(bodies.get(copy));
+    // in that copy's table. `adopt` accepts that `undefined` — the branch has
+    // an owner, this copy only cannot see it.
+    //
+    // What it refuses is a body we CAN see that took a different response: the
+    // callback ignored the branch and built from somewhere else, so the branch
+    // has no owner at all.
+    if (!teed.adopt(bodies.get(copy))) {
+      teed.release();
+      throw new TypeError(
+        `Cannot clone ${this.name}: the new error was built from a different response, so the ` +
+          "cloned body branch has no owner. Build a new instance from the response it receives.",
+      );
+    }
     return copy;
   }
 }

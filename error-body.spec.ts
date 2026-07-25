@@ -490,6 +490,50 @@ describe("errorBodyOf — tee() and its branches", () => {
     teed.release();
   });
 
+  test("owns() answers for the response this body took, and only that one", () => {
+    const response = new Response("payload");
+    const body = errorBodyOf(response);
+
+    expect(body.owns(response)).toBe(true);
+    expect(body.owns(new Response("payload"))).toBe(false);
+  });
+
+  test("adopt() reports true when the branch has an owner", () => {
+    const source = errorBodyOf(new Response("payload"));
+    const teed = source.tee();
+
+    expect(teed.adopt(errorBodyOf(teed.branch))).toBe(true);
+  });
+
+  test("adopt() reports true for an owner this copy cannot see", () => {
+    // Built by a DIFFERENT copy of this library, so it is not in this table.
+    const source = errorBodyOf(new Response("payload"));
+    const teed = source.tee();
+
+    expect(teed.adopt(undefined)).toBe(true);
+
+    teed.release();
+  });
+
+  test("adopt() refuses a sibling that took a different response", async () => {
+    const { response, state } = trackedResponse();
+    const source = errorBodyOf(response);
+    const teed = source.tee();
+    // The owner ignored the branch and took another response, so the branch is
+    // an orphan: nobody will ever release it.
+    const foreign = errorBodyOf(new Response("elsewhere"));
+
+    expect(teed.adopt(foreign)).toBe(false);
+    // Nothing recorded: `teed` would claim a shared source that does not exist.
+    expect(source.teed).toBe(false);
+    expect(foreign.teed).toBe(false);
+
+    // The caller releases the orphan, and the source frees normally.
+    teed.release();
+    await expect(source.cancel()).resolves.toBeUndefined();
+    expect(state.cancelled).toBe(true);
+  });
+
   test("release() frees a branch nobody took, so cancel() settles", async () => {
     const { response, state } = trackedResponse();
     const source = errorBodyOf(response);

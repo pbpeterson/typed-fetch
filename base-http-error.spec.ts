@@ -28,6 +28,17 @@ class UnconfiguredContextHttpError extends BaseHttpError {
   }
 }
 
+/** Ignores the response it is given and builds from its own. */
+class DetachedHttpError extends BaseHttpError {
+  override readonly name = "DetachedHttpError" as const;
+  readonly status = 499 as const;
+  readonly statusText = "Custom" as const;
+
+  constructor(_response: Response) {
+    super(new Response("detached", { status: 499 }));
+  }
+}
+
 class ContextNotFoundError extends NotFoundError {
   constructor(
     response: Response,
@@ -51,6 +62,135 @@ describe("BaseHttpError — response is not an own enumerable property (B1)", ()
     expect(error.url).toBe("");
     expect(error.headers).toBeInstanceOf(Headers);
     expect(await error.text()).toBe("body");
+  });
+});
+
+describe("BaseHttpError.toJSON() — the record JSON.stringify produces", () => {
+  test("carries the identity a plain Error omits", async () => {
+    const error = new NotFoundError(
+      new Response("payload", {
+        status: 404,
+        statusText: "Not Found",
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+
+    // `message` and `stack` are non-enumerable on Error, so without toJSON the
+    // record read as a complete one that had lost the message line.
+    expect(JSON.parse(JSON.stringify(error))).toEqual({
+      name: "NotFoundError",
+      message: "HTTP 404 Not Found",
+      status: 404,
+      statusText: "Not Found",
+      url: "",
+      headers: [["content-type", "text/plain"]],
+    });
+
+    await error.cancel();
+  });
+
+  test("headers are pairs, so a repeated set-cookie survives", () => {
+    const error = new NotFoundError(
+      new Response(null, {
+        status: 404,
+        headers: [
+          ["set-cookie", "a=1"],
+          ["set-cookie", "b=2"],
+        ],
+      }),
+    );
+
+    const { headers } = error.toJSON();
+
+    expect(headers).toEqual([
+      ["set-cookie", "a=1"],
+      ["set-cookie", "b=2"],
+    ]);
+    // The shape this rejects: an object keeps only the last cookie.
+    expect(Object.fromEntries(headers)).toEqual({ "set-cookie": "b=2" });
+    // The pair list is a HeadersInit, so the record rebuilds the original.
+    expect(new Headers(headers).getSetCookie()).toEqual(["a=1", "b=2"]);
+  });
+
+  test("neither the stack nor the body reaches the record", async () => {
+    const error = new NotFoundError(new Response("secret payload", { status: 404 }));
+
+    // The record has exactly these members, and no others.
+    expect(Object.keys(error.toJSON()).toSorted()).toEqual([
+      "headers",
+      "message",
+      "name",
+      "status",
+      "statusText",
+      "url",
+    ]);
+
+    const json = JSON.stringify(error);
+
+    expect(json).not.toContain("secret payload");
+    expect(json).not.toContain("stack");
+    // Excluded from the record, still on the error for a caller who wants it.
+    expect(error.stack).toBeDefined();
+
+    await error.cancel();
+  });
+
+  test("UnknownHttpError reports the status the server sent", () => {
+    const error = new UnknownHttpError(new Response(null, { status: 599, statusText: "Weird" }));
+
+    expect(error.toJSON()).toEqual({
+      name: "UnknownHttpError",
+      message: "HTTP 599 Weird",
+      status: 599,
+      statusText: "Weird",
+      url: "",
+      headers: [],
+    });
+  });
+
+  test("a consumer subclass inherits it and reports its own name", async () => {
+    const error = new ContextHttpError(new Response("body", { status: 499 }), "tenant-42");
+
+    expect(error.toJSON().name).toBe("ContextHttpError");
+    expect(error.toJSON().status).toBe(499);
+
+    await error.cancel();
+  });
+});
+
+describe("BaseHttpError — headers are a copy of the response's, not an alias", () => {
+  test("editing error.headers cannot write back into the response", () => {
+    const response = new Response(null, {
+      status: 404,
+      headers: { "content-type": "text/plain" },
+    });
+    const error = new NotFoundError(response);
+
+    expect(error.headers).toBeInstanceOf(Headers);
+    expect(error.headers).not.toBe(response.headers);
+
+    error.headers.set("x-injected", "1");
+    error.headers.delete("content-type");
+
+    // Reachable through an injected `fetch` that kept the Response.
+    expect(response.headers.get("x-injected")).toBeNull();
+    expect(response.headers.get("content-type")).toBe("text/plain");
+  });
+
+  test("the copy carries every header, including a repeated set-cookie", () => {
+    const response = new Response(null, {
+      status: 404,
+      headers: [
+        ["set-cookie", "a=1"],
+        ["set-cookie", "b=2"],
+        ["retry-after", "60"],
+      ],
+    });
+
+    const error = new NotFoundError(response);
+
+    expect(error.headers.getSetCookie()).toEqual(["a=1", "b=2"]);
+    expect(error.headers.get("retry-after")).toBe("60");
   });
 });
 
@@ -180,6 +320,33 @@ describe("BaseHttpError.cancel() — a failed clone must not strand the body", (
     // Returning `this` yields one instance owning two teed branches, so
     // releasing it can never release both.
     expect(() => error.clone(() => error)).toThrowError(/returned the same error/);
+
+    await expect(error.cancel()).resolves.toBeUndefined();
+  });
+
+  test("a recreate callback that ignores the response it receives is rejected", async () => {
+    const error = new NotFoundError(new Response("payload", { status: 404 }));
+    const foreign = new NotFoundError(new Response("elsewhere", { status: 404 }));
+
+    // The callback returns a DIFFERENT error, built from a different response.
+    // The teed branch then has no owner at all: the platform never frees the
+    // source, and cancel() on this error never settles.
+    expect(() => error.clone(() => foreign)).toThrowError(
+      /Build a new instance from the response it receives/,
+    );
+    expect(() => error.clone(() => foreign)).toThrowError(TypeError);
+
+    await expect(error.cancel()).resolves.toBeUndefined();
+    await foreign.cancel();
+  });
+
+  test("a subclass constructor that discards the branch is rejected too", async () => {
+    // The no-callback path hands the branch to `this.constructor`. A subclass
+    // that calls super() with its own response orphans it exactly the same way,
+    // so the guard cannot live in the callback branch alone.
+    const error = new DetachedHttpError(new Response("payload", { status: 499 }));
+
+    expect(() => error.clone()).toThrowError(/Build a new instance from the response it receives/);
 
     await expect(error.cancel()).resolves.toBeUndefined();
   });

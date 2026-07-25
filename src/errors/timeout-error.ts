@@ -30,11 +30,35 @@ export class TimeoutError extends Error {
   constructor(message: string = "Request timed out", options?: { cause?: unknown; url?: string }) {
     super(message);
     if (options && "cause" in options) {
-      this.cause = options.cause;
+      // `defineProperty`, not an assignment: `cause` must be non-enumerable,
+      // exactly as `new Error(message, { cause })` defines it. See
+      // `./network-error` for what an enumerable one leaks.
+      Object.defineProperty(this, "cause", {
+        value: options.cause,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
     }
     if (options && "url" in options && options.url !== undefined) {
       this.url = options.url;
     }
+  }
+
+  /**
+   * The record `JSON.stringify(error)` produces.
+   *
+   * `message` and `stack` are not enumerable own properties of an `Error`, so
+   * a structured logger that serializes one records everything EXCEPT the line
+   * a reader looks for first. This method supplies the record instead.
+   *
+   * `cause` is absent on purpose. It holds the platform error that failed the
+   * request, and its own chain carries transport detail — local and remote
+   * addresses and ports on undici. Log `error.cause` deliberately when you
+   * want it.
+   */
+  toJSON(): { name: string; message: string; url: string } {
+    return { name: this.name, message: this.message, url: this.url };
   }
 }
 

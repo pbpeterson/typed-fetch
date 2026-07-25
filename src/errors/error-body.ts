@@ -45,15 +45,21 @@ export interface TeedErrorBody {
    */
   release(): void;
   /**
-   * Record that both branches now have owners.
+   * Record that both branches now have owners, and report whether they do.
    *
    * `sibling` is the body of whoever took {@link branch}. It is `undefined`
    * when that owner was built by a DIFFERENT copy of this library — a
    * `recreate` callback may return an instance whose class, and whose body
    * table, came from another loaded package copy. Marking what we can see is the
    * honest outcome; the flag is bookkeeping, never a guard.
+   *
+   * Returns `false`, and records NOTHING, when `sibling` exists but does not
+   * own {@link branch}: a `recreate` callback that ignores the response it
+   * receives and builds from another one leaves the branch an orphan. The
+   * caller must then {@link release} it. Marking `teed` there would record a
+   * state that never happened — the two bodies do not share a source.
    */
-  adopt(sibling: ErrorBody | undefined): void;
+  adopt(sibling: ErrorBody | undefined): boolean;
 }
 
 /** The lifecycle of one failed response body: read it once, release it, or split it. */
@@ -65,6 +71,16 @@ export interface ErrorBody {
    * Written only by `adopt`; nothing in this module branches on it.
    */
   teed: boolean;
+  /**
+   * Is `candidate` the response this body took custody of?
+   *
+   * Identity only, and the one question that can be asked about the captured
+   * `Response` from outside: the response itself never leaves this module.
+   * {@link TeedErrorBody.adopt} asks it of the body that claims to own a
+   * branch, so a `recreate` callback that builds from a different response is
+   * detected instead of silently orphaning the branch.
+   */
+  owns(candidate: Response): boolean;
   /** Read the body as JSON. Claims the body; an empty or non-JSON payload still rejects. */
   json<T = unknown>(): Promise<T>;
   /** Read the body as text. Claims the body. */
@@ -229,9 +245,15 @@ export function errorBodyOf(response: Response): ErrorBody {
         branch.body?.cancel().catch(() => {});
       },
       adopt(sibling) {
+        // A sibling that took a DIFFERENT response never took this branch, so
+        // the branch is an orphan and the caller has to release it. Report it
+        // before writing anything: `teed` would otherwise record a shared
+        // source that does not exist.
+        if (sibling && !sibling.owns(branch)) return false;
         // Both sides now share one teed source, and both must be released.
         body.teed = true;
         if (sibling) sibling.teed = true;
+        return true;
       },
     };
   }
@@ -240,6 +262,9 @@ export function errorBodyOf(response: Response): ErrorBody {
   // by which point this initializer has completed.
   const body: ErrorBody = {
     teed: false,
+    owns(candidate: Response): boolean {
+      return candidate === response;
+    },
     async json<T = unknown>(): Promise<T> {
       claim("json");
       return response.json();

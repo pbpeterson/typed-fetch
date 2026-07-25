@@ -37,11 +37,41 @@ export class NetworkError extends Error {
   constructor(message: string = "Network error", options?: { cause?: unknown; url?: string }) {
     super(message);
     if (options && "cause" in options) {
-      this.cause = options.cause;
+      // `defineProperty`, not `this.cause = ...`. A plain assignment creates an
+      // ENUMERABLE own property, while `new Error(message, { cause })` creates
+      // a non-enumerable one. The difference is not cosmetic: an enumerable
+      // `cause` enters `JSON.stringify(error)`, `{ ...error }`, and
+      // `Object.keys(error)`, and the cause of a failed `fetch` is a platform
+      // error whose own chain carries socket detail — local and remote
+      // addresses and ports on undici. That reaches any structured log that
+      // serializes the error. The descriptor below is the one the platform
+      // writes: writable and configurable, never enumerable.
+      Object.defineProperty(this, "cause", {
+        value: options.cause,
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
     }
     if (options && "url" in options && options.url !== undefined) {
       this.url = options.url;
     }
+  }
+
+  /**
+   * The record `JSON.stringify(error)` produces.
+   *
+   * `message` and `stack` are not enumerable own properties of an `Error`, so
+   * a structured logger that serializes one records everything EXCEPT the line
+   * a reader looks for first. This method supplies the record instead.
+   *
+   * `cause` is absent on purpose. It holds the platform error that failed the
+   * request, and its own chain carries transport detail — local and remote
+   * addresses and ports on undici. Log `error.cause` deliberately when you
+   * want it.
+   */
+  toJSON(): { name: string; message: string; url: string } {
+    return { name: this.name, message: this.message, url: this.url };
   }
 }
 

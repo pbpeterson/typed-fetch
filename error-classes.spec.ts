@@ -9,6 +9,7 @@ import {
   TimeoutError,
   UnknownHttpError,
 } from "./src/errors";
+import { isAbortError, isNetworkError, isTimeoutError } from "./src/index";
 import { allErrors } from "./fixtures/error-roster";
 
 // ── B2: cause/reason presence is honest (`declare`, no phantom undefined) ──
@@ -54,6 +55,117 @@ describe("NetworkError / AbortedError / TimeoutError — cause & reason presence
     const reasonOnly = new AbortedError("x", { reason: "r" });
     expect("cause" in reasonOnly).toBe(false);
     expect(reasonOnly.reason).toBe("r");
+  });
+
+  // ── cause/reason are non-enumerable, as the platform defines them ──
+  test("cause and reason carry the descriptor `new Error(m, { cause })` writes", () => {
+    // The reference: the platform's own installation of `cause`.
+    expect(Object.getOwnPropertyDescriptor(new Error("x", { cause: "c" }), "cause")).toEqual({
+      value: "c",
+      writable: true,
+      enumerable: false,
+      configurable: true,
+    });
+
+    const cases: Array<[Error, string]> = [
+      [new NetworkError("x", { cause: "c" }), "cause"],
+      [new TimeoutError("x", { cause: "c" }), "cause"],
+      [new AbortedError("x", { cause: "c" }), "cause"],
+      [new AbortedError("x", { reason: "c" }), "reason"],
+    ];
+    for (const [error, key] of cases) {
+      expect(Object.getOwnPropertyDescriptor(error, key)).toEqual({
+        value: "c",
+        writable: true,
+        enumerable: false,
+        configurable: true,
+      });
+    }
+  });
+
+  test("a cause never reaches JSON.stringify, a spread, or Object.keys", () => {
+    // undici's cause chain carries socket detail — addresses and ports — and an
+    // enumerable `cause` puts all of it into any structured log.
+    const cause = new Error("socket", { cause: { localAddress: "10.0.0.1", localPort: 51234 } });
+    const errors = [
+      new NetworkError("fetch failed", { cause, url: "https://example.test/a" }),
+      new TimeoutError("timed out", { cause }),
+      new AbortedError("aborted", { cause, reason: { token: "secret-value" } }),
+    ];
+
+    for (const error of errors) {
+      expect(Object.keys(error)).not.toContain("cause");
+      expect(Object.keys(error)).not.toContain("reason");
+      expect({ ...error }).not.toHaveProperty("cause");
+      expect({ ...error }).not.toHaveProperty("reason");
+      expect(JSON.stringify(error)).not.toContain("localAddress");
+      expect(JSON.stringify(error)).not.toContain("secret-value");
+    }
+  });
+
+  test("a non-enumerable cause is still readable and still writable", () => {
+    const first = new Error("first");
+    const error = new NetworkError("x", { cause: first });
+
+    expect(error.cause).toBe(first);
+    expect("cause" in error).toBe(true);
+
+    const second = new Error("second");
+    error.cause = second;
+    expect(error.cause).toBe(second);
+  });
+
+  test("the brands and the guards are untouched by the descriptor change", () => {
+    const net = new NetworkError("x", { cause: "c" });
+    const aborted = new AbortedError("x", { cause: "c", reason: "r" });
+    const timedOut = new TimeoutError("x", { cause: "c" });
+
+    expect(net).toBeInstanceOf(NetworkError);
+    expect(aborted).toBeInstanceOf(AbortedError);
+    expect(timedOut).toBeInstanceOf(TimeoutError);
+    expect([isNetworkError(net), isAbortError(aborted), isTimeoutError(timedOut)]).toEqual([
+      true,
+      true,
+      true,
+    ]);
+  });
+
+  // ── toJSON ──
+  test("toJSON records the message and the url, never the cause or the reason", () => {
+    const cause = new TypeError("fetch failed");
+
+    expect(
+      new NetworkError("fetch failed", { cause, url: "https://example.test/a" }).toJSON(),
+    ).toEqual({
+      name: "NetworkError",
+      message: "fetch failed",
+      url: "https://example.test/a",
+    });
+    expect(new TimeoutError("timed out", { cause }).toJSON()).toEqual({
+      name: "TimeoutError",
+      message: "timed out",
+      url: "",
+    });
+    expect(new AbortedError("aborted", { cause, reason: "stop" }).toJSON()).toEqual({
+      name: "AbortedError",
+      message: "aborted",
+      url: "",
+    });
+  });
+
+  test("a cyclic abort reason no longer makes JSON.stringify throw", () => {
+    const reason: Record<string, unknown> = {};
+    reason.self = reason;
+    const aborted = new AbortedError("aborted", { reason });
+
+    // An enumerable `reason` made every logger that serialized this error throw
+    // `TypeError: Converting circular structure to JSON`.
+    expect(() => JSON.stringify(aborted)).not.toThrow();
+    expect(JSON.parse(JSON.stringify(aborted))).toEqual({
+      name: "AbortedError",
+      message: "aborted",
+      url: "",
+    });
   });
 
   test("url defaults to the empty string, including for an explicit undefined", () => {

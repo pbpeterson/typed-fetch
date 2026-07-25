@@ -110,6 +110,32 @@ describe.skipIf(!distExists)("public API surface is frozen", () => {
       expect(exported.status).toBe(ErrorClass.status);
     }
   });
+
+  // `toJSON` is a public METHOD. Both snapshots above see only NAMES, so
+  // nothing else in this file notices it failing to reach the built package.
+  test.each([
+    ["main entry", "./dist/index.mjs"],
+    ["./errors subpath", "./dist/errors/index.mjs"],
+  ])("%s ships toJSON on the built error classes", async (_entry, path) => {
+    const mod = (await importDist(path)) as unknown as {
+      NotFoundError: typeof NotFoundError;
+      NetworkError: typeof NetworkError;
+    };
+
+    expect(JSON.parse(JSON.stringify(new mod.NotFoundError(responseWithStatus(404))))).toEqual({
+      name: "NotFoundError",
+      message: "HTTP 404",
+      status: 404,
+      statusText: "Not Found",
+      url: "",
+      headers: [],
+    });
+    expect(JSON.parse(JSON.stringify(new mod.NetworkError("boom")))).toEqual({
+      name: "NetworkError",
+      message: "boom",
+      url: "",
+    });
+  });
 });
 
 // Axis B — freeze the TYPE-ONLY surface (see the header comment above for why
