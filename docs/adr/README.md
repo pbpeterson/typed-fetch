@@ -56,6 +56,18 @@ Those two header edits are the only permitted changes to a superseded ADR's
 content. Correcting a typo or a broken link is fine; rewriting the argument is
 not.
 
+## Recording a later fact
+
+A fact can change after an ADR is accepted without reversing its decision. A
+follow-up that implements the ADR is the common case.
+
+Record it in a dated `## Amendments` section at the END of that ADR. Never in
+Context, Decision, or Consequences. Those sections record what was true, and
+what was argued, on the date in the header.
+
+If the decision itself no longer holds, that is not an amendment. Write a new
+ADR and follow "Changing a decision" above.
+
 ## Index
 
 | ADR                                                       | Title                                   | Status   |

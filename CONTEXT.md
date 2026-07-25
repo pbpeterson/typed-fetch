@@ -19,12 +19,12 @@ defined term is correct here.
   error modes, and which calls throw synchronously versus reject. In this
   repository, "the four readers claim the body and reject; `tee()` claims
   nothing and throws" is part of an interface.
-- **Depth** — leverage at the interface: how much behaviour a caller can reach
+- **Depth** — leverage at the interface: how much behavior a caller can reach
   per unit of interface it must learn. `error-body` is deep — the `ErrorBody`
   interface has seven members (`teed`, the four readers, `cancel`, `tee`) over
   roughly 250 lines of platform-divergence handling. A module is **shallow**
   when its interface is nearly as complicated as its implementation.
-- **Seam** — the place where a module's interface lives; where behaviour can be
+- **Seam** — the place where a module's interface lives; where behavior can be
   altered without editing in that place. Say seam, never "boundary" (overloaded)
   and never "layer".
 - **Adapter** — a concrete thing satisfying an interface at a seam. Describes a
@@ -37,7 +37,7 @@ defined term is correct here.
 - **The interface is the test surface.** Callers and tests cross the same seam.
   Needing to test _past_ an interface means the module is the wrong shape. The
   body-lifecycle extraction happened because a large group of tests constructed
-  a `NotFoundError` to reach behaviour that was not about `NotFoundError`.
+  a `NotFoundError` to reach behavior that was not about `NotFoundError`.
   Those tests now call `errorBodyOf` directly.
 
 ## Domain vocabulary
@@ -71,13 +71,13 @@ Words this codebase already uses, some of them only implicitly until now.
   required: a completed read leaves the stream locked on some runtimes, so the
   lock test cannot come first.
 - **Documented divergence** — a runtime difference the library describes and
-  handles explicitly, choosing the behaviour that is correct on the runtime
+  handles explicitly, choosing the behavior that is correct on the runtime
   reporting the state. Bun's `bodyUsed`-on-lock is the standing example.
 - **Copy** — one instance of this library's classes in a process. Two entry
   points (`.`, `./errors`) × two formats (ESM, CJS) means a consumer can hold
   several. `instanceof` is per-copy and unreliable across them.
 - **Brand** — a `Symbol.for`-keyed marker stamped on a root error prototype so
-  the guards recognise a value across copies. The authority on "did this library
+  the guards recognize a value across copies. The authority on "did this library
   make this?" — not `instanceof`, and not assignability.
 - **Structural, deliberately** — the error classes carry no `#private`,
   `private`, or `protected` member, because TypeScript emits a nominal

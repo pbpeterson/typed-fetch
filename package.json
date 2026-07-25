@@ -16,6 +16,7 @@
     "typed",
     "typescript"
   ],
+  "homepage": "https://github.com/pbpeterson/typed-fetch#readme",
   "bugs": {
     "url": "https://github.com/pbpeterson/typed-fetch/issues"
   },

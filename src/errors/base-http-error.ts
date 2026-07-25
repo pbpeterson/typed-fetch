@@ -97,7 +97,7 @@ export abstract class BaseHttpError extends Error {
    * Code that logs only `error.message` and drops the error leaks one
    * connection per failed request.
    *
-   * This does NOT buffer the payload. Cancelling releases the body, but it can
+   * This does NOT buffer the payload. Canceling releases the body, but it can
    * close the connection instead of returning it to the keep-alive pool: the
    * remaining bytes were never received, so the connection cannot be reused.
    * Read the body with {@link text} when connection reuse matters more than
@@ -108,7 +108,7 @@ export abstract class BaseHttpError extends Error {
    * here therefore stays pending until the sibling branch is released too.
    * That is native `ReadableStream` behavior, kept deliberately rather than
    * hidden: resolving early would report a release that did not happen.
-   * Cancelling one branch never cancels the other — the consumer cloned it in
+   * Canceling one branch never cancels the other — the consumer cloned it in
    * order to read it.
    *
    * @example

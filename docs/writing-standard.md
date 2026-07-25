@@ -9,9 +9,21 @@ has readers in the same position.
 NOTE: This document does not claim conformance with ASD-STE100 or any other
 formal standard. It borrows the ideas only.
 
-Apply this standard to `README.md`, `CONTRIBUTING.md`, `CONTEXT.md`,
-`RELEASING.md`, both `SKILL.md` files, the files under `docs/`, and every
-public JSDoc comment in `src/`.
+Apply this standard to `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`,
+`CONTEXT.md`, `RELEASING.md`, both `SKILL.md` files, the files under `docs/`,
+and every public JSDoc comment in `src/`.
+
+Two limits on that scope:
+
+- A code identifier keeps the spelling the code uses, even when the code
+  disagrees with this standard. `` `cancelled` `` names a variable in
+  `src/errors/error-body.ts`; the prose around it says "canceled".
+- A runtime message string is program output, not documentation. Changing one
+  is a behavior change, not an editorial change.
+
+`README.md` is the only document in the npm tarball. A link from it to any
+other repository file must be an absolute URL, or a reader who opens it from
+`node_modules` follows a dead link.
 
 ## Purpose
 

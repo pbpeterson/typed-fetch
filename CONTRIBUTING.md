@@ -193,7 +193,7 @@ This gate (zero deps, plain Node, runs **after `pnpm build`**):
 2. Installs it into a throwaway consumer project (`npm install ./<tarball>`).
 3. Exercises the **installed** package: ESM `import`, CJS `require`, the
    `./errors` subpath, cross-entry and cross-format `instanceof`/`isHttpError`,
-   plus abort/timeout/injected-`fetch`/`Request`-first-arg behaviour.
+   plus abort/timeout/injected-`fetch`/`Request`-first-arg behavior.
 4. Typechecks a consumer `.ts` against the install under **both**
    `moduleResolution: "bundler"` and `"nodenext"` (the nodenext pass doubles as
    an `attw`-style types-wiring check), using the repo's own `tsc`.
@@ -343,7 +343,7 @@ error — do all of the following:
      expectTypeOf<XxxError["statusText"]>().toEqualTypeOf<"<Status Text>">();
      ```
 
-6. Run `pnpm format` to normalise the new files, then run the gates (above).
+6. Run `pnpm format` to normalize the new files, then run the gates (above).
 
 ### What the roster tests catch
 
@@ -413,7 +413,7 @@ One argument that is **not** a reason to keep things hand-written: "a factory
 would break class names and stack traces." That is false —
 `Object.defineProperty(C, "name", ...)` reproduces the instance `name`, the
 `stack` header line, and `String(error)` exactly. Do not use it. The case
-rests on the emitted declarations, not on runtime behaviour.
+rests on the emitted declarations, not on runtime behavior.
 
 A proposal that clears the bar in ADR 0001's "What would change our mind"
 section is genuinely welcome; one that re-runs the arguments above is not.

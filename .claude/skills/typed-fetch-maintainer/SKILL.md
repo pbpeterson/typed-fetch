@@ -133,7 +133,7 @@ often:
   `WeakMap<BaseHttpError, ErrorBody>`, read through `bodyOf(error)` — which also
   rejects a structurally-assignable impostor and any subclass that skipped
   `super(response)`.
-- State inside `errorBodyOf` is closure variables (`canceled`, `readStarted`,
+- State inside `errorBodyOf` is closure variables (`cancelled`, `readStarted`,
   `cancelling`); `teed` is the only property on the returned object. There is no
   `State` record and no `response` field.
 

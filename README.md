@@ -16,7 +16,7 @@ Native `fetch` does not reject a request for an HTTP error status. The calling c
 
 Body readers are separate operations. `json()`, `text()`, `blob()`, and `arrayBuffer()` keep the native Fetch behavior, and they can reject.
 
-> **Upgrade from 0.x:** Version 1.0 has breaking changes. Read [Migrating from 0.x](./CHANGELOG.md#migrating-from-0x).
+> **Upgrade from 0.x:** Version 1.0 has breaking changes. Read [Migrating from 0.x](https://github.com/pbpeterson/typed-fetch/blob/main/CHANGELOG.md#migrating-from-0x).
 
 ### Terms
 
@@ -859,11 +859,11 @@ This library does not include these features:
 
 Keep a `default` branch in a known-status switch. A newer package version can move a status from `UnknownHttpError` to a dedicated class, and the `default` branch keeps that code correct.
 
-Read [`RELEASING.md`](./RELEASING.md) for the release procedure.
+Read [`RELEASING.md`](https://github.com/pbpeterson/typed-fetch/blob/main/RELEASING.md) for the release procedure.
 
 ## Contribution and license
 
-Read [`CONTRIBUTING.md`](./CONTRIBUTING.md) before you make a pull request.
+Read [`CONTRIBUTING.md`](https://github.com/pbpeterson/typed-fetch/blob/main/CONTRIBUTING.md) before you make a pull request.
 
 That document gives the setup instructions, the required checks, and the procedure to add an HTTP status class.
 

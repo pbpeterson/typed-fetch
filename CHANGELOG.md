@@ -19,7 +19,7 @@ conventional SemVer governs. Everything else here is a fix.
   body, when the body was already consumed — including by a consumer holding
   the `Response` — and when this library already started reading it; a repeated
   call settles with the first one; and it rejects with a `TypeError` when an
-  EXTERNAL reader holds the stream and has read nothing through it. Cancelling
+  EXTERNAL reader holds the stream and has read nothing through it. Canceling
   does not download the remaining bytes, so the runtime may close the connection
   instead of returning it to the keep-alive pool — read the body with `text()`
   when connection reuse matters more than the transfer.
@@ -45,8 +45,8 @@ conventional SemVer governs. Everything else here is a fix.
   reject with their **own** abort error instead of `signal.reason`. Only an
   identity match (`err === signal.reason`) took the abort path before, so
   `whatwg-fetch` (jsdom), `node-fetch@3`, and other injected implementations
-  produced a `NetworkError` for a cancelled request — and a retry loop keyed on
-  `NetworkError` would reissue calls the caller had explicitly cancelled. A
+  produced a `NetworkError` for a canceled request — and a retry loop keyed on
+  `NetworkError` would reissue calls the caller had explicitly canceled. A
   governing signal that reports `aborted` plus an error-shaped rejection named
   `"AbortError"` or `"TimeoutError"` is now classified as the cancellation, and
   the signal's `reason` still decides `AbortedError` vs `TimeoutError`. An
@@ -72,13 +72,13 @@ conventional SemVer governs. Everything else here is a fix.
   repeated cancel, library read, external lock, consumed body, releasable body.
 - `cancel()` after `clone()` is now correct and idempotent. Cloning tees the
   body stream, and the platform releases the source only once every branch is
-  read or cancelled, so the promise stays pending until the sibling is released.
+  read or canceled, so the promise stays pending until the sibling is released.
   That native semantics is kept deliberately (resolving early would report a
   release that did not happen), and it is now documented with the
   `Promise.all([error.cancel(), copy.cancel()])` pattern. A repeated `cancel()`
   settles **with** the in-flight one instead of reporting success while the
   first is still waiting, and a late rejection can no longer surface as an
-  unhandled rejection. Cancelling one branch never cancels its sibling.
+  unhandled rejection. Canceling one branch never cancels its sibling.
 - `BaseHttpError` keeps its per-instance state in a module-scoped `WeakMap`
   instead of ECMAScript `#private` fields. TypeScript emits a nominal
   `#private;` marker into each declaration file, so `dist/index.d.ts` and
@@ -166,7 +166,7 @@ conventional SemVer governs. Everything else here is a fix.
 - Corrected the `cancel()` documentation: it no longer claims resources are
   freed "immediately". The README now states what `await cancel()` waits for,
   that a cloned body requires every branch to be released, and the explicit
-  trade-off — cancelling skips the remaining bytes but can cost connection
+  trade-off — canceling skips the remaining bytes but can cost connection
   reuse, while reading them keeps the connection but pays the transfer.
 - Noted that the `AbortSignal.any()` deadline recipe requires Node 20.3 or
   later, while the package floor stays at Node 20, and added a single-controller
@@ -198,7 +198,7 @@ conventional SemVer governs. Everything else here is a fix.
 - **Aborts and timeouts now return `AbortedError` / `TimeoutError` instead of
   `NetworkError`.** Both are new classes that extend `Error` directly (not
   `NetworkError`), so **`isNetworkError()` no longer returns `true` for
-  cancelled or timed-out requests.** Cancellation and timeouts are not
+  canceled or timed-out requests.** Cancellation and timeouts are not
   network failures, and collapsing all three into `NetworkError` forced an
   untyped `error.cause` cast to tell them apart. See
   [Migrating from 0.x](#migrating-from-0x) below.
@@ -337,7 +337,7 @@ conventional SemVer governs. Everything else here is a fix.
 - **Timeout classification now requires a `DOMException`, not a forgeable
   `reason.name`.** Detection previously matched a `reason` that was any `Error`
   whose `.name` was `"TimeoutError"`, so a caller doing
-  `controller.abort(Object.assign(new Error("cancelled"), { name: "TimeoutError" }))`
+  `controller.abort(Object.assign(new Error("canceled"), { name: "TimeoutError" }))`
   was misclassified as a `TimeoutError` — and, worse, the caller's meaningful
   reason was demoted to `cause` and lost from `error.reason`. This is the
   mirror of the `err.name === "AbortError"` bug already fixed above, on the
@@ -463,7 +463,7 @@ const { response, error } = await typedFetch<User[]>("/api/users", {
 });
 if (isNetworkError(error)) {
   if ((error.cause as Error)?.name === "AbortError") {
-    console.log("Request was cancelled");
+    console.log("Request was canceled");
   } else {
     console.log("Network error:", error.message);
   }
@@ -476,7 +476,7 @@ const { response, error } = await typedFetch<User[]>("/api/users", {
   signal: AbortSignal.timeout(5000),
 });
 if (isAbortError(error)) {
-  console.log("Request was cancelled");
+  console.log("Request was canceled");
 } else if (isTimeoutError(error)) {
   console.log("Request timed out");
 } else if (isNetworkError(error)) {
