@@ -113,13 +113,31 @@ describe("extractBlocks — fence lengths and indentation", () => {
     expect(extractBlocks(doc)).toHaveLength(1);
   });
 
-  test("KNOWN SHARP EDGE: a closing fence at a different indent swallows the rest of the file", () => {
-    // The closing regex is built from the OPENING fence's indent, so a
-    // mismatched close consumes every later block — including ones that would
-    // have failed to compile. The gate then prints a lower "TypeScript blocks
-    // found" number that nobody compares against anything, which is this gate's
-    // whole failure mode: silent under-checking. Pinned, not endorsed — if you
-    // fix the parser, this test is your notification.
+  test("a deeply indented fence closes at its own indent (list-item case)", () => {
+    // CONTRIBUTING.md has a ```typescript fence five spaces deep inside a list
+    // item, closed at the same five spaces. A flat "close may be 0-3 spaces"
+    // rule reports that as unterminated — the bound is relative to the opening
+    // indent, not absolute.
+    const doc = md(
+      "   - step:",
+      "",
+      "     " + FENCE + "ts",
+      "     const a = 1;",
+      "     " + FENCE,
+      "",
+    );
+    const blocks = extractBlocks(doc);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].unterminated).toBe(false);
+  });
+
+  test("a closing fence at a different indent still closes the block", () => {
+    // CommonMark lets the closing fence carry 0-3 spaces of indentation
+    // INDEPENDENTLY of the opening fence. Building the closing regex from the
+    // opening indent meant a mismatched close consumed every later block —
+    // including ones that would have failed to compile. That is this gate's
+    // worst failure mode: silent under-checking, reported as a lower block
+    // count that nothing compares against.
     const doc = md(
       "  " + FENCE + "ts",
       "  const a: number = 1;",
@@ -131,8 +149,10 @@ describe("extractBlocks — fence lengths and indentation", () => {
       "",
     );
     const blocks = extractBlocks(doc);
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0].code).toContain("const b: string = 2;");
+    expect(blocks).toHaveLength(2);
+    expect(blocks[0].code).toContain("const a: number = 1;");
+    expect(blocks[1].code).toContain("const b: string = 2;");
+    expect(blocks.some((b) => b.unterminated)).toBe(false);
   });
 
   test("an unclosed fence runs to end of file", () => {
@@ -249,7 +269,7 @@ describe("planDocBlocks", () => {
       ],
       "/repo/dist",
     );
-    expect(plan.blocks[0].name).toBe("_claude_skills_typed_fetch_maintainer_SKILL_md__L1");
+    expect(plan.blocks[0].name).toBe("_claude_skills_typed_fetch_maintainer_SKILL_md__L1__b0");
   });
 
   test("the block name matches what attributeDiagnostics parses back out", () => {
@@ -277,9 +297,10 @@ describe("planDocBlocks", () => {
     expect(plan.blocks[0].content).toBe(`import x from "/repo/dist/index.js";\nexport {};\n`);
   });
 
-  test("KNOWN SHARP EDGE: paths that differ only by punctuation collide", () => {
-    // Both sanitize to src_foo_bar_ts; main() writes one file over the other and
-    // one block is silently never compiled. Pinned so a fix is a visible change.
+  test("paths that differ only by punctuation get distinct block names", () => {
+    // Both sanitize to src_foo_bar_ts. main() writes each block to
+    // blocks/<name>.ts, so a collision meant one file overwrote the other and
+    // one block was silently never compiled.
     const plan = planDocBlocks(
       [
         doc(
@@ -303,7 +324,28 @@ describe("planDocBlocks", () => {
       ],
       "/repo/dist",
     );
-    expect(plan.blocks[0].name).toBe(plan.blocks[1].name);
+    expect(plan.blocks[0].name).not.toBe(plan.blocks[1].name);
+    // Still parseable by attributeDiagnostics, which only accepts [A-Za-z0-9_].
+    expect(plan.blocks[0].name).toMatch(/^[A-Za-z0-9_]+$/);
+    expect(plan.blocks[1].name).toMatch(/^[A-Za-z0-9_]+$/);
+  });
+
+  test("reports an unterminated fence instead of swallowing the rest of the file", () => {
+    // A fence that is never closed used to run to EOF and emit one giant
+    // block, so every later example vanished from the count in silence.
+    const plan = planDocBlocks(
+      [doc("README.md", "markdown", FENCE + "ts", "const a = 1;", "", "no closing fence here")],
+      "/d",
+    );
+    expect(plan.unterminated).toEqual([{ file: "README.md", line: 1 }]);
+  });
+
+  test("a well-formed document reports no unterminated fences", () => {
+    const plan = planDocBlocks(
+      [doc("README.md", "markdown", FENCE + "ts", "const a = 1;", FENCE)],
+      "/d",
+    );
+    expect(plan.unterminated).toEqual([]);
   });
 });
 
@@ -350,7 +392,13 @@ describe("attributeDiagnostics", () => {
   });
 });
 
-const plan = (over = {}) => ({ blocks: [], skipped: [], totalTsBlocks: 0, ...over });
+const plan = (over = {}) => ({
+  blocks: [],
+  skipped: [],
+  unterminated: [],
+  totalTsBlocks: 0,
+  ...over,
+});
 const block = (name, file, line) => ({ name, file, line, content: "" });
 
 describe("judgeDocs", () => {

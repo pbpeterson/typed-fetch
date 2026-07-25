@@ -97,7 +97,7 @@ export const MAX_SKIP_RATIO = 0.5;
 /**
  * Extract fenced ts/typescript blocks from markdown.
  * @param {string} md
- * @returns {{ line: number, info: string, code: string, skip: boolean }[]}
+ * @returns {{ line: number, info: string, code: string, skip: boolean, unterminated: boolean }[]}
  */
 export function extractBlocks(md) {
   const lines = md.split("\n");
@@ -116,8 +116,22 @@ export function extractBlocks(md) {
       const info = open[3].trim();
       const lang = info.split(/\s+/)[0]?.toLowerCase();
       const fenceLine = i + 1; // 1-based line of the opening fence
-      const closeRe = new RegExp(`^${indent}\`{${fence.length},}\\s*$`);
-      // Find the matching closing fence (>= same length, same indent).
+      // The closing fence does NOT have to sit at the opening fence's indent.
+      // Requiring an exact match meant a block opened at indent 2 and closed at
+      // indent 0 never closed: the scan ran to EOF and swallowed every later
+      // block. That is this gate's worst failure mode, because it under-checks
+      // SILENTLY — the only symptom is a smaller "blocks found" number that
+      // nothing compares against.
+      //
+      // CommonMark allows the close 0-3 spaces of indentation relative to its
+      // container, so the bound is the opening indent plus 3 — not a flat 0-3.
+      // A flat bound looks right and is wrong here: CONTRIBUTING.md has a fence
+      // five spaces deep inside a list item, which a 0-3 rule reports as
+      // unterminated. (Found exactly that way, by running the gate.)
+      //
+      // Fence LENGTH still does the real work: a ````markdown wrapper needs >= 4
+      // backticks to close, so the ```ts fences nested inside it stay body.
+      const closeRe = new RegExp(`^ {0,${indent.length + 3}}\`{${fence.length},}\\s*$`);
       let j = i + 1;
       const body = [];
       while (j < lines.length && !closeRe.test(lines[j])) {
@@ -126,7 +140,11 @@ export function extractBlocks(md) {
       }
       if (lang === "ts" || lang === "typescript") {
         const skip = info.split(/\s+/).slice(1).includes(SKIP_MARKER);
-        blocks.push({ line: fenceLine, info, code: body.join("\n"), skip });
+        // A fence that reached EOF without a close is a malformed document, not
+        // a block. Flagged rather than silently emitted, so the caller can fail
+        // loudly instead of compiling one giant block and losing the rest.
+        const unterminated = j >= lines.length;
+        blocks.push({ line: fenceLine, info, code: body.join("\n"), skip, unterminated });
       }
       i = j + 1;
     } else {
@@ -187,6 +205,7 @@ export function rewriteImports(code, distDir) {
  * @typedef {{
  *   blocks: PlannedBlock[],
  *   skipped: { file: string, line: number }[],
+ *   unterminated: { file: string, line: number }[],
  *   totalTsBlocks: number,
  * }} DocPlan
  */
@@ -201,25 +220,37 @@ export function planDocBlocks(docs, distDir) {
   const blocks = [];
   /** @type {{ file: string, line: number }[]} */
   const skipped = [];
+  /** @type {{ file: string, line: number }[]} */
+  const unterminated = [];
   let totalTsBlocks = 0;
 
   for (const { file, format, source } of docs) {
     const md = format === "jsdoc" ? jsdocToMarkdown(source) : source;
     for (const block of extractBlocks(md)) {
       totalTsBlocks += 1;
+      if (block.unterminated) {
+        unterminated.push({ file, line: block.line });
+        continue;
+      }
       if (block.skip) {
         skipped.push({ file, line: block.line });
         continue;
       }
       blocks.push({
-        name: `${file.replace(/[^a-zA-Z0-9]/g, "_")}__L${block.line}`,
+        // The sanitized path is for human readability only; `blocks.length` is
+        // what makes the name UNIQUE. Sanitizing alone collided —
+        // `src/foo-bar.ts` and `src/foo_bar.ts` both became `src_foo_bar_ts`,
+        // so main() wrote one block's file over the other's and one example was
+        // silently never compiled. The suffix keeps the name inside the
+        // [A-Za-z0-9_] set that attributeDiagnostics parses back out.
+        name: `${file.replace(/[^a-zA-Z0-9]/g, "_")}__L${block.line}__b${blocks.length}`,
         file,
         line: block.line,
         content: wrapBlock(rewriteImports(block.code, distDir)),
       });
     }
   }
-  return { blocks, skipped, totalTsBlocks };
+  return { blocks, skipped, unterminated, totalTsBlocks };
 }
 
 /**
@@ -271,6 +302,12 @@ export function attributeDiagnostics(tscOutput, blocks) {
  * @returns {DocsVerdict}
  */
 export function judgeDocs({ plan, tscOutput }) {
+  // Checked BEFORE the tsc verdict: an unterminated fence means the document
+  // was mis-parsed, so every block after it was never extracted and a green
+  // tsc run would only prove the fragment we did manage to read. That is
+  // under-checking, which this gate must never report as a pass.
+  if (plan.unterminated.length > 0) return { kind: "unterminated-fence" };
+
   if (tscOutput !== null) {
     const failures = attributeDiagnostics(tscOutput, plan.blocks);
     // TS5112 must never appear — if it does, our config strategy regressed. It
@@ -412,6 +449,16 @@ function main() {
 
   const verdict = judgeDocs({ plan, tscOutput });
 
+  if (verdict.kind === "unterminated-fence") {
+    console.error("check-docs: a fenced block is never closed, so the rest of that document was");
+    console.error("  not parsed and its later examples were never checked. Close the fence:\n");
+    for (const u of plan.unterminated) {
+      console.error(`    - ${u.file}:${u.line}`);
+    }
+    console.error("");
+    scratch.dispose();
+    process.exit(1);
+  }
   if (verdict.kind === "tsc-config-regression") {
     console.error("check-docs: tsc emitted TS5112 (root tsconfig leaked in). This masks real");
     console.error("  errors and is a bug in this script. Aborting.\n");
