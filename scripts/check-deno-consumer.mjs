@@ -7,18 +7,19 @@
 // package's exports map to its published .d.mts declarations.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installTarball, packTarball } from "./lib/npm-pack.mjs";
+import { createScratchDir } from "./lib/scratch-dir.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const workDir = mkdtempSync(join(tmpdir(), "typed-fetch-deno-consumer-"));
-const npmEnvironment = { ...process.env };
-
-for (const key of Object.keys(npmEnvironment)) {
-  if (key.toLowerCase().startsWith("npm_config_")) delete npmEnvironment[key];
-}
+// The `finally` below is not enough on its own: it does NOT run when the process
+// dies from SIGINT, so Ctrl-C during `npm install` or `deno check` — the two
+// slow steps a human actually interrupts — used to leak this directory every
+// time. createScratchDir also cleans up on signals.
+const scratch = createScratchDir("typed-fetch-deno-consumer-");
+const workDir = scratch.path;
 
 const consumer = `
 import { isKnownHttpError, typedFetch } from "@pbpeterson/typed-fetch";
@@ -48,32 +49,19 @@ void checkTypedResponse;
 `;
 
 try {
-  const rawPack = execFileSync("npm", ["pack", "--json", "--pack-destination", workDir], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    env: npmEnvironment,
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-  const packResult = JSON.parse(rawPack);
-  const packed = Array.isArray(packResult) ? packResult[0] : packResult;
-  if (!packed?.filename) throw new Error("npm pack did not report a tarball filename");
+  // packTarball resolves the tarball by reading workDir back rather than by
+  // trusting npm's reported filename — npm 8 reported the scope-prefixed name
+  // while writing the scope-stripped one, and this gate used to trust it.
+  const { path: tarball } = packTarball(repoRoot, workDir);
 
   writeFileSync(
     join(workDir, "package.json"),
     JSON.stringify({ private: true, type: "module" }, null, 2),
   );
-  execFileSync(
-    "npm",
-    [
-      "install",
-      "--ignore-scripts",
-      "--no-audit",
-      "--no-fund",
-      "--no-package-lock",
-      join(workDir, packed.filename),
-    ],
-    { cwd: workDir, env: npmEnvironment, stdio: "inherit" },
-  );
+  installTarball(workDir, tarball, {
+    flags: ["--ignore-scripts", "--no-audit", "--no-fund", "--no-package-lock"],
+    stdio: "inherit",
+  });
   writeFileSync(join(workDir, "consumer.ts"), consumer);
 
   const installedPackage = JSON.parse(
@@ -115,5 +103,5 @@ try {
     `deno consumer: OK (${installedPackage.name}@${installedPackage.version}, published types loaded)`,
   );
 } finally {
-  rmSync(workDir, { recursive: true, force: true });
+  scratch.dispose();
 }

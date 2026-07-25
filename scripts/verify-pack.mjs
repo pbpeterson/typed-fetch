@@ -23,14 +23,12 @@
 // grow a dev dep for a release guard.
 
 import { execFileSync } from "node:child_process";
-
-// pnpm forwards its own config as npm_config_* variables to lifecycle scripts.
-// Newer npm versions warn about pnpm-only keys. The pack manifest must be
-// deterministic and does not need user/package-manager configuration.
-const npmEnvironment = { ...process.env };
-for (const key of Object.keys(npmEnvironment)) {
-  if (key.toLowerCase().startsWith("npm_config_")) delete npmEnvironment[key];
-}
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+// The pack manifest must be deterministic and owes nothing to the shell that
+// happens to be running it; NPM_ENV drops pnpm's forwarded npm_config_* keys.
+// See scripts/lib/npm-pack.mjs for why all three npm-calling gates need this.
+import { NPM_ENV } from "./lib/npm-pack.mjs";
 
 // Compiled entry points that MUST be in every published tarball. These back the
 // `main`, `module`, `types` and `exports` fields in package.json — if any is
@@ -94,6 +92,115 @@ const LEAK_RULES = [
 const MIN_FILE_COUNT = 13;
 const MAX_FILE_COUNT = 13;
 
+// ---------------------------------------------------------------------------
+// THE DECISION. Pure: plain data in, plain data out, or a thrown Error whose
+// message is exactly what the report prints. No fs, no child_process, no
+// console, no process.exit — so scripts/verify-pack.spec.mjs can call it with a
+// manifest ARRAY instead of synthesising a package on disk. Three of the checks
+// below are unreachable from an on-disk fixture at any price (see the spec).
+//
+// Exported for the spec only. scripts/ never ships: package.json
+// `files: ["dist"]` excludes it, which this very gate asserts.
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalise the payload of `npm pack --dry-run --json` into the two facts the
+ * policy needs. npm reports a one-element array; older shapes reported the
+ * object directly.
+ *
+ * @param {any} parsed
+ * @returns {{ files: string[], fileCount: number }}
+ */
+export function readPackManifest(parsed) {
+  const pkg = Array.isArray(parsed) ? parsed[0] : parsed;
+  if (!pkg || !Array.isArray(pkg.files)) {
+    throw new Error("`npm pack` output had no file list to inspect.");
+  }
+  const files = pkg.files.map((f) => f.path);
+  return {
+    files,
+    fileCount: typeof pkg.entryCount === "number" ? pkg.entryCount : files.length,
+  };
+}
+
+/**
+ * The entire published-tarball manifest policy, as a pure function.
+ *
+ * Fail-fast, exactly like the script this was extracted from: it throws on the
+ * FIRST violation and the message is verbatim what `fail()` prints. The four
+ * checks stay in their original order — the order IS the contract (a partial
+ * build must report the missing entry point, not a file count).
+ *
+ * @param {string[]} packedFiles every path `npm pack` would ship
+ * @param {number} [fileCount] npm's own entryCount; defaults to packedFiles.length
+ * @returns {{ fileCount: number }}
+ */
+export function verifyPackManifest(packedFiles, fileCount = packedFiles.length) {
+  const packedSet = new Set(packedFiles);
+
+  // 1. Required compiled entry points present.
+  const missingDist = REQUIRED_DIST_FILES.filter((f) => !packedSet.has(f));
+  if (missingDist.length > 0) {
+    throw new Error(
+      `tarball is missing required compiled file(s):\n    - ${missingDist.join("\n    - ")}`,
+    );
+  }
+
+  // 2. Required metadata files present.
+  const missingMeta = REQUIRED_META_FILES.filter((f) => !packedSet.has(f));
+  if (missingMeta.length > 0) {
+    throw new Error(
+      `tarball is missing required metadata file(s):\n    - ${missingMeta.join("\n    - ")}`,
+    );
+  }
+
+  // 3. Every packed path must be on the allowlist. Known leak shapes are named
+  //    explicitly so the failure explains itself.
+  const leaked = [];
+  for (const f of packedFiles) {
+    const rule = LEAK_RULES.find((r) => r.test(f));
+    if (rule) {
+      leaked.push(`${f}  (${rule.label})`);
+      continue;
+    }
+    if (ALLOWED_EXACT.has(f)) continue;
+    if (ALLOWED_PATTERNS.some((re) => re.test(f))) continue;
+    leaked.push(`${f}  (not on the allow-list)`);
+  }
+  if (leaked.length > 0) {
+    throw new Error(
+      "tarball would ship file(s) that are not part of the published artifact:\n" +
+        `    - ${leaked.join("\n    - ")}\n` +
+        "Clean dist/ and rebuild (`pnpm build` runs tsup with clean:true). If a new " +
+        "file genuinely belongs in the artifact, add it to ALLOWED_EXACT/ALLOWED_PATTERNS " +
+        "here and bump MAX_FILE_COUNT deliberately.",
+    );
+  }
+
+  // 4. Sanity-check the overall file count. A sourcemap or a stray dotfile is
+  //    caught above; this catches a partial build (too few) and anything the
+  //    allow-list admits that nobody looked at (too many).
+  if (fileCount < MIN_FILE_COUNT) {
+    throw new Error(
+      `tarball has ${fileCount} file(s), expected at least ${MIN_FILE_COUNT}. ` +
+        "Build output looks incomplete.",
+    );
+  }
+  if (fileCount > MAX_FILE_COUNT) {
+    throw new Error(
+      `tarball has ${fileCount} file(s), expected at most ${MAX_FILE_COUNT}:\n` +
+        `    - ${packedFiles.join("\n    - ")}\n` +
+        "Something new is shipping. Confirm it belongs, then bump MAX_FILE_COUNT.",
+    );
+  }
+
+  return { fileCount };
+}
+
+// ---------------------------------------------------------------------------
+// Adapter + thin main. Everything below this line touches the world.
+// ---------------------------------------------------------------------------
+
 function fail(message) {
   console.error(`\n✖ verify-pack: ${message}\n`);
   console.error(
@@ -103,90 +210,50 @@ function fail(message) {
   process.exit(1);
 }
 
-let raw;
-try {
-  raw = execFileSync("npm", ["pack", "--dry-run", "--json"], {
-    encoding: "utf8",
-    env: npmEnvironment,
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-} catch (err) {
-  fail(`\`npm pack --dry-run --json\` failed to run: ${err.message}`);
-}
-
-let parsed;
-try {
-  parsed = JSON.parse(raw);
-} catch (err) {
-  fail(`could not parse \`npm pack\` JSON output: ${err.message}`);
-}
-
-const pkg = Array.isArray(parsed) ? parsed[0] : parsed;
-if (!pkg || !Array.isArray(pkg.files)) {
-  fail("`npm pack` output had no file list to inspect.");
-}
-
-const packedFiles = pkg.files.map((f) => f.path);
-const packedSet = new Set(packedFiles);
-
-// 1. Required compiled entry points present.
-const missingDist = REQUIRED_DIST_FILES.filter((f) => !packedSet.has(f));
-if (missingDist.length > 0) {
-  fail(`tarball is missing required compiled file(s):\n    - ${missingDist.join("\n    - ")}`);
-}
-
-// 2. Required metadata files present.
-const missingMeta = REQUIRED_META_FILES.filter((f) => !packedSet.has(f));
-if (missingMeta.length > 0) {
-  fail(`tarball is missing required metadata file(s):\n    - ${missingMeta.join("\n    - ")}`);
-}
-
-// 3. Every packed path must be on the allowlist. Known leak shapes are named
-//    explicitly so the failure explains itself.
-const leaked = [];
-for (const f of packedFiles) {
-  const rule = LEAK_RULES.find((r) => r.test(f));
-  if (rule) {
-    leaked.push(`${f}  (${rule.label})`);
-    continue;
+function main() {
+  let raw;
+  try {
+    raw = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+      encoding: "utf8",
+      env: NPM_ENV,
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+  } catch (err) {
+    fail(`\`npm pack --dry-run --json\` failed to run: ${err.message}`);
   }
-  if (ALLOWED_EXACT.has(f)) continue;
-  if (ALLOWED_PATTERNS.some((re) => re.test(f))) continue;
-  leaked.push(`${f}  (not on the allow-list)`);
-}
-if (leaked.length > 0) {
-  fail(
-    "tarball would ship file(s) that are not part of the published artifact:\n" +
-      `    - ${leaked.join("\n    - ")}\n` +
-      "Clean dist/ and rebuild (`pnpm build` runs tsup with clean:true). If a new " +
-      "file genuinely belongs in the artifact, add it to ALLOWED_EXACT/ALLOWED_PATTERNS " +
-      "here and bump MAX_FILE_COUNT deliberately.",
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    fail(`could not parse \`npm pack\` JSON output: ${err.message}`);
+  }
+
+  let fileCount;
+  try {
+    const manifest = readPackManifest(parsed);
+    ({ fileCount } = verifyPackManifest(manifest.files, manifest.fileCount));
+  } catch (err) {
+    // Note: a genuine bug in the decision (say a TypeError) is also reported as
+    // a manifest failure rather than as a stack trace. Both exit 1, so no
+    // release is corrupted, but an incident gets a misleading first line.
+    // validate-release.mjs has the identical wart; fixing both together with a
+    // marker Error subclass is a separate, deliberate change.
+    fail(err.message);
+  }
+
+  console.log(
+    `✔ verify-pack: manifest OK — ${fileCount} files; ` +
+      `all ${REQUIRED_DIST_FILES.length} required entry points + LICENSE/README present, ` +
+      "every packed path on the allow-list.",
   );
+  for (const f of [...REQUIRED_DIST_FILES, ...REQUIRED_META_FILES]) {
+    console.log(`    ✓ ${f}`);
+  }
 }
 
-// 4. Sanity-check the overall file count. A sourcemap or a stray dotfile is
-//    caught above; this catches a partial build (too few) and anything the
-//    allow-list admits that nobody looked at (too many).
-const fileCount = typeof pkg.entryCount === "number" ? pkg.entryCount : packedFiles.length;
-if (fileCount < MIN_FILE_COUNT) {
-  fail(
-    `tarball has ${fileCount} file(s), expected at least ${MIN_FILE_COUNT}. ` +
-      "Build output looks incomplete.",
-  );
-}
-if (fileCount > MAX_FILE_COUNT) {
-  fail(
-    `tarball has ${fileCount} file(s), expected at most ${MAX_FILE_COUNT}:\n` +
-      `    - ${packedFiles.join("\n    - ")}\n` +
-      "Something new is shipping. Confirm it belongs, then bump MAX_FILE_COUNT.",
-  );
-}
-
-console.log(
-  `✔ verify-pack: manifest OK — ${fileCount} files; ` +
-    `all ${REQUIRED_DIST_FILES.length} required entry points + LICENSE/README present, ` +
-    "every packed path on the allow-list.",
-);
-for (const f of [...REQUIRED_DIST_FILES, ...REQUIRED_META_FILES]) {
-  console.log(`    ✓ ${f}`);
-}
+// Importing this module must do nothing at all; only `node scripts/verify-pack.mjs`
+// runs the gate. The end-to-end tests in the spec exist to prove this guard has
+// not come undone — a disconnected main() would make the gate exit 0 in silence.
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) main();

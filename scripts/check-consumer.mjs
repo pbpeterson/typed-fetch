@@ -24,20 +24,14 @@
 // Exits non-zero with a per-assertion report if any consumer contract breaks.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readdirSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve, dirname } from "node:path";
+import { existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { installTarball, NPM_ENV, packTarball } from "./lib/npm-pack.mjs";
+import { createScratchDir } from "./lib/scratch-dir.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PKG_NAME = "@pbpeterson/typed-fetch";
-
-// pnpm lifecycle scripts expose pnpm-only npm_config_* keys. Strip them only
-// from nested npm calls so npm's output is deterministic and warning-free.
-const npmEnvironment = { ...process.env };
-for (const key of Object.keys(npmEnvironment)) {
-  if (key.toLowerCase().startsWith("npm_config_")) delete npmEnvironment[key];
-}
 
 // ---------------------------------------------------------------------------
 // KNOWN_FAILING — assertions that fail against the CURRENT (unfixed) artifact.
@@ -83,130 +77,10 @@ const KNOWN_FAILING = new Set([
   // loudly. Do NOT add ids here to paper over a real regression.
 ]);
 
-// ---------------------------------------------------------------------------
-// Assertion harness
-// ---------------------------------------------------------------------------
-const results = [];
-function record(id, ok, detail) {
-  results.push({ id, ok, detail });
-  const known = KNOWN_FAILING.has(id);
-  if (ok) {
-    console.log(`  ✔ ${id}`);
-  } else if (known) {
-    console.log(`  ⚠ ${id} — FAILED (known, tracked in KNOWN_FAILING): ${detail}`);
-  } else {
-    console.log(`  ✖ ${id} — ${detail}`);
-  }
-}
-
-// Informational only — printed in the report, never affects the exit code.
-// Use for facts that document a limitation (e.g. cross-format `instanceof`)
-// rather than a contract the artifact must satisfy.
-const notes = [];
-function note(id, detail) {
-  notes.push({ id, detail });
-  console.log(`  · ${id} — ${detail}`);
-}
-
-// ---------------------------------------------------------------------------
-// Temp dirs + cleanup. Everything lives under one mkdtemp root so a single rm
-// cleans it all, even on early exit.
-// ---------------------------------------------------------------------------
-const WORK = mkdtempSync(join(tmpdir(), "tf-consumer-"));
-let cleaned = false;
-function cleanup() {
-  if (cleaned) return;
-  cleaned = true;
-  try {
-    rmSync(WORK, { recursive: true, force: true });
-  } catch {
-    /* best effort */
-  }
-}
-process.on("exit", cleanup);
-for (const sig of ["SIGINT", "SIGTERM"]) {
-  process.on(sig, () => {
-    cleanup();
-    process.exit(1);
-  });
-}
-
-function run(cmd, args, opts = {}) {
-  const env = cmd === "npm" ? npmEnvironment : process.env;
-  return execFileSync(cmd, args, { encoding: "utf8", env, ...opts });
-}
-
-// ---------------------------------------------------------------------------
-// 1. Pack the tarball.
-// ---------------------------------------------------------------------------
-console.log(`\n▸ Packing ${PKG_NAME} …`);
-const packDir = join(WORK, "pack");
-mkdirSync(packDir, { recursive: true });
-let tarball;
-try {
-  const out = run("npm", ["pack", "--pack-destination", packDir, "--json"], {
-    cwd: REPO_ROOT,
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-  const meta = JSON.parse(out);
-  const filename = (Array.isArray(meta) ? meta[0] : meta).filename;
-  // npm reports the logical filename; the real file on disk uses the sanitized
-  // (scope-stripped) name. Resolve against what actually landed in packDir.
-  const packed = readdirSync(packDir).filter((f) => f.endsWith(".tgz"));
-  if (packed.length !== 1) {
-    throw new Error(`expected exactly one .tgz in ${packDir}, found ${packed.join(", ")}`);
-  }
-  tarball = join(packDir, packed[0]);
-  console.log(`  packed: ${packed[0]} (reported ${filename})`);
-} catch (err) {
-  console.error(`\n✖ npm pack failed: ${err.message}`);
-  process.exit(1);
-}
-
-// ---------------------------------------------------------------------------
-// 2. Scratch consumer project, install the tarball as a file: dependency.
-// ---------------------------------------------------------------------------
-console.log("\n▸ Installing tarball into a scratch consumer project …");
-const consumer = join(WORK, "consumer");
-mkdirSync(consumer, { recursive: true });
-writeFileSync(
-  join(consumer, "package.json"),
-  JSON.stringify(
-    {
-      name: "tf-consumer-scratch",
-      version: "0.0.0",
-      private: true,
-      // no "type" — we drive ESM via .mjs and CJS via .cjs explicitly so the
-      // module system of each probe is unambiguous.
-    },
-    null,
-    2,
-  ),
-);
-try {
-  run("npm", ["install", "--no-audit", "--no-fund", "--save", tarball], {
-    cwd: consumer,
-    stdio: ["ignore", "pipe", "inherit"],
-  });
-  console.log("  install OK");
-} catch (err) {
-  console.error(`\n✖ npm install of tarball failed: ${err.message}`);
-  process.exit(1);
-}
-
-// ---------------------------------------------------------------------------
-// Runtime probes. Each probe is written to the consumer dir and executed with
-// the consumer as cwd, so `@pbpeterson/typed-fetch` resolves through its
-// installed node_modules exactly as a real user's would. Each probe prints a
-// single JSON line of booleans/values that we assert on here.
-// ---------------------------------------------------------------------------
-function runProbe(filename, source) {
-  const p = join(consumer, filename);
-  writeFileSync(p, source);
-  const out = run(process.execPath, [p], { cwd: consumer, stdio: ["ignore", "pipe", "pipe"] });
-  const line = out.trim().split("\n").filter(Boolean).pop();
-  return JSON.parse(line);
-}
+// ===========================================================================
+// A. MODULE DATA. Inert strings and constants — importing this file runs
+//    nothing, touches no disk and spawns no npm.
+// ===========================================================================
 
 // A local 404 server helper, inlined into each probe (probes are separate
 // processes and cannot share scope).
@@ -230,14 +104,9 @@ export function start404() {
   });
 }
 `;
-writeFileSync(join(consumer, "server.mjs"), SERVER_HELPER);
 
 // --- ESM probe: main entry, full behaviour surface ------------------------
-console.log("\n▸ ESM (main entry) probes …");
-try {
-  const r = runProbe(
-    "probe-esm.mjs",
-    `
+const PROBE_ESM = `
 import {
   typedFetch,
   isHttpError,
@@ -303,39 +172,10 @@ try {
   srv.close();
 }
 console.log(JSON.stringify(out));
-`,
-  );
-  record("esm:response-null", r.responseNull, `responseNull=${r.responseNull}`);
-  record("esm:isHttpError", r.isHttpError, `isHttpError=${r.isHttpError}`);
-  record("esm:isKnownHttpError", r.isKnownHttpError, `isKnownHttpError=${r.isKnownHttpError}`);
-  record("esm:custom-is-http", r.customIsHttp, `customIsHttp=${r.customIsHttp}`);
-  record("esm:custom-is-not-known", r.customIsNotKnown, `customIsNotKnown=${r.customIsNotKnown}`);
-  record("esm:instanceof-NotFoundError", r.instanceofNotFound, `got name=${r.name}`);
-  record("esm:status-404", r.status404, `status check=${r.status404}`);
-  record("esm:injected-fetch-called", r.injectedCalled, `injectedCalled=${r.injectedCalled}`);
-  record(
-    "esm:injected-fetch-NotFound",
-    r.injectedNotFound,
-    `injectedNotFound=${r.injectedNotFound}`,
-  );
-  record("esm:abort-reason-AbortedError", r.abortIsAborted, `abortIsAborted=${r.abortIsAborted}`);
-  record("esm:abort-reason-preserved", r.abortReason, `reason preserved=${r.abortReason}`);
-  record("esm:timeout-TimeoutError", r.timeoutIsTimeout, `got name=${r.timeoutName}`);
-  record(
-    "abort:request-first-arg-preaborted",
-    r.requestPreAbortIsAborted,
-    `Request-first-arg pre-aborted signal surfaced as ${r.requestPreAbortName}, expected AbortedError`,
-  );
-} catch (err) {
-  record("esm:probe", false, `ESM probe crashed: ${err.message}`);
-}
+`;
 
 // --- CJS probe: same surface via require() --------------------------------
-console.log("\n▸ CJS (require) probes …");
-try {
-  const r = runProbe(
-    "probe-cjs.cjs",
-    `
+const PROBE_CJS = `
 const { typedFetch, isHttpError, isKnownHttpError, NotFoundError } = require("${PKG_NAME}");
 const http = require("node:http");
 
@@ -365,27 +205,14 @@ function start404() {
   }
   console.log(JSON.stringify(out));
 })();
-`,
-  );
-  record("cjs:response-null", r.responseNull, `responseNull=${r.responseNull}`);
-  record("cjs:isHttpError", r.isHttpError, `isHttpError=${r.isHttpError}`);
-  record("cjs:isKnownHttpError", r.isKnownHttpError, `isKnownHttpError=${r.isKnownHttpError}`);
-  record("cjs:instanceof-NotFoundError", r.instanceofNotFound, `got name=${r.name}`);
-  record("cjs:status-404", r.status404, `status check=${r.status404}`);
-} catch (err) {
-  record("cjs:probe", false, `CJS probe crashed: ${err.message}`);
-}
+`;
 
 // --- Subpath probe: NotFoundError from ./errors, typedFetch from main ------
 // Bug 1 (cross-ENTRY axis). An error produced via the main entry's error map
 // must be `instanceof` the NotFoundError re-exported from the ./errors subpath.
 // The dual-bundle build once made them different classes (→ false); the two
 // entries must now share one class identity within a format.
-console.log("\n▸ Subpath (./errors) cross-entry instanceof probe …");
-try {
-  const r = runProbe(
-    "probe-subpath.mjs",
-    `
+const PROBE_SUBPATH = `
 import { typedFetch, isHttpError } from "${PKG_NAME}";
 import { NotFoundError, BaseHttpError } from "${PKG_NAME}/errors";
 import { start404 } from "./server.mjs";
@@ -402,23 +229,7 @@ try {
   srv.close();
 }
 console.log(JSON.stringify(out));
-`,
-  );
-  // Sanity: the main-entry guard must still recognise its own error.
-  record("subpath:main-guard-true", r.mainGuardStillTrue, `isHttpError=${r.mainGuardStillTrue}`);
-  record(
-    "subpath:instanceof-across-entries",
-    r.instanceofSubpathNotFound,
-    `error(name=${r.name}) instanceof (import "${PKG_NAME}/errors").NotFoundError = ${r.instanceofSubpathNotFound} (must be true — the main entry and ./errors must share one class identity within a format)`,
-  );
-  record(
-    "subpath:instanceof-base-across-entries",
-    r.instanceofSubpathBase,
-    `error instanceof (subpath) BaseHttpError = ${r.instanceofSubpathBase}`,
-  );
-} catch (err) {
-  record("subpath:probe", false, `subpath probe crashed: ${err.message}`);
-}
+`;
 
 // --- Cross-format probe: require(...).isHttpError on an ESM-import error ----
 // Bug 1 on the format axis. The CJS-provided guard must accept an error minted
@@ -427,11 +238,7 @@ console.log(JSON.stringify(out));
 // `instanceof` on a distinct class copy is inherently impossible across the
 // dual-package boundary and is NOT a contract — it is recorded informationally
 // so the report documents the limitation without failing.
-console.log("\n▸ Cross-format (CJS guard on ESM-minted error) probe …");
-try {
-  const r = runProbe(
-    "probe-crossformat.mjs",
-    `
+const PROBE_CROSSFORMAT = `
 import { typedFetch } from "${PKG_NAME}";          // ESM graph mints the error
 import { createRequire } from "node:module";
 import { start404 } from "./server.mjs";
@@ -450,40 +257,8 @@ try {
   srv.close();
 }
 console.log(JSON.stringify(out));
-`,
-  );
-  record(
-    "crossformat:require-guard-on-esm-error",
-    r.cjsGuardOnEsmError,
-    `require("${PKG_NAME}").isHttpError(esmError name=${r.name}) = ${r.cjsGuardOnEsmError} (must be true — the brand-based guard works across CJS/ESM)`,
-  );
-  record(
-    "crossformat:require-known-guard-on-esm-error",
-    r.cjsKnownGuardOnEsmError,
-    `require("${PKG_NAME}").isKnownHttpError(esmError name=${r.name}) = ${r.cjsKnownGuardOnEsmError}`,
-  );
-  // Informational, NOT an assertion: cross-FORMAT `instanceof` on a distinct
-  // class copy cannot work across the dual-package boundary — this is exactly
-  // why the library brands its guards and tells consumers to prefer them.
-  note(
-    "crossformat:require-instanceof-on-esm-error",
-    `esmError instanceof require(...).NotFoundError = ${r.cjsInstanceofOnEsmError} (expected false across formats — use isHttpError, not instanceof)`,
-  );
-} catch (err) {
-  record("crossformat:probe", false, `cross-format probe crashed: ${err.message}`);
-}
+`;
 
-// ---------------------------------------------------------------------------
-// 4. Typecheck a consumer .ts file against the installed package under BOTH
-//    moduleResolution: "bundler" and "nodenext". Uses the repo's own tsc, not
-//    npx (no network, deterministic version).
-//
-//    The nodenext pass doubles as an attw-style types-wiring check: it forces
-//    per-condition ESM resolution, which surfaces the single-`types`/`.d.mts`
-//    masquerade that `attw` would flag as FalseCJS/FalseESM.
-// ---------------------------------------------------------------------------
-console.log("\n▸ Consumer typecheck (resolution modes, lib matrix, cross-format) …");
-const tscBin = join(REPO_ROOT, "node_modules", ".bin", "tsc");
 const CONSUMER_TS = `
 import { typedFetch, isHttpError, isKnownHttpError, NotFoundError } from "${PKG_NAME}";
 import { NotFoundError as SubpathNotFound } from "${PKG_NAME}/errors";
@@ -552,52 +327,16 @@ export const asUnion: TypedFetchError = makeError();
 // The repo's own @types, so the Node passes need no network install.
 const REPO_TYPE_ROOTS = [join(REPO_ROOT, "node_modules", "@types")];
 
-// Run each typecheck with the consumer project as cwd so the bare specifier
-// `@pbpeterson/typed-fetch` resolves through the real install. We place the
-// tsconfig+sources inside the consumer dir to make resolution consumer-relative.
-function typecheckInConsumer({ id, moduleResolution, lib, types, files }) {
-  const cfgname = `tsconfig.${id}.json`;
-  const moduleKind = moduleResolution === "nodenext" ? "nodenext" : "esnext";
-  writeFileSync(
-    join(consumer, cfgname),
-    JSON.stringify(
-      {
-        compilerOptions: {
-          target: "es2022",
-          module: moduleKind,
-          moduleResolution,
-          lib,
-          strict: true,
-          noEmit: true,
-          // skipLibCheck:false so a broken .d.ts in the package surfaces.
-          skipLibCheck: false,
-          types,
-          ...(types.length > 0 ? { typeRoots: REPO_TYPE_ROOTS } : {}),
-        },
-        files,
-      },
-      null,
-      2,
-    ),
-  );
-  try {
-    run(tscBin, ["--noEmit", "-p", join(consumer, cfgname)], {
-      cwd: consumer,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return { ok: true, output: "" };
-  } catch (err) {
-    const output = `${err.stdout || ""}${err.stderr || ""}`.trim();
-    return { ok: false, output };
-  }
-}
-
-writeFileSync(join(consumer, "consumer.api.ts"), CONSUMER_TS);
-writeFileSync(join(consumer, "consumer.nodom.ts"), CONSUMER_NO_DOM_TS);
-writeFileSync(join(consumer, "cross-format.cts"), CONSUMER_CJS_CTS);
-writeFileSync(join(consumer, "cross-format.mts"), CONSUMER_ESM_MTS);
-
-const TYPECHECK_PASSES = [
+// ---------------------------------------------------------------------------
+// 4. Typecheck a consumer .ts file against the installed package under BOTH
+//    moduleResolution: "bundler" and "nodenext". Uses the repo's own tsc, not
+//    npx (no network, deterministic version).
+//
+//    The nodenext pass doubles as an attw-style types-wiring check: it forces
+//    per-condition ESM resolution, which surfaces the single-`types`/`.d.mts`
+//    masquerade that `attw` would flag as FalseCJS/FalseESM.
+// ---------------------------------------------------------------------------
+export const TYPECHECK_PASSES = [
   // The two original resolution modes.
   {
     id: "bundler",
@@ -639,66 +378,468 @@ const TYPECHECK_PASSES = [
   },
 ];
 
-for (const pass of TYPECHECK_PASSES) {
-  const { ok, output } = typecheckInConsumer(pass);
-  const id = `typecheck:${pass.id}`;
-  record(id, ok, ok ? "" : `tsc(${pass.id}) errors:\n${indent(output)}`);
+// ===========================================================================
+// B. THE DECISIONS. Pure: a parsed probe record in, ordered assertions out.
+//    No fs, no child_process, no console, no process — so a spec can feed each
+//    one the exact JSON a green run produces and assert the id roster, or feed
+//    it `{}` and prove a truncated probe fails loudly instead of confusingly.
+//
+//    Note the seam was already there in spirit: each probe computes booleans
+//    like `error && error.status === 404` INSIDE its own process, so the
+//    verdict data already crossed a process boundary. This just names it.
+// ===========================================================================
+
+/** @typedef {{ id: string, ok: boolean, detail: string }} Assertion */
+/** @typedef {{ id: string, detail: string }} Note */
+/** @typedef {{ results: Assertion[], notes: Note[] }} ProbeVerdict */
+
+/**
+ * @param {string} id
+ * @param {unknown} ok truthiness is the verdict, exactly as `record()` treated it
+ * @param {string} detail
+ * @returns {Assertion}
+ */
+const assert = (id, ok, detail) => ({ id, ok: Boolean(ok), detail });
+
+/**
+ * 13 assertions from the main-entry ESM probe, in the order they are printed.
+ * @param {any} r parsed JSON line from probe-esm.mjs
+ * @returns {ProbeVerdict}
+ */
+export function esmAssertions(r) {
+  return {
+    results: [
+      assert("esm:response-null", r.responseNull, `responseNull=${r.responseNull}`),
+      assert("esm:isHttpError", r.isHttpError, `isHttpError=${r.isHttpError}`),
+      assert("esm:isKnownHttpError", r.isKnownHttpError, `isKnownHttpError=${r.isKnownHttpError}`),
+      assert("esm:custom-is-http", r.customIsHttp, `customIsHttp=${r.customIsHttp}`),
+      assert(
+        "esm:custom-is-not-known",
+        r.customIsNotKnown,
+        `customIsNotKnown=${r.customIsNotKnown}`,
+      ),
+      assert("esm:instanceof-NotFoundError", r.instanceofNotFound, `got name=${r.name}`),
+      assert("esm:status-404", r.status404, `status check=${r.status404}`),
+      assert("esm:injected-fetch-called", r.injectedCalled, `injectedCalled=${r.injectedCalled}`),
+      assert(
+        "esm:injected-fetch-NotFound",
+        r.injectedNotFound,
+        `injectedNotFound=${r.injectedNotFound}`,
+      ),
+      assert(
+        "esm:abort-reason-AbortedError",
+        r.abortIsAborted,
+        `abortIsAborted=${r.abortIsAborted}`,
+      ),
+      assert("esm:abort-reason-preserved", r.abortReason, `reason preserved=${r.abortReason}`),
+      assert("esm:timeout-TimeoutError", r.timeoutIsTimeout, `got name=${r.timeoutName}`),
+      assert(
+        "abort:request-first-arg-preaborted",
+        r.requestPreAbortIsAborted,
+        `Request-first-arg pre-aborted signal surfaced as ${r.requestPreAbortName}, expected AbortedError`,
+      ),
+    ],
+    notes: [],
+  };
 }
 
-function indent(s) {
+/**
+ * @param {any} r parsed JSON line from probe-cjs.cjs
+ * @returns {ProbeVerdict}
+ */
+export function cjsAssertions(r) {
+  return {
+    results: [
+      assert("cjs:response-null", r.responseNull, `responseNull=${r.responseNull}`),
+      assert("cjs:isHttpError", r.isHttpError, `isHttpError=${r.isHttpError}`),
+      assert("cjs:isKnownHttpError", r.isKnownHttpError, `isKnownHttpError=${r.isKnownHttpError}`),
+      assert("cjs:instanceof-NotFoundError", r.instanceofNotFound, `got name=${r.name}`),
+      assert("cjs:status-404", r.status404, `status check=${r.status404}`),
+    ],
+    notes: [],
+  };
+}
+
+/**
+ * @param {any} r parsed JSON line from probe-subpath.mjs
+ * @returns {ProbeVerdict}
+ */
+export function subpathAssertions(r) {
+  return {
+    results: [
+      // Sanity: the main-entry guard must still recognise its own error.
+      assert(
+        "subpath:main-guard-true",
+        r.mainGuardStillTrue,
+        `isHttpError=${r.mainGuardStillTrue}`,
+      ),
+      assert(
+        "subpath:instanceof-across-entries",
+        r.instanceofSubpathNotFound,
+        `error(name=${r.name}) instanceof (import "${PKG_NAME}/errors").NotFoundError = ${r.instanceofSubpathNotFound} (must be true — the main entry and ./errors must share one class identity within a format)`,
+      ),
+      assert(
+        "subpath:instanceof-base-across-entries",
+        r.instanceofSubpathBase,
+        `error instanceof (subpath) BaseHttpError = ${r.instanceofSubpathBase}`,
+      ),
+    ],
+    notes: [],
+  };
+}
+
+/**
+ * Two assertions and ONE NOTE. The note must never become an assertion: raw
+ * cross-FORMAT `instanceof` on a distinct class copy is inherently impossible
+ * across the dual-package boundary, which is precisely why the library brands
+ * its guards and documents "prefer isHttpError over instanceof". Promoting it
+ * would turn a documented non-contract into a permanently red gate.
+ * @param {any} r parsed JSON line from probe-crossformat.mjs
+ * @returns {ProbeVerdict}
+ */
+export function crossformatAssertions(r) {
+  return {
+    results: [
+      assert(
+        "crossformat:require-guard-on-esm-error",
+        r.cjsGuardOnEsmError,
+        `require("${PKG_NAME}").isHttpError(esmError name=${r.name}) = ${r.cjsGuardOnEsmError} (must be true — the brand-based guard works across CJS/ESM)`,
+      ),
+      assert(
+        "crossformat:require-known-guard-on-esm-error",
+        r.cjsKnownGuardOnEsmError,
+        `require("${PKG_NAME}").isKnownHttpError(esmError name=${r.name}) = ${r.cjsKnownGuardOnEsmError}`,
+      ),
+    ],
+    notes: [
+      {
+        id: "crossformat:require-instanceof-on-esm-error",
+        detail: `esmError instanceof require(...).NotFoundError = ${r.cjsInstanceofOnEsmError} (expected false across formats — use isHttpError, not instanceof)`,
+      },
+    ],
+  };
+}
+
+/**
+ * Indent captured compiler output so it reads as a block under its assertion.
+ * @param {string} s
+ */
+export function indent(s) {
   return s
     .split("\n")
     .map((l) => `      ${l}`)
     .join("\n");
 }
 
+/**
+ * @param {{ id: string }} pass
+ * @param {{ ok: boolean, output: string }} outcome
+ * @returns {Assertion}
+ */
+export function typecheckAssertion(pass, outcome) {
+  return assert(
+    `typecheck:${pass.id}`,
+    outcome.ok,
+    outcome.ok ? "" : `tsc(${pass.id}) errors:\n${indent(outcome.output)}`,
+  );
+}
+
+/**
+ * The tsconfig a consumer typecheck pass runs under. Pure config building,
+ * lifted out of the adapter so the policy in it is assertable.
+ *
+ * @param {{ moduleResolution: string, lib: string[], types: string[], files: string[] }} pass
+ * @param {string[]} typeRoots
+ */
+export function consumerTsconfig({ moduleResolution, lib, types, files }, typeRoots) {
+  const moduleKind = moduleResolution === "nodenext" ? "nodenext" : "esnext";
+  return {
+    compilerOptions: {
+      target: "es2022",
+      module: moduleKind,
+      moduleResolution,
+      lib,
+      strict: true,
+      noEmit: true,
+      // skipLibCheck:false so a broken .d.ts in the package surfaces.
+      skipLibCheck: false,
+      types,
+      ...(types.length > 0 ? { typeRoots } : {}),
+    },
+    files,
+  };
+}
+
+/**
+ * The KNOWN_FAILING bookkeeping and the exit rule, as one pure function.
+ *
+ * The unexpected-PASS branch is the reason this is worth extracting: it has not
+ * executed since KNOWN_FAILING was emptied, and the only time it ever will is
+ * during a future incident, when it has to be right.
+ *
+ * @param {{ results: Assertion[], notes: Note[], knownFailing: Set<string> }} run
+ */
+export function judgeConsumer({ results, notes, knownFailing }) {
+  const failures = results.filter((r) => !r.ok);
+  const unexpectedFailures = failures.filter((r) => !knownFailing.has(r.id));
+  const knownFailures = failures.filter((r) => knownFailing.has(r.id));
+  const unexpectedPasses = results.filter((r) => r.ok && knownFailing.has(r.id));
+  return {
+    counts: {
+      total: results.length,
+      passed: results.filter((r) => r.ok).length,
+      known: knownFailures.length,
+      informational: notes.length,
+      unexpectedFail: unexpectedFailures.length,
+      unexpectedPass: unexpectedPasses.length,
+    },
+    knownFailures,
+    unexpectedFailures,
+    unexpectedPasses,
+    ok: unexpectedFailures.length === 0 && unexpectedPasses.length === 0,
+  };
+}
+
+// ===========================================================================
+// C. THE ADAPTER. All I/O, no pass/fail judgement.
+// ===========================================================================
+
+function run(cmd, args, opts = {}) {
+  const env = cmd === "npm" ? NPM_ENV : process.env;
+  return execFileSync(cmd, args, { encoding: "utf8", env, ...opts });
+}
+
 // ---------------------------------------------------------------------------
-// 5. Report + exit.
+// Runtime probes. Each probe is written to the consumer dir and executed with
+// the consumer as cwd, so `@pbpeterson/typed-fetch` resolves through its
+// installed node_modules exactly as a real user's would. Each probe prints a
+// single JSON line of booleans/values that we assert on here.
 // ---------------------------------------------------------------------------
-console.log("\n" + "─".repeat(70));
-console.log("Consumer contract report");
-console.log("─".repeat(70));
-
-const failures = results.filter((r) => !r.ok);
-const unexpectedFailures = failures.filter((r) => !KNOWN_FAILING.has(r.id));
-const knownFailures = failures.filter((r) => KNOWN_FAILING.has(r.id));
-const unexpectedPasses = results.filter((r) => r.ok && KNOWN_FAILING.has(r.id));
-
-console.log(`  total assertions : ${results.length}`);
-console.log(`  passed           : ${results.filter((r) => r.ok).length}`);
-console.log(`  known-failing    : ${knownFailures.length}`);
-console.log(`  informational    : ${notes.length}`);
-console.log(`  UNEXPECTED fail  : ${unexpectedFailures.length}`);
-console.log(`  UNEXPECTED pass  : ${unexpectedPasses.length}`);
-
-if (notes.length) {
-  console.log("\n  Informational (documented limitations, not contracts):");
-  for (const n of notes) console.log(`    · ${n.id}: ${n.detail}`);
+function runProbe(consumer, filename, source) {
+  const p = join(consumer, filename);
+  writeFileSync(p, source);
+  const out = run(process.execPath, [p], { cwd: consumer, stdio: ["ignore", "pipe", "pipe"] });
+  const line = out.trim().split("\n").filter(Boolean).pop();
+  return JSON.parse(line);
 }
 
-if (knownFailures.length) {
-  console.log("\n  Known failures (tracked, will turn green when bugs are fixed):");
-  for (const f of knownFailures) console.log(`    ⚠ ${f.id}\n        ${f.detail}`);
+// Run each typecheck with the consumer project as cwd so the bare specifier
+// `@pbpeterson/typed-fetch` resolves through the real install. We place the
+// tsconfig+sources inside the consumer dir to make resolution consumer-relative.
+function typecheckInConsumer(consumer, tscBin, pass) {
+  const cfgname = `tsconfig.${pass.id}.json`;
+  writeFileSync(
+    join(consumer, cfgname),
+    JSON.stringify(consumerTsconfig(pass, REPO_TYPE_ROOTS), null, 2),
+  );
+  try {
+    run(tscBin, ["--noEmit", "-p", join(consumer, cfgname)], {
+      cwd: consumer,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { ok: true, output: "" };
+  } catch (err) {
+    const output = `${err.stdout || ""}${err.stderr || ""}`.trim();
+    return { ok: false, output };
+  }
 }
 
-if (unexpectedPasses.length) {
-  console.log("\n  ✖ KNOWN_FAILING is stale — these now PASS and must be removed from the list:");
-  for (const f of unexpectedPasses) console.log(`    - ${f.id}`);
+// ===========================================================================
+// D. THE THIN MAIN. Composition, rendering, exit code — and nothing else.
+// ===========================================================================
+
+function main() {
+  // Everything lives under one mkdtemp root so a single rm cleans it all, even
+  // on early exit or a Ctrl-C mid-install. Created HERE, not at module scope:
+  // importing this file must not make a temp dir in every vitest worker.
+  const { path: WORK } = createScratchDir("tf-consumer-");
+
+  /** @type {Assertion[]} */
+  const results = [];
+  /** @type {Note[]} */
+  const notes = [];
+
+  // `record` is the RENDERER: it prints as it accumulates, interleaved with the
+  // section headers below, which is why the mappers must preserve source order.
+  const record = (a) => {
+    results.push(a);
+    if (a.ok) {
+      console.log(`  ✔ ${a.id}`);
+    } else if (KNOWN_FAILING.has(a.id)) {
+      console.log(`  ⚠ ${a.id} — FAILED (known, tracked in KNOWN_FAILING): ${a.detail}`);
+    } else {
+      console.log(`  ✖ ${a.id} — ${a.detail}`);
+    }
+  };
+  // Informational only — printed in the report, never affects the exit code.
+  // Use for facts that document a limitation (e.g. cross-format `instanceof`)
+  // rather than a contract the artifact must satisfy.
+  const note = (n) => {
+    notes.push(n);
+    console.log(`  · ${n.id} — ${n.detail}`);
+  };
+  const emit = (verdict) => {
+    for (const a of verdict.results) record(a);
+    for (const n of verdict.notes) note(n);
+  };
+
+  // -------------------------------------------------------------------------
+  // 1. Pack the tarball.
+  // -------------------------------------------------------------------------
+  console.log(`\n▸ Packing ${PKG_NAME} …`);
+  const packDir = join(WORK, "pack");
+  mkdirSync(packDir, { recursive: true });
+  let tarball;
+  try {
+    // npm reports the logical filename; the real file on disk uses the
+    // sanitized (scope-stripped) name. packTarball resolves against what
+    // actually landed in packDir and hands back npm's claim only so the report
+    // can show both.
+    const packed = packTarball(REPO_ROOT, packDir);
+    tarball = packed.path;
+    console.log(`  packed: ${basename(tarball)} (reported ${packed.reported})`);
+  } catch (err) {
+    console.error(`\n✖ npm pack failed: ${err.message}`);
+    process.exit(1);
+  }
+
+  // -------------------------------------------------------------------------
+  // 2. Scratch consumer project, install the tarball as a file: dependency.
+  // -------------------------------------------------------------------------
+  console.log("\n▸ Installing tarball into a scratch consumer project …");
+  const consumer = join(WORK, "consumer");
+  mkdirSync(consumer, { recursive: true });
+  writeFileSync(
+    join(consumer, "package.json"),
+    JSON.stringify(
+      {
+        name: "tf-consumer-scratch",
+        version: "0.0.0",
+        private: true,
+        // no "type" — we drive ESM via .mjs and CJS via .cjs explicitly so the
+        // module system of each probe is unambiguous.
+      },
+      null,
+      2,
+    ),
+  );
+  try {
+    installTarball(consumer, tarball, { flags: ["--no-audit", "--no-fund", "--save"] });
+    console.log("  install OK");
+  } catch (err) {
+    console.error(`\n✖ npm install of tarball failed: ${err.message}`);
+    process.exit(1);
+  }
+
+  writeFileSync(join(consumer, "server.mjs"), SERVER_HELPER);
+
+  // -------------------------------------------------------------------------
+  // 3. Runtime probes.
+  // -------------------------------------------------------------------------
+  console.log("\n▸ ESM (main entry) probes …");
+  try {
+    emit(esmAssertions(runProbe(consumer, "probe-esm.mjs", PROBE_ESM)));
+  } catch (err) {
+    record(assert("esm:probe", false, `ESM probe crashed: ${err.message}`));
+  }
+
+  console.log("\n▸ CJS (require) probes …");
+  try {
+    emit(cjsAssertions(runProbe(consumer, "probe-cjs.cjs", PROBE_CJS)));
+  } catch (err) {
+    record(assert("cjs:probe", false, `CJS probe crashed: ${err.message}`));
+  }
+
+  console.log("\n▸ Subpath (./errors) cross-entry instanceof probe …");
+  try {
+    emit(subpathAssertions(runProbe(consumer, "probe-subpath.mjs", PROBE_SUBPATH)));
+  } catch (err) {
+    record(assert("subpath:probe", false, `subpath probe crashed: ${err.message}`));
+  }
+
+  console.log("\n▸ Cross-format (CJS guard on ESM-minted error) probe …");
+  try {
+    emit(crossformatAssertions(runProbe(consumer, "probe-crossformat.mjs", PROBE_CROSSFORMAT)));
+  } catch (err) {
+    record(assert("crossformat:probe", false, `cross-format probe crashed: ${err.message}`));
+  }
+
+  // -------------------------------------------------------------------------
+  // 4. Consumer typechecks.
+  // -------------------------------------------------------------------------
+  console.log("\n▸ Consumer typecheck (resolution modes, lib matrix, cross-format) …");
+  // On Windows the shim is `tsc.cmd`; execFileSync does not resolve the
+  // extension for you, so a bare "tsc" is an ENOENT there.
+  const tscBin = join(
+    REPO_ROOT,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "tsc.cmd" : "tsc",
+  );
+  if (!existsSync(tscBin)) {
+    console.error(`check-consumer: tsc not found at ${tscBin}. Run \`pnpm install\`.`);
+    process.exit(1);
+  }
+
+  writeFileSync(join(consumer, "consumer.api.ts"), CONSUMER_TS);
+  writeFileSync(join(consumer, "consumer.nodom.ts"), CONSUMER_NO_DOM_TS);
+  writeFileSync(join(consumer, "cross-format.cts"), CONSUMER_CJS_CTS);
+  writeFileSync(join(consumer, "cross-format.mts"), CONSUMER_ESM_MTS);
+
+  for (const pass of TYPECHECK_PASSES) {
+    record(typecheckAssertion(pass, typecheckInConsumer(consumer, tscBin, pass)));
+  }
+
+  // -------------------------------------------------------------------------
+  // 5. Report + exit.
+  // -------------------------------------------------------------------------
+  console.log("\n" + "─".repeat(70));
+  console.log("Consumer contract report");
+  console.log("─".repeat(70));
+
+  const verdict = judgeConsumer({ results, notes, knownFailing: KNOWN_FAILING });
+
+  console.log(`  total assertions : ${verdict.counts.total}`);
+  console.log(`  passed           : ${verdict.counts.passed}`);
+  console.log(`  known-failing    : ${verdict.counts.known}`);
+  console.log(`  informational    : ${verdict.counts.informational}`);
+  console.log(`  UNEXPECTED fail  : ${verdict.counts.unexpectedFail}`);
+  console.log(`  UNEXPECTED pass  : ${verdict.counts.unexpectedPass}`);
+
+  if (notes.length) {
+    console.log("\n  Informational (documented limitations, not contracts):");
+    for (const n of notes) console.log(`    · ${n.id}: ${n.detail}`);
+  }
+
+  if (verdict.knownFailures.length) {
+    console.log("\n  Known failures (tracked, will turn green when bugs are fixed):");
+    for (const f of verdict.knownFailures) console.log(`    ⚠ ${f.id}\n        ${f.detail}`);
+  }
+
+  if (verdict.unexpectedPasses.length) {
+    console.log("\n  ✖ KNOWN_FAILING is stale — these now PASS and must be removed from the list:");
+    for (const f of verdict.unexpectedPasses) console.log(`    - ${f.id}`);
+  }
+
+  if (verdict.unexpectedFailures.length) {
+    console.log("\n  ✖ Unexpected failures:");
+    for (const f of verdict.unexpectedFailures) console.log(`    - ${f.id}: ${f.detail}`);
+  }
+
+  if (!verdict.ok) {
+    console.log("\n✖ check-consumer: FAILED\n");
+    process.exit(1);
+  }
+
+  console.log(
+    `\n✔ check-consumer: OK — ${verdict.counts.passed} passed` +
+      (verdict.counts.known ? `, ${verdict.counts.known} known-failing (tracked)` : "") +
+      ". Tarball behaves as a real consumer expects.\n",
+  );
+  process.exit(0);
 }
 
-if (unexpectedFailures.length) {
-  console.log("\n  ✖ Unexpected failures:");
-  for (const f of unexpectedFailures) console.log(`    - ${f.id}: ${f.detail}`);
-}
-
-if (unexpectedFailures.length || unexpectedPasses.length) {
-  console.log("\n✖ check-consumer: FAILED\n");
-  process.exit(1);
-}
-
-console.log(
-  `\n✔ check-consumer: OK — ${results.filter((r) => r.ok).length} passed` +
-    (knownFailures.length ? `, ${knownFailures.length} known-failing (tracked)` : "") +
-    ". Tarball behaves as a real consumer expects.\n",
-);
-process.exit(0);
+// Importing this module must do nothing at all; only
+// `node scripts/check-consumer.mjs` runs the gate.
+const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) main();
