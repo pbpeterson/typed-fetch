@@ -51,11 +51,11 @@ import { allErrors } from "./fixtures/error-roster";
 
 describe("httpErrors & statusCodeErrorMap", () => {
   test("httpErrors contains all 40 error classes", () => {
-    expect(httpErrors).toHaveLength(40);
+    expect(httpErrors).toHaveLength(allErrors.length);
   });
 
   test("statusCodeErrorMap contains all 40 status codes", () => {
-    expect(statusCodeErrorMap.size).toBe(40);
+    expect(statusCodeErrorMap.size).toBe(allErrors.length);
   });
 
   test("every httpErrors class maps to the correct status code", () => {
@@ -118,8 +118,8 @@ describe("roster sync", () => {
   // class present in one artifact but not the other, or a status code
   // whose map entry disagrees with the class's own static `status`.
   test("roster cardinality is exactly 40 and map <-> array agree", () => {
-    expect(httpErrors.length).toBe(40);
-    expect(statusCodeErrorMap.size).toBe(40);
+    expect(httpErrors.length).toBe(allErrors.length);
+    expect(statusCodeErrorMap.size).toBe(allErrors.length);
 
     const arrayStatuses = new Set(httpErrors.map((C) => C.status));
     const mapStatuses = new Set(statusCodeErrorMap.keys());
