@@ -1,0 +1,443 @@
+import { describe, expect, test } from "vitest";
+import {
+  attributeDiagnostics,
+  extractBlocks,
+  judgeDocs,
+  jsdocToMarkdown,
+  MAX_SKIP_RATIO,
+  planDocBlocks,
+  REQUIRED_DIST_ENTRIES,
+  rewriteImports,
+  SKIP_MARKER,
+  wrapBlock,
+} from "./check-docs.mjs";
+
+// Markdown fixtures are line arrays: a template literal cannot hold a fence
+// without escaping every backtick, and the line NUMBERS are what this parser is
+// judged on.
+const md = (...lines) => lines.join("\n");
+const FENCE = "```";
+const FENCE4 = "````";
+
+describe("extractBlocks — which fences count", () => {
+  test("extracts ts and typescript fences and ignores every other language", () => {
+    const doc = md(
+      "# Title",
+      "",
+      FENCE + "ts",
+      "const a = 1;",
+      FENCE,
+      "",
+      FENCE + "typescript",
+      "const b = 2;",
+      FENCE,
+      "",
+      FENCE + "js",
+      "const c = 3;",
+      FENCE,
+      "",
+      FENCE + "bash",
+      "pnpm build",
+      FENCE,
+      "",
+      FENCE,
+      "plain",
+      FENCE,
+      "",
+    );
+    expect(extractBlocks(doc).map((b) => b.code)).toEqual(["const a = 1;", "const b = 2;"]);
+  });
+
+  test("matches the language case-insensitively", () => {
+    expect(extractBlocks(md(FENCE + "TS", "const a = 1;", FENCE))).toHaveLength(1);
+  });
+
+  test("reports the 1-based line of the OPENING fence", () => {
+    const doc = md(
+      "intro",
+      "",
+      FENCE + "ts",
+      "const a = 1;",
+      FENCE,
+      "",
+      FENCE + "ts",
+      "const b = 2;",
+      FENCE,
+    );
+    expect(extractBlocks(doc).map((b) => b.line)).toEqual([3, 7]);
+  });
+
+  test("a fence whose info string contains a backtick is not a fence", () => {
+    expect(extractBlocks(md(FENCE + "ts `x`", "const a = 1;", FENCE))).toHaveLength(0);
+  });
+});
+
+describe("extractBlocks — the skip marker", () => {
+  test(`marks a block skipped only for the exact \`${SKIP_MARKER}\` marker`, () => {
+    const doc = md(
+      FENCE + `ts ${SKIP_MARKER}`,
+      "fragment",
+      FENCE,
+      "",
+      FENCE + "ts twoslash",
+      "const a = 1;",
+      FENCE,
+      "",
+      FENCE + "ts",
+      "const b = 2;",
+      FENCE,
+    );
+    expect(extractBlocks(doc).map((b) => b.skip)).toEqual([true, false, false]);
+  });
+
+  test("the marker must be an info-string word, not part of the language", () => {
+    expect(extractBlocks(md(FENCE + `ts${SKIP_MARKER}`, "x", FENCE))).toHaveLength(0);
+  });
+});
+
+describe("extractBlocks — fence lengths and indentation", () => {
+  test("treats a ````markdown wrapper as one opaque block, not two", () => {
+    // CONTRIBUTING.md documents the fence convention by showing a nested ```ts
+    // block. That inner block is documentation ABOUT fences and must not be
+    // compiled.
+    const doc = md(FENCE4 + "markdown", FENCE + "ts", "const broken: string = 1;", FENCE, FENCE4);
+    expect(extractBlocks(doc)).toHaveLength(0);
+  });
+
+  test("a longer closing fence closes a shorter opening fence", () => {
+    expect(extractBlocks(md(FENCE + "ts", "const a = 1;", FENCE4))).toHaveLength(1);
+  });
+
+  test("an indented block closed at the same indent is extracted", () => {
+    const doc = md("- item:", "", "  " + FENCE + "ts", "  const a = 1;", "  " + FENCE, "");
+    expect(extractBlocks(doc)).toHaveLength(1);
+  });
+
+  test("KNOWN SHARP EDGE: a closing fence at a different indent swallows the rest of the file", () => {
+    // The closing regex is built from the OPENING fence's indent, so a
+    // mismatched close consumes every later block — including ones that would
+    // have failed to compile. The gate then prints a lower "TypeScript blocks
+    // found" number that nobody compares against anything, which is this gate's
+    // whole failure mode: silent under-checking. Pinned, not endorsed — if you
+    // fix the parser, this test is your notification.
+    const doc = md(
+      "  " + FENCE + "ts",
+      "  const a: number = 1;",
+      FENCE,
+      "",
+      FENCE + "ts",
+      "const b: string = 2;",
+      FENCE,
+      "",
+    );
+    const blocks = extractBlocks(doc);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].code).toContain("const b: string = 2;");
+  });
+
+  test("an unclosed fence runs to end of file", () => {
+    const blocks = extractBlocks(md(FENCE + "ts", "const a = 1;", "still inside"));
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].code).toBe("const a = 1;\nstill inside");
+  });
+});
+
+describe("jsdocToMarkdown", () => {
+  test("strips the leading ` * ` decoration", () => {
+    expect(jsdocToMarkdown(" * hello")).toBe("hello");
+    expect(jsdocToMarkdown(" *")).toBe("");
+  });
+
+  test("preserves one output line per input line so fence lines stay source lines", () => {
+    const src = md(
+      "/**",
+      " * Example:",
+      " * " + FENCE + "ts",
+      " * const a = 1;",
+      " * " + FENCE,
+      " */",
+    );
+    expect(jsdocToMarkdown(src).split("\n")).toHaveLength(src.split("\n").length);
+    expect(extractBlocks(jsdocToMarkdown(src))[0].line).toBe(3);
+  });
+});
+
+describe("rewriteImports", () => {
+  const DIST = "/repo/dist";
+
+  test("rewrites the /errors subpath before the root specifier", () => {
+    // Order matters: rewriting the root first would leave "/repo/dist/index.js/errors".
+    const code = md(
+      `import { typedFetch } from "@pbpeterson/typed-fetch";`,
+      `import { NotFoundError } from "@pbpeterson/typed-fetch/errors";`,
+    );
+    const out = rewriteImports(code, DIST);
+    expect(out).toContain(`"/repo/dist/index.js"`);
+    expect(out).toContain(`"/repo/dist/errors/index.js"`);
+    expect(out).not.toContain("index.js/errors");
+    expect(out).not.toContain("@pbpeterson/typed-fetch");
+  });
+
+  test("handles single-quoted specifiers", () => {
+    expect(rewriteImports(`import x from '@pbpeterson/typed-fetch';`, DIST)).toContain(
+      `"/repo/dist/index.js"`,
+    );
+  });
+
+  test("points at the implementation, not the declaration file", () => {
+    // Importing the .d.ts directly trips TS2846 and would force every value
+    // import in the docs to become a type import.
+    expect(rewriteImports(`import x from "@pbpeterson/typed-fetch";`, DIST)).not.toContain(".d.ts");
+  });
+
+  test("leaves unrelated specifiers alone", () => {
+    const code = `import { z } from "zod";`;
+    expect(rewriteImports(code, DIST)).toBe(code);
+  });
+});
+
+describe("wrapBlock", () => {
+  test("forces module semantics so an import-less block is not a script", () => {
+    expect(wrapBlock("const a = 1;")).toBe("const a = 1;\nexport {};\n");
+  });
+});
+
+describe("planDocBlocks", () => {
+  const doc = (file, format, ...lines) => ({ file, format, source: md(...lines) });
+
+  test("counts every ts block, compiles the unskipped ones, records the skipped ones", () => {
+    const plan = planDocBlocks(
+      [
+        doc(
+          "README.md",
+          "markdown",
+          FENCE + "ts",
+          "const a = 1;",
+          FENCE,
+          "",
+          FENCE + `ts ${SKIP_MARKER}`,
+          "fragment",
+          FENCE,
+        ),
+        doc(
+          "src/index.ts",
+          "jsdoc",
+          "/**",
+          " * " + FENCE + "ts",
+          " * const b = 2;",
+          " * " + FENCE,
+          " */",
+        ),
+      ],
+      "/repo/dist",
+    );
+    expect(plan.totalTsBlocks).toBe(3);
+    expect(plan.blocks).toHaveLength(2);
+    expect(plan.skipped).toEqual([{ file: "README.md", line: 5 }]);
+  });
+
+  test("names each block file after its source path and fence line", () => {
+    const plan = planDocBlocks(
+      [
+        doc(
+          ".claude/skills/typed-fetch-maintainer/SKILL.md",
+          "markdown",
+          FENCE + "ts",
+          "const a = 1;",
+          FENCE,
+        ),
+      ],
+      "/repo/dist",
+    );
+    expect(plan.blocks[0].name).toBe("_claude_skills_typed_fetch_maintainer_SKILL_md__L1");
+  });
+
+  test("the block name matches what attributeDiagnostics parses back out", () => {
+    // These two must agree; the diagnostic regex only accepts [A-Za-z0-9_].
+    const plan = planDocBlocks(
+      [doc("skills/typed-fetch/SKILL.md", "markdown", FENCE + "ts", "x", FENCE)],
+      "/d",
+    );
+    expect(plan.blocks[0].name).toMatch(/^[A-Za-z0-9_]+$/);
+  });
+
+  test("applies the import rewrite and the module wrapper to the block content", () => {
+    const plan = planDocBlocks(
+      [
+        doc(
+          "README.md",
+          "markdown",
+          FENCE + "ts",
+          `import x from "@pbpeterson/typed-fetch";`,
+          FENCE,
+        ),
+      ],
+      "/repo/dist",
+    );
+    expect(plan.blocks[0].content).toBe(`import x from "/repo/dist/index.js";\nexport {};\n`);
+  });
+
+  test("KNOWN SHARP EDGE: paths that differ only by punctuation collide", () => {
+    // Both sanitize to src_foo_bar_ts; main() writes one file over the other and
+    // one block is silently never compiled. Pinned so a fix is a visible change.
+    const plan = planDocBlocks(
+      [
+        doc(
+          "src/foo-bar.ts",
+          "jsdoc",
+          "/**",
+          " * " + FENCE + "ts",
+          " * const a = 1;",
+          " * " + FENCE,
+          " */",
+        ),
+        doc(
+          "src/foo_bar.ts",
+          "jsdoc",
+          "/**",
+          " * " + FENCE + "ts",
+          " * const b = 2;",
+          " * " + FENCE,
+          " */",
+        ),
+      ],
+      "/repo/dist",
+    );
+    expect(plan.blocks[0].name).toBe(plan.blocks[1].name);
+  });
+});
+
+describe("attributeDiagnostics", () => {
+  const blocks = [
+    { name: "README_md__L13", file: "README.md", line: 13, content: "" },
+    { name: "src_index_ts__L40", file: "src/index.ts", line: 40, content: "" },
+  ];
+
+  test("maps a diagnostic back to its doc file and fence line", () => {
+    const out = attributeDiagnostics(
+      "blocks/README_md__L13.ts(4,20): error TS2339: Property 'status' does not exist.",
+      blocks,
+    );
+    expect(out).toEqual([
+      { file: "README.md", line: 13, msg: "error TS2339: Property 'status' does not exist." },
+    ]);
+  });
+
+  test("de-duplicates identical diagnostics", () => {
+    const line = "blocks/README_md__L13.ts(4,20): error TS2339: nope.";
+    expect(attributeDiagnostics(md(line, line), blocks)).toHaveLength(1);
+  });
+
+  test("keeps two diagnostics that differ only by column", () => {
+    expect(
+      attributeDiagnostics(
+        md(
+          "blocks/README_md__L13.ts(4,20): error TS2339: nope.",
+          "blocks/README_md__L13.ts(4,31): error TS2339: nope.",
+        ),
+        blocks,
+      ),
+    ).toHaveLength(2);
+  });
+
+  test("ignores non-diagnostic noise and unknown block names", () => {
+    expect(
+      attributeDiagnostics(
+        md("Found 1 error.", "blocks/GHOST_md__L1.ts(1,1): error TS2304: Cannot find name 'x'."),
+        blocks,
+      ),
+    ).toEqual([]);
+  });
+});
+
+const plan = (over = {}) => ({ blocks: [], skipped: [], totalTsBlocks: 0, ...over });
+const block = (name, file, line) => ({ name, file, line, content: "" });
+
+describe("judgeDocs", () => {
+  test("passes when tsc succeeded and the skip ratio is in budget", () => {
+    expect(
+      judgeDocs({
+        plan: plan({ totalTsBlocks: 4, skipped: [{ file: "a", line: 1 }] }),
+        tscOutput: null,
+      }),
+    ).toEqual({ kind: "ok" });
+  });
+
+  test(`allows a skip ratio of exactly ${MAX_SKIP_RATIO}`, () => {
+    const skipped = [
+      { file: "a", line: 1 },
+      { file: "b", line: 2 },
+    ];
+    expect(judgeDocs({ plan: plan({ totalTsBlocks: 4, skipped }), tscOutput: null })).toEqual({
+      kind: "ok",
+    });
+  });
+
+  test("fails just above the skip ratio", () => {
+    const skipped = [1, 2, 3].map((line) => ({ file: "a", line }));
+    expect(judgeDocs({ plan: plan({ totalTsBlocks: 5, skipped }), tscOutput: null })).toEqual({
+      kind: "skip-ratio",
+      skipRatio: 0.6,
+    });
+  });
+
+  test("treats a docs set with no ts blocks as a zero ratio, not a division by zero", () => {
+    expect(judgeDocs({ plan: plan(), tscOutput: null })).toEqual({ kind: "ok" });
+  });
+
+  test("reports every attributable block failure", () => {
+    const verdict = judgeDocs({
+      plan: plan({ blocks: [block("README_md__L13", "README.md", 13)] }),
+      tscOutput: "blocks/README_md__L13.ts(4,20): error TS2339: nope.",
+    });
+    expect(verdict).toEqual({
+      kind: "block-failures",
+      failures: [{ file: "README.md", line: 13, msg: "error TS2339: nope." }],
+    });
+  });
+
+  test("a TS5112 leak outranks attributable failures", () => {
+    // TS5112 means the root tsconfig leaked in, which MASKS real errors — the
+    // parsed diagnostics cannot be trusted, so the script must abort loudly.
+    const verdict = judgeDocs({
+      plan: plan({ blocks: [block("README_md__L13", "README.md", 13)] }),
+      tscOutput: md(
+        "error TS5112: tsconfig.json is present but will not be loaded...",
+        "blocks/README_md__L13.ts(4,20): error TS2339: nope.",
+      ),
+    });
+    expect(verdict).toEqual({ kind: "tsc-config-regression" });
+  });
+
+  test("a tsc failure with nothing attributable is surfaced, never swallowed", () => {
+    expect(judgeDocs({ plan: plan(), tscOutput: "FATAL ERROR: heap out of memory" })).toEqual({
+      kind: "unattributable",
+    });
+  });
+
+  test("the skip ratio is not consulted when blocks failed to compile", () => {
+    const skipped = [1, 2, 3].map((line) => ({ file: "a", line }));
+    const verdict = judgeDocs({
+      plan: plan({
+        blocks: [block("README_md__L13", "README.md", 13)],
+        skipped,
+        totalTsBlocks: 4,
+      }),
+      tscOutput: "blocks/README_md__L13.ts(4,20): error TS2339: nope.",
+    });
+    expect(verdict.kind).toBe("block-failures");
+  });
+});
+
+describe("REQUIRED_DIST_ENTRIES", () => {
+  test("requires implementation AND declarations for both entry points", () => {
+    // Value imports resolve against the .js, type info against the .d.ts. A
+    // half-built dist/ must fail rather than silently under-check.
+    expect(REQUIRED_DIST_ENTRIES).toEqual([
+      "index.js",
+      "index.d.ts",
+      "errors/index.js",
+      "errors/index.d.ts",
+    ]);
+  });
+});
