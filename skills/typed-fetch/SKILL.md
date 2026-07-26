@@ -1,6 +1,10 @@
 ---
 name: typed-fetch
-description: Write HTTP client code with @pbpeterson/typed-fetch — a zero-dependency, type-safe fetch wrapper that resolves with errors as values instead of rejecting. Use when a project depends on @pbpeterson/typed-fetch, when calling typedFetch, or when handling its errors (NotFoundError, NetworkError, UnknownHttpError, AbortedError, TimeoutError, isHttpError, isKnownHttpError, isAbortError, isTimeoutError). Also use when the user asks for fetch with Go-style error handling, no-throw HTTP requests, or typed HTTP error classes in TypeScript.
+description: >-
+  Write HTTP client code with @pbpeterson/typed-fetch, a type-safe wrapper that
+  resolves with errors as values. Use it when a project depends on the package,
+  calls typedFetch, or handles its error classes and guards. Also use it for
+  Go-style Fetch error handling and no-throw HTTP requests in TypeScript.
 ---
 
 # Using typed-fetch
@@ -95,7 +99,10 @@ Notes on the union:
 - `NetworkError` also covers a permanent request-construction failure, such as an invalid URL or the `CONNECT` method. It also covers a transient failure, such as a DNS failure or a refused connection. No portable test separates the two: `error.cause` is a `TypeError` for every kind of failure, and on Deno there is no `cause` at all. A blind retry loop keyed on `NetworkError` retries the permanent failures forever. Put the retry policy in a layer that knows the request.
 - `AbortedError` and `TimeoutError` do not extend `NetworkError`. `isNetworkError()` returns `false` for both. Use the dedicated guards.
 - `error.url` is present on every member of the union. It is the empty string when no URL could be resolved. Read it without narrowing.
-- Only a status of 400 or more is an HTTP error. `typedFetch` converts the response's `status` to a number before it compares it with 400, and it reads that status once. Status `0` stays on the success branch, so check `response.ok` for an opaque response.
+- Only a status of 400 or more is an HTTP error. `typedFetch` converts `status`
+  to a number before the comparison. It records the first successful read.
+  Status `0` stays on the success branch. Check `response.ok` for an opaque
+  response.
 
 ### Type guards
 
@@ -269,6 +276,10 @@ in the URL position. `signal: null` detaches the `Request`'s signal.
 
 Inject an implementation through `options.fetch` for testing, dependency
 injection, or a custom agent.
+
+The implementation must resolve with a platform `Response` or a
+standards-compatible polyfill. A partial response object resolves with
+`NetworkError`.
 
 ```typescript
 import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";

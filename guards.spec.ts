@@ -32,6 +32,13 @@ function foreignHttpError(status: number, ...brands: symbol[]): Error {
   Object.defineProperty(error, "status", { value: status });
   return error;
 }
+
+function responseReportingStatus(status: unknown): Response {
+  const response = new Response(null);
+  Object.defineProperty(response, "status", { get: () => status });
+  return response;
+}
+
 // ── Type guards ──────────────────────────────────────────────────────
 
 describe("isHttpError", () => {
@@ -283,8 +290,9 @@ describe("the guards accept a status a custom Fetch reported as a string", () =>
     // an `UnknownHttpError` carrying the STRING "404", and `isKnownHttpError`
     // returned false for what is plainly a 404 — because it requires
     // `typeof status === "number"`.
+    const response = responseReportingStatus("404");
     const { error } = await typedFetch("https://example.invalid/string-status", {
-      fetch: (async () => ({ status: "404" })) as unknown as typeof fetch,
+      fetch: (async () => response) as typeof fetch,
     });
 
     expect(isKnownHttpError(error)).toBe(true);
@@ -308,8 +316,9 @@ describe("the guards accept a status a custom Fetch reported as a string", () =>
     // become a 404 and Infinity does not become a 599. Both miss the map and
     // land where an unmapped status belongs.
     for (const status of [404.7, Infinity]) {
+      const response = responseReportingStatus(status);
       const { error } = await typedFetch("https://example.invalid/unmapped-number", {
-        fetch: (async () => ({ status })) as unknown as typeof fetch,
+        fetch: (async () => response) as typeof fetch,
       });
 
       expect(error).toBeInstanceOf(UnknownHttpError);

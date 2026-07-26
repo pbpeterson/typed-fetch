@@ -17,6 +17,7 @@ import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
 import { classifyRequestFailure } from "./request-failure";
 import { statusOf } from "./errors/response-identity";
+import { releaseResponseBody } from "./errors/error-body";
 
 /** Realm-safe Request detection for iframe, node:vm, and duplicated-runtime inputs. */
 function isRequest(value: unknown): value is Request {
@@ -24,6 +25,53 @@ function isRequest(value: unknown): value is Request {
     return (
       (typeof Request !== "undefined" && value instanceof Request) ||
       Object.prototype.toString.call(value) === "[object Request]"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Realm-safe `Response` validation.
+ *
+ * Calling the native status getter avoids accepting an object that only spoofs
+ * `[object Response]`. A structural fallback admits standards-compatible Fetch
+ * polyfills from another implementation while rejecting partial test doubles.
+ */
+function isResponse(value: unknown): value is Response {
+  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
+    return false;
+  }
+  try {
+    if (typeof Response !== "undefined") {
+      const getter = Object.getOwnPropertyDescriptor(Response.prototype, "status")?.get;
+      if (typeof getter === "function") {
+        Reflect.apply(getter, value, []);
+        return true;
+      }
+    }
+  } catch {
+    // A foreign standards-compatible implementation has different internal
+    // slots. Check its public Response shape below.
+  }
+
+  try {
+    if (Object.prototype.toString.call(value) !== "[object Response]") return false;
+    const fields = [
+      "body",
+      "bodyUsed",
+      "headers",
+      "ok",
+      "redirected",
+      "status",
+      "statusText",
+      "type",
+      "url",
+    ];
+    const methods = ["arrayBuffer", "blob", "clone", "formData", "json", "text"];
+    return (
+      fields.every((field) => field in value) &&
+      methods.every((method) => typeof (value as Record<string, unknown>)[method] === "function")
     );
   } catch {
     return false;
@@ -219,24 +267,6 @@ function requestUrl(input: FetchInput): string {
 }
 
 /**
- * Release a response body that no caller can reach any more. Best effort.
- *
- * Called only from a failure path, where `res` leaves scope with an open body
- * and no owner. Every step is guarded: `res` can be a partial test double
- * instead of a `Response`, `body` is one more getter on the same untrusted
- * object, and `cancel()` can throw or return a non-promise. A failure to
- * release must never replace the cause the caller is waiting for.
- */
-function releaseBody(res: Response): void {
-  try {
-    res.body?.cancel().catch(() => {});
-  } catch {
-    // Nothing further can be done here, and the original cause is the one to
-    // report.
-  }
-}
-
-/**
  * The options the ambient `fetch` accepts, minus the two slots this library
  * retypes.
  *
@@ -344,22 +374,9 @@ export async function typedFetch<JsonReturnType>(
     const res = await fetchImpl(url, init);
 
     // Inside the envelope on purpose. `fetchImpl` can be an injected
-    // implementation, so the resolved value is untrusted input: a hostile
-    // `status`/`url` getter throws while being read, and a partial test double
-    // resolves a non-Response. A THROW must surface as an error VALUE, which is
-    // the contract this function exists to keep, instead of rejecting.
-    //
-    // A non-Response that answers the read is a different case, and it is NOT
-    // forced into an error: `status` is the only thing consulted, so a double
-    // whose `status` CONVERTS to a number of 400 or more becomes the matching
-    // HTTP error, and one that converts to anything else — including `NaN`,
-    // which is what `undefined` converts to — stays on the success branch and
-    // reaches the caller through the cast below. Measured: `{ status: 404 }`
-    // resolves as `NotFoundError`, `{ status: "404" }` resolves as
-    // `NotFoundError` too, `"a string"` resolves as
-    // `{ response: "a string", error: null }`, and `undefined` resolves as
-    // `NetworkError` only because reading `.status` off it throws. README,
-    // "API reference", states the same rule for consumers.
+    // implementation, so the resolved value is untrusted input. A non-Response
+    // or a hostile identity getter must surface as an error VALUE instead of
+    // rejecting or escaping through the typed success branch.
     //
     // `status` is read ONCE PER RESPONSE, by `statusOf`, which records the
     // value it read. The constructor and `UnknownHttpError` then answer with
@@ -374,6 +391,9 @@ export async function typedFetch<JsonReturnType>(
     // hostile getter, or a `valueOf` that throws during the numeric conversion
     // — and a throw here strands the body. See the catch.
     try {
+      if (!isResponse(res)) {
+        throw new TypeError("The fetch implementation resolved a value that is not a Response.");
+      }
       const status = statusOf(res);
       if (status >= 400) {
         const ErrorClass = statusCodeErrorMap.get(status);
@@ -390,7 +410,7 @@ export async function typedFetch<JsonReturnType>(
       // `res` lives in the outer try block: the caller gets `response: null`
       // and never gets a handle to the body the network already opened.
       // Release it here, or it stays open with no owner.
-      releaseBody(res);
+      releaseResponseBody(res);
       throw cause;
     }
 

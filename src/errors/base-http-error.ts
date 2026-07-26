@@ -375,10 +375,9 @@ export abstract class BaseHttpError extends Error {
    * subclass whose constructor takes more arguments receives `undefined` for
    * them. Pass the callback whenever the subclass has such state.
    *
-   * A recreation callback must return a NEW error built from the `Response` it
-   * receives. Five conditions refuse the result, and each one releases the
-   * orphaned branch before it throws a `TypeError`, so the original error stays
-   * fully usable:
+   * A recreation callback must return a NEW error built from its `Response`.
+   * Five conditions refuse the result. Each condition releases the orphaned
+   * branch before it throws, so the original error stays usable:
    *
    * 1. The callback returns a value that is not an object, such as `null`.
    * 2. The callback returns this same error instead of a new one.
@@ -574,7 +573,7 @@ export abstract class BaseHttpError extends Error {
     // this copy and has no table entry was already refused above, with the
     // Proxy-flavoured message it needs. So this branch is exactly "an instance
     // from a genuinely different package copy" plus "an object pretending to be
-    // one", which is why the question has to be ASKED instead of assumed. The
+    // one", which is why the question must be ASKED instead of assumed. The
     // only mechanism that crosses a copy seam is a `Symbol.for` key, which is
     // what `asksOwnsResponse` reads.
     if (owner === undefined) {

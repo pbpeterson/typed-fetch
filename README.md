@@ -410,7 +410,10 @@ Three rules make this module correct.
 
 - It reads every error body, so no caller can hold one. It uses `catch` on the read, because a body read can reject.
 - It reads every success body through `response.json()`, so no success stream stays open.
-- It merges headers with `new Headers(caller)`. A spread does not work. `{ ...options?.headers }` type-checks, and it produces `{}` when the caller passes a `Headers` instance, because a `Headers` has no enumerable own properties. `new Headers(options?.headers)` compiles with no cast, and it accepts every form the `headers` option accepts.
+- It merges headers with `new Headers(caller)`. A spread does not work.
+  `{ ...options?.headers }` produces `{}` for a `Headers` instance. That class
+  has no enumerable own properties. `new Headers(options?.headers)` accepts
+  every supported form without a cast.
 
 The spread of `options` keeps an own `fetch` property, which is the form `typedFetch` reads. Read "API reference" for that rule.
 
@@ -542,7 +545,9 @@ Each class keeps the original Fetch error in `cause`. `AbortedError` and `Timeou
 
 Each of these errors also has a `url` value. Use this value to identify a failed request among concurrent requests.
 
-`error.url` holds the full href. `error.message` and the `toJSON()` record hold a redacted form: the origin and the path, with the userinfo, the query string, and the fragment removed. A log line and a log record therefore never disagree.
+`error.url` holds the full href. `error.message` and the `toJSON()` record hold
+the origin and path. They remove userinfo, query strings, and fragments. A log
+line and a log record therefore agree.
 
 ### Network failures
 
@@ -550,9 +555,16 @@ Each of these errors also has a `url` value. Use this value to identify a failed
 
 These input errors are permanent. A DNS failure, a refused connection, and a reset connection are transient. `NetworkError` covers both kinds, and it does not tell you which one you hold.
 
-No portable test separates them. `error.cause` holds the rejection that `fetch` produced, and that rejection is a `TypeError` for every kind of failure, so a `cause instanceof TypeError` check answers `true` in all of them. The platforms diverge further: on Deno every failure in this section arrives as a bare `TypeError` that carries no `cause` and no error code.
+No portable test separates them. `error.cause` holds the rejection from
+`fetch`. Every kind can produce a `TypeError`, so `cause instanceof TypeError`
+does not classify the failure.
 
-Put the retry policy in a layer that knows the request. That layer knows whether the URL is a constant of the program or a value that a user supplied, which is the fact that decides a retry.
+The platforms diverge further. On Deno, these failures use a bare `TypeError`
+without a `cause` or error code.
+
+Put the retry policy in a layer that knows the request. That layer can
+distinguish a program constant from user input. This distinction decides
+whether to retry.
 
 ```typescript
 import {
@@ -720,7 +732,11 @@ The optional `fetch` property sets a custom Fetch implementation. Use it for tes
 
 `typedFetch` reads `fetch` as an own property of `options`. A `fetch` that arrives through the prototype chain is ignored, and the request goes to the global `fetch`. Set the property with `{ ...options, fetch }` or with `Object.assign(options, { fetch })`. A `fetch` method on the prototype of a class you pass as `options` is not used.
 
-This rule differs from every other option on purpose. `method`, `headers`, `body`, and `signal` are WebIDL dictionary members, and the platform reads those through the prototype chain. `typedFetch` preserves that. `fetch` is this library's own extension, and it selects the transport.
+This rule differs from every other option. `method`, `headers`, `body`, and
+`signal` are WebIDL dictionary members. The platform reads them through the
+prototype chain, and `typedFetch` preserves that behavior.
+
+`fetch` is this library's extension. It selects the transport.
 
 A single `Object.prototype.fetch = …` write anywhere in the process would otherwise redirect every request in it. That includes a call that passes no options object at all. The write would also hand the caller's `Authorization` header to whoever performed it.
 
@@ -744,11 +760,20 @@ The other optional members do not name `undefined`. Under that flag,
 `{ method: maybeString }` and `{ body: maybeBody }` still fail with TS2379. The
 second is native `RequestInit` behavior.
 
-A custom Fetch implementation is not trusted input. `typedFetch` inspects the resolved value inside the result envelope. When a read of `status` or `url` on that value throws, `typedFetch` resolves with a `NetworkError` that holds the original error in `cause`.
+A custom Fetch implementation is not trusted input. It must resolve with a
+platform `Response` or a standards-compatible polyfill. A partial test double
+or another value resolves with a `NetworkError` whose `cause` is a `TypeError`.
 
-NOTE: A resolved value that is not a `Response` but answers a `status` read does not become a `NetworkError`. `typedFetch` converts `status` to a number and compares it with 400. A value that converts to 400 or more becomes an HTTP error. A value that converts to less than 400, or to `NaN`, stays on the success branch.
+`typedFetch` inspects the response inside the result envelope. If an identity
+getter throws, `typedFetch` resolves with a `NetworkError`. Its `cause` holds
+the thrown value.
 
-`typedFetch` reads `status`, `statusText`, `url`, and `headers` once each. A custom Fetch implementation whose getters answer differently on a second read cannot make `error.status`, `error.message`, and the `toJSON()` record disagree. The first read decides all three. `statusText` and `url` are the empty string when the implementation answers with a value that is not a string.
+`typedFetch` records each successful read of `status`, `statusText`, `url`, and
+`headers` immediately. A later getter failure cannot cause an earlier field to
+be read again. The first successful read decides the error identity.
+
+`statusText` and `url` become empty strings when the implementation answers
+with values that are not strings.
 
 You can give a `Request` in the `url` position. `typedFetch` keeps its method, headers, signal, and Node.js body.
 
@@ -946,11 +971,15 @@ console.log(copy.tenant); // "acme"
 await Promise.all([error.cancel(), copy.cancel()]);
 ```
 
-The callback must give a new error, built from the `Response` it receives. `clone()` throws `TypeError` in five conditions.
+The callback must give a new error built from the `Response` it receives.
+`clone()` throws `TypeError` in five conditions.
 
 1. The callback gives a value that is not an object, such as `null`, `undefined`, a string, or a number. The declared return type forbids this, and a JavaScript caller or one `as any` still reaches it. `clone(() => null)` resolved with `null` before, and the cloned branch had no owner.
 2. The callback gives the same error. One instance cannot own two branches.
-3. The callback gives a value that claims this package copy and carries no body, such as a Proxy from an instrumentation library or an `Object.create` delegate. The wrapper cannot own the cloned branch, and the response would stay open with no way to release it.
+3. The callback gives a value that claims this package copy and carries no
+   body. Examples include a Proxy from instrumentation or an `Object.create`
+   delegate. The wrapper cannot own the cloned branch. The response would stay
+   open with no release path.
 4. The callback gives an error built from a different `Response`. The cloned branch then has no owner.
 5. The callback gives an error from a package copy that cannot confirm that it took the cloned branch. Each package copy keeps its own body table. `clone()` asks the new error directly, through a `Symbol.for` method that every copy of this package stamps.
 

@@ -203,6 +203,45 @@ describe("identityOf — one read per field, per response, ever", () => {
 
     expect(touched).toEqual({ body: 0, bodyUsed: 0, clone: 0 });
   });
+
+  test("RI-18: fields read before a failing headers getter stay recorded", () => {
+    const cause = new Error("headers getter exploded");
+    const laterHeaders = new Headers({ "x-later": "2" });
+    const { response, counts } = countingResponse({
+      status: [420, 421],
+      statusText: ["FIRST", "SECOND"],
+      url: ["https://first.test/x", "https://second.test/y"],
+      headers: [throwing(cause), laterHeaders],
+    });
+
+    expect(() => identityOf(response)).toThrow(cause);
+
+    const identity = identityOf(response);
+    expect(identity).toEqual({
+      status: 420,
+      statusText: "FIRST",
+      url: "https://first.test/x",
+      headers: laterHeaders,
+    });
+    expect(counts).toEqual({ status: 1, statusText: 1, url: 1, headers: 2 });
+  });
+
+  test("RI-19: statusText stays recorded when the first url read fails", () => {
+    const cause = new Error("url getter exploded");
+    const { response, counts } = countingResponse({
+      status: [420, 421],
+      statusText: ["FIRST", "SECOND"],
+      url: [throwing(cause), "https://second.test/y"],
+    });
+
+    expect(() => identityOf(response)).toThrow(cause);
+
+    const identity = identityOf(response);
+    expect(identity.status).toBe(420);
+    expect(identity.statusText).toBe("FIRST");
+    expect(identity.url).toBe("https://second.test/y");
+    expect(counts).toEqual({ status: 1, statusText: 1, url: 2, headers: 1 });
+  });
 });
 
 describe("statusOf — the normalization policy", () => {
@@ -463,14 +502,11 @@ describe("lendIdentity — an inherited identity, for one construction only", ()
   });
 });
 
-describe("statusOf — the documented residual", () => {
-  test("RI-16: a primitive resolved value cannot be cached, and is not", () => {
-    // A `WeakMap` refuses a primitive key. An injected `fetch` that resolves a
-    // STRING whose prototype was polluted with a `status` getter therefore gets
-    // one read per call rather than one read per response. Every other
-    // guarantee this library makes about an injected implementation is equally
-    // void for a polluted `String.prototype`, so this is a known limit, tested
-    // so it stays one.
+describe("statusOf — defensive input outside the typedFetch contract", () => {
+  test("RI-16: a primitive cannot be cached, and is not", () => {
+    // `typedFetch` rejects a primitive before this internal function. Keep the
+    // function total when a direct caller violates its declared Response type:
+    // read once per call and do not fail because WeakMap cannot key the value.
     let reads = 0;
     // oxlint-disable-next-line no-extend-native -- polluting it IS the test
     Object.defineProperty(String.prototype, "status", {

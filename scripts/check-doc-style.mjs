@@ -57,6 +57,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { isMainModule } from "./lib/is-main-module.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -81,7 +82,7 @@ export const STYLE_MARKDOWN_SOURCES = [
   ".claude/skills/typed-fetch-maintainer/SKILL.md",
 ];
 
-// `docs/writing-standard.md` is the ONE document that has to write a forbidden
+// `docs/writing-standard.md` is the ONE document that must write a forbidden
 // phrase down in order to forbid it, so it is exempt from the vocabulary rules.
 // An inline allow-marker was considered and rejected: machinery for one file.
 export const VOCABULARY_EXEMPT_FILES = [WRITING_STANDARD_FILE];
@@ -141,43 +142,94 @@ function maskFencedBlocks(lines) {
 }
 
 /**
- * Keep only the bodies of `/** … *\/` blocks, dropping the leading ` * `
- * decoration and blanking every other line.
+ * Does a node carry the named modifier?
  *
- * A `//` line comment is NOT JSDoc and is not prose. Scanning them flags
- * `src/errors/error-body.ts:223`, an internal line comment inside an INTERNAL
- * module that explains two code identifiers. The writing standard's scope is
- * "every **public** JSDoc comment in `src/`", so this scoping is what the
- * standard already says rather than a convenience.
- * @param {string[]} lines
+ * @param {ts.Node} node
+ * @param {ts.SyntaxKind} kind
+ */
+function hasModifier(node, kind) {
+  return ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((m) => m.kind === kind) === true;
+}
+
+/**
+ * Keep only JSDoc attached to exported declarations and their public members.
+ *
+ * The last attached block is the declaration's JSDoc. An earlier block is a
+ * file or module note separated from the declaration by another JSDoc block.
+ * @param {string} source
  * @returns {string[]}
  */
-function jsdocProseLines(lines) {
-  const out = [];
-  let inBlock = false;
-  for (const line of lines) {
-    if (!inBlock) {
-      const open = line.indexOf("/**");
-      if (open === -1) {
-        out.push("");
-        continue;
-      }
-      const rest = line.slice(open + 3);
-      const close = rest.indexOf("*/");
-      if (close !== -1) {
-        out.push(rest.slice(0, close));
-        continue;
-      }
-      out.push(rest);
-      inBlock = true;
-      continue;
-    }
-    const close = line.indexOf("*/");
-    const body = close === -1 ? line : line.slice(0, close);
-    if (close !== -1) inBlock = false;
-    out.push(body.replace(/^\s*\*\s?/, ""));
+function publicJSDocProseLines(source) {
+  const file = ts.createSourceFile(
+    "style-source.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const kept = source.split("").map((char) => (char === "\n" ? "\n" : " "));
+
+  /** @param {ts.Node} node */
+  function keepJSDoc(node) {
+    const docs = /** @type {readonly ts.JSDoc[] | undefined} */ (node.jsDoc);
+    const doc = docs?.at(-1);
+    if (!doc) return;
+    if (doc.tags?.some((tag) => tag.tagName.text === "internal")) return;
+    for (let index = doc.pos; index < doc.end; index += 1) kept[index] = source[index];
   }
-  return out;
+
+  /** @param {ts.Node} node */
+  function keepPublicShape(node) {
+    keepJSDoc(node);
+
+    if (
+      ts.isClassDeclaration(node) ||
+      ts.isInterfaceDeclaration(node) ||
+      ts.isTypeLiteralNode(node)
+    ) {
+      for (const member of node.members) {
+        if (
+          hasModifier(member, ts.SyntaxKind.PrivateKeyword) ||
+          hasModifier(member, ts.SyntaxKind.ProtectedKeyword) ||
+          (member.name && ts.isPrivateIdentifier(member.name))
+        ) {
+          continue;
+        }
+        keepPublicShape(member);
+      }
+      return;
+    }
+
+    if (ts.isTypeAliasDeclaration(node) && ts.isTypeLiteralNode(node.type)) {
+      keepPublicShape(node.type);
+      return;
+    }
+
+    if (ts.isEnumDeclaration(node)) {
+      for (const member of node.members) keepPublicShape(member);
+    }
+  }
+
+  for (const statement of file.statements) {
+    if (
+      hasModifier(statement, ts.SyntaxKind.ExportKeyword) ||
+      ts.isExportDeclaration(statement) ||
+      ts.isExportAssignment(statement)
+    ) {
+      keepPublicShape(statement);
+    }
+  }
+
+  const lines = kept.join("").split("\n");
+  return lines.map((line) => {
+    const closingLine = line.trim() === "*/";
+    const prose = line
+      .replace(/^.*?\/\*\*/, "")
+      .replace(/\*\/.*$/, "")
+      .replace(/^\s*\*\s?/, "");
+    if (prose.trim() !== "") return prose;
+    return closingLine ? " " : "";
+  });
 }
 
 /**
@@ -189,7 +241,7 @@ function jsdocProseLines(lines) {
  */
 export function toProseLines(source, format) {
   const raw = source.split("\n");
-  const lines = format === "jsdoc" ? jsdocProseLines(raw) : raw;
+  const lines = format === "jsdoc" ? publicJSDocProseLines(source) : raw;
   return maskFencedBlocks(lines).map(stripInlineCode);
 }
 
@@ -242,6 +294,11 @@ export const VOCABULARY_RULES = [
     id: "body-aborted",
     pattern: /\bbod(?:y|ies)\b(?:\s+\w+){0,3}\s+aborted\b/i,
     message: "An error body is canceled, not aborted.",
+  },
+  {
+    id: "normative-synonym",
+    pattern: /\b(?:needs?|has|have|had)\s+to\b|\bit\s+is\s+recommended\b/i,
+    message: 'Use "must", "must not", "should", "can", or "may" for normative prose.',
   },
 ];
 
@@ -426,29 +483,39 @@ export function termsAgree(diff) {
  * up inside `docs` by filename. Lookup-by-name turns a renamed or missing file
  * into a silent pass, which is the failure mode this repository already names
  * in `check-docs.mjs:44-50`.
- * @param {{ docs: StyleDoc[], readmeSource: string, standardSource: string }} input
+ * @param {{
+ *   docs: StyleDoc[],
+ *   readmeSource: string,
+ *   standardSource: string,
+ *   missingFiles?: string[],
+ * }} input
  * @returns {{
+ *   missingFiles: string[],
  *   relativeLinks: { line: number, target: string }[],
  *   vocabulary: { file: string, line: number, rule: string, match: string }[],
  *   terms: TermsDiff,
  *   ok: boolean,
  * }}
  */
-export function judgeDocStyle({ docs, readmeSource, standardSource }) {
+export function judgeDocStyle({ docs, readmeSource, standardSource, missingFiles = [] }) {
   const relativeLinks = findRelativeLinks(readmeSource);
   const vocabulary = findVocabularyViolations(docs);
   const terms = diffTermsTables(parseTermsTable(readmeSource), parseTermsTable(standardSource));
   return {
+    missingFiles,
     relativeLinks,
     vocabulary,
     terms,
-    ok: relativeLinks.length === 0 && vocabulary.length === 0 && termsAgree(terms),
+    ok:
+      missingFiles.length === 0 &&
+      relativeLinks.length === 0 &&
+      vocabulary.length === 0 &&
+      termsAgree(terms),
   };
 }
 
 // ---------------------------------------------------------------------------
-// Adapter. All fs access. No pass/fail branch lives here except the one I/O
-// precondition (a roster file must exist) whose message is fixed.
+// Adapter. All fs access. It records missing files as facts for the decision.
 // ---------------------------------------------------------------------------
 
 /**
@@ -474,7 +541,7 @@ function collectFiles(dir, prefix, ext) {
   return found.toSorted();
 }
 
-/** @returns {StyleDoc[]} */
+/** @returns {{ docs: StyleDoc[], missingFiles: string[] }} */
 function gatherStyleDocs() {
   const roster = [
     ...STYLE_MARKDOWN_SOURCES.map((file) => ({
@@ -492,25 +559,34 @@ function gatherStyleDocs() {
   ];
   /** @type {StyleDoc[]} */
   const docs = [];
+  /** @type {string[]} */
+  const missingFiles = [];
   for (const { file, format } of roster) {
     const abs = join(repoRoot, file);
     if (!existsSync(abs)) {
-      console.error(`check-doc-style: doc file not found: ${file}`);
-      process.exit(1);
+      missingFiles.push(file);
+      continue;
     }
     docs.push({ file, format, source: readFileSync(abs, "utf8") });
   }
-  return docs;
+  return { docs, missingFiles };
 }
 
 function main() {
-  const docs = gatherStyleDocs();
+  const { docs, missingFiles } = gatherStyleDocs();
   const byFile = new Map(docs.map((d) => [d.file, d.source]));
   const readmeSource = byFile.get(README_FILE) ?? "";
   const standardSource = byFile.get(WRITING_STANDARD_FILE) ?? "";
-  const verdict = judgeDocStyle({ docs, readmeSource, standardSource });
+  const verdict = judgeDocStyle({ docs, readmeSource, standardSource, missingFiles });
 
   console.log(`check-doc-style: scanned ${docs.length} documentation sources`);
+
+  if (verdict.missingFiles.length > 0) {
+    console.error(
+      `\ncheck-doc-style: ${verdict.missingFiles.length} documentation file(s) missing`,
+    );
+    for (const file of verdict.missingFiles) console.error(`  ${file}`);
+  }
 
   if (verdict.relativeLinks.length > 0) {
     console.error(

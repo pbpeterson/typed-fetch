@@ -110,7 +110,7 @@ type NativeFetchHeaders = NonNullable<NonNullable<Parameters<typeof fetch>[1]>["
  * undici's `HeaderRecord` is an all-optional mapped type, so
  * `{ Authorization: undefined }` type-checks and `fetch` then sends the
  * literal string `"undefined"`. The no-DOM profile is this library's primary
- * target, so the record shape has to be ours.
+ * target, so the record shape must be ours.
  */
 type HeaderContainers = Exclude<NativeFetchHeaders, Record<string, string | undefined>>;
 

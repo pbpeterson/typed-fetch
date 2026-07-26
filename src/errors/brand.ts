@@ -103,9 +103,9 @@ export function brand(prototype: object, brandSymbol: symbol): void {
  * The brands above answer "what kind of thing is this?". That question has a
  * fixed answer per class, so a `true` placed on a prototype settles it. This
  * one asks about ONE instance and ONE `Response`, so only the instance can
- * answer it, and the answer has to be computed. A marker cannot carry it.
+ * answer it, and the answer must be computed. A marker cannot carry it.
  *
- * ## Why it has to cross copies at all
+ * ## Why it must cross copies
  *
  * `clone()` tees the error body and hands the branch to a `recreate` callback.
  * The platform frees the teed source only once EVERY branch is read or

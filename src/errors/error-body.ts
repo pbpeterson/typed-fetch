@@ -111,6 +111,60 @@ export interface ErrorBody {
   tee(): TeedErrorBody;
 }
 
+/**
+ * Read a native body without trusting an own `body` property.
+ *
+ * An injected `Response.clone()` can return a real branch with a hostile own
+ * getter or value. Its native prototype getter still owns the internal stream.
+ */
+function bodyForRelease(response: Response): ReadableStream<Uint8Array> | null | undefined {
+  try {
+    const seen = new Set<object>();
+    let prototype = Object.getPrototypeOf(response) as object | null;
+    let found = false;
+    let body: ReadableStream<Uint8Array> | null | undefined;
+    while (prototype && !seen.has(prototype)) {
+      seen.add(prototype);
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, "body");
+      if (typeof descriptor?.get === "function") {
+        try {
+          body = Reflect.apply(descriptor.get, response, []) as ReadableStream<Uint8Array> | null;
+          found = true;
+        } catch {
+          // A custom prototype can also be hostile. Keep looking for the
+          // native getter behind it.
+        }
+      }
+      prototype = Object.getPrototypeOf(prototype) as object | null;
+    }
+    if (found) return body;
+  } catch {
+    // A Proxy can refuse prototype inspection. Cleanup remains best effort.
+  }
+
+  try {
+    return response.body;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Release an unreachable body without allowing cleanup to replace the cause.
+ *
+ * @internal
+ */
+export function releaseResponseBody(response: Response): void {
+  try {
+    const pending = bodyForRelease(response)?.cancel();
+    if (pending && typeof pending.catch === "function") {
+      void pending.catch(() => {});
+    }
+  } catch {
+    // The response or stream is not usable enough to release.
+  }
+}
+
 export function errorBodyOf(response: Response): ErrorBody {
   /** Set by {@link ErrorBody.cancel}. */
   let cancelled = false;
@@ -248,12 +302,12 @@ export function errorBodyOf(response: Response): ErrorBody {
       branch,
       release() {
         // Nobody can await this: the caller is receiving an exception, not a
-        // copy. Swallow the rejection so it cannot surface as unhandled.
-        branch.body?.cancel().catch(() => {});
+        // copy. Cleanup is total and swallows a stream rejection.
+        releaseResponseBody(branch);
       },
       adopt(sibling) {
         // A sibling that took a DIFFERENT response never took this branch, so
-        // the branch is an orphan and the caller has to release it. Report it
+        // the branch is an orphan and the caller must release it. Report it
         // before writing anything: `teed` would otherwise record a shared
         // source that does not exist.
         if (sibling && !sibling.owns(branch)) return false;

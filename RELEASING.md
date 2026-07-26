@@ -34,9 +34,12 @@ attestation.
   - `CHANGELOG.md` has a section with a calendar-valid date for the version;
   - the `[Unreleased]` changelog section is empty;
   - the changelog footer defines a `[X.Y.Z]:` compare link that ends at
-    `vX.Y.Z`, and the `[Unreleased]:` link compares from `vX.Y.Z` to `HEAD`.
-    The base of the `[X.Y.Z]:` range is not checked, because this gate cannot
-    see the previous version.
+    `vX.Y.Z`;
+  - the `[Unreleased]:` link compares from `vX.Y.Z` to `HEAD`.
+
+  The gate does not check the base of the version range. It cannot see the
+  previous version.
+
 - The publish job uses a GitHub-hosted runner, Node `22.23.1`, pnpm from the
   exact `packageManager` field, and npm `11.18.0`. Release dependencies are not
   restored from a package-manager cache. It installs the reviewed lockfile with
@@ -105,9 +108,8 @@ Run every step, in order, for every release:
    [X.Y.Z]: https://github.com/pbpeterson/typed-fetch/compare/vPREVIOUS...vX.Y.Z
    ```
 
-   A dated heading whose link is missing, or whose link names a tag that was
-   never pushed, claims a publication that cannot be reconstructed from an
-   immutable tag. `scripts/validate-release.mjs` fails the publish job on both.
+   A missing link prevents reconstruction from an immutable tag. A link to an
+   unpushed tag has the same effect. `scripts/validate-release.mjs` rejects both.
    WARNING: That gate needs a tag ref, so it can run only after the irreversible
    push in step 6. Read the footer against this step before you tag.
 
@@ -212,21 +214,20 @@ the rule, not intuition.
    changing what the argument means, or returning anything other than a boolean
    are all the same break.
 
-   What a violation costs: `clone()` asks the returned error whether it took the
-   cloned body branch, and it treats "cannot answer" as "not confirmed". A
-   consumer holding two package copies would get a `TypeError` on a correct
-   `clone(recreate)` call — or, if the key survived but its meaning changed,
-   a wrong answer that leaves the branch with no owner, so `cancel()` on the
-   original error never settles and one connection stays open per cloned error.
+   `clone()` asks whether the returned error took the cloned body branch. It
+   treats "cannot answer" as "not confirmed".
+
+   A violation can reject a correct cross-copy call. A changed meaning can also
+   orphan the branch. Then `cancel()` never settles, and a connection stays open.
    Only a consumer with two copies is affected, which is why no consumer-facing
    type or export changes and no other rule in this list catches it.
 
    Two gates hold the rule, and `scripts/validate-release.mjs` deliberately does
    not. `brand.spec.ts` pins the literal key string and the frozen property
    descriptor, so a rename is a failed test rather than a review comment.
-   `pnpm check-consumer` installs the packed tarball and performs a real
-   cross-copy `clone()` across both module formats, so a key that survives with
-   a changed meaning fails there — behavior, not a text match.
+   `pnpm check-consumer` installs the packed tarball. It performs a cross-copy
+   `clone()` across both module formats. A changed key meaning fails there as
+   behavior, not as a text match.
    `validate-release` decides publishing identity, tag alignment, and the
    changelog from release metadata alone. It never reads `src/` or `dist/`, and
    it cannot see the previous version, so it cannot decide a question that is

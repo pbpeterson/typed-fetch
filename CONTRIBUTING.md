@@ -119,8 +119,8 @@ Two rules from that standard cause most review comments:
 
 Work through this list before you request a review of a documentation change.
 
-- [ ] Every TypeScript example compiles, including the ones in `CHANGELOG.md`.
-- [ ] Every HTTP error body is read, canceled, or transferred.
+- [ ] Every current TypeScript example compiles.
+- [ ] Every current HTTP error body is read, canceled, or transferred.
 - [ ] Every example request URL is absolute.
 - [ ] abort refers to a request.
 - [ ] cancel refers to an error body.
@@ -129,25 +129,19 @@ Work through this list before you request a review of a documentation change.
 - [ ] Conditions appear before conditional actions.
 - [ ] New terminology is defined on first use.
 - [ ] README, public skill, and JSDoc describe the same behavior.
-- [ ] The README Terms table carries the same terms as the controlled
-      vocabulary in `docs/writing-standard.md`, in the same order, and each
-      README meaning begins with the standard's meaning.
+- [ ] The README Terms table matches the controlled vocabulary.
+- [ ] Each README meaning begins with the standard's meaning.
 - [ ] No internal export is presented as public.
 - [ ] Warnings describe a concrete consequence.
 
 ### Documentation examples are typechecked (`pnpm check-docs`)
 
-`scripts/check-docs.mjs` extracts every fenced ` ```ts ` / ` ```typescript `
-block from `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, both `SKILL.md`
-files, and the public JSDoc examples in **every `.ts` file under `src/`**. It
-rewrites the
-`@pbpeterson/typed-fetch` import to point at the **built `dist/`**, then
-typechecks each block with the project's `tsc`. This is why it must run **after
-`pnpm build`** — `dist/` is the compile target. If `dist/` is missing the guard
-**fails loudly** rather than skipping. It exists because the README's headline
-example was published with a type error (`error.status` read on the raw
-`TypedFetchError` union, which includes `NetworkError` — a class with no
-`.status`) and three rounds of "verify the examples" review never ran `tsc`.
+`scripts/check-docs.mjs` extracts fenced TypeScript from every documentation
+source. It also extracts public JSDoc examples from every file under `src/`.
+
+The gate rewrites package imports to target the built `dist/`. It then
+typechecks each block with the project's `tsc`. Run it after `pnpm build`.
+If `dist/` is missing, the guard fails.
 
 **Skipping a block.** Some blocks legitimately cannot compile on their own — an
 isolated body fragment that assumes `error` from a previous snippet, a bare type
@@ -189,12 +183,9 @@ the fence ` ```ts historical ` instead of `no-check`:
   a text match, not a compile, and a Before/After pair only reads as a diff if
   both halves follow one URL convention.
 
-**Example request URLs.** `check-docs` also fails a `typedFetch(...)` call whose
-first argument is a string literal that is not an absolute URL. A relative URL
-resolves against a document base, which exists in a browser and does not exist
-on Node, so `typedFetch("/api/users")` rejects on Node with `TypeError: Failed
-to parse URL`. Template-literal arguments are ignored: a computed URL cannot be
-judged statically.
+**Example request URLs.** `check-docs` fails a `typedFetch` call with a relative
+string literal. Browsers can resolve it against a document base. Node has no
+document base, so it rejects the URL. The gate ignores computed URLs.
 
 **Limitation — compilation is necessary, not sufficient.** A block can typecheck
 and still be wrong, so a green `check-docs` is not proof the docs are correct.
@@ -211,10 +202,12 @@ manually. `check-docs` only proves the TypeScript example is well-formed.
 and no `tsc`, so it runs before `pnpm build` and fails in milliseconds. It
 accumulates three classes of violation and prints all of them:
 
-1. **A relative link in `README.md`.** `README.md` is the only document in the
-   npm tarball, so a link to any other repository file must be an absolute URL
-   (`docs/writing-standard.md:26-28`). A `#fragment` is allowed; it resolves
-   inside the file itself.
+For TypeScript, it scans JSDoc on exported declarations and public members.
+Private, protected, non-exported, and `@internal` declarations are excluded.
+
+1. **A relative link in `README.md`.** This file is the only document in the npm
+   tarball. Links to repository files must use absolute URLs. A `#fragment`
+   remains valid inside the file.
 2. **A controlled-vocabulary violation in prose.** A request is aborted, an
    error body is canceled.
 3. **A README Terms table that has drifted.** The table must carry the same
@@ -228,14 +221,14 @@ stripped first, so `` `cancelled` `` — the variable in
 printed inside backticks is not read as a link.
 
 `docs/writing-standard.md` is exempt from the vocabulary rules. It is the one
-document that has to write a forbidden phrase down in order to forbid it.
+document that must state a forbidden phrase to forbid it.
 
 **What it cannot see.** Two limits, both deliberate, and both pinned by a test in
 `scripts/check-doc-style.spec.mjs`.
 
-The rules are **lexical**. "reissue calls the caller had explicitly canceled"
-says "calls", not "requests", and no regular expression reaches it — that one is
-still a review item. Vocabulary inside a fenced example is not scanned either,
+The rules are **lexical**. "reissue calls the caller had explicitly aborted"
+says "calls", not "requests", and no regular expression reaches it. Vocabulary
+inside a fenced example is not scanned either,
 because a legitimate reproduction can contain `new Error("canceled")`. Tense and
 sentence length are not checked at all.
 
@@ -336,9 +329,9 @@ split each gate across two files instead of one readable file), and
 `scripts/lib/` holds only _plumbing_ — scratch directories and npm
 pack/install — never policy.
 
-`check-deno-consumer.mjs` is the deliberate exception: its pass/fail verdict is
-`deno check`'s exit code, which the gate does not compute. There is no decision
-in it, so there is no interface to give it. Do not restructure it.
+`check-deno-consumer.mjs` applies the same structure. Its pure decision checks
+the Deno version requirement. The adapter records the `deno check` exit as an
+I/O fact, and the thin `main` owns the report.
 
 Note that `pnpm typecheck` does **not** cover `scripts/`: `tsconfig.test.json`
 has no `allowJs`/`checkJs`. The `// @ts-check` comments and JSDoc types in these
@@ -498,19 +491,16 @@ The body lifecycle is a seam between two modules. `src/errors/base-http-error.ts
 owns HTTP error identity — `status`, `statusText`, `url`, `headers`, and the
 message line. `src/errors/error-body.ts` owns the single-use body.
 
-Identity itself is read through `src/errors/response-identity.ts`, once per
-response. `statusOf(response)` answers the class-selection read in
-`src/index.ts`. `identityOf(response)` answers the whole record inside the
-`BaseHttpError` constructor and inside `UnknownHttpError`. Both record what they
-read in a `WeakMap` keyed by the response, so a later caller reads nothing and
-answers with the recorded value. Code in `src/` must not read `response.status`,
-`response.statusText`, or `response.url` directly. A direct read reintroduces
-the defect the module exists to remove: a custom Fetch implementation whose
-getter answers differently on a second read produced an error whose class,
-message, and `status` disagreed with each other. When you change the
-normalization — the `Number()` conversion on `status`, or the empty string for a
-`statusText` or a `url` that is not a string — add a case to
-`response-identity.spec.ts`.
+Identity is read through `src/errors/response-identity.ts`.
+`statusOf(response)` answers the class-selection read in `src/index.ts`.
+`identityOf(response)` answers the whole record inside the error constructors.
+
+Both functions record each successful field read immediately. A later getter
+failure cannot make an earlier field run again. Code in `src/` must not read
+`response.status`, `response.statusText`, or `response.url` directly.
+
+A direct read can make one error report conflicting values. When normalization
+changes, add a case to `response-identity.spec.ts`.
 
 `BaseHttpError` never stores the failed `Response`. The constructor passes the
 response to `errorBodyOf(response)`, which captures it in a **closure** and

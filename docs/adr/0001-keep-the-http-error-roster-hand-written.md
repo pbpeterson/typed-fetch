@@ -155,7 +155,7 @@ The revert removed the generator, not the fix.
 
 ### Drift is already impossible past CI
 
-The reason the duplication is safe is that nothing has to be remembered. The
+The duplication is safe because nothing must be remembered. The
 `roster sync` block in the test suite is an independent second source of truth,
 hand-authored in the tests rather than derived from `src/`:
 

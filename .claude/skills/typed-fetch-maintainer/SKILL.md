@@ -22,8 +22,8 @@ CONTEXT.md holds the module map. This tree adds only `src/errors/`:
 ```
 base-http-error.ts      → HTTP error IDENTITY (status, statusText, url,
                           headers, message); body methods delegate
-response-identity.ts    → the four identity fields of one Response, read once
-                          per response (INTERNAL)
+response-identity.ts    → records the first successful read of each Response
+                          identity field (INTERNAL)
 error-body.ts           → internal single-use body lifecycle (see below)
 known-http-error.ts     → internal branded base for the 40 dedicated classes
 network-error.ts        → NetworkError with cause (original fetch rejection)
@@ -51,16 +51,15 @@ index.ts                → re-export barrel for the ./errors subpath
    `"AbortError"`/`"TimeoutError"` — an injected fetch (whatwg-fetch,
    node-fetch@3) builds its own abort error. `reason ?? err` then decides
    timeout vs abort. An aborted signal alone is never sufficient.
-3. `statusOf(res) >= 400` → mapped class from `statusCodeErrorMap`, else
-   `UnknownHttpError`. `statusOf` (`src/errors/response-identity.ts`) records
-   the value it read, so the SAME read reaches the `BaseHttpError` constructor
-   and `UnknownHttpError` — the status that selected the class is the status in
-   `error.status`, in `error.message`, and in the `toJSON()` record. It is
-   `Number(raw)`, so an injected fetch answering `"404"` reaches `NotFoundError`
-   with a numeric `404`. Never read `res.status` directly here. This runs INSIDE
-   the same `try`: an injected fetch can resolve a non-`Response` or a hostile
-   getter, the numeric conversion can throw through a hostile `valueOf`, and
-   both must stay an error value.
+3. Validate `res` as a platform `Response` or standards-compatible polyfill.
+   Any other value becomes `NetworkError`. Then use `statusOf(res) >= 400` to
+   select the mapped class or `UnknownHttpError`.
+
+   `src/errors/response-identity.ts` records each successful field read
+   immediately. A later getter failure cannot make an earlier field run again.
+   `Number(raw)` normalizes `status`, so `"404"` selects `NotFoundError`.
+   Never read the identity fields directly.
+
 4. Otherwise success — body NOT parsed; consumer calls `response.json()`. 3xx with `redirect: "manual"` is success.
 
 No broad internal throw/catch control flow beyond the single `fetch` envelope.

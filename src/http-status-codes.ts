@@ -11,8 +11,8 @@ import { HttpErrors, httpErrors } from "./errors/helpers";
  * only state it could reach that this derivation cannot is DISAGREEMENT with
  * the classes' own `static status`, which is precisely the bug the roster-sync
  * tests existed to catch. Deriving the map makes that state unrepresentable
- * instead of merely tested, and removes one of the parallel lists a new status
- * code used to have to be registered in (see
+ * instead of merely tested. It also removes one parallel list that previously
+ * required registration for each new status code (see
  * `docs/adr/0001-keep-the-http-error-roster-hand-written.md`, which explains
  * why the *remaining* lists stay hand-written: they carry declarations, this
  * one was only ever a projection).

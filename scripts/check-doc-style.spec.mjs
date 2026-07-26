@@ -60,6 +60,36 @@ describe("toProseLines", () => {
     expect(toProseLines(source, "jsdoc")).toEqual(["", "the canceled request", " ", ""]);
   });
 
+  test("jsdoc format ignores a block attached to a non-exported declaration", () => {
+    const source = md("/**", " * the canceled request", " */", "const x = 1;");
+    expect(toProseLines(source, "jsdoc")).toEqual(["", "", "", ""]);
+  });
+
+  test("jsdoc format scans public members and ignores private members", () => {
+    const source = md(
+      "export class Example {",
+      "  /** the canceled request */",
+      "  public run(): void {}",
+      "  /** the canceled request */",
+      "  private stop(): void {}",
+      "}",
+    );
+    const lines = toProseLines(source, "jsdoc");
+    expect(lines[1]).toContain("the canceled request");
+    expect(lines[3]).toBe("");
+  });
+
+  test("jsdoc format ignores an exported declaration marked @internal", () => {
+    const source = md(
+      "/**",
+      " * the canceled request",
+      " * @internal",
+      " */",
+      "export const x = 1;",
+    );
+    expect(toProseLines(source, "jsdoc")).toEqual(["", "", "", "", ""]);
+  });
+
   test("jsdoc format drops a // line comment entirely", () => {
     // Regression: src/errors/error-body.ts:223 is an internal line comment that
     // explains two code identifiers. The standard's scope is PUBLIC JSDoc.
@@ -123,6 +153,11 @@ describe("findVocabularyViolations", () => {
     // The rule was narrowed to `stop THE request` for exactly this line, which
     // is the canonical definition of the term in both Terms tables.
     expect(hits("| abort the request | An AbortSignal stops a request. |")).toEqual([]);
+  });
+
+  test("flags synonyms for the normative vocabulary", () => {
+    expect(ids("The caller has to release the body.")).toContain("normative-synonym");
+    expect(ids("It is recommended to retry.")).toContain("normative-synonym");
   });
 
   test("never flags text inside a fenced block", () => {
@@ -414,6 +449,12 @@ describe("judgeDocStyle", () => {
     expect(verdict.relativeLinks).toHaveLength(1);
     expect(verdict.vocabulary).toHaveLength(1);
     expect(verdict.terms.unparsed).toEqual([README_FILE]);
+  });
+
+  test("missing files are policy facts in the accumulating verdict", () => {
+    const verdict = judgeDocStyle({ ...clean(), missingFiles: ["README.md", "src/index.ts"] });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.missingFiles).toEqual(["README.md", "src/index.ts"]);
   });
 
   test("link scanning is scoped to README.md", () => {

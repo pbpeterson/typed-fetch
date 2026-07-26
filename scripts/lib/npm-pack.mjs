@@ -11,8 +11,7 @@
 //      lifecycle scripts as `npm_config_*` variables, and newer npm versions
 //      warn about the pnpm-only keys. The scrub loop was copied verbatim into
 //      verify-pack.mjs, check-consumer.mjs and check-deno-consumer.mjs. A pack
-//      manifest has to be deterministic and owes nothing to whoever's shell
-//      happens to be running it.
+//      manifest must be deterministic and owes nothing to the active shell.
 //
 //   2. NPM'S REPORTED FILENAME IS NOT THE FILE IT WROTE. `npm pack --json`
 //      reports a `filename` field, and npm 8 reported the scope-PREFIXED name

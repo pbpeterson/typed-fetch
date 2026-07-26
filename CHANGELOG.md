@@ -6,16 +6,14 @@
 
 This is a **major**, and most of the breaks are in runtime behavior.
 
-The baseline is `1.0.0`, not `1.1.0`. `1.1.0` was prepared in this repository,
-never published to npm, and never tagged. Read its section below. Every
-consumer upgrades `1.0.0` → `2.0.0`, so the real migration delta is the union
-of this section and the `[1.1.0]` section.
+The baseline is `1.0.0`, not `1.1.0`. `1.1.0` was prepared in this repository.
+It was never published to npm or tagged. Read its section below. Every consumer
+upgrades `1.0.0` → `2.0.0`. The migration delta combines this section with the
+`[1.1.0]` section.
 
-The numbered list below is written against `1.1.0`, because that is the diff
-these commits made. One item does not reach a `1.0.0` consumer: the
-`clone(recreate)` callback that break 4 narrows was itself added in `1.1.0`, so
-`1.0.0` code has no callback to refuse. Every other item applies from `1.0.0`
-unchanged.
+The numbered list below is written against `1.1.0`. One item does not reach a
+`1.0.0` consumer. The `clone(recreate)` callback narrowed by break 4 was added
+in `1.1.0`. Every other item applies from `1.0.0` unchanged.
 
 These runtime changes remove behavior that `1.1.0` had.
 
@@ -24,10 +22,9 @@ These runtime changes remove behavior that `1.1.0` had.
 2. `error.cause` and `AbortedError.reason` are no longer enumerable either.
 3. `error.headers` is a copy of the response headers. A write through it no
    longer reaches the response.
-4. `clone(recreate)` refuses every callback result that cannot own the cloned
-   body branch: a copy built from a different response, a Proxy or a delegate
-   wrapped around the new error, a copy that cannot confirm that it took the
-   branch, and a result that is not an object.
+4. `clone(recreate)` refuses callback results that cannot own the cloned body
+   branch. This includes a different response, a wrapper, an unconfirmed copy,
+   and a non-object result.
 5. A custom Fetch implementation that resolves a response whose `headers` is
    `null` yields a `NetworkError` instead of an HTTP error.
 6. `typedFetch` reads the `fetch` override as an own property of `options`. An
@@ -36,6 +33,8 @@ These runtime changes remove behavior that `1.1.0` had.
    and it converts `status` to a number. A custom Fetch implementation whose
    getters answer differently on a second read, or that answers `status` with a
    string, produces a different error.
+8. A custom Fetch implementation must resolve with a platform `Response` or a
+   compatible polyfill. Other values yield a `NetworkError`.
 
 One break is compile-time. `TypedFetchOptions["headers"]` rejects `undefined`
 as a header value, so code that compiled against `1.1.0` on a Node consumer
@@ -45,20 +44,21 @@ Read the migration table before you upgrade.
 
 ### Migration
 
-| What changed                                           | How it shows up                                                        | What to do                                                                           |
-| ------------------------------------------------------ | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `headers` and `url` are not enumerable                 | A log built from `{ ...error }` loses both fields                      | Call `error.toJSON()`, or read `error.headers` and `error.url` by name               |
-| `cause` and `reason` are not enumerable                | A deep log loses the transport detail                                  | Read `error.cause` and `error.reason` by name                                        |
-| `error.headers` is a copy                              | `error.headers.set(...)` no longer edits the response                  | Edit the `Response` you hold                                                         |
-| `clone(recreate)` refuses a wrapper                    | A `TypeError` names the wrapper                                        | Return the new error itself, never a Proxy around it                                 |
-| `clone(recreate)` refuses an unconfirmed copy          | A `TypeError` names a copy that cannot confirm the branch              | Upgrade the other package copy, or build the new error with the copy that is cloning |
-| `clone(recreate)` refuses a non-object result          | A `TypeError` names what the callback returned                         | Return the new error itself                                                          |
-| A string `status` from a custom Fetch                  | The error class changes from `UnknownHttpError` to the dedicated class | Assert on `error.status` as a number                                                 |
-| A non-string `statusText` or `url` from a custom Fetch | The field is the empty string                                          | Answer with a string, as the platform does                                           |
-| Identity is read once                                  | A test double with a counting getter records one read                  | Update the count in the test                                                         |
-| `headers: null` from a custom Fetch                    | The result is a `NetworkError`                                         | Give the response a real `Headers` value                                             |
-| `fetch` must be an own property                        | The request goes to the global `fetch`                                 | Write `{ ...options, fetch }` or `Object.assign(options, { fetch })`                 |
-| `headers` rejects `undefined`                          | TS2322 or TS2375 on a Node consumer without `lib.dom`                  | Write `...(token ? { Authorization: token } : {})`                                   |
+| What changed                                           | How it shows up                                                        | What to do                                                             |
+| ------------------------------------------------------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `headers` and `url` are not enumerable                 | A log built from `{ ...error }` loses both fields                      | Call `error.toJSON()`, or read `error.headers` and `error.url` by name |
+| `cause` and `reason` are not enumerable                | A deep log loses the transport detail                                  | Read `error.cause` and `error.reason` by name                          |
+| `error.headers` is a copy                              | `error.headers.set(...)` no longer edits the response                  | Edit the `Response` you hold                                           |
+| `clone(recreate)` refuses a wrapper                    | A `TypeError` names the wrapper                                        | Return the new error itself, never a Proxy around it                   |
+| `clone(recreate)` refuses an unconfirmed copy          | A `TypeError` names a copy that cannot confirm the branch              | Upgrade the other copy, or construct the error with this copy          |
+| `clone(recreate)` refuses a non-object result          | A `TypeError` names what the callback returned                         | Return the new error itself                                            |
+| A string `status` from a custom Fetch                  | The error class changes from `UnknownHttpError` to the dedicated class | Assert on `error.status` as a number                                   |
+| A non-string `statusText` or `url` from a custom Fetch | The field is the empty string                                          | Answer with a string, as the platform does                             |
+| Identity is read once                                  | A test double with a counting getter records one read                  | Update the count in the test                                           |
+| `headers: null` from a custom Fetch                    | The result is a `NetworkError`                                         | Give the response a real `Headers` value                               |
+| A custom Fetch resolves a non-`Response`               | The result is a `NetworkError`                                         | Return a platform `Response` or compatible polyfill                    |
+| `fetch` must be an own property                        | The request goes to the global `fetch`                                 | Write `{ ...options, fetch }` or `Object.assign(options, { fetch })`   |
+| `headers` rejects `undefined`                          | TS2322 or TS2375 on a Node consumer without `lib.dom`                  | Write `...(token ? { Authorization: token } : {})`                     |
 
 ### Breaking
 
@@ -98,27 +98,31 @@ Read the migration table before you upgrade.
   path. A copy that claims this package copy's prototype chain must be
   registered in this copy's table. It is now refused with a `TypeError` that
   releases the branch first.
-- `clone(recreate)` refuses a copy that cannot confirm that it took the cloned
-  body branch. The body table is per package copy, so a copy built by a
-  different one is invisible to it. That invisibility was read as consent: a
-  callback returning an instance from another copy, built from a **different**
-  response, was accepted, the teed branch became an orphan, the platform never
-  freed the source, and `cancel()` on the original error never settled. There
-  was no recovery path, and the cost was one pinned connection and one
-  unreleased stream per cloned error. Every copy now stamps a
+- `clone(recreate)` refuses a copy that cannot confirm ownership of the cloned
+  branch. Each package copy has its own body table. Another copy's body is
+  therefore invisible.
+
+  That invisibility was previously consent. A callback could return an instance
+  from another copy that held a different response. The teed branch became an
+  orphan, and `cancel()` never settled. Every copy now stamps a
   `Symbol.for("@pbpeterson/typed-fetch.ownsResponse")` method on
   `BaseHttpError.prototype`, and `clone()` asks it. An instance from a
   different package copy is accepted when it confirms that it took the branch.
   An instance from a package copy older than this one cannot answer, and
   `clone()` throws a `TypeError` after it releases the branch. Migration:
   upgrade the other copy, or build the new error with the copy that is cloning.
+
 - `clone(recreate)` refuses a callback result that is not an object.
   `clone(() => null)` resolved with `null` and stranded the branch. It now
   throws a `TypeError` that names what the callback returned.
 - `typedFetch` reads `status`, `statusText`, and `url` once per response. A
   custom Fetch implementation whose getters answer differently on a second read
   no longer produces an error whose class, message, and `status` disagree. The
-  first read decides all three.
+  first successful read decides all three. Each field is recorded immediately,
+  so a later getter failure cannot cause an earlier field to be read again.
+- A custom Fetch implementation must resolve with a platform `Response` or a
+  standards-compatible polyfill. A string, bare object, or partial test double
+  now yields `NetworkError`. Before, it could escape as typed success.
 - `typedFetch` converts `status` to a number before it compares it with 400. A
   custom Fetch implementation that answers `status` with `"404"` now resolves
   with `NotFoundError` and a numeric `status` of `404`. It resolved with
@@ -159,7 +163,7 @@ Read the migration table before you upgrade.
   the index signature on the internal `StrictHeaders`, and undici's
   `HeaderRecord`, an all-optional mapped type reached through the native branch
   of the union. Narrowing only the first is a no-op, because the type is a union
-  and the native branch still accepts the value. Both had to close. A consumer
+  and the native branch still accepts the value. Both required correction. A consumer
   with `lib.dom` was already protected by the platform's own `HeadersInit`, so
   this affects the no-DOM Node profile, which is the one the library targets.
   The option is now deliberately stricter than the platform there. Write
@@ -347,7 +351,7 @@ Read the migration table before you upgrade.
   its connection on its own. The threshold is an internal buffer size.
 - `README.md` documents the constructors of `NetworkError`, `AbortedError`, and
   `TimeoutError`. Their properties were documented and their signatures were
-  not, so a consumer who fabricated one in a test had to read
+  not, so a consumer who fabricated one in a test was forced to read
   `dist/errors/index.d.ts`.
 - `README.md` shows how a wrapper merges headers. The previous wrapper example
   passed `options` straight through. The naive `{ ...options?.headers }` spread
@@ -436,12 +440,12 @@ Read the migration table before you upgrade.
   the heading resolves through, and no other gate reads the footer. The base of
   the `[X.Y.Z]:` range stays unchecked, because this gate cannot see the
   previous version. `RELEASING.md` gains the matching checklist step.
-- The suite grows from 833 cases to 1140, in 21 files.
+- The suite grows from 833 cases to 1161, in 22 files.
   `response-identity.spec.ts` is new and drives the identity module directly,
   with no error class: counting getters pin one read per response, and the rest
   pin the `Number()` conversion, the empty string for a `statusText` or a `url`
-  that is not a string, the identity a cloned branch inherits, and the
-  primitive-key residual.
+  that is not a string, the identity a cloned branch inherits, and partial
+  identity failures.
   `base-http-error.spec.ts` gains the `clone()` decision table — one case per
   refusal condition, each closed by one helper that asserts the teed branch
   reports `bodyUsed === true` and that `cancel()` on the original settles. The
@@ -902,6 +906,7 @@ if (error) {
   // error was typed as NotFoundError | ServerErrors | UnknownHttpError | NetworkError,
   // but a 403 response would still construct a ForbiddenError at runtime —
   // the second type argument was never checked against what actually came back.
+  if ("cancel" in error) await error.cancel();
 }
 ```
 
@@ -961,6 +966,8 @@ if (isNetworkError(error)) {
   } else {
     console.log("Network error:", error.message);
   }
+} else if (error && "cancel" in error) {
+  await error.cancel();
 }
 ```
 

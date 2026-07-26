@@ -46,18 +46,21 @@ defined term is correct here.
 Words this codebase already uses, some of them only implicitly until now.
 
 - **Identity** — the four fields an HTTP error takes from its `Response`:
-  `status`, `statusText`, `url`, and `headers`. Read **once per response** and
-  recorded in a `WeakMap`, so the status that selects the error class is the
-  status in `error.status`, in `error.message`, and in the `toJSON()` record.
-  The copy `clone()` produces inherits the identity of the error it was cloned
-  from, and does not re-read the **branch** — when the cloning package **copy**
-  is also the one that builds it. The inherited identity is **lent** to the
-  branch, not recorded against it: it answers for the construction of that one
-  error and is taken back when the construction ends. Four limits follow from
-  that sentence, and the residual below names all four. The record is normalized
-  where a real `Response` cannot differ but an injected one can: `status` is
-  `Number()` applied to the single read, and `statusText` and `url` are the
-  empty string when the read answers with anything other than a string.
+  `status`, `statusText`, `url`, and `headers`. Each successful read is recorded
+  immediately in a `WeakMap`. A later failure cannot cause an earlier field to
+  be read again.
+
+  The recorded status selects the error class. The same value appears in
+  `error.status`, `error.message`, and the `toJSON()` record.
+
+  The copy from `clone()` inherits the original error's identity when the same
+  package **copy** builds both. The identity is **lent** to the **branch** during
+  construction. It is removed when construction ends.
+
+  The record is normalized where an injected `Response` can differ. `status`
+  uses `Number()` on the single read. Non-string `statusText` and `url` values
+  become empty strings.
+
 - **Error body** — the body of the `Response` that produced an HTTP error. A
   single-use stream owned by `src/errors/error-body.ts`. Every error body must
   be read or canceled. An unread body keeps its stream open, and the open stream
@@ -156,7 +159,7 @@ Words this codebase already uses, some of them only implicitly until now.
     may legitimately install their own.
 
 - **Residual** — something the library cannot close, stated rather than left
-  undiscovered. Six exist, and the first three are disclosures a **channel**
+  undiscovered. Five exist, and the first three are disclosures a **channel**
   keeps. `cause` survives `structuredClone` and the fatal-exception printer,
   because both are platform algorithms with no hook. vitest's assertion-message
   stringifier reads own property names including non-enumerable ones, and it
@@ -164,14 +167,8 @@ Words this codebase already uses, some of them only implicitly until now.
   segment survives redaction by design, because dropping the path would reduce
   `url` to the origin.
 
-  The other three are limits on a guarantee rather than disclosures, and they
+  The other two are limits on a guarantee rather than disclosures, and they
   are named here so the next reader meets them as decisions.
-  - A `WeakMap` cannot key a primitive, so the single-read guarantee on
-    **identity** covers object responses only. An injected `fetch` that resolves
-    a string or a number whose prototype was polluted with a `status` getter
-    reads once per call, and two calls can disagree. Every other guarantee this
-    library gives about an injected implementation is equally void for a
-    polluted `String.prototype`.
   - A **copy** that answers the ownership query `true` while holding a different
     response is believed. The query is a protocol across a **seam**, not a
     proof, and nothing on this side of the seam can check it. The alternative is

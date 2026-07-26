@@ -13,6 +13,9 @@ Apply this standard to `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`,
 `CONTEXT.md`, `RELEASING.md`, both `SKILL.md` files, the files under `docs/`,
 and every public JSDoc comment in `src/`.
 
+Public JSDoc is attached to an exported declaration or a public member. A
+declaration marked `@internal` is outside this scope.
+
 Two limits on that scope:
 
 - A code identifier keeps the spelling the code uses, even when the code
@@ -133,11 +136,16 @@ content.
 
 ## Examples
 
-Every TypeScript example must compile. `pnpm check-docs` compiles each fenced
-block against the built package in `dist/`.
+Every TypeScript example for the current API must compile. `pnpm check-docs`
+compiles each current fenced block against the built package in `dist/`.
 
-Every example that obtains an HTTP error must do one of three things with the
-body:
+A `historical` block in `CHANGELOG.md` records an API that no longer exists.
+It is archival evidence, not current usage guidance. It is exempt from
+compilation and body-ownership rules because the current package cannot execute
+it.
+
+Every current example that obtains an HTTP error must do one of three things
+with the body:
 
 1. read it, with `json()`, `text()`, `blob()`, or `arrayBuffer()`;
 2. cancel it, with `await error.cancel()`;

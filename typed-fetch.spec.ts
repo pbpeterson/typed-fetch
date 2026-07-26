@@ -374,38 +374,50 @@ describe("typedFetch", () => {
     expect(result.error?.cause).toBeInstanceOf(TypeError);
   });
 
-  // The comment above `res.status` in src/index.ts states exactly this split,
-  // so the cases below are what makes that comment checkable. They pass
-  // before and after the comment was corrected — the behavior is deliberate and
-  // documented (README, "API reference"); only the comment was wrong.
-  test("a non-Response stays on the branch its status selects", async () => {
-    // A read that reports >= 400 → the matching HTTP error VALUE.
-    const mapped = await typedFetch("https://example.invalid/double-404", {
-      fetch: respondingWith({ status: 404 }),
+  test.each([
+    ["an object with a status", { status: 404 }],
+    ["a string", "not a response"],
+    ["a bare object", {}],
+    ["a spoofed Response tag", { status: 200, [Symbol.toStringTag]: "Response" }],
+    ["undefined", undefined],
+  ])("a custom fetch resolving %s → NetworkError, never a typed success", async (_label, value) => {
+    const result = await typedFetch("https://example.invalid/non-response", {
+      fetch: respondingWith(value),
     });
-    expect(mapped.response).toBe(null);
-    expect(mapped.error).toBeInstanceOf(NotFoundError);
 
-    // A read that reports nothing → SUCCESS, and the double reaches the caller.
-    const stringy = await typedFetch("https://example.invalid/double-string", {
-      fetch: respondingWith("not a response"),
-    });
-    expect(stringy.error).toBe(null);
-    expect(stringy.response as unknown).toBe("not a response");
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBeInstanceOf(TypeError);
+  });
 
-    const bare = await typedFetch("https://example.invalid/double-bare", {
-      fetch: respondingWith({}),
-    });
-    expect(bare.error).toBe(null);
-    expect((bare.response as unknown as { status?: unknown }).status).toBeUndefined();
+  test("a standards-compatible foreign Response shape stays supported", async () => {
+    const polyfill = {
+      body: null,
+      bodyUsed: false,
+      headers: new Headers(),
+      ok: true,
+      redirected: false,
+      status: 200,
+      statusText: "OK",
+      type: "basic",
+      url: "https://polyfill.test/",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone() {
+        return this;
+      },
+      formData: async () => new FormData(),
+      json: async () => ({ source: "polyfill" }),
+      text: async () => "polyfill",
+      [Symbol.toStringTag]: "Response",
+    } as unknown as Response;
 
-    // Only a read that THROWS becomes a NetworkError. That is the whole of the
-    // envelope's promise about an injected implementation.
-    const nothing = await typedFetch("https://example.invalid/double-undefined", {
-      fetch: respondingWith(undefined),
+    const result = await typedFetch<{ source: string }>("https://example.invalid/polyfill", {
+      fetch: respondingWith(polyfill),
     });
-    expect(nothing.response).toBe(null);
-    expect(nothing.error).toBeInstanceOf(NetworkError);
+
+    expect(result.error).toBe(null);
+    expect(await result.response?.json()).toEqual({ source: "polyfill" });
   });
 
   test("a Response whose url getter throws → NetworkError value, no rejection", async () => {
@@ -1745,8 +1757,9 @@ describe("typedFetch — the response identity is read once per response", () =>
   });
 
   test("TF-03: a string status reaches its dedicated class with a numeric status", async () => {
+    const { response } = cyclingResponse("status", ["404"]);
     const result = await typedFetch("https://example.invalid/string-status", {
-      fetch: respondingWith({ status: "404" }),
+      fetch: resolving(response),
     });
 
     expect(result.error).toBeInstanceOf(NotFoundError);
@@ -1826,8 +1839,9 @@ describe("typedFetch — the response identity is read once per response", () =>
   ];
 
   test.each(statusConversionRows)("TF-04: $label", async ({ status, outcome, Class, expected }) => {
+    const { response } = cyclingResponse("status", [status]);
     const result = await typedFetch("https://example.invalid/status-conversion", {
-      fetch: respondingWith({ status }),
+      fetch: resolving(response),
     });
 
     if (outcome === "success") {
@@ -2163,13 +2177,62 @@ describe("typedFetch — the response identity is read once per response", () =>
       },
     };
 
+    const { response } = cyclingResponse("status", [status]);
     const result = await typedFetch("https://example.invalid/counting-valueof", {
-      fetch: respondingWith({ status }),
+      fetch: resolving(response),
     });
 
     expect(result.error).toBeInstanceOf(NotFoundError);
     // One read, one conversion. A second `Number(raw)` anywhere on the path
     // would run this getter again and could answer a different status.
     expect(valueOfCalls).toBe(1);
+  });
+
+  test("TF-20: a partial identity failure cannot change earlier fields on retry", async () => {
+    const response = new Response(null);
+    const cause = new Error("headers getter exploded");
+    const laterHeaders = new Headers({ "x-later": "2" });
+    const reads = { status: 0, statusText: 0, url: 0, headers: 0 };
+
+    Object.defineProperties(response, {
+      status: {
+        get() {
+          reads.status += 1;
+          return reads.status === 1 ? 420 : 421;
+        },
+      },
+      statusText: {
+        get() {
+          reads.statusText += 1;
+          return reads.statusText === 1 ? "FIRST" : "SECOND";
+        },
+      },
+      url: {
+        get() {
+          reads.url += 1;
+          return reads.url === 1 ? "https://first.test/x" : "https://second.test/y";
+        },
+      },
+      headers: {
+        get() {
+          reads.headers += 1;
+          if (reads.headers === 1) throw cause;
+          return laterHeaders;
+        },
+      },
+    });
+
+    const fetch = resolving(response);
+    const first = await typedFetch("https://example.invalid/partial-identity", { fetch });
+    expect(first.error).toBeInstanceOf(NetworkError);
+    expect(first.error?.cause).toBe(cause);
+
+    const second = await typedFetch("https://example.invalid/partial-identity", { fetch });
+    expect(second.error).toBeInstanceOf(UnknownHttpError);
+    if (!isHttpError(second.error)) throw new Error("expected an HTTP error");
+    expect(second.error.status).toBe(420);
+    expect(second.error.message).toContain("HTTP 420 FIRST (https://first.test/x)");
+    expect(second.error.url).toBe("https://first.test/x");
+    expect(reads).toEqual({ status: 1, statusText: 1, url: 1, headers: 2 });
   });
 });

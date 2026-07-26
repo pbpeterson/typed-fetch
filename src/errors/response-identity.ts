@@ -1,5 +1,6 @@
 /**
- * The four identity fields of one `Response`, read at most ONCE per response.
+ * The four identity fields of one `Response`, with each successful read
+ * recorded at most ONCE per response.
  *
  * ## Why this module exists
  *
@@ -19,8 +20,8 @@
  * 200, and whose `error.status` reported 201. One response, three answers.
  *
  * This module makes the answer singular. Every caller in `src/` reads identity
- * through here, and the first read of a field is the only read that ever
- * happens for that response.
+ * through here. The first successful read of a field is the only successful
+ * read that happens for that response.
  *
  * ## Why once per RESPONSE, and not once per construction
  *
@@ -31,16 +32,16 @@
  * with a longer fuse. A `Response` has ONE identity, so the record is keyed by
  * the response and survives for as long as the response does.
  *
- * The consequence, stated so it is a decision rather than a surprise: a
- * response's identity is fixed at its first read. A getter that changes its
- * answer later cannot change what this library already recorded.
+ * The consequence, stated so it is a decision rather than a surprise: the
+ * first successful field reads fix a response's identity. A getter that changes
+ * later cannot replace a recorded answer.
  *
  * There is exactly one identity here that was not read from the response it
  * describes: the one a cloned branch INHERITS. It is a LOAN rather than a
  * record, it lives only for the construction of the copy, and
  * {@link lendIdentity} states in full why the difference is load-bearing.
  *
- * ## Why two tables and not one partially-filled record
+ * ## Why status and partial identity fields have separate tables
  *
  * The success path must read `status` and NOTHING else. `typedFetch` consults
  * `status` on every resolved value, including every 200. Reading a whole
@@ -48,9 +49,12 @@
  * that never become an error, allocate a record nobody reads, and — decisively —
  * turn a hostile `headers` getter on a successful response into a
  * `NetworkError`. That is a behavior change the suite already pins the opposite
- * way. So {@link statusOf} fills a status-only table, and {@link identityOf}
- * fills the whole record and reuses the status the status-only table already
- * holds.
+ * way. So {@link statusOf} fills a status-only table.
+ *
+ * {@link identityOf} records each remaining field immediately after that read
+ * succeeds. It stores the whole record after every field succeeds. If a later
+ * getter throws, a retry reuses the earlier successful fields and retries only
+ * the failed field.
  *
  * ## The normalization rules, and why they are these rules
  *
@@ -94,23 +98,14 @@
  * - The cost to accept: a test double that answers `url` with a `URL` OBJECT
  *   loses it. A double must answer with a string, as the platform does.
  *
- * `headers` is read once and passed through UNTOUCHED. The record must not hold
- * a copy, because a `Headers` is mutable and one shared copy across two errors
- * built from one response would let `a.headers.set(...)` edit `b.headers`. That
- * is the aliasing hazard `BaseHttpError` builds its own copy to prevent, and it
- * keeps building one per error. The value is not normalized either: a value the
- * `Headers` constructor refuses is a signal the envelope already turns into a
- * `NetworkError`, and normalizing it away would silently undo a shipped
- * decision.
+ * The first successful `headers` read is passed through UNTOUCHED. The record
+ * must not hold a copy. A shared copy would let one error edit another error's
+ * headers. `BaseHttpError` prevents that aliasing by making one copy per error.
+ *
+ * The value is not normalized. A value the `Headers` constructor refuses makes
+ * the envelope produce a `NetworkError`.
  *
  * ## Residuals, stated rather than left undiscovered
- *
- * A `WeakMap` cannot key a primitive. If an injected `fetch` resolves a string
- * or a number whose prototype was polluted with a `status` getter, the reads
- * here are still one per CALL, but the calls are not shared, so two calls can
- * disagree. Every other guarantee this library gives about an injected
- * implementation is equally void for a polluted `String.prototype`, so this is a
- * known limit rather than the next defect. It has a test.
  *
  * An inherited identity is SCOPED, in two directions that a reader must not
  * confuse with the read-once guarantee above. It reaches AT MOST the copy
@@ -170,6 +165,16 @@ const statusByResponse = new WeakMap<object, number>();
 const identityByResponse = new WeakMap<object, ResponseIdentity>();
 
 /**
+ * Successful field reads that happened before the whole identity was complete.
+ *
+ * A later getter can throw. Recording each earlier field immediately keeps the
+ * first successful read authoritative when the same response is tried again.
+ */
+const statusTextByResponse = new WeakMap<object, string>();
+const urlByResponse = new WeakMap<object, string>();
+const headersByResponse = new WeakMap<object, Headers>();
+
+/**
  * Identities LENT to a response for the duration of one construction, and taken
  * back after it. Filled and emptied by {@link lendIdentity}; consulted by
  * {@link identityOf} before the recorded table, and by nothing else.
@@ -191,10 +196,9 @@ const lentByResponse = new WeakMap<object, ResponseIdentity>();
 /**
  * Can this value be a `WeakMap` key?
  *
- * An injected `fetch` may resolve anything at all, including a primitive, and a
- * `WeakMap` refuses a primitive key. Every function here answers for a
- * non-keyable value by reading it directly, once per call — see the residual in
- * the module header.
+ * `typedFetch` rejects a resolved primitive before this module. The guard
+ * remains defensive for an internal caller that violates the `Response` type.
+ * A `WeakMap` refuses such a value, so it is read directly.
  */
 function keyable(value: unknown): value is object {
   return value !== null && (typeof value === "object" || typeof value === "function");
@@ -209,8 +213,16 @@ function textOf(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/** Read and record one field only after its getter and normalization succeed. */
+function recordedField<T>(table: WeakMap<object, T>, key: object, read: () => T): T {
+  if (table.has(key)) return table.get(key) as T;
+  const value = read();
+  table.set(key, value);
+  return value;
+}
+
 /**
- * The response's status, read at most once per response, ever.
+ * The response's status, with its first successful read recorded per response.
  *
  * This is the read the error class is selected on, and the same value reaches
  * `error.status`, `error.message`, and `error.toJSON()`, so the four can no
@@ -238,8 +250,8 @@ export function statusOf(response: Response): number {
 }
 
 /**
- * The response's whole identity, with every field read at most once per
- * response, ever.
+ * The response's whole identity, with every successful field read recorded
+ * immediately per response.
  *
  * The status is the same single read {@link statusOf} returns: on the
  * `typedFetch` path it is already recorded, so this call reads three fields, not
@@ -268,15 +280,23 @@ export function identityOf(response: Response): ResponseIdentity {
     if (recorded !== undefined) return recorded;
   }
 
-  const identity: ResponseIdentity = {
-    status: statusOf(response),
-    statusText: textOf(response.statusText),
-    url: textOf(response.url),
-    // Passed through, never copied: see the module header on the aliasing
-    // hazard a shared copy would create between two errors built from one
-    // response.
-    headers: response.headers,
-  };
+  const status = statusOf(response);
+  const statusText =
+    key === undefined
+      ? textOf(response.statusText)
+      : recordedField(statusTextByResponse, key, () => textOf(response.statusText));
+  const url =
+    key === undefined
+      ? textOf(response.url)
+      : recordedField(urlByResponse, key, () => textOf(response.url));
+  // Passed through, never copied: see the module header on the aliasing hazard
+  // a shared copy would create between two errors built from one response.
+  const headers =
+    key === undefined
+      ? response.headers
+      : recordedField(headersByResponse, key, () => response.headers);
+
+  const identity: ResponseIdentity = { status, statusText, url, headers };
 
   if (key !== undefined) identityByResponse.set(key, identity);
   return identity;
