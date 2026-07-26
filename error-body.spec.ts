@@ -414,6 +414,13 @@ describe("errorBodyOf — tee() and its branches", () => {
     const branch = errorBodyOf(teed.branch);
     teed.adopt(branch);
 
+    // 50 ms, and deliberately NOT the 500 ms budget `settlesWithin` uses in
+    // `base-http-error.spec.ts` and `public-surface.spec.ts`. THE ASSERTION IS
+    // INVERTED HERE. Those files assert `"settled"`, where a tight timer can
+    // lose a race a starved runner would have won, so their budget is generous.
+    // The three races in this file assert `"pending"`: the timer winning IS the
+    // pass, a starved runner cannot flake them, and a longer budget would only
+    // make every run wait longer for the same verdict.
     const settled = await Promise.race([
       source.cancel().then(() => "settled"),
       new Promise((resolve) => setTimeout(() => resolve("pending"), 50)),
@@ -705,4 +712,51 @@ describe("errorBodyOf — one predicate, two messages", () => {
       );
     });
   }
+});
+
+describe("errorBodyOf — the other half of the seam", () => {
+  test("EB-01: the body module never touches identity", async () => {
+    // Identity lives ABOVE the seam and the single-use stream below it.
+    // `response-identity.spec.ts` asserts the mirror image: the identity module
+    // never touches `body`, `bodyUsed`, or `clone`. Together the two cases pin
+    // the seam from both sides, so a future change that lets one module learn
+    // the other's job fails a test instead of passing review.
+    const response = new Response("payload", { status: 404 });
+    const reads = { status: 0, statusText: 0, url: 0, headers: 0 };
+    const real = { statusText: response.statusText, url: response.url, headers: response.headers };
+    Object.defineProperty(response, "status", {
+      configurable: true,
+      get() {
+        reads.status += 1;
+        return 404;
+      },
+    });
+    Object.defineProperty(response, "statusText", {
+      configurable: true,
+      get() {
+        reads.statusText += 1;
+        return real.statusText;
+      },
+    });
+    Object.defineProperty(response, "url", {
+      configurable: true,
+      get() {
+        reads.url += 1;
+        return real.url;
+      },
+    });
+    Object.defineProperty(response, "headers", {
+      configurable: true,
+      get() {
+        reads.headers += 1;
+        return real.headers;
+      },
+    });
+
+    const body = errorBodyOf(response);
+    expect(await body.text()).toBe("payload");
+    await body.cancel();
+
+    expect(reads).toEqual({ status: 0, statusText: 0, url: 0, headers: 0 });
+  });
 });

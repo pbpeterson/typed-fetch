@@ -101,6 +101,50 @@ export function validateRelease(candidate) {
     throw new Error("The CHANGELOG [Unreleased] section must be empty before publishing.");
   }
 
+  // The footer reference definitions, for THIS version only.
+  //
+  // The dated heading above proves the section exists; it proves nothing about
+  // the link the heading resolves through. A release that moved the entries and
+  // left the footer alone shipped `[1.1.0]` and
+  // `compare/v1.1.0...HEAD` against a tag that was never pushed, so both links
+  // 404 and the changelog claims a publication that never happened. No other
+  // gate reads the footer: `check-doc-style` scans README links only, and
+  // `check-docs` compiles fenced TypeScript.
+  //
+  // This is inside the SAME scope the rest of this function has, which is why
+  // it belongs here and the `Symbol.for` rule (RELEASING.md, semver rule 7)
+  // does not. Both rules are policy, but that one needs a diff against the
+  // previously released `src/`, and these two facts are decided from the
+  // version string, the repository URL, and the changelog text — every one of
+  // them already in `candidate`.
+  //
+  // The base of each range is deliberately NOT checked. This function cannot
+  // see the previous version, and inventing one from the changelog would make
+  // it a second source of truth for release history.
+  const compareBase = `${candidate.repositoryUrl.replace(/^git\+/, "").replace(/\.git$/, "")}/compare`;
+
+  const versionLink = new RegExp(
+    `^\\[${escapeRegex(candidate.version)}\\]:[ \\t]*(\\S+)[ \\t]*$`,
+    "m",
+  ).exec(candidate.changelog);
+  if (!versionLink) {
+    throw new Error(`CHANGELOG.md needs a [${candidate.version}] link definition in the footer.`);
+  }
+  if (
+    !versionLink[1].startsWith(`${compareBase}/`) ||
+    !versionLink[1].endsWith(`...v${candidate.version}`)
+  ) {
+    throw new Error(
+      `The CHANGELOG [${candidate.version}] link must be a ${compareBase}/ range ending at v${candidate.version}.`,
+    );
+  }
+
+  const expectedUnreleasedLink = `${compareBase}/v${candidate.version}...HEAD`;
+  const unreleasedLink = /^\[Unreleased\]:[ \t]*(\S+)[ \t]*$/m.exec(candidate.changelog);
+  if (!unreleasedLink || unreleasedLink[1] !== expectedUnreleasedLink) {
+    throw new Error(`The CHANGELOG [Unreleased] link must be ${expectedUnreleasedLink}.`);
+  }
+
   return { distTag: semverMatch[4] === undefined ? "latest" : "next" };
 }
 

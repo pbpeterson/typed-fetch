@@ -70,17 +70,19 @@ Do not write "need to", "have to", or "it is recommended". Use the table.
 
 Use these terms exactly. Each names one thing.
 
-| Term                  | Meaning                                                             |
-| --------------------- | ------------------------------------------------------------------- |
-| resolves with         | A promise finishes normally and supplies a value.                   |
-| rejects               | A promise finishes with an error.                                   |
-| throws                | A synchronous operation raises an exception.                        |
-| abort the request     | An `AbortSignal` stops a request.                                   |
-| cancel the error body | `error.cancel()` releases the body of an HTTP error.                |
-| read the error body   | `json()`, `text()`, `blob()`, or `arrayBuffer()` consumes the body. |
-| known HTTP error      | A status code that has a dedicated error class.                     |
-| unknown HTTP error    | A status code of 400 or more with no dedicated class.               |
-| package copy          | One loaded instance of this package in a process.                   |
+| Term                  | Meaning                                                                                                                                |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| resolves with         | A promise finishes normally and supplies a value.                                                                                      |
+| rejects               | A promise finishes with an error.                                                                                                      |
+| throws                | A synchronous operation raises an exception.                                                                                           |
+| abort the request     | An `AbortSignal` stops a request.                                                                                                      |
+| cancel the error body | `error.cancel()` releases the body of an HTTP error.                                                                                   |
+| read the error body   | `json()`, `text()`, `blob()`, or `arrayBuffer()` consumes the body.                                                                    |
+| known HTTP error      | A status code that has a dedicated error class.                                                                                        |
+| unknown HTTP error    | A status code of 400 or more with no dedicated class.                                                                                  |
+| package copy          | One loaded instance of this package in a process.                                                                                      |
+| reason phrase         | The status text that the server sends on the wire. It can differ from the library's `statusText`.                                      |
+| error record          | The plain object that `error.toJSON()` returns. `JSON.stringify(error)` writes it, and `console.log(error)` prints it below the stack. |
 
 Two rules follow from that table, and both are load-bearing:
 
@@ -90,6 +92,15 @@ Two rules follow from that table, and both are load-bearing:
 `typedFetch` never rejects for a request failure, so never describe a request
 failure with "throws" or "rejects". It **resolves with** an error value. Body
 readers are separate operations, and they do reject.
+
+The Terms table in `README.md` mirrors this table. It carries the same terms in
+the same order, and each meaning begins with the meaning above. A README
+meaning can append one package-specific sentence. `pnpm check-doc-style`
+enforces the relation.
+
+This document is the one place where a forbidden phrase can be written down, so
+`pnpm check-doc-style` does not scan it for vocabulary violations. Every other
+document in the scope above is scanned.
 
 ## Markers
 

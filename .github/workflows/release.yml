@@ -49,6 +49,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm format:check
+      - run: pnpm check-doc-style
       - run: pnpm typecheck
       # Build explicitly BEFORE test and publish. Do NOT rely on the
       # `prepublishOnly` lifecycle hook — if it is renamed, removed, or a

@@ -22,6 +22,8 @@ CONTEXT.md holds the module map. This tree adds only `src/errors/`:
 ```
 base-http-error.ts      → HTTP error IDENTITY (status, statusText, url,
                           headers, message); body methods delegate
+response-identity.ts    → the four identity fields of one Response, read once
+                          per response (INTERNAL)
 error-body.ts           → internal single-use body lifecycle (see below)
 known-http-error.ts     → internal branded base for the 40 dedicated classes
 network-error.ts        → NetworkError with cause (original fetch rejection)
@@ -49,10 +51,16 @@ index.ts                → re-export barrel for the ./errors subpath
    `"AbortError"`/`"TimeoutError"` — an injected fetch (whatwg-fetch,
    node-fetch@3) builds its own abort error. `reason ?? err` then decides
    timeout vs abort. An aborted signal alone is never sufficient.
-3. `res.status >= 400` → mapped class from `statusCodeErrorMap`, else
-   `UnknownHttpError`. This runs INSIDE the same `try`: an injected fetch can
-   resolve a non-`Response` or a hostile getter, and that must stay an error
-   value.
+3. `statusOf(res) >= 400` → mapped class from `statusCodeErrorMap`, else
+   `UnknownHttpError`. `statusOf` (`src/errors/response-identity.ts`) records
+   the value it read, so the SAME read reaches the `BaseHttpError` constructor
+   and `UnknownHttpError` — the status that selected the class is the status in
+   `error.status`, in `error.message`, and in the `toJSON()` record. It is
+   `Number(raw)`, so an injected fetch answering `"404"` reaches `NotFoundError`
+   with a numeric `404`. Never read `res.status` directly here. This runs INSIDE
+   the same `try`: an injected fetch can resolve a non-`Response` or a hostile
+   getter, the numeric conversion can throw through a hostile `valueOf`, and
+   both must stay an error value.
 4. Otherwise success — body NOT parsed; consumer calls `response.json()`. 3xx with `redirect: "manual"` is success.
 
 No broad internal throw/catch control flow beyond the single `fetch` envelope.
@@ -122,11 +130,18 @@ on consumer subclasses, see CONTRIBUTING.md, "Consumer subclasses and cloning".
 
 **CONTRIBUTING.md, "Error response bodies", holds the invariants** — the
 `claimable()` predicate, the fixed `cancel()` order, the `bodyUsed` rule, and
-the tee contract. Three facts about the seam, because they are read wrong most
+the tee contract. Four facts about the seam, because they are read wrong most
 often:
 
 - The lifecycle is NOT in `base-http-error.ts`. That file owns HTTP error
   identity (status, statusText, url, headers, message); its body methods delegate.
+  It keeps TWO module-scoped `WeakMap`s keyed by the error instance: `bodies`
+  (the `ErrorBody` handle) and `identities` (the `ResponseIdentity` the
+  constructor read). Both live outside the class for the same reason: a
+  `#private` field emits a nominal `#private;` marker into both declaration
+  files and makes the two declarations of every class mutually unassignable.
+  The identity tables in `response-identity.ts` are keyed the other way round,
+  by the RESPONSE, so two errors built from one response report one identity.
 - `errorBodyOf(response)` captures the `Response` in a **closure**, never as a
   property, so it is unreachable from the error a consumer holds.
   `base-http-error.ts` keys one `ErrorBody` handle per instance in a
@@ -136,6 +151,28 @@ often:
 - State inside `errorBodyOf` is closure variables (`cancelled`, `readStarted`,
   `cancelling`); `teed` is the only property on the returned object. There is no
   `State` record and no `response` field.
+- `clone()` does two things beyond teeing. It calls
+  `lendIdentity(teed.branch, identity)` BEFORE it builds the copy, so a copy this
+  package copy builds inherits this error's identity instead of reading the
+  branch — a real `Response.clone()` reports the platform's internal slots, not
+  the own-property getter that produced the original identity. LENT, not
+  recorded: the returned revoke runs in a `finally` around the construction.
+  `teed.branch` is whatever `response.clone()` answered with, and a custom Fetch
+  implementation can answer with a `Response` it did not create, so a permanent
+  record would bind a real, unrelated `Response` to this error's identity for the
+  life of the process. Never widen that window, and never let `statusOf` consult
+  the loan — that is the read `typedFetch` performs on every resolved response.
+  An instance from a DIFFERENT package copy inherits nothing, because the
+  identity tables are per copy; it reads the branch.
+- `clone()` then decides ownership of the branch, and the last open case crosses
+  a package copy seam: when the returned
+  error is absent from this copy's `bodies` table and does not claim this copy,
+  `asksOwnsResponse(copy, teed.branch)` asks it directly, through the
+  `Symbol.for("@pbpeterson/typed-fetch.ownsResponse")` method that
+  `stampOwnsResponse` puts on `BaseHttpError.prototype`. `true` accepts;
+  `false` and `undefined` both release the branch and throw, with different
+  messages. Never make `adopt()` decide that — the question is about identity
+  and prototypes, which live above this seam.
 
 A refused read **rejects** (the readers are `async`); a refused `clone()`
 **throws** (`tee()` is synchronous). Keep that split. Never resolve a teed

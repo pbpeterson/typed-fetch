@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import {
   cjsAssertions,
   consumerTsconfig,
+  crossCopyAssertions,
   crossformatAssertions,
   esmAssertions,
   indent,
@@ -62,6 +63,14 @@ const GREEN_CROSSFORMAT = {
   cjsKnownGuardOnEsmError: true,
   // Genuinely false in a green run: cross-format instanceof cannot work.
   cjsInstanceofOnEsmError: false,
+};
+
+const GREEN_CROSSCOPY = {
+  acceptsCorrectBranch: true,
+  bothCancelsSettle: true,
+  refusesDifferentResponse: true,
+  branchReleased: true,
+  originalCancelSettles: true,
 };
 
 const GREEN_RESOLUTION = {
@@ -219,6 +228,28 @@ describe("crossformatAssertions", () => {
     const verdict = crossformatAssertions({});
     expect(failing(verdict)).toHaveLength(2);
     expect(verdict.notes).toHaveLength(1);
+  });
+});
+
+describe("crossCopyAssertions", () => {
+  test("emits 3 assertions in the printed order", () => {
+    expect(ids(crossCopyAssertions(GREEN_CROSSCOPY))).toEqual([
+      "crosscopy:accepts-correct-branch",
+      "crosscopy:refuses-different-response",
+      "crosscopy:branch-released",
+    ]);
+    expect(failing(crossCopyAssertions(GREEN_CROSSCOPY))).toEqual([]);
+    expect(crossCopyAssertions(GREEN_CROSSCOPY).notes).toEqual([]);
+  });
+
+  test("a truncated probe record fails all 3 without throwing", () => {
+    // The probe clones a real teed body, so it can die mid-write in a way the
+    // others cannot. Reading `undefined` off the partial JSON must produce three
+    // plain failures, never a confusing report and never a throw.
+    const verdict = crossCopyAssertions({});
+    expect(verdict.results).toHaveLength(3);
+    expect(failing(verdict)).toHaveLength(3);
+    expect(verdict.results.every((a) => a.ok === false)).toBe(true);
   });
 });
 

@@ -2,20 +2,40 @@
 
 ## [Unreleased]
 
-This is a **major**, and most of the breaks are in runtime behavior. Six
-runtime changes remove behavior that `1.1.0` had.
+## [2.0.0] - 2026-07-26
+
+This is a **major**, and most of the breaks are in runtime behavior.
+
+The baseline is `1.0.0`, not `1.1.0`. `1.1.0` was prepared in this repository,
+never published to npm, and never tagged. Read its section below. Every
+consumer upgrades `1.0.0` → `2.0.0`, so the real migration delta is the union
+of this section and the `[1.1.0]` section.
+
+The numbered list below is written against `1.1.0`, because that is the diff
+these commits made. One item does not reach a `1.0.0` consumer: the
+`clone(recreate)` callback that break 4 narrows was itself added in `1.1.0`, so
+`1.0.0` code has no callback to refuse. Every other item applies from `1.0.0`
+unchanged.
+
+These runtime changes remove behavior that `1.1.0` had.
 
 1. `error.headers` and `error.url` are no longer enumerable. A spread, an
    `Object.keys(error)` walk, and a `for...in` loop no longer reach them.
 2. `error.cause` and `AbortedError.reason` are no longer enumerable either.
 3. `error.headers` is a copy of the response headers. A write through it no
    longer reaches the response.
-4. `clone(recreate)` refuses two more callback results: a copy built from a
-   different response, and a Proxy or a delegate wrapped around the new error.
+4. `clone(recreate)` refuses every callback result that cannot own the cloned
+   body branch: a copy built from a different response, a Proxy or a delegate
+   wrapped around the new error, a copy that cannot confirm that it took the
+   branch, and a result that is not an object.
 5. A custom Fetch implementation that resolves a response whose `headers` is
    `null` yields a `NetworkError` instead of an HTTP error.
 6. `typedFetch` reads the `fetch` override as an own property of `options`. An
    override that arrives through the prototype chain is ignored.
+7. `typedFetch` reads a response's `status`, `statusText`, and `url` once each,
+   and it converts `status` to a number. A custom Fetch implementation whose
+   getters answer differently on a second read, or that answers `status` with a
+   string, produces a different error.
 
 One break is compile-time. `TypedFetchOptions["headers"]` rejects `undefined`
 as a header value, so code that compiled against `1.1.0` on a Node consumer
@@ -25,15 +45,20 @@ Read the migration table before you upgrade.
 
 ### Migration
 
-| What changed                            | How it shows up                                       | What to do                                                             |
-| --------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------- |
-| `headers` and `url` are not enumerable  | A log built from `{ ...error }` loses both fields     | Call `error.toJSON()`, or read `error.headers` and `error.url` by name |
-| `cause` and `reason` are not enumerable | A deep log loses the transport detail                 | Read `error.cause` and `error.reason` by name                          |
-| `error.headers` is a copy               | `error.headers.set(...)` no longer edits the response | Edit the `Response` you hold                                           |
-| `clone(recreate)` refuses a wrapper     | A `TypeError` names the wrapper                       | Return the new error itself, never a Proxy around it                   |
-| `headers: null` from a custom Fetch     | The result is a `NetworkError`                        | Give the response a real `Headers` value                               |
-| `fetch` must be an own property         | The request goes to the global `fetch`                | Write `{ ...options, fetch }` or `Object.assign(options, { fetch })`   |
-| `headers` rejects `undefined`           | TS2322 or TS2375 on a Node consumer without `lib.dom` | Write `...(token ? { Authorization: token } : {})`                     |
+| What changed                                           | How it shows up                                                        | What to do                                                                           |
+| ------------------------------------------------------ | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `headers` and `url` are not enumerable                 | A log built from `{ ...error }` loses both fields                      | Call `error.toJSON()`, or read `error.headers` and `error.url` by name               |
+| `cause` and `reason` are not enumerable                | A deep log loses the transport detail                                  | Read `error.cause` and `error.reason` by name                                        |
+| `error.headers` is a copy                              | `error.headers.set(...)` no longer edits the response                  | Edit the `Response` you hold                                                         |
+| `clone(recreate)` refuses a wrapper                    | A `TypeError` names the wrapper                                        | Return the new error itself, never a Proxy around it                                 |
+| `clone(recreate)` refuses an unconfirmed copy          | A `TypeError` names a copy that cannot confirm the branch              | Upgrade the other package copy, or build the new error with the copy that is cloning |
+| `clone(recreate)` refuses a non-object result          | A `TypeError` names what the callback returned                         | Return the new error itself                                                          |
+| A string `status` from a custom Fetch                  | The error class changes from `UnknownHttpError` to the dedicated class | Assert on `error.status` as a number                                                 |
+| A non-string `statusText` or `url` from a custom Fetch | The field is the empty string                                          | Answer with a string, as the platform does                                           |
+| Identity is read once                                  | A test double with a counting getter records one read                  | Update the count in the test                                                         |
+| `headers: null` from a custom Fetch                    | The result is a `NetworkError`                                         | Give the response a real `Headers` value                                             |
+| `fetch` must be an own property                        | The request goes to the global `fetch`                                 | Write `{ ...options, fetch }` or `Object.assign(options, { fetch })`                 |
+| `headers` rejects `undefined`                          | TS2322 or TS2375 on a Node consumer without `lib.dom`                  | Write `...(token ? { Authorization: token } : {})`                                   |
 
 ### Breaking
 
@@ -72,8 +97,43 @@ Read the migration table before you upgrade.
   pinned connection and one unreleased stream per cloned error, with no recovery
   path. A copy that claims this package copy's prototype chain must be
   registered in this copy's table. It is now refused with a `TypeError` that
-  releases the branch first. An instance built by a genuinely different package
-  copy is still accepted.
+  releases the branch first.
+- `clone(recreate)` refuses a copy that cannot confirm that it took the cloned
+  body branch. The body table is per package copy, so a copy built by a
+  different one is invisible to it. That invisibility was read as consent: a
+  callback returning an instance from another copy, built from a **different**
+  response, was accepted, the teed branch became an orphan, the platform never
+  freed the source, and `cancel()` on the original error never settled. There
+  was no recovery path, and the cost was one pinned connection and one
+  unreleased stream per cloned error. Every copy now stamps a
+  `Symbol.for("@pbpeterson/typed-fetch.ownsResponse")` method on
+  `BaseHttpError.prototype`, and `clone()` asks it. An instance from a
+  different package copy is accepted when it confirms that it took the branch.
+  An instance from a package copy older than this one cannot answer, and
+  `clone()` throws a `TypeError` after it releases the branch. Migration:
+  upgrade the other copy, or build the new error with the copy that is cloning.
+- `clone(recreate)` refuses a callback result that is not an object.
+  `clone(() => null)` resolved with `null` and stranded the branch. It now
+  throws a `TypeError` that names what the callback returned.
+- `typedFetch` reads `status`, `statusText`, and `url` once per response. A
+  custom Fetch implementation whose getters answer differently on a second read
+  no longer produces an error whose class, message, and `status` disagree. The
+  first read decides all three.
+- `typedFetch` converts `status` to a number before it compares it with 400. A
+  custom Fetch implementation that answers `status` with `"404"` now resolves
+  with `NotFoundError` and a numeric `status` of `404`. It resolved with
+  `UnknownHttpError` carrying the string `"404"` before, which broke the
+  declared `number` type and made `isKnownHttpError` return `false`.
+- `statusText` and `url` are the empty string when the response answers with a
+  value that is not a string. A `URL` object in the `url` slot of a test double
+  no longer reaches `error.url`. Give the double a string.
+- A copy from `clone()` reports the identity of the error it was cloned from. It
+  no longer re-reads the cloned response. This covers a copy that the cloning
+  package copy builds, which is every copy that a built-in error, a subclass, or
+  a same-copy recreation callback produces. A recreation callback that returns an
+  instance from a different package copy runs that copy's constructor, and that
+  instance reads the response it receives. For a real `Response` the two answer
+  with the same four values.
 - A custom Fetch implementation that resolves a response whose `headers` is
   `null` now yields a `NetworkError` instead of an HTTP error. The error
   constructor copies the response headers, and `new Headers(null)` throws. The
@@ -234,10 +294,13 @@ Read the migration table before you upgrade.
   reset mid-body. The README and the internal documentation were updated, and
   this block was not. It is what a consumer sees on hover, because it ships in
   `dist/index.d.ts`.
-- The `README.md` examples used browser-relative URLs such as `/api/users`,
-  which reject on Node with `TypeError: Failed to parse URL`. Installation names
-  Node 20 as the target. The first example therefore could not run on the
-  runtime the document recommends. Every example URL is now absolute.
+- The examples used browser-relative URLs such as `/api/users`, which reject on
+  Node with `TypeError: Failed to parse URL`. Installation names Node 20 as the
+  target. The first example therefore could not run on the runtime the document
+  recommends. Every example URL is now absolute in `README.md`, in
+  `skills/typed-fetch/SKILL.md`, in the public JSDoc, and in the migration
+  examples in this file. `pnpm check-docs` fails a `typedFetch` example whose
+  first argument is a relative URL literal.
 
 ### Documentation
 
@@ -251,6 +314,22 @@ Read the migration table before you upgrade.
   test separates the two kinds: on Deno every failure in that section arrives as
   a bare `TypeError` with no `cause` and no error code, so the section now says
   to put the retry policy in a layer that knows the request.
+  The correction reached `README.md` only. `src/errors/network-error.ts` and
+  `skills/typed-fetch/SKILL.md` still told the reader to inspect `cause` before
+  retrying, so the package shipped two contradictory rules — one of them in the
+  `.d.ts` a consumer reads on hover. All three now carry the same rule.
+- The README Terms table was missing `resolves with`, `rejects`, and `throws`,
+  the three terms the controlled vocabulary is built on. It now carries the same
+  eleven terms as `docs/writing-standard.md`, in the same order. `reason phrase`
+  and `error record` moved into that standard, so no term is defined in the
+  consumer document alone. `pnpm check-doc-style` compares the two tables.
+- The README linked to `./LICENSE` from its license badge and its closing
+  section. `README.md` is the only document in the npm tarball, so a reader
+  opening it from `node_modules` followed a dead link twice. Both are absolute
+  URLs now, and `pnpm check-doc-style` fails any relative link in `README.md`.
+- Nine occurrences in this file used the error-body word for an abort. A request
+  is aborted; an error body is canceled. The wording changed; no recorded fact
+  did.
 - A documentation pass verified every prose claim in `README.md` against the
   code and corrected four false statements. "A repeated header appears once per
   arrival" held only for `set-cookie`. `Headers` combines duplicates of every
@@ -321,10 +400,86 @@ Read the migration table before you upgrade.
   DOM, `@types/node`, and `exactOptionalPropertyTypes: true`, compiling
   `typedFetch(url, { fetch: maybeFetch })` against the published declarations.
   It is the only executable gate for that contract, because this repository does
-  not compile its own sources with the flag. The suite now runs 35 consumer
+  not compile its own sources with the flag. The suite now runs 38 consumer
   assertions.
+- `scripts/check-consumer.mjs` also gains a cross-copy clone probe. The ESM copy
+  of the installed tarball clones an error, and the CJS copy supplies the
+  recreated instance. It proves the one thing nothing else proves: that the
+  `ownsResponse` stamp survives `npm pack`, `npm install`, and the `exports` map
+  in both formats. `Symbol.for` is process-global, so the ESM copy can ask a CJS
+  instance — but only when each format ran its own stamping side effect, which a
+  packaging change could drop. Three assertions: a copy from the other format
+  that took the handed branch is accepted and both bodies release; a copy built
+  from a different response is refused with the branch released first; and every
+  `cancel()` is raced against a timer, so a stranded branch reports a verdict
+  instead of hanging the gate.
+- `pnpm check-docs` now compiles the TypeScript examples in `CHANGELOG.md`.
+  All four failed: three put a `// Before (0.x)` half and an `// After` half in
+  one fence, so the halves collided with `TS2451` before either was judged, and
+  the After halves were missing their imports. Two obtained an HTTP error and
+  never released its body. The migration examples are now one fence per half.
+  A half that documents a removed API carries the new `historical` marker, which
+  is valid only in `CHANGELOG.md`, is never compiled, and — unlike `no-check` —
+  leaves the skip ratio untouched, because a changelog accumulates historical
+  examples forever and that ratio must not drift toward its cliff on their
+  account. `historical` used in any other file fails the gate. `check-docs` also
+  fails a `typedFetch` example whose first argument is a relative URL literal.
+- `pnpm check-doc-style` is a new gate. It reads Markdown and public JSDoc as
+  text, needs no `dist/` and no `tsc`, and reports three classes at once: a
+  relative link in `README.md`, a controlled-vocabulary violation in prose, and
+  a README Terms table that has drifted from `docs/writing-standard.md`. It runs
+  before `pnpm build` in CI, because none of its checks needs a build.
+- `scripts/validate-release.mjs` now also reads the CHANGELOG FOOTER. It
+  requires a `[X.Y.Z]:` compare link that ends at `vX.Y.Z`, and an
+  `[Unreleased]:` link that compares from `vX.Y.Z` to `HEAD`. The dated heading
+  it already checked proves the section exists and proves nothing about the link
+  the heading resolves through, and no other gate reads the footer. The base of
+  the `[X.Y.Z]:` range stays unchecked, because this gate cannot see the
+  previous version. `RELEASING.md` gains the matching checklist step.
+- The suite grows from 833 cases to 1140, in 21 files.
+  `response-identity.spec.ts` is new and drives the identity module directly,
+  with no error class: counting getters pin one read per response, and the rest
+  pin the `Number()` conversion, the empty string for a `statusText` or a `url`
+  that is not a string, the identity a cloned branch inherits, and the
+  primitive-key residual.
+  `base-http-error.spec.ts` gains the `clone()` decision table — one case per
+  refusal condition, each closed by one helper that asserts the teed branch
+  reports `bodyUsed === true` and that `cancel()` on the original settles. The
+  two assertions are independent: the first alone would pass if `release()` ran
+  on the wrong branch, the second alone would pass if the platform changed its
+  tee semantics. One existing case changed rather than being papered over — an
+  instance from a package copy that cannot answer the ownership query is now
+  refused. It also gains the four `BH-17` to `BH-20` cases that pin the
+  inherited identity as a LOAN, one of which pins the revoke's position: a
+  `recreate` callback that throws is the only exit a revoke written below the
+  construction block misses, and moving the revoke there leaves that loan alive
+  for the life of the process. `brand.spec.ts` covers the reader's three
+  answers, its refusal to throw for a hostile value, and the frozen descriptor
+  of the stamped method.
+- `docs/adr/0002-refuse-a-clone-copy-that-cannot-confirm-the-branch.md` records
+  why the unconfirmed copy is refused instead of accepted, including the
+  lenient policy as an evaluated and rejected alternative. Without it the next
+  reader sees a refusal and re-proposes leniency.
 
-## [1.1.0] - 2026-07-24
+## [1.1.0] - 2026-07-24 — NEVER PUBLISHED
+
+WARNING: `1.1.0` is not on npm, and no `v1.1.0` git tag exists. It was prepared,
+dated, and superseded by `2.0.0` before anything was published. The published
+versions end at `1.0.0`. Do not try to install `1.1.0`, and do not follow a
+`v1.1.0` compare link.
+
+Your upgrade path is `1.0.0` → `2.0.0`. Everything in this section shipped as
+part of `2.0.0`, so the real migration delta is the union of the `[2.0.0]`
+section and this one. Read both.
+
+This section keeps its own heading and its own date, and it carries no footer
+link, because there is no tag for one to name.
+[`RELEASING.md`](https://github.com/pbpeterson/typed-fetch/blob/main/RELEASING.md)
+requires every publication to be reconstructable from an immutable tag, so a
+dated heading on its own reads as a publication. Folding this section into
+`[2.0.0]` would hide a version number that existed in `package.json` and in this
+file. Leaving it dated and unmarked would let it claim a publication that never
+happened.
 
 This release is a **minor**, not the patch it was originally numbered. Nothing
 is removed or narrowed and no error class changes, but two public additions —
@@ -367,10 +522,10 @@ conventional SemVer governs. Everything else here is a fix.
   reject with their **own** abort error instead of `signal.reason`. Only an
   identity match (`err === signal.reason`) took the abort path before, so
   `whatwg-fetch` (jsdom), `node-fetch@3`, and other injected implementations
-  produced a `NetworkError` for a canceled request — and a retry loop keyed on
-  `NetworkError` would reissue calls the caller had explicitly canceled. A
+  produced a `NetworkError` for an aborted request — and a retry loop keyed on
+  `NetworkError` would reissue calls the caller had explicitly aborted. A
   governing signal that reports `aborted` plus an error-shaped rejection named
-  `"AbortError"` or `"TimeoutError"` is now classified as the cancellation, and
+  `"AbortError"` or `"TimeoutError"` is now classified as the abort, and
   the signal's `reason` still decides `AbortedError` vs `TimeoutError`. An
   aborted signal remains necessary but not sufficient: an unrelated rejection
   (a `TypeError` from `Request` construction, a `SecurityError`, a bare object
@@ -520,7 +675,7 @@ conventional SemVer governs. Everything else here is a fix.
 - **Aborts and timeouts now return `AbortedError` / `TimeoutError` instead of
   `NetworkError`.** Both are new classes that extend `Error` directly (not
   `NetworkError`), so **`isNetworkError()` no longer returns `true` for
-  canceled or timed-out requests.** Cancellation and timeouts are not
+  aborted or timed-out requests.** An abort and a timeout are not
   network failures, and collapsing all three into `NetworkError` forced an
   untyped `error.cause` cast to tell them apart. See
   [Migrating from 0.x](#migrating-from-0x) below.
@@ -576,7 +731,7 @@ conventional SemVer governs. Everything else here is a fix.
 - `isAbortError(error): error is AbortedError` and
   `isTimeoutError(error): error is TimeoutError` guards, alongside the new
   `AbortedError` and `TimeoutError` classes.
-- `AbortedError.reason` (`unknown`) — the `AbortSignal`'s cancellation reason,
+- `AbortedError.reason` (`unknown`) — the `AbortSignal`'s abort reason,
   i.e. whatever the caller passed to `controller.abort(reason)`. Typed
   `unknown` so the consumer narrows it. When `abort()` is called with no
   argument, the platform supplies a `DOMException` named `"AbortError"`.
@@ -688,7 +843,7 @@ conventional SemVer governs. Everything else here is a fix.
   by service workers, middleware, and request factories — put the signal on the
   first argument, where it is a prototype getter (`url.signal`), not on `init`.
   The catch block keyed abort/timeout classification solely off `init.signal`,
-  so every cancellation on this path misclassified as a `NetworkError` instead
+  so every abort on this path misclassified as a `NetworkError` instead
   of `AbortedError`/`TimeoutError`. The governing signal is now resolved from
   either slot. Precedence matches native `fetch(request, init)`: an
   options-slot `signal` overrides the `Request`'s own signal entirely.
@@ -738,19 +893,29 @@ Breaking changes to handle:
 
 **1. The second `ErrorType` type parameter is gone.**
 
-```typescript
-// Before (0.x)
-const { response, error } = await typedFetch<User, NotFoundError>("/api/users/123");
+```typescript historical
+// 0.x. This block documents a removed API and cannot compile against 1.x.
+const { response, error } = await typedFetch<User, NotFoundError>(
+  "https://api.example.com/users/123",
+);
 if (error) {
   // error was typed as NotFoundError | ServerErrors | UnknownHttpError | NetworkError,
   // but a 403 response would still construct a ForbiddenError at runtime —
   // the second type argument was never checked against what actually came back.
 }
+```
 
-// After
-import { isKnownHttpError } from "@pbpeterson/typed-fetch";
+Replace it with:
 
-const { response, error } = await typedFetch<User>("/api/users/123");
+```typescript
+import { typedFetch, isKnownHttpError } from "@pbpeterson/typed-fetch";
+
+interface User {
+  id: number;
+}
+
+const { error } = await typedFetch<User>("https://api.example.com/users/123");
+
 if (error && isKnownHttpError(error)) {
   switch (error.status) {
     case 404:
@@ -763,46 +928,69 @@ if (error && isKnownHttpError(error)) {
       // Keep a default for forward compatibility and mixed package versions.
       console.log(`HTTP ${error.status}`);
   }
+  // No branch above reads the body, so cancel it.
+  await error.cancel();
 }
 ```
 
 Prefer `instanceof` if you only care about one class:
 
 ```typescript
-import { NotFoundError } from "@pbpeterson/typed-fetch";
+import { typedFetch, isHttpError, NotFoundError } from "@pbpeterson/typed-fetch";
+
+const { error } = await typedFetch("https://api.example.com/users/123");
 
 if (error instanceof NotFoundError) {
   console.log("User not found");
+  await error.cancel();
+} else if (isHttpError(error)) {
+  await error.cancel();
 }
 ```
 
 **2. Aborts and timeouts are no longer `NetworkError`.**
 
-```typescript
-// Before (0.x)
-const { response, error } = await typedFetch<User[]>("/api/users", {
+```typescript historical
+// 0.x. This block documents a removed API and cannot compile against 1.x.
+const { response, error } = await typedFetch<User[]>("https://api.example.com/users", {
   signal: AbortSignal.timeout(5000),
 });
 if (isNetworkError(error)) {
   if ((error.cause as Error)?.name === "AbortError") {
-    console.log("Request was canceled");
+    console.log("Request was aborted");
   } else {
     console.log("Network error:", error.message);
   }
 }
+```
 
-// After
-import { isNetworkError, isAbortError, isTimeoutError } from "@pbpeterson/typed-fetch";
+Replace it with:
 
-const { response, error } = await typedFetch<User[]>("/api/users", {
+```typescript
+import {
+  typedFetch,
+  isNetworkError,
+  isAbortError,
+  isTimeoutError,
+  isHttpError,
+} from "@pbpeterson/typed-fetch";
+
+interface User {
+  id: number;
+}
+
+const { error } = await typedFetch<User[]>("https://api.example.com/users", {
   signal: AbortSignal.timeout(5000),
 });
+
 if (isAbortError(error)) {
-  console.log("Request was canceled");
+  console.log("Request was aborted");
 } else if (isTimeoutError(error)) {
   console.log("Request timed out");
 } else if (isNetworkError(error)) {
   console.log("Network error:", error.message);
+} else if (isHttpError(error)) {
+  await error.cancel();
 }
 ```
 
@@ -816,8 +1004,8 @@ timed-out requests.
 The public surface now contains the runtime functions, error classes, and
 consumer-facing types. Replace imports of the removed implementation details:
 
-```typescript
-// Before (0.x)
+```typescript historical
+// 0.x. Every name below was removed in 1.0 and cannot resolve against 1.x.
 import {
   statusCodeErrorMap,
   httpErrors,
@@ -825,8 +1013,11 @@ import {
   type TypedHeaders,
   type StrictHeaders,
 } from "@pbpeterson/typed-fetch";
+```
 
-// After (1.x)
+Replace them with:
+
+```typescript
 import {
   isKnownHttpError,
   type ClientErrors,
@@ -887,6 +1078,6 @@ header input from `TypedFetchOptions["headers"]` instead of importing
 
 See the [commit history](https://github.com/pbpeterson/typed-fetch/commits/main).
 
-[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v1.1.0...HEAD
-[1.1.0]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.0...v1.1.0
+[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v0.8.1...v1.0.0

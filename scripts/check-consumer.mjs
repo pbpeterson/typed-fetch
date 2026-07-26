@@ -260,6 +260,76 @@ try {
 console.log(JSON.stringify(out));
 `;
 
+// --- Cross-copy clone probe: the ownership query across the format seam -----
+// `clone()` tees the error body and hands the branch to a `recreate` callback.
+// The body table is per package COPY, so a copy built by a different one is
+// invisible to it — and that invisibility used to be read as consent: a callback
+// returning an instance from another copy, built from a DIFFERENT response, was
+// accepted, the branch became an orphan, and `cancel()` on the original error
+// never settled. Every copy now stamps a
+// `Symbol.for("@pbpeterson/typed-fetch.ownsResponse")` method on
+// `BaseHttpError.prototype`, and `clone()` asks it.
+//
+// This probe proves the one thing nothing else proves: that the stamp survives
+// `npm pack`, `npm install`, and the `exports` map, in BOTH formats, as a real
+// consumer resolves them. `Symbol.for` is process-global, so the ESM copy's
+// `clone()` can ask a CJS copy's instance — but only if each format actually ran
+// its own stamping side effect, which a downstream bundler could tree-shake away.
+const PROBE_CROSSCOPY = `
+import { typedFetch } from "${PKG_NAME}";          // ESM graph mints and clones
+import { createRequire } from "node:module";
+import { start404 } from "./server.mjs";
+const require = createRequire(import.meta.url);
+const cjs = require("${PKG_NAME}");                  // CJS graph supplies the copy
+
+// A stranded branch makes cancel() wait forever, so race it: this probe must
+// report a verdict rather than hang the gate.
+const settlesWithin = (promise, ms = 500) =>
+  Promise.race([
+    promise.then(() => "settled", () => "settled"),
+    new Promise((resolve) => setTimeout(() => resolve("pending"), ms)),
+  ]);
+
+const out = {};
+const srv = await start404();
+try {
+  // 1. A copy from another package copy, built CORRECTLY from the handed
+  //    branch, is accepted and both bodies release.
+  const accepted = await typedFetch(srv.url);
+  let copy;
+  const cloned = accepted.error.clone((response) => {
+    copy = new cjs.NotFoundError(response);
+    return copy;
+  });
+  out.acceptsCorrectBranch = cloned === copy;
+  out.bothCancelsSettle =
+    (await settlesWithin(Promise.all([accepted.error.cancel(), copy.cancel()]))) === "settled";
+
+  // 2. The same across formats, from a DIFFERENT response: refused, and the
+  //    branch is released BEFORE the throw, so the original stays usable.
+  const refused = await typedFetch(srv.url);
+  const elsewhere = new Response("elsewhere", { status: 404 });
+  let branch;
+  let thrown;
+  try {
+    refused.error.clone((response) => {
+      branch = response;
+      return new cjs.NotFoundError(elsewhere);
+    });
+  } catch (err) {
+    thrown = err;
+  }
+  out.refusesDifferentResponse =
+    thrown instanceof TypeError && /built from a different response/.test(thrown.message);
+  out.branchReleased = Boolean(branch) && branch.bodyUsed === true;
+  out.originalCancelSettles = (await settlesWithin(refused.error.cancel())) === "settled";
+  if (elsewhere.body) elsewhere.body.cancel().catch(() => {});
+} finally {
+  srv.close();
+}
+console.log(JSON.stringify(out));
+`;
+
 // --- Resolution probe: the two packaging promises a resolver has to keep -----
 // (1) `<pkg>/package.json` must be reachable THROUGH the resolver. Tooling that
 //     reads a dependency's manifest (bundler plugins, monorepo linters, version
@@ -611,6 +681,39 @@ export function crossformatAssertions(r) {
 }
 
 /**
+ * Three assertions from the cross-copy clone probe.
+ *
+ * The gate is ACCUMULATING, so this returns a verdict record rather than
+ * throwing: a refusal that fails to release the branch and a refusal that never
+ * happens are two separate findings, and truncating the report to the first one
+ * would hide the second.
+ * @param {any} r parsed JSON line from probe-crosscopy.mjs
+ * @returns {ProbeVerdict}
+ */
+export function crossCopyAssertions(r) {
+  return {
+    results: [
+      assert(
+        "crosscopy:accepts-correct-branch",
+        r.acceptsCorrectBranch && r.bothCancelsSettle,
+        `accepted=${r.acceptsCorrectBranch} bothCancelsSettle=${r.bothCancelsSettle} (an instance from a different package copy that took the handed branch must be accepted, and both bodies must release — a stamp missing from either format breaks this)`,
+      ),
+      assert(
+        "crosscopy:refuses-different-response",
+        r.refusesDifferentResponse,
+        `refusesDifferentResponse=${r.refusesDifferentResponse} (a copy built from a DIFFERENT response leaves the teed branch an orphan; accepting it pins one connection and one unreleased stream per cloned error, with no recovery path)`,
+      ),
+      assert(
+        "crosscopy:branch-released",
+        r.branchReleased && r.originalCancelSettles,
+        `branchReleased=${r.branchReleased} originalCancelSettles=${r.originalCancelSettles} (the refusal must release the branch BEFORE it throws, or cancel() on the original error never settles)`,
+      ),
+    ],
+    notes: [],
+  };
+}
+
+/**
  * Six assertions from the resolution probe: two for the `./package.json`
  * subpath, four for the node10 directory redirect. These are MANIFEST
  * promises, not behavior — but they are only observable against a real
@@ -902,6 +1005,13 @@ function main() {
     emit(crossformatAssertions(runProbe(consumer, "probe-crossformat.mjs", PROBE_CROSSFORMAT)));
   } catch (err) {
     record(assert("crossformat:probe", false, `cross-format probe crashed: ${err.message}`));
+  }
+
+  console.log("\n▸ Cross-copy clone (ESM clones, CJS supplies the new error) probe …");
+  try {
+    emit(crossCopyAssertions(runProbe(consumer, "probe-crosscopy.mjs", PROBE_CROSSCOPY)));
+  } catch (err) {
+    record(assert("crosscopy:probe", false, `cross-copy probe crashed: ${err.message}`));
   }
 
   console.log("\n▸ Resolution (./package.json subpath, node10 ./errors redirect) probes …");

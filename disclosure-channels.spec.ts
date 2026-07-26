@@ -366,3 +366,42 @@ describe("disclosure channels — the escape hatches still work", () => {
     }
   });
 });
+
+describe("disclosure channels — the cross-copy ownership query", () => {
+  test("D1: the stamped query is an inventory entry, not a channel", async () => {
+    // CONTEXT.md: "Add a channel there before adding a member anywhere." This
+    // member is a FUNCTION and carries no data, so it cannot leak a value — and
+    // that is exactly why it needs an entry rather than a pass. The inventory is
+    // only useful while it is complete.
+    const key = Symbol.for("@pbpeterson/typed-fetch.ownsResponse");
+    const error = httpError();
+
+    // Stamped on the PROTOTYPE with defineProperty, never declared as a
+    // computed class member: a computed member would emit a `unique symbol`
+    // into both declaration files and reintroduce the `#private` cross-format
+    // assignability hazard.
+    expect(Object.getOwnPropertySymbols(error)).toEqual([]);
+    expect(Object.prototype.hasOwnProperty.call(error, key)).toBe(false);
+    expect(
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(error) as object, key),
+    ).toBeUndefined();
+    expect(typeof (error as unknown as Record<symbol, unknown>)[key]).toBe("function");
+
+    // Every one of the seven channels, asserted for the member's NAME rather
+    // than for a sentinel, because a function has no value to plant in.
+    const channels = [
+      JSON.stringify(error),
+      inspect(error, { depth: null }),
+      inspect(error, { showHidden: true, depth: null }),
+      inspect(error, { customInspect: false, showHidden: false, depth: null }),
+      String(error),
+      inspect(structuredClone(error) as Error, { showHidden: true, depth: null }),
+      JSON.stringify({ keys: Object.keys(error), spread: { ...error } }),
+    ];
+    for (const rendered of channels) {
+      expect(rendered).not.toContain("ownsResponse");
+    }
+
+    await error.cancel();
+  });
+});

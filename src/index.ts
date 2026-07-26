@@ -16,6 +16,7 @@ import {
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
 import { classifyRequestFailure } from "./request-failure";
+import { statusOf } from "./errors/response-identity";
 
 /** Realm-safe Request detection for iframe, node:vm, and duplicated-runtime inputs. */
 function isRequest(value: unknown): value is Request {
@@ -294,7 +295,7 @@ export type TypedFetchOptions = NativeRequestOptions & {
  *   id: number;
  * }
  *
- * const { response, error } = await typedFetch<User>("/api/users/1");
+ * const { response, error } = await typedFetch<User>("https://api.example.com/users/1");
  * if (error) {
  *   console.log(error.name);
  *   // An HTTP error carries a body. This example does not read it, so it
@@ -350,21 +351,30 @@ export async function typedFetch<JsonReturnType>(
     //
     // A non-Response that answers the read is a different case, and it is NOT
     // forced into an error: `status` is the only thing consulted, so a double
-    // reporting `>= 400` becomes the matching HTTP error, and one reporting
-    // anything else — including `undefined` — stays on the success branch and
+    // whose `status` CONVERTS to a number of 400 or more becomes the matching
+    // HTTP error, and one that converts to anything else — including `NaN`,
+    // which is what `undefined` converts to — stays on the success branch and
     // reaches the caller through the cast below. Measured: `{ status: 404 }`
-    // resolves as `NotFoundError`, `"a string"` resolves as
+    // resolves as `NotFoundError`, `{ status: "404" }` resolves as
+    // `NotFoundError` too, `"a string"` resolves as
     // `{ response: "a string", error: null }`, and `undefined` resolves as
     // `NetworkError` only because reading `.status` off it throws. README,
     // "API reference", states the same rule for consumers.
     //
-    // `status` is read ONCE, into a local, INSIDE the block below. Once,
-    // because a getter is free to report a different value on a second read,
-    // and selecting the error class from a second read answers a status this
-    // branch was never taken on. Inside, because the read itself can throw, and
-    // a throw here strands the body — see the catch.
+    // `status` is read ONCE PER RESPONSE, by `statusOf`, which records the
+    // value it read. The constructor and `UnknownHttpError` then answer with
+    // that same value instead of reading the response again, so the status that
+    // selected the error class is the status in `error.status`, in
+    // `error.message`, and in the `toJSON()` record. Once matters because a
+    // getter is free to report a different value on a second read, and a class
+    // selected on one read whose fields come from another answers a status this
+    // branch was never taken on.
+    //
+    // The read stays INSIDE the block below, because it can still throw — a
+    // hostile getter, or a `valueOf` that throws during the numeric conversion
+    // — and a throw here strands the body. See the catch.
     try {
-      const status = res.status;
+      const status = statusOf(res);
       if (status >= 400) {
         const ErrorClass = statusCodeErrorMap.get(status);
         return {
@@ -373,7 +383,8 @@ export async function typedFetch<JsonReturnType>(
         };
       }
     } catch (cause) {
-      // The line above reads `status`, and the error class reads `statusText`,
+      // The line above reads `status` (and converts it, which a hostile
+      // `valueOf` can make throw), and the error class reads `statusText`,
       // `url`, and `headers`; any of them can throw for an injected
       // implementation. The catch below turns that into a NetworkError, but
       // `res` lives in the outer try block: the caller gets `response: null`

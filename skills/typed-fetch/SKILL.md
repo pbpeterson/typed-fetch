@@ -32,7 +32,7 @@ interface User {
   name: string;
 }
 
-const { response, error } = await typedFetch<User[]>("/api/users");
+const { response, error } = await typedFetch<User[]>("https://api.example.com/users");
 
 if (error) {
   if (isHttpError(error)) {
@@ -57,7 +57,7 @@ interface User {
   name: string;
 }
 
-const { error } = await typedFetch<User>("/api/users", {
+const { error } = await typedFetch<User>("https://api.example.com/users", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ name: "John" }),
@@ -92,10 +92,10 @@ Each result carries one non-null value. A successful result has `response` and
 Notes on the union:
 
 - A known HTTP error class, such as `NotFoundError`, has a literal-typed `status` and `statusText`. `UnknownHttpError` has a plain `number` status.
-- `NetworkError` also covers a permanent request-construction failure, such as an invalid URL or the `CONNECT` method. Inspect `error.cause` before a retry. A retry of these fails again.
+- `NetworkError` also covers a permanent request-construction failure, such as an invalid URL or the `CONNECT` method. It also covers a transient failure, such as a DNS failure or a refused connection. No portable test separates the two: `error.cause` is a `TypeError` for every kind of failure, and on Deno there is no `cause` at all. A blind retry loop keyed on `NetworkError` retries the permanent failures forever. Put the retry policy in a layer that knows the request.
 - `AbortedError` and `TimeoutError` do not extend `NetworkError`. `isNetworkError()` returns `false` for both. Use the dedicated guards.
 - `error.url` is present on every member of the union. It is the empty string when no URL could be resolved. Read it without narrowing.
-- Only a status of 400 or more is an HTTP error. Status `0` stays on the success branch, so check `response.ok` for an opaque response.
+- Only a status of 400 or more is an HTTP error. `typedFetch` converts the response's `status` to a number before it compares it with 400, and it reads that status once. Status `0` stays on the success branch, so check `response.ok` for an opaque response.
 
 ### Type guards
 
@@ -132,7 +132,7 @@ interface User {
   id: number;
 }
 
-const { response, error } = await typedFetch<User>("/api/users/1");
+const { response, error } = await typedFetch<User>("https://api.example.com/users/1");
 
 if (!error) {
   const user = await response.json();
@@ -194,7 +194,7 @@ To read a body twice, call `error.clone()`.
 ```typescript
 import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
 
-const { error } = await typedFetch("/api/users/1");
+const { error } = await typedFetch("https://api.example.com/users/1");
 
 if (isHttpError(error)) {
   // Call clone() BEFORE the first body read. Release every branch it creates.
@@ -211,6 +211,8 @@ Rules for `clone()`:
 - A `cancel()` on one branch stays pending until the other branch is released too. Release both together with `await Promise.all([error.cancel(), copy.cancel()])`.
 - A `cancel()` on one branch never cancels the other branch.
 - A consumer subclass that holds extra state should pass a recreation callback to `clone()`.
+- A recreation callback must return a new error, built from the `Response` it receives. Any other result throws a `TypeError`, and `clone()` releases the orphaned branch first.
+- An error from a different package copy is accepted only when that copy can confirm that it took the branch. A package copy older than this one cannot confirm it.
 
 ## Common patterns
 
@@ -222,7 +224,7 @@ A timeout resolves with `TimeoutError`, never `NetworkError`. Use a standard
 ```typescript
 import { typedFetch, isHttpError, isTimeoutError } from "@pbpeterson/typed-fetch";
 
-const { error } = await typedFetch("/api/slow", {
+const { error } = await typedFetch("https://api.example.com/slow", {
   signal: AbortSignal.timeout(5000),
 });
 
@@ -242,7 +244,7 @@ promise settles.
 import { typedFetch, isAbortError, isHttpError } from "@pbpeterson/typed-fetch";
 
 const controller = new AbortController();
-const promise = typedFetch("/api/users", { signal: controller.signal });
+const promise = typedFetch("https://api.example.com/users", { signal: controller.signal });
 controller.abort();
 
 const { error } = await promise;
@@ -271,7 +273,7 @@ injection, or a custom agent.
 ```typescript
 import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
 
-const { error } = await typedFetch<{ id: number }>("/api/users/1", {
+const { error } = await typedFetch<{ id: number }>("https://api.example.com/users/1", {
   fetch: async (input, init) => fetch(input, init),
 });
 

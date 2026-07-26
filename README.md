@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/pbpeterson/typed-fetch/actions/workflows/ci.yml/badge.svg)](https://github.com/pbpeterson/typed-fetch/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/%40pbpeterson%2Ftyped-fetch)](https://www.npmjs.com/package/@pbpeterson/typed-fetch)
-[![license](https://img.shields.io/npm/l/%40pbpeterson%2Ftyped-fetch)](./LICENSE)
+[![license](https://img.shields.io/npm/l/%40pbpeterson%2Ftyped-fetch)](https://github.com/pbpeterson/typed-fetch/blob/main/LICENSE)
 
 ## Purpose
 
@@ -35,12 +35,15 @@ This document uses these terms with these meanings.
 
 | Term                  | Meaning                                                                                                                                |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| known HTTP error      | A status code that has a dedicated error class.                                                                                        |
-| unknown HTTP error    | A status code of 400 or more with no dedicated class. `UnknownHttpError` represents it.                                                |
-| package copy          | One loaded instance of this package in a process.                                                                                      |
+| resolves with         | A promise finishes normally and supplies a value.                                                                                      |
+| rejects               | A promise finishes with an error.                                                                                                      |
+| throws                | A synchronous operation raises an exception.                                                                                           |
 | abort the request     | An `AbortSignal` stops a request.                                                                                                      |
 | cancel the error body | `error.cancel()` releases the body of an HTTP error.                                                                                   |
 | read the error body   | `json()`, `text()`, `blob()`, or `arrayBuffer()` consumes the body.                                                                    |
+| known HTTP error      | A status code that has a dedicated error class.                                                                                        |
+| unknown HTTP error    | A status code of 400 or more with no dedicated class. `UnknownHttpError` represents it.                                                |
+| package copy          | One loaded instance of this package in a process.                                                                                      |
 | reason phrase         | The status text that the server sends on the wire. It can differ from the library's `statusText`.                                      |
 | error record          | The plain object that `error.toJSON()` returns. `JSON.stringify(error)` writes it, and `console.log(error)` prints it below the stack. |
 
@@ -743,7 +746,9 @@ second is native `RequestInit` behavior.
 
 A custom Fetch implementation is not trusted input. `typedFetch` inspects the resolved value inside the result envelope. When a read of `status` or `url` on that value throws, `typedFetch` resolves with a `NetworkError` that holds the original error in `cause`.
 
-NOTE: A resolved value that is not a `Response` but answers a `status` read does not become a `NetworkError`. `typedFetch` compares `status` to 400, so a value without a numeric `status` stays on the success branch.
+NOTE: A resolved value that is not a `Response` but answers a `status` read does not become a `NetworkError`. `typedFetch` converts `status` to a number and compares it with 400. A value that converts to 400 or more becomes an HTTP error. A value that converts to less than 400, or to `NaN`, stays on the success branch.
+
+`typedFetch` reads `status`, `statusText`, `url`, and `headers` once each. A custom Fetch implementation whose getters answer differently on a second read cannot make `error.status`, `error.message`, and the `toJSON()` record disagree. The first read decides all three. `statusText` and `url` are the empty string when the implementation answers with a value that is not a string.
 
 You can give a `Request` in the `url` position. `typedFetch` keeps its method, headers, signal, and Node.js body.
 
@@ -941,13 +946,17 @@ console.log(copy.tenant); // "acme"
 await Promise.all([error.cancel(), copy.cancel()]);
 ```
 
-The callback must give a new error, built from the `Response` it receives. `clone()` throws `TypeError` in three conditions.
+The callback must give a new error, built from the `Response` it receives. `clone()` throws `TypeError` in five conditions.
 
-1. The callback gives the same error. One instance cannot own two branches.
-2. The callback gives an error built from a different `Response`. The cloned branch then has no owner.
-3. The callback gives an object wrapped around the new error, such as a Proxy from an instrumentation library or an `Object.create` delegate. The wrapper cannot own the cloned branch, and the response would stay open with no way to release it.
+1. The callback gives a value that is not an object, such as `null`, `undefined`, a string, or a number. The declared return type forbids this, and a JavaScript caller or one `as any` still reaches it. `clone(() => null)` resolved with `null` before, and the cloned branch had no owner.
+2. The callback gives the same error. One instance cannot own two branches.
+3. The callback gives a value that claims this package copy and carries no body, such as a Proxy from an instrumentation library or an `Object.create` delegate. The wrapper cannot own the cloned branch, and the response would stay open with no way to release it.
+4. The callback gives an error built from a different `Response`. The cloned branch then has no owner.
+5. The callback gives an error from a package copy that cannot confirm that it took the cloned branch. Each package copy keeps its own body table. `clone()` asks the new error directly, through a `Symbol.for` method that every copy of this package stamps.
 
-An instance built by a different package copy is still accepted. `clone()` releases the orphaned branch before it throws, so a later `cancel()` on the original error still completes.
+An instance built by a different package copy is accepted when that copy confirms that it took the cloned branch. A package copy older than this one carries no such method, so it cannot confirm it, and `clone()` throws. Upgrade that copy, or build the new error with the copy that is cloning.
+
+`clone()` releases the orphaned branch before it throws, so a later `cancel()` on the original error still completes.
 
 `clone()` wraps a failure of the callback in a `TypeError`. The no-callback form rethrows a failure of the subclass constructor without a change.
 
@@ -1109,6 +1118,7 @@ This library does not include these features:
 6. A change to a `status` literal requires a major release.
 7. A matching `vX.Y.Z` Git tag must start each npm release.
 8. Node.js 20 is the minimum version. A higher minimum requires a major release.
+9. A `Symbol.for` key that crosses package copies is a contract between package versions. Its meaning never changes, and a new question gets a new key. A change to an existing key makes `clone(recreate)` throw a `TypeError` for an install that holds two package copies.
 
 Keep a `default` branch in a known-status switch. A newer package version can move a status from `UnknownHttpError` to a dedicated class, and the `default` branch keeps that code correct.
 
@@ -1120,4 +1130,4 @@ Read [`CONTRIBUTING.md`](https://github.com/pbpeterson/typed-fetch/blob/main/CON
 
 That document gives the setup instructions, the required checks, and the procedure to add an HTTP status class.
 
-The license is MIT. Read [`LICENSE`](./LICENSE).
+The license is MIT. Read [`LICENSE`](https://github.com/pbpeterson/typed-fetch/blob/main/LICENSE).

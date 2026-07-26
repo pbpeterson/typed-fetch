@@ -1,7 +1,14 @@
 import { describe, test, expect, expectTypeOf, vi } from "vitest";
 import { useTestServer } from "./fixtures/http-server";
 import { allErrors } from "./fixtures/error-roster";
-import { typedFetch, isHttpError, isNetworkError, isAbortError, isTimeoutError } from "./src/index";
+import {
+  typedFetch,
+  isHttpError,
+  isKnownHttpError,
+  isNetworkError,
+  isAbortError,
+  isTimeoutError,
+} from "./src/index";
 import {
   AbortedError,
   BadGatewayError,
@@ -448,6 +455,7 @@ describe("typedFetch", () => {
   test("a live body is released when the status getter throws", async () => {
     const cause = new Error("status getter exploded");
     let cancelCalls = 0;
+    let statusReads = 0;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode("payload-that-is-still-open"));
@@ -459,6 +467,7 @@ describe("typedFetch", () => {
     const hostileResponse = new Response(stream, { status: 404 });
     Object.defineProperty(hostileResponse, "status", {
       get() {
+        statusReads += 1;
         throw cause;
       },
     });
@@ -478,6 +487,10 @@ describe("typedFetch", () => {
     // typedFetch resolves, so neither needs a timer.
     expect(hostileResponse.bodyUsed).toBe(true);
     expect(cancelCalls).toBe(1);
+    // The status is read ONCE, even on the failing path. A second read here
+    // would call a getter that has already reported it cannot answer, and would
+    // report the second failure as the cause instead of the first.
+    expect(statusReads).toBe(1);
   });
 
   test("the error class keys on the status the branch was taken on", async () => {
@@ -1604,5 +1617,559 @@ describe("typedFetch", () => {
       expect(isNetworkError(result.error)).toBe(true);
       expect(isAbortError(result.error)).toBe(false);
     });
+  });
+});
+
+// ── The response identity is read ONCE ───────────────────────────────
+//
+// `status`, `statusText`, and `url` used to be read several times along one
+// error-construction path, by three modules that never compared notes. For a
+// real `Response` every read agrees, so nothing was visibly wrong. For an
+// INJECTED `fetch` — the seam this library documents and invites a consumer to
+// use — a getter may answer differently on a second read, and the reads
+// disagreed: the class was selected on one value, the message reported a
+// second, and `error.status` reported a third.
+//
+// Every test below counts the reads. An assertion on the value alone would pass
+// against code that reads three times and happens to agree, which is exactly
+// the code this suite is here to keep out.
+
+/** Wrap a value so the cycling accessor THROWS it instead of returning it. */
+class ThrowOnRead {
+  constructor(readonly value: unknown) {}
+}
+
+const rethrowing = (value: unknown) => new ThrowOnRead(value);
+
+/**
+ * A `Response` whose ONE named identity accessor answers with the next value of
+ * a list, holding the last value once the list runs out, and counts its reads.
+ *
+ * Built with `Object.defineProperty` on a real `Response`, matching the hostile
+ * response tests above: an own accessor shadows the platform's prototype
+ * getter, which is exactly what an instrumentation wrapper or a partial test
+ * double looks like from inside this library.
+ */
+function cyclingResponse(
+  field: "status" | "statusText" | "url" | "headers",
+  values: readonly unknown[],
+  init?: ResponseInit,
+  body: BodyInit | null = null,
+): { response: Response; reads: () => number } {
+  const response = new Response(body, init);
+  let reads = 0;
+  Object.defineProperty(response, field, {
+    configurable: true,
+    get() {
+      const value = values[Math.min(reads, values.length - 1)];
+      reads += 1;
+      if (value instanceof ThrowOnRead) throw value.value;
+      return value;
+    },
+  });
+  return { response, reads: () => reads };
+}
+
+/** An injected fetch that resolves one prepared `Response`. */
+const resolving = (response: Response) => (async () => response) as unknown as typeof fetch;
+
+/**
+ * A body stream that is genuinely open, and that records the release.
+ *
+ * Every assertion about a released body needs one: a `new Response(null, …)`
+ * has no stream, so `bodyUsed` stays `false` forever and a "the body was
+ * released" assertion would be silently meaningless.
+ */
+function liveBody(): { stream: ReadableStream<Uint8Array>; cancelCalls: () => number } {
+  let cancelCalls = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("payload-that-is-still-open"));
+    },
+    cancel() {
+      cancelCalls += 1;
+    },
+  });
+  return { stream, cancelCalls: () => cancelCalls };
+}
+
+/**
+ * The four-way agreement, asserted in one place: the status the branch was
+ * taken on, `error.status`, the number in `error.message`, and
+ * `error.toJSON().status`. One response has one identity, so all four are the
+ * same value.
+ */
+function expectIdentityAgrees(error: BaseHttpError, status: number): void {
+  expect(error.status).toBe(status);
+  expect(error.message.startsWith(`HTTP ${status}`)).toBe(true);
+  expect(error.toJSON().status).toBe(status);
+}
+
+describe("typedFetch — the response identity is read once per response", () => {
+  test("TF-01: the reported cycle 420 -> 200 -> 201 gives one answer, not three", async () => {
+    const { response, reads } = cyclingResponse("status", [420, 200, 201], {
+      status: 200,
+      statusText: "Weird",
+    });
+
+    const result = await typedFetch("https://example.invalid/cycling-status", {
+      fetch: resolving(response),
+    });
+
+    expect(result.error).toBeInstanceOf(UnknownHttpError);
+    if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+
+    expectIdentityAgrees(result.error, 420);
+    expect(result.error.message.startsWith("HTTP 420 Weird")).toBe(true);
+    // The class was selected on 420. Before the fix the message said 200 and
+    // `error.status` said 201 — three answers for one response.
+    expect(result.error.message).not.toContain("200");
+    expect(result.error.message).not.toContain("201");
+    expect(reads()).toBe(1);
+  });
+
+  test("TF-02: a dedicated class's message cannot disagree with its literal", async () => {
+    const { response, reads } = cyclingResponse("status", [404, 200, 500], { status: 200 });
+
+    const result = await typedFetch("https://example.invalid/cycling-dedicated", {
+      fetch: resolving(response),
+    });
+
+    expect(result.error).toBeInstanceOf(NotFoundError);
+    if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+
+    expectIdentityAgrees(result.error, 404);
+    expect(result.error.message).not.toContain("HTTP 200");
+    expect(result.error.message).not.toContain("HTTP 500");
+    expect(reads()).toBe(1);
+  });
+
+  test("TF-03: a string status reaches its dedicated class with a numeric status", async () => {
+    const result = await typedFetch("https://example.invalid/string-status", {
+      fetch: respondingWith({ status: "404" }),
+    });
+
+    expect(result.error).toBeInstanceOf(NotFoundError);
+    if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+
+    // It used to resolve as an `UnknownHttpError` carrying the STRING "404",
+    // which broke the declared `number` type and made `isKnownHttpError` return
+    // false for what is plainly a 404.
+    expect(result.error.status).toBe(404);
+    expect(typeof result.error.status).toBe("number");
+    expect(isKnownHttpError(result.error)).toBe(true);
+  });
+
+  const statusConversionRows: Array<{
+    label: string;
+    status: unknown;
+    outcome: "error" | "success" | "network";
+    Class?: new (response: Response) => BaseHttpError;
+    expected?: number;
+  }> = [
+    {
+      label: '"404" -> NotFoundError',
+      status: "404",
+      outcome: "error",
+      Class: NotFoundError,
+      expected: 404,
+    },
+    {
+      label: '"500" -> InternalServerError',
+      status: "500",
+      outcome: "error",
+      Class: InternalServerError,
+      expected: 500,
+    },
+    {
+      label: '"599" -> UnknownHttpError',
+      status: "599",
+      outcome: "error",
+      Class: UnknownHttpError,
+      expected: 599,
+    },
+    { label: '"200" stays on the success branch', status: "200", outcome: "success" },
+    { label: "NaN stays on the success branch", status: NaN, outcome: "success" },
+    { label: "-1 stays on the success branch", status: -1, outcome: "success" },
+    { label: "true stays on the success branch", status: true, outcome: "success" },
+    { label: "null stays on the success branch", status: null, outcome: "success" },
+    { label: "undefined stays on the success branch", status: undefined, outcome: "success" },
+    {
+      label: "Infinity -> UnknownHttpError",
+      status: Infinity,
+      outcome: "error",
+      Class: UnknownHttpError,
+      expected: Infinity,
+    },
+    {
+      label: "404.7 is NOT truncated into NotFoundError",
+      status: 404.7,
+      outcome: "error",
+      Class: UnknownHttpError,
+      expected: 404.7,
+    },
+    {
+      label: "404n -> NotFoundError",
+      status: 404n,
+      outcome: "error",
+      Class: NotFoundError,
+      expected: 404,
+    },
+    {
+      label: "an object with valueOf -> NotFoundError",
+      status: { valueOf: () => 404 },
+      outcome: "error",
+      Class: NotFoundError,
+      expected: 404,
+    },
+    { label: "a Symbol status -> NetworkError", status: Symbol("hostile"), outcome: "network" },
+  ];
+
+  test.each(statusConversionRows)("TF-04: $label", async ({ status, outcome, Class, expected }) => {
+    const result = await typedFetch("https://example.invalid/status-conversion", {
+      fetch: respondingWith({ status }),
+    });
+
+    if (outcome === "success") {
+      // The stance the library states and this suite already enforces: only a
+      // read that THROWS becomes a NetworkError. A value that converts to
+      // less than 400, or to NaN, reaches the caller unchanged.
+      expect(result.error).toBe(null);
+      return;
+    }
+
+    if (outcome === "network") {
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expect(result.error?.cause).toBeInstanceOf(TypeError);
+      return;
+    }
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(Class!);
+    if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+    expect(result.error.status).toBe(expected);
+    expect(typeof result.error.status).toBe("number");
+  });
+
+  test("TF-06: a status getter that throws on the SECOND read never runs twice", async () => {
+    const boom = new Error("status getter exploded on the second read");
+    // A readable payload, not `liveBody()`: this case asserts that the body is
+    // still the ERROR'S — that it was never released — so the test has to be
+    // able to read it to the end.
+    const { response, reads } = cyclingResponse(
+      "status",
+      [404, rethrowing(boom)],
+      { status: 200 },
+      "payload-that-is-still-open",
+    );
+
+    const result = await typedFetch("https://example.invalid/second-read-throws", {
+      fetch: resolving(response),
+    });
+
+    // Before the fix the second read happened inside the constructor, so this
+    // resolved with a NetworkError and the body was released out from under a
+    // consumer who was owed a NotFoundError.
+    expect(result.error).toBeInstanceOf(NotFoundError);
+    expect(result.error).not.toBeInstanceOf(NetworkError);
+    expect(reads()).toBe(1);
+
+    if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+    expect(await result.error.text()).toBe("payload-that-is-still-open");
+  });
+
+  test("TF-07: the class with a THIRD read survives a getter that throws twice", async () => {
+    const boom = new Error("status getter exploded");
+    const { response, reads } = cyclingResponse(
+      "status",
+      [599, rethrowing(boom), rethrowing(boom)],
+      { status: 200 },
+      "payload-that-is-still-open",
+    );
+
+    const result = await typedFetch("https://example.invalid/third-read-throws", {
+      fetch: resolving(response),
+    });
+
+    // `UnknownHttpError` is the class where all three reads used to happen.
+    expect(result.error).toBeInstanceOf(UnknownHttpError);
+    if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+    expect(result.error.status).toBe(599);
+    expect(reads()).toBe(1);
+    expect(await result.error.text()).toBe("payload-that-is-still-open");
+  });
+
+  test("TF-08: a statusText getter that throws on the FIRST read releases the live body", async () => {
+    const cause = new Error("statusText getter exploded");
+    const { stream, cancelCalls } = liveBody();
+    const { response } = cyclingResponse(
+      "statusText",
+      [rethrowing(cause)],
+      { status: 404 },
+      stream,
+    );
+
+    const result = await typedFetch("https://example.invalid/statustext-throws", {
+      fetch: resolving(response),
+    });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+    // Nobody can reach this body any more, so typedFetch must have released it.
+    expect(response.bodyUsed).toBe(true);
+    expect(cancelCalls()).toBe(1);
+  });
+
+  test("TF-09: a statusText getter that throws on the SECOND read never runs twice", async () => {
+    const boom = new Error("statusText getter exploded on the second read");
+    const { response, reads } = cyclingResponse("statusText", ["Weird", rethrowing(boom)], {
+      status: 599,
+    });
+
+    const result = await typedFetch("https://example.invalid/statustext-second-read", {
+      fetch: resolving(response),
+    });
+
+    expect(result.error).toBeInstanceOf(UnknownHttpError);
+    expect(result.error).not.toBeInstanceOf(NetworkError);
+    expect(result.error?.message).toContain("Weird");
+    expect(reads()).toBe(1);
+  });
+
+  const nonStringStatusTextRows: Array<{ label: string; statusText: unknown }> = [
+    { label: "a number", statusText: 42 },
+    { label: "null", statusText: null },
+    { label: "a Symbol", statusText: Symbol("s") },
+    {
+      label: "a hostile toString",
+      statusText: {
+        toString() {
+          throw new Error("toString exploded");
+        },
+      },
+    },
+  ];
+
+  test.each(nonStringStatusTextRows)(
+    "TF-10: a non-string statusText ($label) is the empty string, never a NetworkError",
+    async ({ statusText }) => {
+      // `String(raw)` would THROW for the Symbol and for the hostile toString,
+      // converting a well-formed HTTP error into a NetworkError. The rule is
+      // total instead: the value when it is a string, and "" otherwise.
+      const { response } = cyclingResponse("statusText", [statusText], { status: 599 });
+
+      const result = await typedFetch("https://example.invalid/non-string-statustext", {
+        fetch: resolving(response),
+      });
+
+      expect(result.error).toBeInstanceOf(UnknownHttpError);
+      expect(result.error).not.toBeInstanceOf(NetworkError);
+      if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+      expect(result.error.statusText).toBe("");
+      expect(typeof result.error.statusText).toBe("string");
+      // No reason phrase, and no URL: a synthesised Response reports `url` as "".
+      expect(result.error.message).toBe("HTTP 599");
+    },
+  );
+
+  test("TF-11: a url getter that throws on the FIRST read releases the live body", async () => {
+    const cause = new Error("url getter exploded");
+    const { stream, cancelCalls } = liveBody();
+    const { response } = cyclingResponse("url", [rethrowing(cause)], { status: 404 }, stream);
+
+    const result = await typedFetch("https://example.invalid/url-throws-live-body", {
+      fetch: resolving(response),
+    });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+    expect(response.bodyUsed).toBe(true);
+    expect(cancelCalls()).toBe(1);
+  });
+
+  test("TF-12: a url getter that throws on the SECOND read never runs twice", async () => {
+    // The previously unreported half of the defect. `message` carried the
+    // redacted form of one read and `error.url` carried a second read, so a
+    // second read that threw turned a NotFoundError into a NetworkError.
+    const boom = new Error("url getter exploded on the second read");
+    const { response, reads } = cyclingResponse("url", ["https://a.test/x", rethrowing(boom)], {
+      status: 404,
+    });
+
+    const result = await typedFetch("https://example.invalid/url-second-read", {
+      fetch: resolving(response),
+    });
+
+    expect(result.error).toBeInstanceOf(NotFoundError);
+    expect(result.error).not.toBeInstanceOf(NetworkError);
+    expect(reads()).toBe(1);
+  });
+
+  test("TF-13: a cycling url cannot make the message and the escape hatch disagree", async () => {
+    const { response, reads } = cyclingResponse(
+      "url",
+      ["https://a.test/x?tok=SECRET", "https://b.test/y"],
+      { status: 404 },
+    );
+
+    const result = await typedFetch("https://example.invalid/cycling-url", {
+      fetch: resolving(response),
+    });
+
+    if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+    // The full href on the property, the redacted form in the message and in
+    // the record — both derived from ONE read, so they describe one server.
+    expect(result.error.url).toBe("https://a.test/x?tok=SECRET");
+    expect(result.error.message).toContain("https://a.test/x");
+    expect(result.error.message).not.toContain("b.test");
+    expect(result.error.message).not.toContain("SECRET");
+    expect(result.error.toJSON().url).toBe("https://a.test/x");
+    expect(reads()).toBe(1);
+  });
+
+  const nonStringUrlRows: Array<{ label: string; url: unknown }> = [
+    { label: "a number", url: 42 },
+    { label: "null", url: null },
+    { label: "a URL object", url: new URL("https://a.test/") },
+  ];
+
+  test.each(nonStringUrlRows)(
+    "TF-14: a non-string url ($label) is the empty string, never a NetworkError",
+    async ({ url: rawUrl }) => {
+      const { response } = cyclingResponse("url", [rawUrl], { status: 404 });
+
+      const result = await typedFetch("https://example.invalid/non-string-url", {
+        fetch: resolving(response),
+      });
+
+      expect(result.error).not.toBeInstanceOf(NetworkError);
+      if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+      expect(result.error.url).toBe("");
+      expect(typeof result.error.url).toBe("string");
+      // The no-url message branch: no parenthesized URL at all.
+      expect(result.error.message).toBe("HTTP 404");
+    },
+  );
+
+  test("TF-15: the headers accessor is read exactly once for a live error", async () => {
+    const { stream } = liveBody();
+    const response = new Response(stream, { status: 404 });
+    const real = response.headers;
+    let reads = 0;
+    Object.defineProperty(response, "headers", {
+      configurable: true,
+      get() {
+        reads += 1;
+        return real;
+      },
+    });
+
+    const result = await typedFetch("https://example.invalid/counting-headers", {
+      fetch: resolving(response),
+    });
+
+    expect(result.error).toBeInstanceOf(NotFoundError);
+    expect(reads).toBe(1);
+
+    if (isHttpError(result.error)) await result.error.cancel();
+  });
+
+  const headersRows: Array<{
+    label: string;
+    headers: unknown;
+    outcome: "error" | "network";
+    check?: (error: BaseHttpError) => void;
+  }> = [
+    {
+      label: "a plain empty object builds empty headers",
+      headers: {},
+      outcome: "error",
+      check: (error) => expect([...error.headers.keys()]).toEqual([]),
+    },
+    {
+      label: "a plain record builds the headers it names",
+      headers: { "x-a": "1" },
+      outcome: "error",
+      check: (error) => expect(error.headers.get("x-a")).toBe("1"),
+    },
+    { label: "null is refused by the Headers constructor", headers: null, outcome: "network" },
+    {
+      label: "a string is refused by the Headers constructor",
+      headers: "garbage",
+      outcome: "network",
+    },
+  ];
+
+  test.each(headersRows)("TF-16: $label", async ({ headers, outcome, check }) => {
+    // `headers` is passed through UNNORMALIZED. A value the `Headers`
+    // constructor refuses is a signal the envelope already turns into a
+    // NetworkError, and that is released, documented behavior.
+    const { stream, cancelCalls } = liveBody();
+    const response = new Response(stream, { status: 404 });
+    Object.defineProperty(response, "headers", {
+      configurable: true,
+      get() {
+        return headers;
+      },
+    });
+
+    const result = await typedFetch("https://example.invalid/headers-shapes", {
+      fetch: resolving(response),
+    });
+
+    if (outcome === "network") {
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expect(response.bodyUsed).toBe(true);
+      expect(cancelCalls()).toBe(1);
+      return;
+    }
+
+    expect(result.error).toBeInstanceOf(NotFoundError);
+    if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+    check?.(result.error);
+    await result.error.cancel();
+  });
+
+  test("TF-17: a live 404 reports one identity through every channel", async () => {
+    // The no-hostility baseline. For a real `Response` the platform answers the
+    // same value on every read, so this test passed before the change too —
+    // which is the point: the refactor changed nothing here.
+    const result = await typedFetch(url({ status: 404 }));
+
+    if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+    expectIdentityAgrees(result.error, 404);
+    expect(result.error.statusText).toBe("Not Found");
+    expect(result.error.message).toContain("HTTP 404 Not Found");
+
+    await result.error.cancel();
+  });
+
+  test("TF-18: a live 599 reports one identity through every channel", async () => {
+    const result = await typedFetch(url({ status: 599 }));
+
+    expect(result.error).toBeInstanceOf(UnknownHttpError);
+    if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+    expectIdentityAgrees(result.error, 599);
+
+    await result.error.cancel();
+  });
+
+  test("TF-19: the numeric conversion is part of the single read", async () => {
+    let valueOfCalls = 0;
+    const status = {
+      valueOf() {
+        valueOfCalls += 1;
+        return 404;
+      },
+    };
+
+    const result = await typedFetch("https://example.invalid/counting-valueof", {
+      fetch: respondingWith({ status }),
+    });
+
+    expect(result.error).toBeInstanceOf(NotFoundError);
+    // One read, one conversion. A second `Number(raw)` anywhere on the path
+    // would run this getter again and could answer a different status.
+    expect(valueOfCalls).toBe(1);
   });
 });

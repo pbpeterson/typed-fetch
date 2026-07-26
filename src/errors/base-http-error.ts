@@ -1,7 +1,8 @@
-import { brand, httpErrorBrand } from "./brand";
+import { asksOwnsResponse, brand, httpErrorBrand, stampOwnsResponse } from "./brand";
 import { errorBodyOf, type ErrorBody } from "./error-body";
 import { installInspect } from "./inspect";
 import { redactUrl } from "./redact-url";
+import { identityOf, lendIdentity, type ResponseIdentity } from "./response-identity";
 
 /**
  * Per-instance body custody, held OUTSIDE the class.
@@ -31,6 +32,29 @@ import { redactUrl } from "./redact-url";
  * impostor has no entry here and every body method rejects it by name.
  */
 const bodies = new WeakMap<BaseHttpError, ErrorBody>();
+
+/**
+ * Per-instance identity, held OUTSIDE the class for exactly the reason the
+ * header above gives for {@link bodies}: a `#private` field would emit a nominal
+ * `#private;` marker into both declaration files and make the two declarations
+ * of every error class mutually unassignable. Read that header for the full
+ * rationale; nothing about it is different here.
+ *
+ * What IS new is why a second table exists at all. `clone()` tees the body and
+ * builds the copy from the branch, and a branch produced by a real
+ * `Response.clone()` reports the response's internal slots rather than the
+ * hostile own-property getter that produced this error's identity. This table
+ * lets `clone()` hand the copy the identity it INHERITS, so a copy built by THIS
+ * package copy reports the identity of the error it was cloned from instead of
+ * re-reading the branch.
+ *
+ * "Built by this package copy" is a real limit, not a hedge. The identity tables
+ * are module-scoped, so they are per copy, exactly as this one is. A `recreate`
+ * callback returning an instance from a DIFFERENT copy runs that copy's
+ * constructor against tables that never saw the handoff, and that instance reads
+ * the branch. See the residuals in `./response-identity`.
+ */
+const identities = new WeakMap<BaseHttpError, ResponseIdentity>();
 
 function bodyOf(error: BaseHttpError): ErrorBody {
   const body = bodies.get(error);
@@ -72,6 +96,20 @@ function claimsThisCopy(value: unknown): boolean {
   } catch {
     return true;
   }
+}
+
+/**
+ * The cross-copy counterpart of `ErrorBody.owns`, stamped on the prototype so a
+ * DIFFERENT copy of this library can ask it. See `./brand`.
+ *
+ * Total by construction, which the caller depends on.
+ * `WeakMap.prototype.get` returns `undefined` for a key that is not an object
+ * rather than throwing (verified on Node 20.15.0 for `1`, `undefined`, and
+ * `null`), and `owns` is an identity comparison, so a detached call, a foreign
+ * `this`, and a junk `candidate` all produce `false` instead of an exception.
+ */
+function ownsResponse(this: unknown, candidate: Response): boolean {
+  return bodies.get(this as BaseHttpError)?.owns(candidate) === true;
 }
 
 /**
@@ -131,27 +169,41 @@ export abstract class BaseHttpError extends Error {
   declare public readonly url: string;
 
   constructor(response: Response) {
-    const line = response.statusText
-      ? `HTTP ${response.status} ${response.statusText}`
-      : `HTTP ${response.status}`;
+    // ONE read of each identity field, for the whole construction. Every line
+    // below reads `identity`, never `response`: this constructor used to read
+    // `statusText` twice, `status` twice, and `url` twice, and an injected
+    // `fetch` whose getters answered differently on a second read produced an
+    // error whose message, `url`, and `status` disagreed with each other and
+    // with the read that selected the class. See `./response-identity`, which
+    // also records the values so `UnknownHttpError` and `clone()` answer with
+    // the same ones.
+    const identity = identityOf(response);
+    const line = identity.statusText
+      ? `HTTP ${identity.status} ${identity.statusText}`
+      : `HTTP ${identity.status}`;
     // The REDACTED url in the message, the full href on `this.url`. A query
     // string routinely carries a credential (`?access_token=`, a signed
     // `?X-Amz-Signature=`), and `message` is the one string every log line,
-    // crash dump, and test failure carries. See `./redact-url`.
-    const safeUrl = redactUrl(response.url);
+    // crash dump, and test failure carries. See `./redact-url`. Both forms come
+    // from the SAME single read, so the message and the escape hatch can no
+    // longer point at two different servers.
+    const safeUrl = redactUrl(identity.url);
     super(safeUrl ? `${line} (${safeUrl})` : line);
     // `defineProperty`, not an assignment: an assignment creates an ENUMERABLE
     // own property. See the field docs above, and `./network-error` for the
     // same decision on `cause`.
-    define(this, "url", response.url);
+    define(this, "url", identity.url);
     // A COPY, not the response's own `Headers`. The error outlives the request
     // and is handed to loggers and retry code; an alias would make
     // `error.headers.set(...)` edit the `Response` a consumer still holds
     // through an injected `fetch`, which the `readonly` here denies. One
     // allocation per error buys that. The copy is faithful: a `Headers` init
-    // preserves every duplicate `set-cookie` entry.
-    define(this, "headers", new Headers(response.headers));
+    // preserves every duplicate `set-cookie` entry. The identity record holds
+    // the response's own `Headers` and never this copy, so two errors built
+    // from one response get one copy each and cannot edit each other's.
+    define(this, "headers", new Headers(identity.headers));
     bodies.set(this, errorBodyOf(response));
+    identities.set(this, identity);
   }
 
   /**
@@ -323,6 +375,22 @@ export abstract class BaseHttpError extends Error {
    * subclass whose constructor takes more arguments receives `undefined` for
    * them. Pass the callback whenever the subclass has such state.
    *
+   * A recreation callback must return a NEW error built from the `Response` it
+   * receives. Five conditions refuse the result, and each one releases the
+   * orphaned branch before it throws a `TypeError`, so the original error stays
+   * fully usable:
+   *
+   * 1. The callback returns a value that is not an object, such as `null`.
+   * 2. The callback returns this same error instead of a new one.
+   * 3. The callback returns a value that claims this package copy and carries
+   *    no body, such as a Proxy or a delegate wrapped around the new error.
+   * 4. The callback returns an error built from a different response.
+   * 5. The callback returns an error from a package copy that cannot confirm it
+   *    took the cloned branch. An instance built by a different package copy is
+   *    accepted when that copy confirms it. A package copy older than this one
+   *    cannot confirm it. Upgrade that copy, or build the new error with the
+   *    copy that is cloning.
+   *
    * @example
    * ```ts
    * import { BaseHttpError } from "@pbpeterson/typed-fetch";
@@ -356,28 +424,83 @@ export abstract class BaseHttpError extends Error {
     // Throws before anything is teed when the body is no longer available.
     const teed = bodyOf(this).tee();
 
+    // The copy INHERITS this error's identity instead of re-reading the branch.
+    // A branch from a real `Response.clone()` reports the response's internal
+    // slots, not the own-property getter that produced this error's identity,
+    // so without this handoff `error.clone()` on an error built from a shifting
+    // double would return a copy with a different status, message, and url. For
+    // a real `Response` it changes nothing, because the platform clone already
+    // carries the same values.
+    //
+    // "Instead of re-reading the branch" holds for every branch a platform
+    // `Response.clone()` produces, and a double can still defeat it two ways.
+    // A branch this library has ALREADY read keeps the identity it read:
+    // `lendIdentity` refuses a loan over a record, so the copy reports the
+    // record. And a `recreate` callback that calls `clone()` again, on an error
+    // whose double answers with the SAME `Response` every time, puts both loans
+    // on one key; the inner revoke removes the outer loan and the copy reads the
+    // branch. Both are stated in `./response-identity`, with the reason a
+    // per-key stack is refused.
+    //
+    // A missing entry is the structural impostor `bodyOf` refused on the line
+    // above, so there is nothing to hand over and nothing to do.
+    //
+    // LENT, not recorded, and revoked in the `finally` below. `teed.branch` is
+    // whatever `response.clone()` answered with, and a custom Fetch
+    // implementation can answer with a `Response` it did not create — a real one
+    // that a later, unrelated request will resolve. A permanent record would
+    // bind that `Response` to THIS error's identity in a module-scoped table for
+    // as long as it lives, so the later request would report this error's status
+    // instead of its own. The loan lasts exactly as long as its reason: the
+    // constructor reads it, `UnknownHttpError` reads it again, and nothing in
+    // this library reads a branch's identity after that. See
+    // `./response-identity`, which also records the three rejected alternatives.
+    //
+    // Neither `lendIdentity` nor the revoke can throw — both ignore a non-object
+    // key, and the `WeakMap` operations they perform do not throw for one they
+    // accept. That matters HERE specifically: the branch is already teed, so a
+    // throw between the tee and the construction would orphan it, leaving
+    // `cancel()` on this error waiting forever for an owner that never existed.
+    const identity = identities.get(this);
+    const revokeLoan = identity ? lendIdentity(teed.branch, identity) : undefined;
+
     let copy: this;
-    if (!recreate) {
-      try {
-        // Read INSIDE the try. `this.constructor` is a property read like any
-        // other: an own accessor, or a Proxy `get` trap from an instrumentation
-        // wrapper, can throw here — and the branch above is already teed, so a
-        // throw outside this block strands it and `cancel()` never settles.
-        const Ctor = this.constructor as new (response: Response) => this;
-        copy = new Ctor(teed.branch);
-      } catch (cause) {
-        teed.release();
-        // Deliberately NOT wrapped: a consumer subclass constructor's own
-        // error must reach the caller verbatim.
-        throw cause;
+    // The `finally` is the guard, not the happy path. Every way out of the block
+    // below is a way the loan must end: a copy that was built, a subclass
+    // constructor that threw, and a `recreate` callback that threw. A revoke
+    // written after the block, or repeated in each `catch`, is one edit away
+    // from missing a path — and a missed path is exactly the permanent record
+    // this loan exists to avoid. `BH-20` pins the path that only the `finally`
+    // covers: a `recreate` callback that THROWS. Moving the revoke below the
+    // block leaves that loan alive for the life of the process, and every later
+    // error built from the branch then reports the double's identity.
+    try {
+      if (!recreate) {
+        try {
+          // Read INSIDE the try. `this.constructor` is a property read like any
+          // other: an own accessor, or a Proxy `get` trap from an instrumentation
+          // wrapper, can throw here — and the branch above is already teed, so a
+          // throw outside this block strands it and `cancel()` never settles.
+          const Ctor = this.constructor as new (response: Response) => this;
+          copy = new Ctor(teed.branch);
+        } catch (cause) {
+          teed.release();
+          // Deliberately NOT wrapped: a consumer subclass constructor's own
+          // error must reach the caller verbatim.
+          throw cause;
+        }
+      } else {
+        try {
+          copy = recreate(teed.branch);
+        } catch (cause) {
+          teed.release();
+          throw new TypeError(`Cannot clone ${this.name}: the recreate callback failed.`, {
+            cause,
+          });
+        }
       }
-    } else {
-      try {
-        copy = recreate(teed.branch);
-      } catch (cause) {
-        teed.release();
-        throw new TypeError(`Cannot clone ${this.name}: the recreate callback failed.`, { cause });
-      }
+    } finally {
+      revokeLoan?.();
     }
 
     // One instance cannot own two branches: releasing it would release only
@@ -390,14 +513,33 @@ export abstract class BaseHttpError extends Error {
       );
     }
 
+    // The callback returned something that cannot own anything.
+    //
+    // TypeScript's `(response) => this` return type says this cannot happen. A
+    // JavaScript consumer, a mocked callback in a test double, and one `as any`
+    // all say it can — and it USED to be returned verbatim: `clone(() => null)`
+    // resolved to `null`, the branch was stranded, and `cancel()` on the
+    // original never settled. Checked here, beside the same-instance check,
+    // because it is the same kind of failure (the callback returned the wrong
+    // THING) rather than the wrong provenance.
+    if (copy === null || (typeof copy !== "object" && typeof copy !== "function")) {
+      teed.release();
+      throw new TypeError(
+        `Cannot clone ${this.name}: the recreate callback returned ` +
+          `${copy === null ? "null" : typeof copy} instead of an error, so the cloned body branch ` +
+          "has no owner. Build a new instance from the response it receives.",
+      );
+    }
+
     // `bodies.get`, NOT `bodyOf`: a `recreate` callback may legitimately return
     // an instance built by a different copy of this library, whose body lives
-    // in that copy's table. `adopt` accepts that `undefined` — the branch has
-    // an owner, this copy only cannot see it.
+    // in that copy's table. That `undefined` is not consent on its own — the
+    // block below asks the copy, across the seam, whether it took the branch —
+    // but it is not a refusal either, and `bodyOf` would make it one.
     //
-    // What it refuses is a body we CAN see that took a different response: the
-    // callback ignored the branch and built from somewhere else, so the branch
-    // has no owner at all.
+    // What this copy's table refuses on its own is a body we CAN see that took a
+    // different response: the callback ignored the branch and built from
+    // somewhere else, so the branch has no owner at all.
     // `undefined` from the table means one of two very different things, and
     // only one of them is safe. Raw `instanceof` — the single-copy question,
     // the one case where it is exactly the right tool — separates them: an
@@ -418,7 +560,50 @@ export abstract class BaseHttpError extends Error {
       );
     }
 
-    if (!teed.adopt(bodies.get(copy))) {
+    const owner = bodies.get(copy);
+
+    // The owner is not in this copy's table, so it lives in another copy's, or
+    // nowhere. This is the ONLY path the two checks above leave open, and it is
+    // the one that used to be accepted blind: `adopt(undefined)` returns `true`
+    // unconditionally by its own documented contract, so a callback returning an
+    // instance from a different package copy — built from a DIFFERENT response —
+    // was accepted, the branch became an orphan, and `cancel()` on this error
+    // never settled.
+    //
+    // Reachable only when `claimsThisCopy(copy)` is false: a value that claims
+    // this copy and has no table entry was already refused above, with the
+    // Proxy-flavoured message it needs. So this branch is exactly "an instance
+    // from a genuinely different package copy" plus "an object pretending to be
+    // one", which is why the question has to be ASKED instead of assumed. The
+    // only mechanism that crosses a copy seam is a `Symbol.for` key, which is
+    // what `asksOwnsResponse` reads.
+    if (owner === undefined) {
+      const answer = asksOwnsResponse(copy, teed.branch);
+      if (answer === undefined) {
+        teed.release();
+        throw new TypeError(
+          `Cannot clone ${this.name}: the new error cannot confirm that it took the cloned body ` +
+            "branch, so the branch has no owner. A copy of @pbpeterson/typed-fetch older than this " +
+            "one cannot answer that question. Upgrade that copy, or build the new error with this " +
+            "one.",
+        );
+      }
+      // The message here is deliberately IDENTICAL to the different-response
+      // message below. The two states are the same state — the callback ignored
+      // the branch — and the consumer's fix is the same sentence.
+      if (!answer) {
+        teed.release();
+        throw new TypeError(
+          `Cannot clone ${this.name}: the new error was built from a different response, so the ` +
+            "cloned body branch has no owner. Build a new instance from the response it receives.",
+        );
+      }
+    }
+
+    // `adopt(undefined)` is still the honest outcome for an owner this copy
+    // cannot see: the branch HAS an owner, this copy only cannot mark it. It is
+    // no longer the only thing that happens on that path.
+    if (!teed.adopt(owner)) {
       teed.release();
       throw new TypeError(
         `Cannot clone ${this.name}: the new error was built from a different response, so the ` +
@@ -438,3 +623,8 @@ brand(BaseHttpError.prototype, httpErrorBrand);
 // covers `JSON.stringify`, this covers `console.log`/`util.inspect` and Node's
 // fatal-exception printer. See `./inspect`.
 installInspect(BaseHttpError.prototype);
+
+// Stamped, not declared, for the same reason and in the same way as the brand
+// and the inspect hook above. Only BaseHttpError: the question is about a
+// response body, and NetworkError, AbortedError, and TimeoutError have none.
+stampOwnsResponse(BaseHttpError.prototype, ownsResponse);

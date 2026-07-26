@@ -369,6 +369,32 @@ describe("type-level", () => {
     expectTypeOf<{ "Cache-Control": "public" }>().toExtend<TypedHeaders>();
   });
 
+  // ── the identity refactor changed no declared type ─────────────────
+
+  test("TL-01: the error constructor still takes exactly one parameter", () => {
+    // The guard against an optional second constructor parameter leaking in as
+    // the identity handoff. A parameter there would widen a PUBLIC signature:
+    // it would appear in both emitted declaration files, in every consumer's
+    // IDE, and in the documented subclass contract — and the public-surface
+    // snapshots freeze export NAMES, so nothing else would catch it.
+    expectTypeOf(NotFoundError).toBeConstructibleWith(new Response(null, { status: 404 }));
+
+    const response = new Response(null, { status: 404 });
+    // @ts-expect-error — a second constructor argument does not exist.
+    const extraArgument = new NotFoundError(response, {} as never);
+    // Bound rather than discarded, so the line is a real construction and not
+    // a statement a linter can read as a side effect.
+    expect(extraArgument).toBeInstanceOf(NotFoundError);
+  });
+
+  test("TL-02: status is declared a number, and the runtime now keeps that promise", () => {
+    // `UnknownHttpError.status` used to be able to hold the STRING a custom
+    // Fetch implementation reported. The declared type never changed; what
+    // changed is that it stopped being a promise the runtime could break.
+    expectTypeOf<UnknownHttpError["status"]>().toEqualTypeOf<number>();
+    expectTypeOf<BaseHttpError["status"]>().toEqualTypeOf<number>();
+  });
+
   test("json<T>() returns Promise<T>", () => {
     const error = new NotFoundError(new Response(JSON.stringify({}), { status: 404 }));
     expectTypeOf(error.json<{ message: string }>()).toEqualTypeOf<Promise<{ message: string }>>();

@@ -15,7 +15,9 @@ const release = {
   publishAccess: "public",
   provenance: true,
   changelog:
-    "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-07-17\n\n### Added\n\n- First release.\n",
+    "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-07-17\n\n### Added\n\n- First release.\n\n" +
+    "[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.0...HEAD\n" +
+    "[1.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v0.8.1...v1.0.0\n",
   headCommit: "a".repeat(40),
   tagCommit: "a".repeat(40),
   mainCommit: "a".repeat(40),
@@ -85,8 +87,44 @@ describe("validateRelease", () => {
       },
       "must be empty before publishing",
     ],
+    // The three footer states that shipped a dead link. A dated heading and an
+    // emptied [Unreleased] both pass while the footer still points at the
+    // previous version, so the two checks above cannot see any of them.
+    [
+      "missing version link",
+      {
+        changelog: release.changelog.replace(
+          "[1.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v0.8.1...v1.0.0\n",
+          "",
+        ),
+      },
+      "needs a [1.0.0] link definition",
+    ],
+    [
+      "version link range",
+      {
+        changelog: release.changelog.replace("compare/v0.8.1...v1.0.0", "compare/v0.8.1...v0.9.0"),
+      },
+      "range ending at v1.0.0",
+    ],
+    [
+      "unreleased link",
+      { changelog: release.changelog.replace("compare/v1.0.0...HEAD", "compare/v0.8.1...HEAD") },
+      "[Unreleased] link must be",
+    ],
   ])("rejects a release with an invalid %s", (_name, change, expectedMessage) => {
     expect(() => validateRelease({ ...release, ...change })).toThrow(expectedMessage);
+  });
+
+  test("accepts a footer whose version link starts from any earlier tag", () => {
+    // The BASE of the range is deliberately unchecked: this function cannot see
+    // the previous version, and a release that skips one is legitimate.
+    expect(
+      validateRelease({
+        ...release,
+        changelog: release.changelog.replace("compare/v0.8.1...v1.0.0", "compare/v0.4.0...v1.0.0"),
+      }),
+    ).toEqual({ distTag: "latest" });
   });
 });
 

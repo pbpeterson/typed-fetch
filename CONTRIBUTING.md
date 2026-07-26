@@ -40,16 +40,17 @@ Never commit directly to `main`. Create a branch named `type/short-desc`
 Before opening a PR, all of these must pass:
 
 ```bash
-pnpm lint          # oxlint
-pnpm format:check  # oxfmt --check
-pnpm typecheck     # tsc --noEmit -p tsconfig.test.json
-pnpm build         # tsup — confirm the package actually builds
-pnpm test          # vitest run — includes checks against the built dist/
-pnpm check-docs     # typecheck every fenced TS block in the docs (run AFTER build)
-pnpm verify-pack    # assert the published tarball's file manifest (run AFTER build)
-pnpm check-consumer # pack + install the tarball, exercise it as a real consumer (run AFTER build)
-pnpm audit:prod     # fail on any known runtime-dependency vulnerability
-pnpm audit          # fail on high/critical vulnerabilities in the full toolchain
+pnpm lint            # oxlint
+pnpm format:check    # oxfmt --check
+pnpm check-doc-style # links, controlled vocabulary, README Terms table (no build needed)
+pnpm typecheck       # tsc --noEmit -p tsconfig.test.json
+pnpm build           # tsup — confirm the package actually builds
+pnpm test            # vitest run — includes checks against the built dist/
+pnpm check-docs      # typecheck every fenced TS block in the docs (run AFTER build)
+pnpm verify-pack     # assert the published tarball's file manifest (run AFTER build)
+pnpm check-consumer  # pack + install the tarball, exercise it as a real consumer (run AFTER build)
+pnpm audit:prod      # fail on any known runtime-dependency vulnerability
+pnpm audit           # fail on high/critical vulnerabilities in the full toolchain
 ```
 
 Run them all locally. CI runs the same checks and fails the PR otherwise.
@@ -118,8 +119,9 @@ Two rules from that standard cause most review comments:
 
 Work through this list before you request a review of a documentation change.
 
-- [ ] Every TypeScript example compiles.
+- [ ] Every TypeScript example compiles, including the ones in `CHANGELOG.md`.
 - [ ] Every HTTP error body is read, canceled, or transferred.
+- [ ] Every example request URL is absolute.
 - [ ] abort refers to a request.
 - [ ] cancel refers to an error body.
 - [ ] Promise behavior uses resolves or rejects.
@@ -127,16 +129,18 @@ Work through this list before you request a review of a documentation change.
 - [ ] Conditions appear before conditional actions.
 - [ ] New terminology is defined on first use.
 - [ ] README, public skill, and JSDoc describe the same behavior.
-- [ ] The README Terms table matches the controlled vocabulary in
-      `docs/writing-standard.md`.
+- [ ] The README Terms table carries the same terms as the controlled
+      vocabulary in `docs/writing-standard.md`, in the same order, and each
+      README meaning begins with the standard's meaning.
 - [ ] No internal export is presented as public.
 - [ ] Warnings describe a concrete consequence.
 
 ### Documentation examples are typechecked (`pnpm check-docs`)
 
 `scripts/check-docs.mjs` extracts every fenced ` ```ts ` / ` ```typescript `
-block from `README.md`, `CONTRIBUTING.md`, both `SKILL.md` files, and the public
-JSDoc examples in **every `.ts` file under `src/`**. It rewrites the
+block from `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, both `SKILL.md`
+files, and the public JSDoc examples in **every `.ts` file under `src/`**. It
+rewrites the
 `@pbpeterson/typed-fetch` import to point at the **built `dist/`**, then
 typechecks each block with the project's `tsc`. This is why it must run **after
 `pnpm build`** — `dist/` is the compile target. If `dist/` is missing the guard
@@ -168,6 +172,30 @@ stops proving anything. Prefer making a block self-contained (add the missing
 error. The printed skip list names every skipped block, so a newly-skipped
 headline block is visible to a reviewer.
 
+**A block that documents a removed API.** `CHANGELOG.md` is compiled too, and
+its "Migrating from 0.x" examples show what 0.x code looked like. Those halves
+import names that 1.x removed, so they can never compile against `dist/`. Mark
+the fence ` ```ts historical ` instead of `no-check`:
+
+- `no-check` means "this fragment does not compile standalone, and it should be
+  made to compile if you can." `historical` means "this documents an API that no
+  longer exists — never edit it to make it compile."
+- `historical` is valid **only in `CHANGELOG.md`**. Anywhere else it fails the
+  gate, so it cannot become a general escape hatch.
+- `historical` blocks leave the skip ratio entirely — neither numerator nor
+  denominator. A changelog accumulates them forever, and that ratio must not
+  drift toward its cliff because history got longer.
+- `historical` blocks are still checked for the example-URL rule below. That is
+  a text match, not a compile, and a Before/After pair only reads as a diff if
+  both halves follow one URL convention.
+
+**Example request URLs.** `check-docs` also fails a `typedFetch(...)` call whose
+first argument is a string literal that is not an absolute URL. A relative URL
+resolves against a document base, which exists in a browser and does not exist
+on Node, so `typedFetch("/api/users")` rejects on Node with `TypeError: Failed
+to parse URL`. Template-literal arguments are ignored: a computed URL cannot be
+judged statically.
+
 **Limitation — compilation is necessary, not sufficient.** A block can typecheck
 and still be wrong, so a green `check-docs` is not proof the docs are correct.
 A class template can, for example, compile while omitting
@@ -176,6 +204,47 @@ then be mangled and the error's `.name` becomes incorrect — a runtime contract
 this guard will **never** prove. When you edit an error-class example, read
 `override readonly name` and the intended literal values and confirm them
 manually. `check-docs` only proves the TypeScript example is well-formed.
+
+### Documentation prose is linted (`pnpm check-doc-style`)
+
+`scripts/check-doc-style.mjs` reads the documents as text. It needs no `dist/`
+and no `tsc`, so it runs before `pnpm build` and fails in milliseconds. It
+accumulates three classes of violation and prints all of them:
+
+1. **A relative link in `README.md`.** `README.md` is the only document in the
+   npm tarball, so a link to any other repository file must be an absolute URL
+   (`docs/writing-standard.md:26-28`). A `#fragment` is allowed; it resolves
+   inside the file itself.
+2. **A controlled-vocabulary violation in prose.** A request is aborted, an
+   error body is canceled.
+3. **A README Terms table that has drifted.** The table must carry the same
+   terms as the controlled vocabulary in `docs/writing-standard.md`, in the same
+   order, and each README meaning must begin with the standard's meaning. A
+   README meaning can append one package-specific sentence.
+
+Rules 1 and 2 read the same prose. Fenced code blocks and inline code spans are
+stripped first, so `` `cancelled` `` — the variable in
+`src/errors/error-body.ts` — is never flagged as prose, and a Markdown link
+printed inside backticks is not read as a link.
+
+`docs/writing-standard.md` is exempt from the vocabulary rules. It is the one
+document that has to write a forbidden phrase down in order to forbid it.
+
+**What it cannot see.** Two limits, both deliberate, and both pinned by a test in
+`scripts/check-doc-style.spec.mjs`.
+
+The rules are **lexical**. "reissue calls the caller had explicitly canceled"
+says "calls", not "requests", and no regular expression reaches it — that one is
+still a review item. Vocabulary inside a fenced example is not scanned either,
+because a legitimate reproduction can contain `new Error("canceled")`. Tense and
+sentence length are not checked at all.
+
+The rules are also **line-by-line**. A violation split across a line break is
+missed: CommonMark allows a line ending between `](` and a link destination, and
+a forbidden phrase can wrap between two words. Catching either means matching
+across joined lines, and every function in the gate returns one output line per
+input line so that a violation can be reported as `file:line`. `pnpm format`
+owns the wrapping of every document in the roster. Both misses are review items.
 
 ### The packed tarball is consumed as a real user (`pnpm check-consumer`)
 
@@ -261,7 +330,7 @@ deliberately **not** uniform:
 Uniformity of _purity_ is the invariant; uniformity of _error protocol_ is not.
 
 Two things are deliberately absent: there is **no shared gate harness** (the
-genuine overlap between the five gates is about six lines, and a shared module
+genuine overlap between the gates is about six lines, and a shared module
 would make one file a common failure point for every release check, and would
 split each gate across two files instead of one readable file), and
 `scripts/lib/` holds only _plumbing_ — scratch directories and npm
@@ -429,6 +498,20 @@ The body lifecycle is a seam between two modules. `src/errors/base-http-error.ts
 owns HTTP error identity — `status`, `statusText`, `url`, `headers`, and the
 message line. `src/errors/error-body.ts` owns the single-use body.
 
+Identity itself is read through `src/errors/response-identity.ts`, once per
+response. `statusOf(response)` answers the class-selection read in
+`src/index.ts`. `identityOf(response)` answers the whole record inside the
+`BaseHttpError` constructor and inside `UnknownHttpError`. Both record what they
+read in a `WeakMap` keyed by the response, so a later caller reads nothing and
+answers with the recorded value. Code in `src/` must not read `response.status`,
+`response.statusText`, or `response.url` directly. A direct read reintroduces
+the defect the module exists to remove: a custom Fetch implementation whose
+getter answers differently on a second read produced an error whose class,
+message, and `status` disagreed with each other. When you change the
+normalization — the `Number()` conversion on `status`, or the empty string for a
+`statusText` or a `url` that is not a string — add a case to
+`response-identity.spec.ts`.
+
 `BaseHttpError` never stores the failed `Response`. The constructor passes the
 response to `errorBodyOf(response)`, which captures it in a **closure** and
 returns an `ErrorBody` handle. A module-scoped
@@ -482,6 +565,12 @@ optional recreation callback when a subclass has such state. For example:
 `error.clone((response) => new CustomHttpError(response, error.context))`.
 Add a regression test that consumes both bodies and verifies custom state is
 preserved.
+
+A `recreate` callback that builds the new error from a **different** package
+copy needs that copy to be at this version or newer. `clone()` asks the returned
+error whether it took the cloned branch, through a `Symbol.for` method that
+every copy at this version stamps. A copy older than this one cannot answer, so
+`clone()` releases the branch and throws.
 
 ## Release process and semver policy
 

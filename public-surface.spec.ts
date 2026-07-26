@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -14,6 +14,7 @@ import {
 import { httpErrors } from "./src/errors/helpers";
 import {
   AbortedError,
+  BaseHttpError,
   InternalServerError,
   NetworkError,
   NotFoundError,
@@ -23,6 +24,25 @@ import {
 
 function responseWithStatus(status: number): Response {
   return new Response(null, { status });
+}
+
+/**
+ * Race a promise against a timer, so a stranded teed branch FAILS the suite
+ * instead of hanging it: a bare `await error.cancel()` on an orphaned branch
+ * waits for vitest's global timeout and reports nothing about why.
+ *
+ * The budget is generous on purpose, and it costs nothing where it matters.
+ * Every caller asserts `"settled"`, so the timer is a fallback and the assertion
+ * still fails in milliseconds on a real regression: a stranded branch never
+ * settles at all, so no budget rescues it. A tight budget only adds a way for a
+ * genuinely-settling `cancel()` to lose the race on a starved CI runner and
+ * report a defect that is not there.
+ */
+async function settlesWithin(promise: Promise<unknown>, ms = 500): Promise<string> {
+  return Promise.race([
+    promise.then(() => "settled"),
+    new Promise<string>((resolve) => setTimeout(() => resolve("pending"), ms)),
+  ]);
 }
 
 // P3-03: freeze the public API surface. This machinery owns TWO axes of
@@ -345,5 +365,117 @@ describe.skipIf(!distExists)("guards work across module copies (dist)", () => {
       }
     }
     expect(label).toBe("nf");
+  });
+
+  // ── The cross-copy ownership query, against the REAL artifacts ──────
+  //
+  // These belong here rather than in the consumer gate: they need real teed
+  // streams and a `Promise.race` timeout guard, which vitest expresses directly
+  // and a one-JSON-line probe does not. `B4` in base-http-error.spec.ts is the
+  // primary regression guard, because these skip on a checkout with no `dist/`;
+  // this block is the proof against the built files, where each FORMAT stamps
+  // in its own module init and a bundler could drop one.
+
+  test("axis 9 — an ESM-copy clone accepts a CJS-copy instance built from the branch", async () => {
+    const esm = (await importDist("./dist/index.mjs")) as { typedFetch: typeof typedFetch };
+    const cjsErrors = require("./dist/errors/index.js") as { NotFoundError: typeof NotFoundError };
+
+    const { error } = await esm.typedFetch("http://x/y", {
+      fetch: async () => new Response("payload", { status: 404 }),
+    });
+    const original = error as NotFoundError;
+
+    const copy = original.clone(
+      (response) => new cjsErrors.NotFoundError(response) as NotFoundError,
+    );
+
+    expect(copy).toBeDefined();
+    expect(await settlesWithin(Promise.all([original.cancel(), copy.cancel()]))).toBe("settled");
+  });
+
+  test("axis 9 reverse — a CJS-copy clone accepts an ESM-copy instance", async () => {
+    const cjs = require("./dist/index.js") as { typedFetch: typeof typedFetch };
+    const esmErrors = (await importDist("./dist/errors/index.mjs")) as {
+      NotFoundError: typeof NotFoundError;
+    };
+
+    const { error } = await cjs.typedFetch("http://x/y", {
+      fetch: async () => new Response("payload", { status: 404 }),
+    });
+    const original = error as NotFoundError;
+
+    const copy = original.clone(
+      (response) => new esmErrors.NotFoundError(response) as NotFoundError,
+    );
+
+    expect(copy).toBeDefined();
+    expect(await settlesWithin(Promise.all([original.cancel(), copy.cancel()]))).toBe("settled");
+  });
+
+  test("axis 10 — THE REPRODUCED DEFECT: a cross-copy instance from another response", async () => {
+    // Reproduced on Node 20.15.0 against these exact files: the clone was
+    // accepted, `branch.bodyUsed` stayed `false`, and `original.cancel()`
+    // stayed pending forever.
+    const esm = (await importDist("./dist/index.mjs")) as { typedFetch: typeof typedFetch };
+    const cjsErrors = require("./dist/errors/index.js") as { NotFoundError: typeof NotFoundError };
+
+    const { error } = await esm.typedFetch("http://x/y", {
+      fetch: async () => new Response("payload", { status: 404 }),
+    });
+    const original = error as NotFoundError;
+    const elsewhere = new Response("elsewhere", { status: 404 });
+
+    let branch: Response | undefined;
+    let thrown: unknown;
+    try {
+      original.clone((response) => {
+        branch = response;
+        return new cjsErrors.NotFoundError(elsewhere) as NotFoundError;
+      });
+    } catch (caught) {
+      thrown = caught;
+    }
+
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/built from a different response/);
+    expect(branch?.bodyUsed).toBe(true);
+    expect(await settlesWithin(original.cancel())).toBe("settled");
+    void elsewhere.body?.cancel().catch(() => {});
+  });
+
+  test("C4 — both built formats stamp the query with the frozen descriptor", async () => {
+    // Each format runs its own module init, so a bundler that tree-shook the
+    // stamping side effect out of one of them would leave that format unable to
+    // answer — and every cross-copy clone through it would start throwing.
+    const key = Symbol.for("@pbpeterson/typed-fetch.ownsResponse");
+    const esm = (await importDist("./dist/index.mjs")) as { BaseHttpError: typeof BaseHttpError };
+    const cjs = require("./dist/index.js") as { BaseHttpError: typeof BaseHttpError };
+
+    for (const Base of [esm.BaseHttpError, cjs.BaseHttpError]) {
+      expect(Object.getOwnPropertyDescriptor(Base.prototype, key)).toEqual({
+        value: expect.any(Function),
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+  });
+
+  test("C5 — no declaration file carries a unique symbol or a #private marker", () => {
+    // The type-surface snapshot catches a leaked EXPORT. Only this catches a
+    // leaked `unique symbol`, which would reintroduce the exact cross-format
+    // assignability hazard (`TS2741`) that the whole no-`#private` rule exists
+    // to avoid: two declaration files means two distinct unique symbols.
+    for (const file of [
+      "./dist/index.d.mts",
+      "./dist/index.d.ts",
+      "./dist/errors/index.d.mts",
+      "./dist/errors/index.d.ts",
+    ]) {
+      const text = readFileSync(fileURLToPath(new URL(file, import.meta.url)), "utf8");
+      expect(text, `${file} leaked the ownership query`).not.toContain("ownsResponse");
+      expect(text, `${file} declares a unique symbol`).not.toContain("unique symbol");
+      expect(text, `${file} carries a nominal #private marker`).not.toContain("#private");
+    }
   });
 });

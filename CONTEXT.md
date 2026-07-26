@@ -45,6 +45,19 @@ defined term is correct here.
 
 Words this codebase already uses, some of them only implicitly until now.
 
+- **Identity** — the four fields an HTTP error takes from its `Response`:
+  `status`, `statusText`, `url`, and `headers`. Read **once per response** and
+  recorded in a `WeakMap`, so the status that selects the error class is the
+  status in `error.status`, in `error.message`, and in the `toJSON()` record.
+  The copy `clone()` produces inherits the identity of the error it was cloned
+  from, and does not re-read the **branch** — when the cloning package **copy**
+  is also the one that builds it. The inherited identity is **lent** to the
+  branch, not recorded against it: it answers for the construction of that one
+  error and is taken back when the construction ends. Four limits follow from
+  that sentence, and the residual below names all four. The record is normalized
+  where a real `Response` cannot differ but an injected one can: `status` is
+  `Number()` applied to the single read, and `statusText` and `url` are the
+  empty string when the read answers with anything other than a string.
 - **Error body** — the body of the `Response` that produced an HTTP error. A
   single-use stream owned by `src/errors/error-body.ts`. Every error body must
   be read or canceled. An unread body keeps its stream open, and the open stream
@@ -80,6 +93,18 @@ Words this codebase already uses, some of them only implicitly until now.
 - **Brand** — a `Symbol.for`-keyed marker stamped on a root error prototype so
   the guards recognize a value across copies. The authority on "did this library
   make this?" — not `instanceof`, and not assignability.
+- **The ownership query** — the one `Symbol.for`-keyed member that is callable
+  rather than a marker: `ownsResponse`, stamped on `BaseHttpError.prototype`,
+  answering "do you own this exact `Response`?". It is the cross-copy
+  counterpart of `ErrorBody.owns`. A brand cannot carry it, because a brand has
+  one answer per class and this one is computed per instance and per response.
+  `clone()` asks it when the returned error is absent from this **copy**'s body
+  table, which is the only state in which the branch's owner is invisible from
+  here. The key, the argument, and the boolean answer are a protocol between
+  package **versions**, not merely between copies: a copy released before the
+  query existed cannot answer, so `clone()` releases the **branch** and throws
+  rather than reading silence as consent. A new question gets a new key; this
+  one keeps its meaning forever.
 - **Structural, deliberately** — the error classes carry no `#private`,
   `private`, or `protected` member, because TypeScript emits a nominal
   `#private;` marker that makes the `.d.ts` and `.d.mts` copies of every class
@@ -97,10 +122,10 @@ Words this codebase already uses, some of them only implicitly until now.
   `src/http-status-codes.ts` from each class's own `static status`, so a map
   entry can no longer disagree with the class it names.
 - **Gate** — a check that must pass before a PR merges (`pnpm lint`,
-  `format:check`, `typecheck`, `build`, `test`, `check-docs`, `verify-pack`,
-  `check-consumer`, `audit:prod`, `audit`). CI adds `check-deno-consumer` and
-  `smoke:node-min`. CONTRIBUTING holds the authoritative list and the order to
-  run them in.
+  `format:check`, `check-doc-style`, `typecheck`, `build`, `test`, `check-docs`,
+  `verify-pack`, `check-consumer`, `audit:prod`, `audit`). CI adds
+  `check-deno-consumer` and `smoke:node-min`. CONTRIBUTING holds the
+  authoritative list and the order to run them in.
 - **Frozen surface** — the public export set, snapshotted on two axes (runtime
   values, and type-only exports read from the built `.d.mts`). Changing it is a
   deliberate, reviewed act.
@@ -123,15 +148,68 @@ Words this codebase already uses, some of them only implicitly until now.
   - Symbol-keyed behavior is stamped onto the prototype with `defineProperty`,
     never declared as a computed class member. A computed member emits a
     `unique symbol` into both declaration files and reintroduces the `#private`
-    cross-format assignability hazard (`TS2741`).
+    cross-format assignability hazard (`TS2741`). Three members are stamped this
+    way: the brands, the inspect hook, and the ownership query. The brands and
+    the query are stamped `writable: false, configurable: false`, because a
+    replaced answer to "do you own this branch?" strands a stream that only that
+    method can vouch for. The inspect hook stays replaceable, because a consumer
+    may legitimately install their own.
 
-- **Residual** — a disclosure a channel keeps, stated rather than left
-  undiscovered. Three exist. `cause` survives `structuredClone` and the
-  fatal-exception printer, because both are platform algorithms with no hook.
-  vitest's assertion-message stringifier reads own property names including
-  non-enumerable ones, and it short-circuits errors before its custom-inspect
-  branch. A secret in a URL path segment survives redaction by design, because
-  dropping the path would reduce `url` to the origin.
+- **Residual** — something the library cannot close, stated rather than left
+  undiscovered. Six exist, and the first three are disclosures a **channel**
+  keeps. `cause` survives `structuredClone` and the fatal-exception printer,
+  because both are platform algorithms with no hook. vitest's assertion-message
+  stringifier reads own property names including non-enumerable ones, and it
+  short-circuits errors before its custom-inspect branch. A secret in a URL path
+  segment survives redaction by design, because dropping the path would reduce
+  `url` to the origin.
+
+  The other three are limits on a guarantee rather than disclosures, and they
+  are named here so the next reader meets them as decisions.
+  - A `WeakMap` cannot key a primitive, so the single-read guarantee on
+    **identity** covers object responses only. An injected `fetch` that resolves
+    a string or a number whose prototype was polluted with a `status` getter
+    reads once per call, and two calls can disagree. Every other guarantee this
+    library gives about an injected implementation is equally void for a
+    polluted `String.prototype`.
+  - A **copy** that answers the ownership query `true` while holding a different
+    response is believed. The query is a protocol across a **seam**, not a
+    proof, and nothing on this side of the seam can check it. The alternative is
+    to hand a foreign object the `Response` and let it prove custody, which is
+    what `recreate` already does.
+  - The **identity** a **branch** inherits reaches at most one error: the one
+    built from that branch, by the cloning package **copy**, inside the
+    `clone()` call. Four cases fall outside that sentence, and none of the four
+    is a resource or a disclosure defect.
+
+    Two of them are the scope of the loan. A `recreate` callback that returns an
+    instance from a DIFFERENT package **copy** runs that copy's constructor
+    against that copy's identity tables, which never saw the loan, so that
+    instance reads the branch. So does any error built from the branch after
+    `clone()` returns.
+
+    Two of them keep the loan from reaching even the copy. A branch this library
+    has ALREADY read keeps the identity it read: `lendIdentity` refuses a loan
+    over a record, so the copy reports the record and the two errors disagree.
+    That refusal is the correct trade, because a loan that shadowed a record
+    would BE the poisoning the loan exists to prevent. Separately, a `recreate`
+    callback that calls `clone()` again lands a second loan on the same key,
+    when a double answers `clone()` with one `Response` every time. The inner
+    revoke removes the outer loan, and the outer copy reads the branch. That is
+    copy divergence, not poisoning: the branch is still read once, the record is
+    true about it, and a later request that resolves it reports its own status.
+    A per-key stack of loans closes it and is refused — see
+    `src/errors/response-identity.ts` for the cost.
+
+    For a real `Response` none of the four is observable. A platform branch
+    answers with the same four values the source did, it carries no earlier
+    record, and a platform `clone()` never answers twice with one object. Each
+    shows only through a shadowed or hostile own-property getter — where the
+    re-read values are the truer ones, since they come from the platform's
+    internal slots. The loan is deliberately this narrow: it is written into a
+    table keyed by an object that a custom Fetch implementation chose, so
+    anything wider would let one lie about one response reach a request that has
+    nothing to do with it.
 
 - **Structure and value** — the rule that decides what a channel may carry.
   `headers` emits names, never values. `url` emits the origin and the path,
@@ -143,29 +221,35 @@ Words this codebase already uses, some of them only implicitly until now.
 ## The modules
 
 ```
-index.ts                    public barrel — deliberately small
-src/index.ts                typedFetch + the guards; owns the envelope and the
-                            transport seam. The `fetch` override is read as an
-                            OWN property, never through the prototype chain.
-src/request-failure.ts      classifies a rejected request attempt as an abort,
-                            a timeout, or a network failure. The AbortSignal is
-                            the authority, never the rejection's name.
-                            INTERNAL.
-src/headers.ts              StrictHeaders / TypedHeaders — autocomplete only,
-                            no validation. INTERNAL.
-src/methods.ts              HttpMethods; excludes CONNECT and TRACE, which the
-                            Fetch spec forbids. INTERNAL.
-src/http-status-codes.ts    statusCodeErrorMap — a ReadonlyMap DERIVED from the
-                            roster, not a source of truth. INTERNAL.
-src/errors/base-http-error  HTTP error IDENTITY: status, statusText, url,
-                            headers, message. Delegates the body.
-src/errors/error-body       the response-body lifecycle: claim, cancel, tee.
-                            INTERNAL — never export it from a barrel.
-src/errors/known-http-error the branded base the 40 dedicated classes extend.
-                            INTERNAL — it is what isKnownHttpError requires,
-                            and what a consumer subclass cannot obtain.
-src/errors/brand            cross-copy identity
-src/errors/helpers          the roster and the public unions
+index.ts                      public barrel — deliberately small
+src/index.ts                  typedFetch + the guards; owns the envelope and
+                              the transport seam. The `fetch` override is read
+                              as an OWN property, never through the prototype
+                              chain.
+src/request-failure.ts        classifies a rejected request attempt as an
+                              abort, a timeout, or a network failure. The
+                              AbortSignal is the authority, never the
+                              rejection's name. INTERNAL.
+src/headers.ts                StrictHeaders / TypedHeaders — autocomplete
+                              only, no validation. INTERNAL.
+src/methods.ts                HttpMethods; excludes CONNECT and TRACE, which
+                              the Fetch spec forbids. INTERNAL.
+src/http-status-codes.ts      statusCodeErrorMap — a ReadonlyMap DERIVED from
+                              the roster, not a source of truth. INTERNAL.
+src/errors/base-http-error    HTTP error IDENTITY: status, statusText, url,
+                              headers, message. Delegates the body.
+src/errors/response-identity  the four identity fields of one Response, read
+                              once each. INTERNAL — never export it from a
+                              barrel.
+src/errors/error-body         the response-body lifecycle: claim, cancel, tee.
+                              INTERNAL — never export it from a barrel.
+src/errors/known-http-error   the branded base the 40 dedicated classes
+                              extend. INTERNAL — it is what isKnownHttpError
+                              requires, and what a consumer subclass cannot
+                              obtain.
+src/errors/brand              cross-copy identity: the brands, and the
+                              ownership query one copy asks another
+src/errors/helpers            the roster and the public unions
 ```
 
 `base-http-error` and `error-body` are one seam, drawn where the two concerns
@@ -173,6 +257,19 @@ meet: identity above it, a single-use stream below it. `base-http-error` holds
 an `ErrorBody` handle per instance in a module-scoped `WeakMap` and delegates
 every body method to it. The `Response` itself stays captured in a closure
 inside `error-body`, so it is not reachable from the error a consumer holds.
+
+`response-identity` sits on the identity side of that seam, and it is keyed the
+other way round: the body table is keyed by the ERROR, and the identity tables
+are keyed by the RESPONSE. That is the whole design. One response has one
+identity, so two errors built from it — the original and the **copy** `clone()`
+produces — report the same four fields, and a getter that answers differently on
+a second read cannot make them disagree. `base-http-error` keeps a second
+per-instance table so `clone()` can hand the copy the identity it inherits
+instead of letting it read the **branch** again. It hands it over as a **loan**
+against a third table, revoked in a `finally` once the copy is built. The branch
+is whatever `response.clone()` answered with, and a custom Fetch implementation
+can answer with a `Response` it did not create; a permanent record would bind
+that `Response` to this error's identity for as long as it lives.
 
 The seam exists for locality (successive rounds of defects all landed in the
 lifecycle: a locked-body guard the readers missed, Bun's `bodyUsed` divergence,

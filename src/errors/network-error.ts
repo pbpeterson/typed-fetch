@@ -12,10 +12,23 @@ import { redactUrl, redactUrlInMessage } from "./redact-url";
  * {@link url}.
  *
  * This class also covers *permanent, non-retryable* request-construction
- * failures: `fetch` throws a `TypeError` (surfaced here on `cause`) for an
- * invalid URL, a forbidden method (`CONNECT`/`TRACE`), or a malformed header
- * name — before touching the network. A blind retry-on-`NetworkError` loop will
- * retry these forever; inspect `cause` before retrying.
+ * failures: `fetch` throws a `TypeError` for an invalid URL, a forbidden method
+ * (`CONNECT`/`TRACE`), or a malformed header name — before touching the
+ * network. It equally covers transient failures: a DNS failure, a refused
+ * connection, a reset connection. `NetworkError` covers both kinds, and it does
+ * not tell you which one you hold.
+ *
+ * No portable test separates them. `cause` holds the rejection that `fetch`
+ * produced, and that rejection is a `TypeError` for every kind of failure, so a
+ * `cause instanceof TypeError` check answers `true` in all of them. On Deno
+ * every failure in this class arrives as a bare `TypeError` that carries no
+ * `cause` and no error code.
+ *
+ * A blind retry-on-`NetworkError` loop therefore retries the permanent failures
+ * forever, and no inspection of `cause` prevents it. Put the retry policy in a
+ * layer that knows the request. That layer knows whether the URL is a constant
+ * of the program or a value that a user supplied, which is the fact that
+ * decides a retry.
  *
  * Carries a cross-copy brand so `isNetworkError` works across module copies —
  * prefer it over raw `instanceof` at package boundaries.

@@ -32,21 +32,26 @@ attestation.
   - the ref is strict SemVer and exactly `v<package.json version>`;
   - the tag points to `HEAD`, which is also the current `origin/main` tip;
   - `CHANGELOG.md` has a section with a calendar-valid date for the version;
-  - the `[Unreleased]` changelog section is empty.
+  - the `[Unreleased]` changelog section is empty;
+  - the changelog footer defines a `[X.Y.Z]:` compare link that ends at
+    `vX.Y.Z`, and the `[Unreleased]:` link compares from `vX.Y.Z` to `HEAD`.
+    The base of the `[X.Y.Z]:` range is not checked, because this gate cannot
+    see the previous version.
 - The publish job uses a GitHub-hosted runner, Node `22.23.1`, pnpm from the
   exact `packageManager` field, and npm `11.18.0`. Release dependencies are not
   restored from a package-manager cache. It installs the reviewed lockfile with
   `pnpm install --frozen-lockfile`, then runs:
   1. `pnpm lint`
   2. `pnpm format:check`
-  3. `pnpm typecheck`
-  4. `pnpm build`
-  5. `pnpm test`
-  6. `pnpm check-docs`
-  7. `pnpm verify-pack`
-  8. `pnpm check-consumer`
-  9. `pnpm audit:prod`
-  10. `pnpm audit`
+  3. `pnpm check-doc-style`
+  4. `pnpm typecheck`
+  5. `pnpm build`
+  6. `pnpm test`
+  7. `pnpm check-docs`
+  8. `pnpm verify-pack`
+  9. `pnpm check-consumer`
+  10. `pnpm audit:prod`
+  11. `pnpm audit`
 - `verify-pack` asserts every CJS, ESM, and declaration entry in the tarball;
   `check-consumer` installs that tarball into a scratch project and exercises
   both entry points, both module formats, and consumer typechecking.
@@ -92,10 +97,25 @@ Run every step, in order, for every release:
    pending changelog entries from `[Unreleased]` into
    `## [X.Y.Z] - YYYY-MM-DD`, and leave `[Unreleased]` empty. For the first
    stable publication, use a stable version and the `latest` dist-tag.
+
+   Then update the reference definitions at the FOOTER of `CHANGELOG.md`:
+
+   ```
+   [Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/vX.Y.Z...HEAD
+   [X.Y.Z]: https://github.com/pbpeterson/typed-fetch/compare/vPREVIOUS...vX.Y.Z
+   ```
+
+   A dated heading whose link is missing, or whose link names a tag that was
+   never pushed, claims a publication that cannot be reconstructed from an
+   immutable tag. `scripts/validate-release.mjs` fails the publish job on both.
+   WARNING: That gate needs a tag ref, so it can run only after the irreversible
+   push in step 6. Read the footer against this step before you tag.
+
 2. **Run the exact publish-job gates locally, in order:**
    ```bash
    pnpm lint
    pnpm format:check
+   pnpm check-doc-style
    pnpm typecheck
    pnpm build
    pnpm test
@@ -180,3 +200,35 @@ the rule, not intuition.
    [why this document exists](#why-this-document-exists)).
 6. **Node engines stay `>=20`.** Dropping support for a Node major version is
    a `major` release.
+7. **A `Symbol.for` key that crosses package copies is a contract between
+   package versions. Never change the meaning of an existing key. A new
+   question gets a new key.** `Symbol.for` resolves to one symbol for the whole
+   process, so every version a consumer has installed answers under the same
+   keys. Two of them carry behavior rather than a marker:
+   `Symbol.for("@pbpeterson/typed-fetch.ownsResponse")`, which every copy stamps
+   on `BaseHttpError.prototype` with the shape
+   `(candidate: Response) => boolean`, and the inspect hook. The rule binds the
+   key string, the argument, and the return value together. Renaming the key,
+   changing what the argument means, or returning anything other than a boolean
+   are all the same break.
+
+   What a violation costs: `clone()` asks the returned error whether it took the
+   cloned body branch, and it treats "cannot answer" as "not confirmed". A
+   consumer holding two package copies would get a `TypeError` on a correct
+   `clone(recreate)` call — or, if the key survived but its meaning changed,
+   a wrong answer that leaves the branch with no owner, so `cancel()` on the
+   original error never settles and one connection stays open per cloned error.
+   Only a consumer with two copies is affected, which is why no consumer-facing
+   type or export changes and no other rule in this list catches it.
+
+   Two gates hold the rule, and `scripts/validate-release.mjs` deliberately does
+   not. `brand.spec.ts` pins the literal key string and the frozen property
+   descriptor, so a rename is a failed test rather than a review comment.
+   `pnpm check-consumer` installs the packed tarball and performs a real
+   cross-copy `clone()` across both module formats, so a key that survives with
+   a changed meaning fails there — behavior, not a text match.
+   `validate-release` decides publishing identity, tag alignment, and the
+   changelog from release metadata alone. It never reads `src/` or `dist/`, and
+   it cannot see the previous version, so it cannot decide a question that is
+   about a diff against a released one. Adding a text match for the key would
+   make it a second source of truth for something two gates already prove.

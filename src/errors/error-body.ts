@@ -53,6 +53,13 @@ export interface TeedErrorBody {
    * table, came from another loaded package copy. Marking what we can see is the
    * honest outcome; the flag is bookkeeping, never a guard.
    *
+   * Do NOT turn this into a guard for the cross-copy case. Whether an owner
+   * from another package copy really took the branch is asked in
+   * `BaseHttpError.clone()`, through a `Symbol.for`-keyed query the other copy
+   * answers — the only mechanism that crosses a copy seam. That question is
+   * about identity and prototypes, which live ABOVE this module's seam; this
+   * module owns a single-use stream and nothing else.
+   *
    * Returns `false`, and records NOTHING, when `sibling` exists but does not
    * own {@link branch}: a `recreate` callback that ignores the response it
    * receives and builds from another one leaves the branch an orphan. The

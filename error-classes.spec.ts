@@ -9,7 +9,13 @@ import {
   TimeoutError,
   UnknownHttpError,
 } from "./src/errors";
-import { isAbortError, isNetworkError, isTimeoutError } from "./src/index";
+import {
+  isAbortError,
+  isHttpError,
+  isKnownHttpError,
+  isNetworkError,
+  isTimeoutError,
+} from "./src/index";
 import { allErrors } from "./fixtures/error-roster";
 
 // ── B2: cause/reason presence is honest (`declare`, no phantom undefined) ──
@@ -331,4 +337,109 @@ describe("message and url agree on what they disclose", () => {
     expect(JSON.stringify(error)).not.toContain("hunter2");
     expect(error.url).toBe(url);
   });
+});
+
+// ── The status a class was selected on is the status it reports ──────
+
+/**
+ * A `Response` whose `status` and `statusText` accessors answer with the next
+ * value of a list and count their reads. A shifting getter is what an injected
+ * `fetch` can hand this library, and the counters are what prove the reads
+ * collapsed to one.
+ */
+function shiftingResponse(
+  status: readonly unknown[],
+  statusText: readonly unknown[] = [""],
+  init?: ResponseInit,
+): { response: Response; reads: { status: number; statusText: number } } {
+  const response = new Response(null, init);
+  const reads = { status: 0, statusText: 0 };
+  Object.defineProperty(response, "status", {
+    configurable: true,
+    get() {
+      const value = status[Math.min(reads.status, status.length - 1)];
+      reads.status += 1;
+      return value;
+    },
+  });
+  Object.defineProperty(response, "statusText", {
+    configurable: true,
+    get() {
+      const value = statusText[Math.min(reads.statusText, statusText.length - 1)];
+      reads.statusText += 1;
+      return value;
+    },
+  });
+  return { response, reads };
+}
+
+describe("UnknownHttpError — the class where all three reads diverged", () => {
+  test("EC-01: every member reports the first read", () => {
+    const { response, reads } = shiftingResponse([420, 200, 201], ["Weird", "OK"], { status: 404 });
+
+    const error = new UnknownHttpError(response);
+
+    expect(error.status).toBe(420);
+    expect(error.statusText).toBe("Weird");
+    expect(error.message).toBe("HTTP 420 Weird");
+    expect(error.toJSON()).toEqual({
+      name: "UnknownHttpError",
+      message: "HTTP 420 Weird",
+      status: 420,
+      statusText: "Weird",
+      url: "",
+      headers: [],
+    });
+    // One read each, for the class that used to perform three of `status` and
+    // three of `statusText` on a single construction.
+    expect(reads).toEqual({ status: 1, statusText: 1 });
+
+    expect(isHttpError(error)).toBe(true);
+    expect(isKnownHttpError(error)).toBe(false);
+  });
+
+  const statusShapes: Array<{ label: string; raw: unknown; expected: number }> = [
+    { label: "a real number", raw: 404, expected: 404 },
+    { label: 'the string "404"', raw: "404", expected: 404 },
+    { label: 'the string "200"', raw: "200", expected: 200 },
+    { label: "a padded numeric string", raw: " 404 ", expected: 404 },
+    { label: "a hex string", raw: "0x1F4", expected: 500 },
+    { label: "NaN", raw: NaN, expected: NaN },
+    { label: "Infinity", raw: Infinity, expected: Infinity },
+    { label: "a negative number", raw: -1, expected: -1 },
+    { label: "a fractional status", raw: 404.7, expected: 404.7 },
+    { label: "true", raw: true, expected: 1 },
+    { label: "null", raw: null, expected: 0 },
+    { label: "undefined", raw: undefined, expected: NaN },
+  ];
+
+  test.each(statusShapes)("EC-02: status is a number for $label", ({ raw, expected }) => {
+    // `abstract readonly status: number` used to be a promise the runtime could
+    // break: a response reporting the string "404" produced an
+    // `UnknownHttpError` whose `status` was a string.
+    const { response } = shiftingResponse([raw], [""], { status: 599 });
+
+    const error = new UnknownHttpError(response);
+
+    expect(typeof error.status).toBe("number");
+    expect(error.status).toBe(expected);
+  });
+});
+
+describe("every dedicated class keys on the status it was selected on", () => {
+  test.each(allErrors)(
+    "EC-03: $Class.name reads the status once and reports its own literal",
+    ({ Class, status }) => {
+      const { response, reads } = shiftingResponse([status, 200], [""], { status });
+
+      const error = new Class(response);
+
+      expect(error.status).toBe(Class.status);
+      expect(error.message.startsWith(`HTTP ${Class.status}`)).toBe(true);
+      // A second read reported 200, which no dedicated class can ever be
+      // selected on.
+      expect(error.message).not.toContain("HTTP 200");
+      expect(reads.status).toBe(1);
+    },
+  );
 });

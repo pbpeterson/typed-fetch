@@ -50,6 +50,7 @@ const repoRoot = resolve(scriptDir, "..");
 // implicit `any`) that this guard exists to catch and never looked at.
 export const DOC_MARKDOWN_SOURCES = [
   "README.md",
+  "CHANGELOG.md",
   "CONTRIBUTING.md",
   "skills/typed-fetch/SKILL.md",
   ".claude/skills/typed-fetch-maintainer/SKILL.md",
@@ -95,10 +96,75 @@ export const SKIP_MARKER = "no-check";
 // for is a marker that rots. Tune deliberately, not to make a red run go green.
 export const MAX_SKIP_RATIO = 0.5;
 
+// A SECOND marker, for a block that documents an API that no longer exists.
+// `no-check` and `historical` make different claims:
+//
+//   no-check   "this fragment does not compile standalone, and it SHOULD be
+//              made to compile if you can" (CONTRIBUTING.md:167).
+//   historical "this documents an API that no longer exists — never edit it to
+//              make it compile."
+//
+// Conflating them breaks three things. (1) The `no-check` instruction is
+// actively harmful for a 0.x example: you cannot make it self-contained, and
+// editing it until it compiles falsifies the record of what the old API looked
+// like. (2) MAX_SKIP_RATIO exists so `no-check` cannot rot, but a CHANGELOG
+// accumulates historical examples FOREVER, so folding them into the same ratio
+// makes it climb monotonically toward the cliff and eventually fail for a
+// reason that is not a defect. (3) With one marker, nothing distinguishes
+// "this block is history" from "someone skipped a block that regressed".
+export const HISTORICAL_MARKER = "historical";
+
+// The only files where HISTORICAL_MARKER is permitted. Pinned so widening it is
+// a reviewed diff, exactly like REQUIRED_DIST_ENTRIES. Anywhere else the marker
+// fails the gate, so it cannot become a general escape hatch.
+export const HISTORICAL_SOURCES = ["CHANGELOG.md"];
+
+// An example request URL must carry a scheme. A relative URL resolves against a
+// document base, which exists in a browser and does not exist on Node, so
+// `typedFetch("/api/users")` rejects on Node with `TypeError: Failed to parse
+// URL` — on the runtime Installation names as the target.
+export const ABSOLUTE_URL_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
+
+// Requiring the quote IMMEDIATELY after `(` is what makes this precise: it
+// skips `typedFetch(new Request(url))` (no quote) and
+// typedFetch(`${BASE}${path}`) (a backtick is not in the character class),
+// because a computed URL cannot be judged statically.
+const TYPED_FETCH_LITERAL_RE = /\btypedFetch\s*(?:<[^>(]*>)?\s*\(\s*(["'])([^"']*)\1/g;
+
+/**
+ * Relative string-literal URLs passed as typedFetch's first argument.
+ *
+ * A text match, not a compile, so it applies to EVERY extracted block —
+ * including a `historical` one. Keeping the Before and After halves of a
+ * migration example on one URL convention is what makes the pair read as a
+ * diff.
+ * @param {{ file: string, line: number, code: string }[]} blocks
+ * @returns {{ file: string, line: number, url: string }[]}
+ */
+export function findRelativeExampleUrls(blocks) {
+  const found = [];
+  for (const { file, line, code } of blocks) {
+    TYPED_FETCH_LITERAL_RE.lastIndex = 0;
+    for (const match of code.matchAll(TYPED_FETCH_LITERAL_RE)) {
+      // The block's FENCE line, not an offset inside the block: that is the
+      // location every other diagnostic in this gate reports.
+      if (!ABSOLUTE_URL_RE.test(match[2])) found.push({ file, line, url: match[2] });
+    }
+  }
+  return found;
+}
+
 /**
  * Extract fenced ts/typescript blocks from markdown.
  * @param {string} md
- * @returns {{ line: number, info: string, code: string, skip: boolean, unterminated: boolean }[]}
+ * @returns {{
+ *   line: number,
+ *   info: string,
+ *   code: string,
+ *   skip: boolean,
+ *   historical: boolean,
+ *   unterminated: boolean,
+ * }[]}
  */
 export function extractBlocks(md) {
   const lines = md.split("\n");
@@ -140,12 +206,21 @@ export function extractBlocks(md) {
         j += 1;
       }
       if (lang === "ts" || lang === "typescript") {
-        const skip = info.split(/\s+/).slice(1).includes(SKIP_MARKER);
+        const markers = info.split(/\s+/).slice(1);
+        const skip = markers.includes(SKIP_MARKER);
+        const historical = markers.includes(HISTORICAL_MARKER);
         // A fence that reached EOF without a close is a malformed document, not
         // a block. Flagged rather than silently emitted, so the caller can fail
         // loudly instead of compiling one giant block and losing the rest.
         const unterminated = j >= lines.length;
-        blocks.push({ line: fenceLine, info, code: body.join("\n"), skip, unterminated });
+        blocks.push({
+          line: fenceLine,
+          info,
+          code: body.join("\n"),
+          skip,
+          historical,
+          unterminated,
+        });
       }
       i = j + 1;
     } else {
@@ -203,10 +278,14 @@ export function rewriteImports(code, distDir) {
 /**
  * @typedef {{ file: string, format: "markdown" | "jsdoc", source: string }} DocSource
  * @typedef {{ name: string, file: string, line: number, content: string }} PlannedBlock
+ * @typedef {{ file: string, line: number }} BlockRef
  * @typedef {{
  *   blocks: PlannedBlock[],
- *   skipped: { file: string, line: number }[],
- *   unterminated: { file: string, line: number }[],
+ *   skipped: BlockRef[],
+ *   historical: BlockRef[],
+ *   historicalMisplaced: BlockRef[],
+ *   unterminated: BlockRef[],
+ *   exampleBlocks: { file: string, line: number, code: string }[],
  *   totalTsBlocks: number,
  * }} DocPlan
  */
@@ -219,10 +298,19 @@ export function rewriteImports(code, distDir) {
 export function planDocBlocks(docs, distDir) {
   /** @type {PlannedBlock[]} */
   const blocks = [];
-  /** @type {{ file: string, line: number }[]} */
+  /** @type {BlockRef[]} */
   const skipped = [];
-  /** @type {{ file: string, line: number }[]} */
+  /** @type {BlockRef[]} */
+  const historical = [];
+  /** @type {BlockRef[]} */
+  const historicalMisplaced = [];
+  /** @type {BlockRef[]} */
   const unterminated = [];
+  // Every extracted, terminated TS block, with the code the AUTHOR wrote —
+  // before the import rewrite. The example-URL rule reads this, so it sees
+  // skipped and historical blocks too.
+  /** @type {{ file: string, line: number, code: string }[]} */
+  const exampleBlocks = [];
   let totalTsBlocks = 0;
 
   for (const { file, format, source } of docs) {
@@ -231,6 +319,14 @@ export function planDocBlocks(docs, distDir) {
       totalTsBlocks += 1;
       if (block.unterminated) {
         unterminated.push({ file, line: block.line });
+        continue;
+      }
+      exampleBlocks.push({ file, line: block.line, code: block.code });
+      // `historical` wins over `no-check` on a fence that carries both: it is
+      // the stronger claim, and it is the one that must never be "fixed".
+      if (block.historical) {
+        const bucket = HISTORICAL_SOURCES.includes(file) ? historical : historicalMisplaced;
+        bucket.push({ file, line: block.line });
         continue;
       }
       if (block.skip) {
@@ -251,7 +347,15 @@ export function planDocBlocks(docs, distDir) {
       });
     }
   }
-  return { blocks, skipped, unterminated, totalTsBlocks };
+  return {
+    blocks,
+    skipped,
+    historical,
+    historicalMisplaced,
+    unterminated,
+    exampleBlocks,
+    totalTsBlocks,
+  };
 }
 
 /**
@@ -289,9 +393,12 @@ export function attributeDiagnostics(tscOutput, blocks) {
 
 /**
  * @typedef {
+ *   | { kind: "unterminated-fence" }
+ *   | { kind: "historical-misplaced", blocks: BlockRef[] }
  *   | { kind: "tsc-config-regression" }
  *   | { kind: "unattributable" }
  *   | { kind: "block-failures", failures: { file: string, line: number, msg: string }[] }
+ *   | { kind: "example-urls", urls: { file: string, line: number, url: string }[] }
  *   | { kind: "skip-ratio", skipRatio: number }
  *   | { kind: "ok" }
  * } DocsVerdict
@@ -309,6 +416,13 @@ export function judgeDocs({ plan, tscOutput }) {
   // under-checking, which this gate must never report as a pass.
   if (plan.unterminated.length > 0) return { kind: "unterminated-fence" };
 
+  // Same class of harm, so the same position: a `historical` marker outside
+  // CHANGELOG.md excluded a block from compilation that should have been
+  // compiled, and a green tsc therefore under-reports.
+  if (plan.historicalMisplaced.length > 0) {
+    return { kind: "historical-misplaced", blocks: plan.historicalMisplaced };
+  }
+
   if (tscOutput !== null) {
     const failures = attributeDiagnostics(tscOutput, plan.blocks);
     // TS5112 must never appear — if it does, our config strategy regressed. It
@@ -320,7 +434,17 @@ export function judgeDocs({ plan, tscOutput }) {
     return { kind: "block-failures", failures };
   }
 
-  const skipRatio = plan.totalTsBlocks === 0 ? 0 : plan.skipped.length / plan.totalTsBlocks;
+  // AFTER the tsc branch: a block that does not compile is the more
+  // fundamental defect, and reporting a URL nit ahead of it would bury the
+  // compile error.
+  const urls = findRelativeExampleUrls(plan.exampleBlocks);
+  if (urls.length > 0) return { kind: "example-urls", urls };
+
+  // Historical blocks leave BOTH sides of the ratio. A changelog accumulates
+  // them forever, and this ratio must not drift toward its cliff because
+  // history got longer.
+  const checkable = plan.totalTsBlocks - plan.historical.length;
+  const skipRatio = checkable <= 0 ? 0 : plan.skipped.length / checkable;
   if (skipRatio > MAX_SKIP_RATIO) return { kind: "skip-ratio", skipRatio };
   return { kind: "ok" };
 }
@@ -460,6 +584,22 @@ function main() {
     scratch.dispose();
     process.exit(1);
   }
+  if (verdict.kind === "historical-misplaced") {
+    console.error(
+      `check-docs: the \`${HISTORICAL_MARKER}\` marker is valid only in ` +
+        `${HISTORICAL_SOURCES.join(", ")}. These blocks were excluded from`,
+    );
+    console.error("  compilation and should not have been:\n");
+    for (const b of verdict.blocks) {
+      console.error(`    - ${b.file}:${b.line}`);
+    }
+    console.error(
+      `\n  Use \`${SKIP_MARKER}\` for a fragment that cannot compile standalone ` +
+        "(see CONTRIBUTING.md).\n",
+    );
+    scratch.dispose();
+    process.exit(1);
+  }
   if (verdict.kind === "tsc-config-regression") {
     console.error("check-docs: tsc emitted TS5112 (root tsconfig leaked in). This masks real");
     console.error("  errors and is a bug in this script. Aborting.\n");
@@ -480,11 +620,19 @@ function main() {
   console.log(`  TypeScript blocks found : ${plan.totalTsBlocks}`);
   console.log(`  checked against dist/    : ${plan.blocks.length}`);
   console.log(`  skipped (\`${SKIP_MARKER}\`)      : ${plan.skipped.length}`);
+  console.log(`  historical (\`${HISTORICAL_MARKER}\`) : ${plan.historical.length}`);
 
   if (plan.skipped.length > 0) {
     console.log("\n  Skipped blocks (must be fragments/templates that cannot compile standalone):");
     for (const s of plan.skipped) {
       console.log(`    - ${s.file}:${s.line}`);
+    }
+  }
+
+  if (plan.historical.length > 0) {
+    console.log("\n  Historical blocks (document a removed API; never edit them to compile):");
+    for (const h of plan.historical) {
+      console.log(`    - ${h.file}:${h.line}`);
     }
   }
 
@@ -497,6 +645,23 @@ function main() {
     }
     console.error("\nFix the doc example, or — only if it is a genuine non-compilable fragment —");
     console.error(`mark its fence \`\`\`ts ${SKIP_MARKER} (see CONTRIBUTING.md).`);
+    process.exit(1);
+  }
+
+  if (verdict.kind === "example-urls") {
+    console.error(
+      `\ncheck-docs: ${verdict.urls.length} example request URL(s) are not absolute:\n`,
+    );
+    for (const u of verdict.urls) {
+      console.error(`  ${u.file} (fence at line ${u.line}): typedFetch("${u.url}")`);
+    }
+    console.error(
+      "\nA relative URL resolves against a document base, which exists in a browser and does",
+    );
+    console.error(
+      'not exist on Node. `typedFetch("/api/users")` rejects there with `TypeError: Failed to',
+    );
+    console.error("parse URL`. Use an absolute URL, e.g. https://api.example.com/users.");
     process.exit(1);
   }
 

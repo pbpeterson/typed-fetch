@@ -6,7 +6,11 @@ import { afterAll, describe, expect, test } from "vitest";
 import { createScratchDir } from "./lib/scratch-dir.mjs";
 import {
   attributeDiagnostics,
+  DOC_MARKDOWN_SOURCES,
   extractBlocks,
+  findRelativeExampleUrls,
+  HISTORICAL_MARKER,
+  HISTORICAL_SOURCES,
   judgeDocs,
   jsdocToMarkdown,
   MAX_SKIP_RATIO,
@@ -97,6 +101,37 @@ describe("extractBlocks — the skip marker", () => {
 
   test("the marker must be an info-string word, not part of the language", () => {
     expect(extractBlocks(md(FENCE + `ts${SKIP_MARKER}`, "x", FENCE))).toHaveLength(0);
+  });
+});
+
+describe("extractBlocks — the historical marker", () => {
+  test(`marks a block historical only for the exact \`${HISTORICAL_MARKER}\` marker`, () => {
+    const doc = md(
+      FENCE + `ts ${HISTORICAL_MARKER}`,
+      "// 0.x",
+      FENCE,
+      "",
+      FENCE + "ts",
+      "const b = 2;",
+      FENCE,
+    );
+    expect(extractBlocks(doc).map((b) => b.historical)).toEqual([true, false]);
+  });
+
+  test("`historical` and `no-check` on one fence sets both flags", () => {
+    const [block] = extractBlocks(md(FENCE + `ts ${HISTORICAL_MARKER} ${SKIP_MARKER}`, "x", FENCE));
+    expect(block.historical).toBe(true);
+    expect(block.skip).toBe(true);
+  });
+
+  test("the marker must be an info-string word, not part of the language", () => {
+    expect(extractBlocks(md(FENCE + `ts${HISTORICAL_MARKER}`, "x", FENCE))).toHaveLength(0);
+  });
+
+  test("a plain ts fence is neither skipped nor historical", () => {
+    const [block] = extractBlocks(md(FENCE + "ts", "const a = 1;", FENCE));
+    expect(block.skip).toBe(false);
+    expect(block.historical).toBe(false);
   });
 });
 
@@ -352,6 +387,126 @@ describe("planDocBlocks", () => {
     );
     expect(plan.unterminated).toEqual([]);
   });
+
+  test("every extracted block reaches exampleBlocks with the code the author wrote", () => {
+    // The URL rule reads THIS, not the rewritten content: it must judge what a
+    // reader copies, before the dist/ import rewrite.
+    const plan = planDocBlocks(
+      [
+        doc(
+          "README.md",
+          "markdown",
+          FENCE + "ts",
+          `import x from "@pbpeterson/typed-fetch";`,
+          FENCE,
+        ),
+      ],
+      "/repo/dist",
+    );
+    expect(plan.exampleBlocks).toEqual([
+      { file: "README.md", line: 1, code: `import x from "@pbpeterson/typed-fetch";` },
+    ]);
+  });
+});
+
+describe("planDocBlocks — historical blocks", () => {
+  const doc = (file, ...lines) => ({ file, format: "markdown", source: md(...lines) });
+  const HIST = FENCE + `ts ${HISTORICAL_MARKER}`;
+
+  test("a historical block in CHANGELOG.md is recorded, not compiled, and not in blocks", () => {
+    const plan = planDocBlocks([doc("CHANGELOG.md", HIST, "// 0.x", FENCE)], "/d");
+    expect(plan.historical).toEqual([{ file: "CHANGELOG.md", line: 1 }]);
+    expect(plan.blocks).toEqual([]);
+    expect(plan.historicalMisplaced).toEqual([]);
+  });
+
+  test("a historical block outside CHANGELOG.md lands in historicalMisplaced", () => {
+    const plan = planDocBlocks([doc("README.md", HIST, "// 0.x", FENCE)], "/d");
+    expect(plan.historicalMisplaced).toEqual([{ file: "README.md", line: 1 }]);
+    expect(plan.historical).toEqual([]);
+    expect(plan.blocks).toEqual([]);
+  });
+
+  test("a historical block still counts toward totalTsBlocks", () => {
+    // The report stays honest about how many examples the corpus holds; only
+    // the skip RATIO excludes them.
+    const plan = planDocBlocks(
+      [doc("CHANGELOG.md", HIST, "// 0.x", FENCE, "", FENCE + "ts", "const a = 1;", FENCE)],
+      "/d",
+    );
+    expect(plan.totalTsBlocks).toBe(2);
+    expect(plan.blocks).toHaveLength(1);
+  });
+
+  test("historical wins over no-check on one fence: the block is recorded once", () => {
+    const plan = planDocBlocks(
+      [doc("CHANGELOG.md", FENCE + `ts ${SKIP_MARKER} ${HISTORICAL_MARKER}`, "x", FENCE)],
+      "/d",
+    );
+    expect(plan.historical).toEqual([{ file: "CHANGELOG.md", line: 1 }]);
+    expect(plan.skipped).toEqual([]);
+  });
+
+  test("a historical block is still handed to the URL rule", () => {
+    const plan = planDocBlocks([doc("CHANGELOG.md", HIST, "// 0.x", FENCE)], "/d");
+    expect(plan.exampleBlocks).toEqual([{ file: "CHANGELOG.md", line: 1, code: "// 0.x" }]);
+  });
+});
+
+const scan = (code) => findRelativeExampleUrls([{ file: "D.md", line: 7, code }]);
+
+describe("findRelativeExampleUrls", () => {
+  test("flags a relative double-quoted first argument", () => {
+    expect(scan(`await typedFetch("/api/users");`)).toEqual([
+      { file: "D.md", line: 7, url: "/api/users" },
+    ]);
+  });
+
+  test("flags the single-quoted form", () => {
+    expect(scan(`await typedFetch('/api/users');`)).toHaveLength(1);
+  });
+
+  test("flags a generic call", () => {
+    expect(scan(`await typedFetch<User>("/api/users");`)).toHaveLength(1);
+  });
+
+  test("accepts an absolute https URL", () => {
+    expect(scan(`await typedFetch("https://api.example.com/users");`)).toEqual([]);
+  });
+
+  test("accepts an http:// URL — the rule is absolute, not https", () => {
+    expect(scan(`await typedFetch("http://localhost:3000/users");`)).toEqual([]);
+  });
+
+  test("ignores a template literal: a computed URL cannot be judged statically", () => {
+    // Regression — skills/typed-fetch/SKILL.md:295 builds its URL from BASE_URL.
+    expect(scan("return typedFetch<T>(`${BASE_URL}${path}`, options);")).toEqual([]);
+  });
+
+  test("ignores a non-literal first argument", () => {
+    expect(scan(`await typedFetch(new Request(url));`)).toEqual([]);
+  });
+
+  test("ignores a relative URL that is not typedFetch's first argument", () => {
+    // Regression — src/errors/redact-url.ts:25 discusses `fetch("/v1/thing")`
+    // in prose about why RELATIVE_BASE exists.
+    expect(scan(`fetch("/v1/thing?token=secret");`)).toEqual([]);
+    expect(scan(`await typedFetch("https://a.example/x", { body: "/api/users" });`)).toEqual([]);
+  });
+
+  test("flags a second violation in the same block and reports the fence line for both", () => {
+    expect(scan(md(`typedFetch("/a");`, `typedFetch("/b");`))).toEqual([
+      { file: "D.md", line: 7, url: "/a" },
+      { file: "D.md", line: 7, url: "/b" },
+    ]);
+  });
+
+  test("reports the source file and fence line, not an offset inside the block", () => {
+    const [hit] = findRelativeExampleUrls([
+      { file: "CHANGELOG.md", line: 741, code: md("// preamble", "", `typedFetch("/api/x");`) },
+    ]);
+    expect(hit).toEqual({ file: "CHANGELOG.md", line: 741, url: "/api/x" });
+  });
 });
 
 describe("attributeDiagnostics", () => {
@@ -400,7 +555,10 @@ describe("attributeDiagnostics", () => {
 const plan = (over = {}) => ({
   blocks: [],
   skipped: [],
+  historical: [],
+  historicalMisplaced: [],
   unterminated: [],
+  exampleBlocks: [],
   totalTsBlocks: 0,
   ...over,
 });
@@ -479,6 +637,122 @@ describe("judgeDocs", () => {
       tscOutput: "blocks/README_md__L13.ts(4,20): error TS2339: nope.",
     });
     expect(verdict.kind).toBe("block-failures");
+  });
+});
+
+describe("judgeDocs — the historical marker and the example-URL rule", () => {
+  const misplaced = [{ file: "README.md", line: 3 }];
+  const relative = [{ file: "README.md", line: 3, code: `typedFetch("/api/users");` }];
+
+  test("reports every misplaced historical block", () => {
+    expect(judgeDocs({ plan: plan({ historicalMisplaced: misplaced }), tscOutput: null })).toEqual({
+      kind: "historical-misplaced",
+      blocks: misplaced,
+    });
+  });
+
+  test("historical-misplaced outranks block-failures", () => {
+    // A misplaced marker EXCLUDED a block from compilation, so a tsc verdict —
+    // green or red — under-reports. Same harm as an unterminated fence.
+    const verdict = judgeDocs({
+      plan: plan({
+        historicalMisplaced: misplaced,
+        blocks: [block("README_md__L13", "README.md", 13)],
+      }),
+      tscOutput: "blocks/README_md__L13.ts(4,20): error TS2339: nope.",
+    });
+    expect(verdict.kind).toBe("historical-misplaced");
+  });
+
+  test("historical-misplaced outranks tsc-config-regression", () => {
+    const verdict = judgeDocs({
+      plan: plan({ historicalMisplaced: misplaced }),
+      tscOutput: "error TS5112: tsconfig.json is present but will not be loaded...",
+    });
+    expect(verdict.kind).toBe("historical-misplaced");
+  });
+
+  test("unterminated-fence outranks historical-misplaced", () => {
+    const verdict = judgeDocs({
+      plan: plan({ historicalMisplaced: misplaced, unterminated: [{ file: "a", line: 1 }] }),
+      tscOutput: null,
+    });
+    expect(verdict.kind).toBe("unterminated-fence");
+  });
+
+  test("reports example-urls when tsc succeeded and a relative URL exists", () => {
+    expect(judgeDocs({ plan: plan({ exampleBlocks: relative }), tscOutput: null })).toEqual({
+      kind: "example-urls",
+      urls: [{ file: "README.md", line: 3, url: "/api/users" }],
+    });
+  });
+
+  test("block-failures outranks example-urls", () => {
+    // A block that does not compile is the more fundamental defect; a URL nit
+    // ahead of it would bury the compile error.
+    const verdict = judgeDocs({
+      plan: plan({
+        blocks: [block("README_md__L13", "README.md", 13)],
+        exampleBlocks: relative,
+      }),
+      tscOutput: "blocks/README_md__L13.ts(4,20): error TS2339: nope.",
+    });
+    expect(verdict.kind).toBe("block-failures");
+  });
+
+  test("example-urls outranks skip-ratio", () => {
+    const skipped = [1, 2, 3].map((line) => ({ file: "a", line }));
+    const verdict = judgeDocs({
+      plan: plan({ exampleBlocks: relative, skipped, totalTsBlocks: 5 }),
+      tscOutput: null,
+    });
+    expect(verdict.kind).toBe("example-urls");
+  });
+
+  test("the skip ratio excludes historical blocks from the denominator", () => {
+    const skipped = [1, 2, 3].map((line) => ({ file: "a", line }));
+    const historical = [1, 2, 3, 4].map((line) => ({ file: "CHANGELOG.md", line }));
+    // 3 skipped of 6 checkable = exactly MAX_SKIP_RATIO, which is allowed.
+    expect(
+      judgeDocs({ plan: plan({ skipped, historical, totalTsBlocks: 10 }), tscOutput: null }),
+    ).toEqual({ kind: "ok" });
+  });
+
+  test("one more skip on the same corpus crosses the ratio", () => {
+    const skipped = [1, 2, 3, 4].map((line) => ({ file: "a", line }));
+    const historical = [1, 2, 3, 4].map((line) => ({ file: "CHANGELOG.md", line }));
+    const verdict = judgeDocs({
+      plan: plan({ skipped, historical, totalTsBlocks: 10 }),
+      tscOutput: null,
+    });
+    expect(verdict.kind).toBe("skip-ratio");
+    expect(verdict.skipRatio).toBeCloseTo(4 / 6, 5);
+  });
+
+  test("a corpus that is entirely historical is a zero ratio, not a division by zero", () => {
+    const historical = [1, 2].map((line) => ({ file: "CHANGELOG.md", line }));
+    expect(judgeDocs({ plan: plan({ historical, totalTsBlocks: 2 }), tscOutput: null })).toEqual({
+      kind: "ok",
+    });
+  });
+});
+
+describe("DOC_MARKDOWN_SOURCES", () => {
+  test("includes CHANGELOG.md", () => {
+    // The whole point of the extension: a hand-maintained roster silently
+    // under-reports, which is the failure mode check-docs.mjs:44-50 records for
+    // the JSDoc side. CHANGELOG.md's migration examples are the ones a reader
+    // copies, and all four of them failed to compile.
+    expect(DOC_MARKDOWN_SOURCES).toContain("CHANGELOG.md");
+  });
+});
+
+describe("HISTORICAL_SOURCES", () => {
+  test("is exactly CHANGELOG.md", () => {
+    // Pinned so widening it is a reviewed diff, the same way
+    // REQUIRED_DIST_ENTRIES is pinned. Anywhere else, `historical` would be a
+    // general escape hatch from compilation.
+    expect(HISTORICAL_SOURCES).toEqual(["CHANGELOG.md"]);
   });
 });
 

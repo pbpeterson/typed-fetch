@@ -5,6 +5,7 @@ import {
   isKnownHttpError,
   isAbortError,
   isTimeoutError,
+  typedFetch,
 } from "./src/index";
 import { hasBrand } from "./src/errors/brand";
 import {
@@ -271,6 +272,49 @@ describe("cross-copy brands", () => {
       expect(isAbortError(v)).toBe(false);
       expect(isTimeoutError(v)).toBe(false);
       expect(isKnownHttpError(v)).toBe(false);
+    }
+  });
+});
+
+describe("the guards accept a status a custom Fetch reported as a string", () => {
+  test("GD-01: a string status is a known HTTP error with a numeric status", async () => {
+    // Before the status was normalized, `{ status: "404" }` missed
+    // `statusCodeErrorMap` (which is keyed by numbers), reached the consumer as
+    // an `UnknownHttpError` carrying the STRING "404", and `isKnownHttpError`
+    // returned false for what is plainly a 404 — because it requires
+    // `typeof status === "number"`.
+    const { error } = await typedFetch("https://example.invalid/string-status", {
+      fetch: (async () => ({ status: "404" })) as unknown as typeof fetch,
+    });
+
+    expect(isKnownHttpError(error)).toBe(true);
+
+    let reached = "none";
+    if (isKnownHttpError(error)) {
+      switch (error.status) {
+        case 404:
+          reached = "404";
+          break;
+        default:
+          reached = "default";
+          break;
+      }
+    }
+    expect(reached).toBe("404");
+  });
+
+  test("GD-02: a numeric status the map does not hold stays unknown", async () => {
+    // The status is NOT truncated and NOT range-checked, so 404.7 does not
+    // become a 404 and Infinity does not become a 599. Both miss the map and
+    // land where an unmapped status belongs.
+    for (const status of [404.7, Infinity]) {
+      const { error } = await typedFetch("https://example.invalid/unmapped-number", {
+        fetch: (async () => ({ status })) as unknown as typeof fetch,
+      });
+
+      expect(error).toBeInstanceOf(UnknownHttpError);
+      expect(isHttpError(error)).toBe(true);
+      expect(isKnownHttpError(error)).toBe(false);
     }
   });
 });

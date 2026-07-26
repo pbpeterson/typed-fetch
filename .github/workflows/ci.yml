@@ -38,6 +38,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm format:check
+      # Prose gate: relative links in README, controlled-vocabulary violations,
+      # and the README Terms table against docs/writing-standard.md. Needs no
+      # dist/ and no tsc, so it runs BEFORE build and fails in milliseconds.
+      - run: pnpm check-doc-style
       - run: pnpm typecheck
       - run: pnpm build
       # Must run AFTER build: public-surface.spec.ts contains dist-gated suites
