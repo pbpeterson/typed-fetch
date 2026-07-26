@@ -16,6 +16,18 @@ Native `fetch` does not reject a request for an HTTP error status. The calling c
 
 Body readers are separate operations. `json()`, `text()`, `blob()`, and `arrayBuffer()` keep the native Fetch behavior, and they can reject.
 
+### Upgrade from 1.x
+
+Version 2.0 has breaking changes. Most are runtime behavior, and they reach a consumer through logging, through `clone()`, or through a custom Fetch implementation:
+
+- **`headers`, `url`, `cause`, and `reason` are no longer enumerable.** A log built from `{ ...error }` loses them. Call `error.toJSON()`, or read each field by name.
+- **`error.headers` is a copy.** A write through it no longer reaches the response.
+- **`clone(recreate)` refuses a callback result that cannot own the cloned body branch.** That covers a non-object, a wrapper such as a Proxy, an error built from a different response, and a copy that cannot confirm it took the branch. Return the new error itself.
+- **A custom Fetch implementation must resolve with a `Response`.** A partial test double resolves with a `NetworkError` instead of escaping as typed success. It must also answer `status`, `statusText`, `url`, and `headers` consistently, because each field is read once.
+- **`TypedFetchOptions["headers"]` rejects `undefined` as a header value.** This is the one compile-time break. Write `...(token ? { Authorization: token } : {})`.
+
+The migration table is in [CHANGELOG.md](https://github.com/pbpeterson/typed-fetch/blob/main/CHANGELOG.md#200---2026-07-26). Read the `1.1.0` section too: `1.1.0` was never published, so every consumer upgrades `1.0.0` → `2.0.0` and the real delta is the union of both sections.
+
 ### Upgrade from 0.x
 
 Version 1.0 has breaking changes. Four of them need a code change:
@@ -549,6 +561,11 @@ Each of these errors also has a `url` value. Use this value to identify a failed
 the origin and path. They remove userinfo, query strings, and fragments. A log
 line and a log record therefore agree.
 
+The path is kept because it names the resource, which is what tells concurrent
+failures apart. That holds for `http:`, `https:`, `ws:`, `wss:`, `ftp:`, and
+`file:`. An opaque scheme carries its payload in the path instead, so a `data:`
+or `blob:` URL is reduced to the scheme alone.
+
 ### Network failures
 
 `NetworkError` also represents an error that occurs before a network connection. Examples include an invalid URL, a forbidden method, and an invalid header name.
@@ -763,6 +780,14 @@ second is native `RequestInit` behavior.
 A custom Fetch implementation is not trusted input. It must resolve with a
 platform `Response` or a standards-compatible polyfill. A partial test double
 or another value resolves with a `NetworkError` whose `cause` is a `TypeError`.
+
+A platform `Response` is accepted through its own `status` getter. A foreign
+implementation is accepted when it tags itself `[object Response]` and exposes
+the members this library reads: `body`, `bodyUsed`, `headers`, `ok`,
+`redirected`, `status`, `statusText`, and `url`, plus the methods
+`arrayBuffer`, `blob`, `clone`, `json`, and `text`. `node-fetch` and
+`cross-fetch` satisfy this. `whatwg-fetch` does not, because it exposes no
+`body` stream, which `error.cancel()` and `clone()` are built on.
 
 `typedFetch` inspects the response inside the result envelope. If an identity
 getter throws, `typedFetch` resolves with a `NetworkError`. Its `cause` holds

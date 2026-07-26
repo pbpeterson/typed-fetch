@@ -22,8 +22,21 @@ describe("redactUrl — structure is kept, every value slot is dropped", () => {
     expect(redactUrl("https://api.test/v1/things")).toBe("https://api.test/v1/things");
   });
 
-  test("the port, and a non-http scheme, survive — they are structure", () => {
+  test("the port survives — it is structure", () => {
     expect(redactUrl("https://api.test:8443/x?t=SECRET")).toBe("https://api.test:8443/x");
+  });
+
+  test("a hierarchical non-http scheme keeps its path", () => {
+    expect(redactUrl("file:///var/log/app.log?t=SECRET")).toBe("file:///var/log/app.log");
+    expect(redactUrl("ws://api.test/socket?token=SECRET")).toBe("ws://api.test/socket");
+  });
+
+  // An opaque scheme carries its payload in the path, so the "path is
+  // structure" trade does not hold and there is nothing left to keep.
+  test("an opaque scheme is reduced to the scheme — the payload IS the path", () => {
+    expect(redactUrl("data:text/plain,SECRET_TOKEN")).toBe("data:");
+    expect(redactUrl("data:application/json;base64,U0VDUkVU")).toBe("data:");
+    expect(redactUrl("blob:https://api.test/9f8c-4a1e-b7d2")).toBe("blob:");
   });
 
   test("a relative URL keeps its path — ordinary in a browser or worker", () => {

@@ -122,7 +122,13 @@ Read the migration table before you upgrade.
   so a later getter failure cannot cause an earlier field to be read again.
 - A custom Fetch implementation must resolve with a platform `Response` or a
   standards-compatible polyfill. A string, bare object, or partial test double
-  now yields `NetworkError`. Before, it could escape as typed success.
+  now yields `NetworkError`. Before, it could escape as typed success. A
+  platform response is recognized through its own `status` getter. A foreign one
+  is recognized when it tags itself `[object Response]` and exposes the members
+  this library reads: `body`, `bodyUsed`, `headers`, `ok`, `redirected`,
+  `status`, `statusText`, `url`, and the methods `arrayBuffer`, `blob`, `clone`,
+  `json`, and `text`. `node-fetch` and `cross-fetch` satisfy this set.
+  `whatwg-fetch` does not, because it exposes no `body` stream.
 - `typedFetch` converts `status` to a number before it compares it with 400. A
   custom Fetch implementation that answers `status` with `"404"` now resolves
   with `NotFoundError` and a numeric `status` of `404`. It resolved with
@@ -278,6 +284,22 @@ Read the migration table before you upgrade.
   answers a status the branch was never taken on; and the release itself is
   wrapped, so a throwing `body` getter can no longer replace the cause being
   reported.
+- The governing `AbortSignal` is read once. `typedFetch` read `options.signal`
+  twice while resolving it: once to test it against `undefined`, once to take
+  its value. An injected options object whose `signal` getter answered
+  differently on the second read left the library holding no signal, and
+  `classifyRequestFailure` consults that signal as the authority. A real abort
+  was reported as a `NetworkError`, and an `AbortSignal.timeout` never reached
+  `TimeoutError`. The value is now taken into a local, exactly as `status` is.
+- `error.message` and the `toJSON()` record no longer carry the payload of an
+  opaque URL. The redaction keeps the path because it names the resource, which
+  is what tells concurrent failures apart. A `data:` URL carries its bytes in
+  the path instead, and a `blob:` URL an unguessable handle to them, so
+  `redactUrl` emitted both in full — a `NetworkError` for
+  `data:text/plain,SECRET` put `SECRET` in the message and in the record. The
+  path is kept for `http:`, `https:`, `ws:`, `wss:`, `ftp:`, and `file:`. Every
+  other scheme is reduced to the scheme alone. `error.url` still holds the full
+  href.
 - `NetworkError` no longer copies a password into `message`. undici rejects a
   URL that carries credentials with a `TypeError` whose message contains the URL
   verbatim. That message was copied into `message`, and from there into the
@@ -360,6 +382,19 @@ Read the migration table before you upgrade.
 
 ### Internal
 
+- `prepublishOnly` verifies the artifact instead of rebuilding it. It ran
+  `npm run build`, so `npm publish` fired tsup with `clean: true` after
+  `verify-pack` and `check-consumer` had already inspected `dist/`. The tarball
+  npm uploaded was a rebuild of the one the gates passed rather than that one.
+  It now runs `scripts/verify-pack.mjs`, which fails a missing or incomplete
+  `dist/` instead of silently regenerating it.
+- The Deno job pins `deno-version: v2.x`. `scripts/check-deno-consumer.mjs`
+  refuses anything below Deno 2, so the major the release is validated against
+  was decided by an action default in a workflow that pins every action by SHA.
+- `errors/package.json`, the Node 10 resolution stub, declares
+  `"sideEffects": false` like the root manifest. A bundler that reads the stub
+  as the description file for `@pbpeterson/typed-fetch/errors` can now treat the
+  subpath as free of side effects.
 - Three wire-level tests prove that a header passed through the `headers` option
   reaches the server, for the record, `Headers`, and pair-list forms. Nothing
   proved it before: removing the forwarding on the path every consumer takes

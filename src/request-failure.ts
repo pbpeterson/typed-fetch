@@ -125,6 +125,11 @@ function isDOMExceptionNamed(value: unknown, ...names: string[]): value is DOMEx
  * own `AbortError` class — a plain `Error` subclass, not a DOMException. Both
  * shapes are accepted here.
  *
+ * This is a statement about REJECTION shapes only. Whether an implementation's
+ * resolved value is accepted as a `Response` is a separate question, answered by
+ * `isResponse` in `src/index.ts` — `whatwg-fetch` fails that one, because it
+ * exposes no `body` stream.
+ *
  * Restricted to error-shaped values so an arbitrary object carrying a `name`
  * property cannot claim an abort. This is only ever consulted while the
  * governing signal reports `aborted`, which is what keeps an unrelated failure

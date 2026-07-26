@@ -420,6 +420,66 @@ describe("typedFetch", () => {
     expect(await result.response?.json()).toEqual({ source: "polyfill" });
   });
 
+  // `node-fetch@2` — and `cross-fetch`, which wraps it — implements neither
+  // `formData` nor `type`. Requiring them turned the documented injection seam
+  // into a `NetworkError` for every request through it, including this 200.
+  test("a foreign Response without formData or type stays supported", async () => {
+    const nodeFetchShape = {
+      body: null,
+      bodyUsed: false,
+      headers: new Headers(),
+      ok: true,
+      redirected: false,
+      status: 200,
+      statusText: "OK",
+      url: "https://node-fetch.test/",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone() {
+        return this;
+      },
+      json: async () => ({ source: "node-fetch" }),
+      text: async () => "node-fetch",
+      [Symbol.toStringTag]: "Response",
+    } as unknown as Response;
+
+    const result = await typedFetch<{ source: string }>("https://example.invalid/node-fetch", {
+      fetch: respondingWith(nodeFetchShape),
+    });
+
+    expect(result.error).toBe(null);
+    expect(await result.response?.json()).toEqual({ source: "node-fetch" });
+  });
+
+  // A `Request` carries `body`, `bodyUsed`, `headers`, `url`, and every read
+  // method, so the member set has to be the one that separates it from a
+  // response: it has no `status`, `statusText`, `ok`, or `redirected`.
+  test("a foreign Request shape is refused, not read as a Response", async () => {
+    const requestShape = {
+      body: null,
+      bodyUsed: false,
+      headers: new Headers(),
+      method: "GET",
+      url: "https://example.invalid/",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone() {
+        return this;
+      },
+      json: async () => ({}),
+      text: async () => "",
+      [Symbol.toStringTag]: "Response",
+    } as unknown as Response;
+
+    const result = await typedFetch("https://example.invalid/request-shape", {
+      fetch: respondingWith(requestShape),
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBeInstanceOf(TypeError);
+  });
+
   test("a Response whose url getter throws → NetworkError value, no rejection", async () => {
     const cause = new Error("url getter exploded");
     const hostileResponse = new Response(null, { status: 404 });
@@ -830,6 +890,39 @@ describe("typedFetch", () => {
 
     if (isAbortError(result.error)) {
       expect(result.error.reason).toBe("just a string");
+    }
+  });
+
+  // The governing signal is the authority every classification below depends
+  // on, so it is read ONCE and kept, exactly as the response identity is. A
+  // second read of the same untrusted slot could answer `undefined` and
+  // downgrade a real abort to a `NetworkError`.
+  test("options.signal is read once: a changing getter cannot downgrade an abort", async () => {
+    const controller = new AbortController();
+    const reason = new Error("route change");
+    controller.abort(reason);
+
+    let reads = 0;
+    const options = {
+      get signal() {
+        reads += 1;
+        return reads === 1 ? controller.signal : undefined;
+      },
+      // A spec-exact runtime rejects with the signal's own reason.
+      fetch: (async () => {
+        throw reason;
+      }) as unknown as typeof fetch,
+    } as unknown as TypedFetchOptions;
+
+    const result = await typedFetch(url({ status: 200 }), options);
+
+    expect(reads).toBe(1);
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(AbortedError);
+    expect(isNetworkError(result.error)).toBe(false);
+
+    if (isAbortError(result.error)) {
+      expect(result.error.reason).toBe(reason);
     }
   });
 

@@ -12,10 +12,15 @@
  * {@link redactUrl} is structural instead — it keeps origin and path and drops
  * every value slot: userinfo, the whole query, and the fragment.
  *
- * RESIDUAL, stated rather than hidden: a secret placed in a PATH SEGMENT
- * (`/reset/RESET_TOKEN`) survives. Dropping the path too would leave `url` at
- * the origin, which destroys the only thing the field is for — telling
- * concurrent failures apart. Path is treated as structure, query as value.
+ * RESIDUAL, stated rather than hidden: a secret placed in a PATH SEGMENT of an
+ * `http:` or `https:` URL (`/reset/RESET_TOKEN`) survives. Dropping the path
+ * too would leave `url` at the origin, which destroys the only thing the field
+ * is for — telling concurrent failures apart. Path is treated as structure,
+ * query as value.
+ *
+ * That trade only holds where the path NAMES something. A `data:` or `blob:`
+ * URL carries its payload in the path instead, so those are reduced to the
+ * scheme.
  *
  * The full href is never lost: `error.url` still holds it, exactly as
  * `error.headers` still holds every header value.
@@ -38,17 +43,36 @@ function stripValues(parsed: URL): URL {
 }
 
 /**
+ * The schemes whose PATH is structure rather than a value.
+ *
+ * These are the WHATWG "special" schemes, and the "path is structure" rule
+ * above is a statement about them: the path names a resource on a host, and the
+ * value slots are the separate ones this module clears.
+ *
+ * `fetch` also accepts OPAQUE schemes, and there the whole payload lives in the
+ * path. A `data:` URL carries its bytes there, and a `blob:` URL carries an
+ * unguessable handle to them. Emitting either verbatim would put the thing this
+ * module exists to remove into `message` and into the `toJSON()` record, so an
+ * opaque URL is reduced to its scheme.
+ */
+const HIERARCHICAL_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:", "ftp:", "file:"]);
+
+/**
  * The href with every value slot removed: no userinfo, no query, no fragment.
  *
  * Total by construction. An empty string stays empty (the documented "no URL
  * could be resolved" value), a relative URL keeps its path, and an input that
  * parses as neither is emitted as a percent-encoded PATH — never as the raw
  * string, so a query or fragment hidden in it is still dropped.
+ *
+ * An opaque scheme is reduced to the scheme alone. See
+ * {@link HIERARCHICAL_PROTOCOLS}.
  */
 export function redactUrl(url: string): string {
   if (!url) return "";
   try {
-    return stripValues(new URL(url)).href;
+    const parsed = new URL(url);
+    return HIERARCHICAL_PROTOCOLS.has(parsed.protocol) ? stripValues(parsed).href : parsed.protocol;
   } catch {
     // Not absolute. Fall through rather than nest: the relative case is
     // ordinary, not exceptional.

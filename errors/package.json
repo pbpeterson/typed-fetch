@@ -1,4 +1,5 @@
 {
+  "sideEffects": false,
   "main": "../dist/errors/index.js",
   "module": "../dist/errors/index.mjs",
   "types": "../dist/errors/index.d.ts"

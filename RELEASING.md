@@ -58,16 +58,34 @@ attestation.
 - `verify-pack` asserts every CJS, ESM, and declaration entry in the tarball;
   `check-consumer` installs that tarball into a scratch project and exercises
   both entry points, both module formats, and consumer typechecking.
+- The tarball ships `dist`, `errors/package.json`, and the three files npm adds
+  on its own: `package.json`, `README.md`, and `LICENSE`. `CHANGELOG.md` is
+  deliberately **not** among them. It is the largest file in the repository, it
+  grows with every release, and a consumer reaches it from the npm page, from
+  the repository, and from the "Upgrade from 1.x" link in `README.md`. Shipping
+  it would add its full size to every install to serve a document nobody reads
+  out of `node_modules`. `scripts/verify-pack.mjs` locks the file count, so this
+  decision is enforced rather than assumed: changing it means changing the count
+  there too.
 - Only the publish job receives `id-token: write`, and only after the reusable
   CI and every repeated publish gate pass does it run
   `npm publish --provenance --access public --tag <dist-tag>`. A prerelease such
   as `1.1.0-rc.1` uses `next`; a stable version uses `latest`.
 - The build is done by the **explicit `pnpm build` step above**, not by the
-  `prepublishOnly` lifecycle hook. `"prepublishOnly": "npm run build"` still
-  exists in `package.json`, but it is now a **redundant safety net**, not the
-  mechanism: if it were ever renamed, removed, or stopped firing under OIDC
-  trusted publishing, the explicit step still guarantees `dist/` is built from
-  the tagged commit. Do not rely on `prepublishOnly` to build the release.
+  `prepublishOnly` lifecycle hook. The hook **verifies** the artifact instead of
+  producing it: `"prepublishOnly": "node scripts/verify-pack.mjs"`.
+
+  It used to run `npm run build`. That made the hook a net for a missing `dist/`,
+  but it also meant `npm publish` fired tsup with `clean: true` **after**
+  `verify-pack` and `check-consumer` had already inspected the directory. The
+  tarball npm uploaded was therefore a rebuild of the one the gates passed, not
+  that one. tsup is deterministic, so the bytes matched in practice — but the
+  gate no longer guarded the artifact it was pointed at.
+
+  Verifying keeps the net and drops the rebuild: a `dist/` that is missing,
+  incomplete, or carrying a source leak fails the publish instead of being
+  silently regenerated. Do not put a build back in this hook.
+
 - `--provenance --access public` attaches npm provenance (a verifiable link
   from the published tarball back to this workflow run and commit) and
   ensures the scoped package publishes as public, not private.

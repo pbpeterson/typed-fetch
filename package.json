@@ -80,7 +80,7 @@
     "check-deno-consumer": "node scripts/check-deno-consumer.mjs",
     "check-doc-style": "node scripts/check-doc-style.mjs",
     "smoke:node-min": "node scripts/smoke/node-min.mjs",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "node scripts/verify-pack.mjs"
   },
   "devDependencies": {
     "@types/node": "^25.9.5",

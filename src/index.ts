@@ -32,6 +32,34 @@ function isRequest(value: unknown): value is Request {
 }
 
 /**
+ * The members a foreign `Response` must expose to be accepted.
+ *
+ * This is the set this library CONSUMES, and nothing beyond it. `formData` and
+ * `type` were required here once and are not any more: `node-fetch@2` (and
+ * `cross-fetch`, which wraps it) implements neither, so requiring them turned
+ * the documented `fetch` injection seam into a `NetworkError` for every
+ * request through it, including a successful 200.
+ *
+ * `body` and `redirected` stay required. They are what separates a Fetch
+ * implementation this library can drive from one it cannot: `error.cancel()`
+ * and `clone()` are built on the body stream, so a polyfill without one —
+ * `whatwg-fetch` is the notable case — would be accepted only to fail later,
+ * at a point where the caller already holds the error. A `Request` also lacks
+ * `status`, `statusText`, `ok`, and `redirected`, so this set excludes one.
+ */
+const FOREIGN_RESPONSE_FIELDS = [
+  "body",
+  "bodyUsed",
+  "headers",
+  "ok",
+  "redirected",
+  "status",
+  "statusText",
+  "url",
+];
+const FOREIGN_RESPONSE_METHODS = ["arrayBuffer", "blob", "clone", "json", "text"];
+
+/**
  * Realm-safe `Response` validation.
  *
  * Calling the native status getter avoids accepting an object that only spoofs
@@ -57,21 +85,11 @@ function isResponse(value: unknown): value is Response {
 
   try {
     if (Object.prototype.toString.call(value) !== "[object Response]") return false;
-    const fields = [
-      "body",
-      "bodyUsed",
-      "headers",
-      "ok",
-      "redirected",
-      "status",
-      "statusText",
-      "type",
-      "url",
-    ];
-    const methods = ["arrayBuffer", "blob", "clone", "formData", "json", "text"];
     return (
-      fields.every((field) => field in value) &&
-      methods.every((method) => typeof (value as Record<string, unknown>)[method] === "function")
+      FOREIGN_RESPONSE_FIELDS.every((field) => field in value) &&
+      FOREIGN_RESPONSE_METHODS.every(
+        (method) => typeof (value as Record<string, unknown>)[method] === "function",
+      )
     );
   } catch {
     return false;
@@ -364,9 +382,17 @@ export async function typedFetch<JsonReturnType>(
     // The AbortSignal can arrive via EITHER slot: the `options`/`init` (its
     // `.signal`), OR a `Request` passed as the first argument (`url.signal`).
     // `signal: null` detaches the Request's signal; absent/undefined falls back.
+    //
+    // Read ONCE, into a local, for the same reason `statusOf` records the status
+    // it read: `init` can be an injected object whose `signal` getter answers
+    // differently on a second read. This binding is the authority
+    // `classifyRequestFailure` consults, so a second read that answered
+    // `undefined` would classify a real abort as a `NetworkError` and a timeout
+    // as neither.
+    const initSignal = init.signal;
     signal =
-      init.signal !== undefined
-        ? (init.signal ?? undefined)
+      initSignal !== undefined
+        ? (initSignal ?? undefined)
         : isRequest(url)
           ? url.signal
           : undefined;
