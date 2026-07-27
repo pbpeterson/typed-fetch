@@ -353,6 +353,31 @@ Note that `pnpm typecheck` does **not** cover `scripts/`: `tsconfig.test.json`
 has no `allowJs`/`checkJs`. The `// @ts-check` comments and JSDoc types in these
 files are for editors and readers; do not rely on them for CI enforcement.
 
+## Do not propose a new defense against a hostile `fetch` on its own
+
+`typedFetch` takes a `fetch` option, so the resolved value, the rejection, the
+signal, and the options object are all untrusted. The natural reaction, on
+finding one more thing a hostile implementation could do, is to add one more
+guard. Twenty-four percent of this repository's recent history is that reaction,
+and each guard became the surface the next round aimed at.
+
+How far the distrust goes is now a decision, not an open question. Read
+[ADR 0003](./docs/adr/0003-the-untrusted-fetch-conformance-boundary.md) first.
+A hostile-input report is exactly one of three things:
+
+1. **Already a row.** The in-scope table names 24 behaviors and what the caller
+   gets for each. `fixtures/hostile-fetch.ts` drives every one end to end.
+2. **Out of scope, permanently.** The ADR lists eight, with the reason each
+   cannot be closed or is not worth closing. A report that the library does not
+   handle one of those is not a defect.
+3. **Neither.** Then the table is incomplete, and the change is an amendment to
+   the ADR **plus** the scenario, in one commit. `conformance.spec.ts` asserts
+   the rows and the scenarios are the same set with the same titles, so a guard
+   added without a row fails the suite, and so does a row with no guard.
+
+That last gate is the point. The boundary cannot move quietly in either
+direction.
+
 ## Adding a new HTTP status code
 
 The 40 concrete error classes are plain, hand-written source. There is no

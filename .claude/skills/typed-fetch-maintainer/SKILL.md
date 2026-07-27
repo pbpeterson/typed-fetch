@@ -219,6 +219,7 @@ every gate before you commit. With Deno 2 installed, also run
 
 - `pnpm typecheck` uses `tsconfig.test.json` — it includes the root `*.spec.ts` files so `expectTypeOf` assertions are real. Plain `tsc --noEmit` skips them. Spec files must stay at the repo root: the include glob is root-only, and two tests read a source file via a CWD-relative path (`base-http-error.spec.ts` and `error-classes.spec.ts`, both reading `src/errors/base-http-error.ts`).
 - Tests hit a real local HTTP server (no mocks). Query params drive responses: `?status=`, `?body=`, `?header=Key:Value`.
+- How far the library distrusts an injected `fetch` is settled by `docs/adr/0003-the-untrusted-fetch-conformance-boundary.md`: 24 in-scope rows, 8 permanently out of scope. `fixtures/hostile-fetch.ts` drives every row and `conformance.spec.ts` binds the two lists together, so a new guard without an ADR row fails the suite. Read it before adding a hostile-input defense.
 - 407 cannot go through Node's fetch (rejected at the network level) — tested through an injected `fetch` that resolves a 407 response, and deliberately excluded from `errorCases`. Direct construction was rejected there: it proves nothing about the status-to-class lookup.
 - Abort/timeout are exercised against the live server (`controller.abort()` and `AbortSignal.timeout()`), asserting `AbortedError`/`TimeoutError` and that `isNetworkError` is false for both.
 

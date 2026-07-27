@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Documented
+
+- **The untrusted-`fetch` conformance boundary.** `typedFetch` invites an
+  injected `fetch`, which makes the resolved value, the rejection, the signal,
+  and the options object untrusted. How far the library distrusts them is now a
+  decision rather than an open question:
+  [ADR 0003](./docs/adr/0003-the-untrusted-fetch-conformance-boundary.md) names
+  24 in-scope behaviors and what the caller gets for each, and eight that are
+  permanently out of scope with the reason each cannot be closed. No runtime
+  behavior changed; every row records what the library already did.
+
+  The record has an executable half. `fixtures/hostile-fetch.ts` drives every
+  row end to end, and `conformance.spec.ts` asserts that the rows and the
+  scenarios are the same set with the same titles — so a guard added without a
+  row fails the suite, and so does a row with no guard.
+
 ### Fixed
 
 1. A request header value the platform REFUSES no longer reaches

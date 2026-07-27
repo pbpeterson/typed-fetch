@@ -74,3 +74,4 @@ ADR and follow "Changing a decision" above.
 | -------------------------------------------------------------------- | ------------------------------------------------------ | -------- |
 | [0001](./0001-keep-the-http-error-roster-hand-written.md)            | Keep the HTTP error roster hand-written                | Accepted |
 | [0002](./0002-refuse-a-clone-copy-that-cannot-confirm-the-branch.md) | Refuse a `clone()` copy that cannot confirm the branch | Accepted |
+| [0003](./0003-the-untrusted-fetch-conformance-boundary.md)           | The untrusted `fetch` conformance boundary             | Accepted |
