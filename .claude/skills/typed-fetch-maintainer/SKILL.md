@@ -127,9 +127,10 @@ procedure. Follow it there, not a copy.** The roster is hand-maintained in
   roster, not a second source of truth.
 - There are **no cardinality numbers to change**. `roster-sync.spec.ts` asserts
   against `allErrors.length`. The literal `40` survives only in test titles.
-- The `errorCases` table in `typed-fetch.spec.ts` is enforced by **no test**.
-  If you omit the row, `test.each` runs one case fewer, the suite still passes,
-  and the new status code never goes through a live request.
+- The `errorCases` table in `typed-fetch.spec.ts` **is** enforced. The test
+  "errorCases covers the whole roster" compares it against `allErrors` and
+  names the missing status, and it also rejects a stale row and a wrong
+  status-to-class pairing.
 
 Adding a class changes the public API surface, so refresh the snapshot with
 `pnpm build && pnpm test -u`. It is a `major`; see RELEASING.md. For `clone()`
@@ -216,9 +217,9 @@ every gate before you commit. With Deno 2 installed, also run
 `pnpm check-deno-consumer` and `pnpm smoke:deno` after `pnpm build`. The manual
 `node_modules` mode requires Deno 2. Facts that live only here:
 
-- `pnpm typecheck` uses `tsconfig.test.json` — it includes the root `*.spec.ts` files so `expectTypeOf` assertions are real. Plain `tsc --noEmit` skips them. Spec files must stay at the repo root: the include glob is root-only, and one test reads `src/errors/base-http-error.ts` via a CWD-relative path.
+- `pnpm typecheck` uses `tsconfig.test.json` — it includes the root `*.spec.ts` files so `expectTypeOf` assertions are real. Plain `tsc --noEmit` skips them. Spec files must stay at the repo root: the include glob is root-only, and two tests read a source file via a CWD-relative path (`base-http-error.spec.ts` and `error-classes.spec.ts`, both reading `src/errors/base-http-error.ts`).
 - Tests hit a real local HTTP server (no mocks). Query params drive responses: `?status=`, `?body=`, `?header=Key:Value`.
-- 407 cannot go through Node's fetch (rejected at the network level) — tested via direct construction, and deliberately excluded from `errorCases`.
+- 407 cannot go through Node's fetch (rejected at the network level) — tested through an injected `fetch` that resolves a 407 response, and deliberately excluded from `errorCases`. Direct construction was rejected there: it proves nothing about the status-to-class lookup.
 - Abort/timeout are exercised against the live server (`controller.abort()` and `AbortSignal.timeout()`), asserting `AbortedError`/`TimeoutError` and that `isNetworkError` is false for both.
 
 ## Gotchas

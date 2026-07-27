@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, test } from "vitest";
 import { createScratchDir } from "./lib/scratch-dir.mjs";
+import { STYLE_MARKDOWN_SOURCES } from "./check-doc-style.mjs";
 import {
   attributeDiagnostics,
   DOC_MARKDOWN_SOURCES,
@@ -833,4 +834,26 @@ describe.skipIf(process.platform === "win32")("check-docs — the gate runs", ()
     },
     CHECK_DOCS_TIMEOUT,
   );
+});
+
+describe("DOC_MARKDOWN_SOURCES", () => {
+  test("is exactly check-doc-style's roster", () => {
+    // The two gates cover ONE declared documentation scope. They drifted once:
+    // check-doc-style globbed `docs/` and listed CONTEXT.md and RELEASING.md
+    // while check-docs did neither, so `docs/adr/0002`'s fence was never
+    // compiled — and `CONTRIBUTING.md` claimed this gate reads "every
+    // documentation source" the whole time.
+    //
+    // Pinned as EQUALITY, not as a subset: a document added to one gate and
+    // forgotten in the other is the failure this reproduces.
+    expect(DOC_MARKDOWN_SOURCES).toEqual(STYLE_MARKDOWN_SOURCES);
+  });
+
+  test("excludes the files the writing standard leaves out of scope", () => {
+    // `docs/writing-standard.md` declares the scope, and PLAN.md (a completed
+    // historical plan) and SECURITY.md are outside it in BOTH gates. Pinned so
+    // that widening the scope is a reviewed diff rather than a side effect.
+    expect(DOC_MARKDOWN_SOURCES).not.toContain("PLAN.md");
+    expect(DOC_MARKDOWN_SOURCES).not.toContain("SECURITY.md");
+  });
 });

@@ -63,6 +63,52 @@ describe("NetworkError / AbortedError / TimeoutError — cause & reason presence
     expect(reasonOnly.reason).toBe("r");
   });
 
+  // A partial options object is also what makes a polluted `Object.prototype`
+  // reachable: `"cause" in options` and a bare `options?.url` both walk the
+  // prototype chain, so a single write anywhere in the process forged a cause
+  // and put a URL this request never touched into `toJSON()` — the record a
+  // logger ships off-box. `typedFetch` already reads its own `fetch` slot with
+  // `Object.hasOwn` for the same reason; these three constructors now read
+  // theirs the same way.
+  test("a polluted Object.prototype cannot inject cause, reason, or url", () => {
+    const polluted = ["cause", "reason", "url"] as const;
+    const proto = Object.prototype as unknown as Record<string, unknown>;
+
+    for (const key of polluted) {
+      expect(Object.hasOwn(proto, key), `${key} already exists on Object.prototype`).toBe(false);
+    }
+
+    proto.cause = { token: "POLLUTED_CAUSE" };
+    proto.reason = "POLLUTED_REASON";
+    proto.url = "https://evil.test/?k=POLLUTED_URL";
+    try {
+      // `Object.hasOwn`, not `in`: while the prototype is polluted, `in` walks
+      // up to it from the ERROR too and reports true for a slot the constructor
+      // never assigned. The question this test asks is whether the constructor
+      // installed one, which is exactly what `hasOwn` answers.
+      //
+      // A PARTIAL options object: it supplies none of the three slots itself,
+      // so every read falls through to the prototype unless it is own-guarded.
+      for (const e of [new NetworkError("x", {}), new TimeoutError("x", {})]) {
+        expect(Object.hasOwn(e, "cause")).toBe(false);
+        expect(e.url).toBe("");
+        expect(e.toJSON().url).toBe("");
+      }
+
+      const aborted = new AbortedError("x", {});
+      expect(Object.hasOwn(aborted, "cause")).toBe(false);
+      expect(Object.hasOwn(aborted, "reason")).toBe(false);
+      expect(aborted.url).toBe("");
+      expect(aborted.toJSON().url).toBe("");
+    } finally {
+      for (const key of polluted) delete proto[key];
+    }
+
+    for (const key of polluted) {
+      expect(Object.hasOwn(proto, key), `${key} leaked out of the test`).toBe(false);
+    }
+  });
+
   // ── cause/reason are non-enumerable, as the platform defines them ──
   test("cause and reason carry the descriptor `new Error(m, { cause })` writes", () => {
     // The reference: the platform's own installation of `cause`.

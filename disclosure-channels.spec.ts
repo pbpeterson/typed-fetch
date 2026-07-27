@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
 import { inspect } from "node:util";
 import { describe, test, expect } from "vitest";
 import { AbortedError, NetworkError, NotFoundError, TimeoutError } from "./src/errors";
+import { classifyRequestFailure } from "./src/request-failure";
 
 /**
  * THE CHANNEL INVENTORY, AS TESTS.
@@ -89,11 +91,47 @@ function timeoutError(): TimeoutError {
   });
 }
 
+/**
+ * The header value a platform REFUSED, echoed back in its own rejection
+ * message.
+ *
+ * `redactUrlInMessage` closed the URL half of this: undici quotes a
+ * credentialed URL verbatim in the one string every log line carries. It quotes
+ * a refused HEADER VALUE the same way — `Headers.append: "…" is an invalid
+ * header value.` — and a secret split across lines (a wrapped base64 token, a
+ * PEM body) is exactly the shape that gets refused. The value reached `message`
+ * and from there every channel below, including the `toJSON()` record that
+ * emits header NAMES precisely so it can never emit a value.
+ *
+ * Built through `classifyRequestFailure`, not by hand: it is the function that
+ * copies the platform message, so this fixture crosses the real seam. That
+ * `typedFetch` collects the refused values and hands them here is pinned
+ * separately, in `typed-fetch.spec.ts`.
+ *
+ * The planted value is `CAUSE_SECRET` because that is where it genuinely
+ * survives. Redaction cleans `message`; the platform rejection is kept as
+ * `cause`, still quoting the value it refused, and `cause` is this file's
+ * documented residual on the two channels that print it. Every other channel
+ * asserts the value is gone, which is what makes them the proof: without the
+ * redaction the copied message carries it into all of them.
+ */
+const REFUSED_HEADER_VALUE = "Basic AAAA\nsk_live_CAUSE_SECRET";
+
+function headerRefusalError(): NetworkError {
+  return classifyRequestFailure(
+    new TypeError(`Headers.append: "${REFUSED_HEADER_VALUE}" is an invalid header value.`),
+    undefined,
+    FULL_URL,
+    [REFUSED_HEADER_VALUE],
+  ) as NetworkError;
+}
+
 const everyErrorKind = [
   ["NotFoundError", httpError],
   ["NetworkError", networkError],
   ["AbortedError", abortedError],
   ["TimeoutError", timeoutError],
+  ["NetworkError from a refused header value", headerRefusalError],
 ] as const;
 
 describe("disclosure channels — no channel emits a secret value", () => {
@@ -197,6 +235,45 @@ describe("disclosure channels — no channel emits a secret value", () => {
   });
 });
 
+describe("disclosure channels — a refused header value", () => {
+  test("the message keeps the diagnostic and drops the value", () => {
+    const message = headerRefusalError().message;
+
+    expect(message).not.toContain("CAUSE_SECRET");
+    expect(message).toContain("<redacted>");
+    // The reason the message is still worth carrying: WHICH failure this was
+    // survives the redaction. Only the value is struck out.
+    expect(message).toContain("is an invalid header value");
+  });
+
+  test("the message cannot forge a log line", () => {
+    // A refused value is refused because it carries NUL, CR, or LF. Copying it
+    // into `message` put a raw newline into the one string every log line
+    // carries, so the leak was also a log-injection primitive. Striking the
+    // value removes the control character with it.
+    const message = headerRefusalError().message;
+
+    expect(message).not.toContain("\n");
+    expect(message).not.toContain("\r");
+    expect(message).not.toContain("\0");
+  });
+
+  test("an accepted value is left alone, so ordinary messages stay readable", () => {
+    // The redactor is handed only the values the platform must refuse. A held
+    // value the platform accepts never reaches a rejection message, and
+    // striking every held value would replace `1` or `application/json`
+    // wherever they appeared and destroy the diagnostic.
+    const error = classifyRequestFailure(
+      new TypeError("Failed to fetch"),
+      undefined,
+      "https://api.test/v1/things",
+      [],
+    );
+
+    expect(error.message).toBe("Failed to fetch");
+  });
+});
+
 describe("disclosure channels — the hook itself", () => {
   test("the hook is installed under util.inspect.custom, without importing node:util", async () => {
     // `Symbol.for("nodejs.util.inspect.custom")` IS `util.inspect.custom`. The
@@ -209,6 +286,50 @@ describe("disclosure channels — the hook itself", () => {
     const error = httpError();
     expect(typeof (error as unknown as Record<symbol, unknown>)[registered]).toBe("function");
     await error.cancel();
+  });
+
+  // ── the hook's own defenses ─────────────────────────────────────────
+  // The module header's whole justification is "this must never throw, because
+  // a throwing custom inspect takes `console.log` down with it" — and its
+  // defenses against exactly that were the least-covered branches in the
+  // package (79% branch coverage on 100% of the lines). Each one below was
+  // removable with the full suite still green.
+
+  test("a non-string name renders as Error rather than propagating", () => {
+    const error = new NetworkError("boom");
+    // A subclass is free to overwrite `name` with anything at all.
+    Object.defineProperty(error, "name", { value: 42, configurable: true });
+    Object.defineProperty(error, "stack", { value: "", configurable: true });
+
+    expect(inspect(error)).toContain("Error: boom");
+  });
+
+  test("an error with no stack still renders a head line", () => {
+    const error = new NetworkError("boom");
+    Object.defineProperty(error, "stack", { value: undefined, configurable: true });
+
+    expect(inspect(error)).toContain("NetworkError: boom");
+  });
+
+  test("a toJSON that is not a function is skipped, not called", () => {
+    const error = new NetworkError("boom");
+    Object.defineProperty(error, "toJSON", { value: "not callable", configurable: true });
+
+    // Without the `typeof === "function"` guard the call throws and the catch
+    // reports `toJSON: "[threw]"` — a defensible fallback, but it means the
+    // guard itself is dead code, and a dead guard is one nobody maintains.
+    expect(inspect(error)).not.toContain("[threw]");
+  });
+
+  test("the below-depth placeholder renders without a stylize function", () => {
+    // A runtime that calls the hook with a bare options object gets no
+    // `stylize`. Reached directly, because `util.inspect` always supplies one.
+    const error = new NetworkError("boom");
+    const hook = (error as unknown as Record<symbol, unknown>)[
+      Symbol.for("nodejs.util.inspect.custom")
+    ] as (depth: number, options: object) => string;
+
+    expect(hook.call(error, -1, {})).toBe("[NetworkError]");
   });
 
   test("the hook is not enumerable, so it never becomes a record member", () => {
@@ -403,5 +524,38 @@ describe("disclosure channels — the cross-copy ownership query", () => {
     }
 
     await error.cancel();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// This file IS the inventory. `CONTEXT.md` says so ("the inventory lives in
+// disclosure-channels.spec.ts as executable tests, one per channel") and then
+// listed a different seven: it named a test runner's diff output — which is a
+// RESIDUAL that does leak, and so can never satisfy the no-sentinel rule every
+// channel here asserts — and omitted `message` on its own.
+//
+// A prose list cannot be trusted to agree with a file it does not read. This
+// pins the authoritative side: the numbering must stay dense and complete, so
+// a channel added, removed, or renumbered is a visible failure rather than a
+// silent divergence from the document that points here.
+// ---------------------------------------------------------------------------
+describe("the channel inventory", () => {
+  test("declares channels 1..7 with no gap, duplicate, or renumbering", () => {
+    const source = readFileSync(new URL("./disclosure-channels.spec.ts", import.meta.url), "utf8");
+    const declared = [...source.matchAll(/──\s*Channel\s+(\d+):\s*(.+?)\s*─/g)];
+
+    expect(declared.map((match) => Number(match[1]))).toEqual([1, 2, 3, 4, 5, 6, 7]);
+
+    // The names, so a renamed channel is a reviewed diff and `CONTEXT.md` has
+    // one place to copy from.
+    expect(declared.map((match) => match[2])).toEqual([
+      "JSON.stringify / toJSON",
+      "util.inspect / console.*",
+      "toString / template interpolation",
+      "the message, on its own",
+      "own enumerable properties",
+      "structuredClone / postMessage",
+      "the fatal-exception printer",
+    ]);
   });
 });

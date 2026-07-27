@@ -116,6 +116,66 @@ describe("type-level", () => {
     expectTypeOf<Response>().toExtend<TypedResponse<unknown>>();
   });
 
+  // ── every TypedResponse member, pinned ──────────────────────────────
+  // The type surface IS the product here, so a member that silently widens to
+  // `any` is a shipped defect, not a test gap. The assertions above pin what is
+  // ABSENT (`bytes`, `getSetCookie`, `values`) plus `json`, `status`, `body`,
+  // `headers`, and `clone`. That left ten members provable-by-nothing:
+  // replacing `ok`, `statusText`, `url`, and `text()` with `any` all at once
+  // still compiled the whole project with zero errors.
+  //
+  // `toExtend<TypedResponse<unknown>>` cannot catch it either — a WIDER
+  // `TypedResponse` still satisfies it — and the public-surface snapshots
+  // freeze export NAMES, never member types.
+  test("every TypedResponse member is pinned, so none can widen to any", () => {
+    type R = TypedResponse<{ a: 1 }>;
+
+    expectTypeOf<R["ok"]>().toEqualTypeOf<boolean>();
+    expectTypeOf<R["redirected"]>().toEqualTypeOf<boolean>();
+    expectTypeOf<R["bodyUsed"]>().toEqualTypeOf<boolean>();
+    expectTypeOf<R["status"]>().toEqualTypeOf<number>();
+    expectTypeOf<R["statusText"]>().toEqualTypeOf<string>();
+    expectTypeOf<R["url"]>().toEqualTypeOf<string>();
+    expectTypeOf<R["type"]>().toEqualTypeOf<
+      "basic" | "cors" | "default" | "error" | "opaque" | "opaqueredirect"
+    >();
+
+    expectTypeOf<R["arrayBuffer"]>().returns.toEqualTypeOf<Promise<ArrayBuffer>>();
+    expectTypeOf<R["blob"]>().returns.toEqualTypeOf<Promise<Blob>>();
+    expectTypeOf<R["formData"]>().returns.toEqualTypeOf<Promise<FormData>>();
+    expectTypeOf<R["text"]>().returns.toEqualTypeOf<Promise<string>>();
+    expectTypeOf<R["json"]>().returns.toEqualTypeOf<Promise<{ a: 1 }>>();
+    expectTypeOf<R["clone"]>().returns.toEqualTypeOf<R>();
+
+    // `body` and `headers` carry types this library does not export, so they
+    // cannot be named here. The absence assertions above pin their shape; this
+    // pins the one thing those cannot say.
+    expectTypeOf<R["body"]>().not.toBeAny();
+    expectTypeOf<R["headers"]>().not.toBeAny();
+  });
+
+  test("TypedResponse has exactly the members pinned above", () => {
+    // The growth direction. Without this, a member added tomorrow is unpinned
+    // again and the test above still passes.
+    expectTypeOf<keyof TypedResponse<unknown>>().toEqualTypeOf<
+      | "body"
+      | "bodyUsed"
+      | "headers"
+      | "ok"
+      | "redirected"
+      | "status"
+      | "statusText"
+      | "type"
+      | "url"
+      | "arrayBuffer"
+      | "blob"
+      | "formData"
+      | "json"
+      | "text"
+      | "clone"
+    >();
+  });
+
   // ── the options slots: replaced, not intersected ───────────────────
   // `RequestInit["method"]` is `string`. Intersecting it with the open union
   // collapsed the whole slot to bare `string` — `string & (HttpMethods | (string
@@ -161,17 +221,21 @@ describe("type-level", () => {
     expectTypeOf<TypedFetchOptions["fetch"]>().toEqualTypeOf<typeof fetch | undefined>();
   });
 
+  // `toEqualTypeOf`, never `toExtend`, on a NARROWING assertion. `any` extends
+  // everything, so `toExtend` is satisfied by a predicate that has collapsed to
+  // `value is any` — the exact widening these four tests are named to prevent.
+  // Mutating each predicate to `error is any` left all four passing.
   test("isHttpError narrows to BaseHttpError", () => {
     const error: unknown = {};
     if (isHttpError(error)) {
-      expectTypeOf(error).toExtend<BaseHttpError>();
+      expectTypeOf(error).toEqualTypeOf<BaseHttpError>();
     }
   });
 
   test("isNetworkError narrows to NetworkError", () => {
     const error: unknown = {};
     if (isNetworkError(error)) {
-      expectTypeOf(error).toExtend<NetworkError>();
+      expectTypeOf(error).toEqualTypeOf<NetworkError>();
     }
   });
 
@@ -191,10 +255,19 @@ describe("type-level", () => {
   });
 
   test("TypedFetchError includes AbortedError and TimeoutError", () => {
-    expectTypeOf<AbortedError>().toExtend<
-      ClientErrors | ServerErrors | UnknownHttpError | NetworkError | AbortedError | TimeoutError
-    >();
-    expectTypeOf<TimeoutError>().toExtend<
+    // Name `TypedFetchError`. Spelling the union out by hand made this a
+    // TAUTOLOGY — `X extends (… | X | …)` holds whatever `TypedFetchError` is,
+    // so deleting both families from the type left this test green and only
+    // the implementation's own return-type inference noticed.
+    expectTypeOf<AbortedError>().toExtend<TypedFetchError>();
+    expectTypeOf<TimeoutError>().toExtend<TypedFetchError>();
+  });
+
+  test("TypedFetchError is exactly the six families, and nothing else", () => {
+    // The hand-written union above catches GROWTH (a new family that does not
+    // extend it). This catches SHRINKAGE in the same breath, which is the
+    // direction the tautology hid.
+    expectTypeOf<TypedFetchError>().toEqualTypeOf<
       ClientErrors | ServerErrors | UnknownHttpError | NetworkError | AbortedError | TimeoutError
     >();
   });
@@ -217,14 +290,14 @@ describe("type-level", () => {
   test("isAbortError narrows to AbortedError", () => {
     const error: unknown = {};
     if (isAbortError(error)) {
-      expectTypeOf(error).toExtend<AbortedError>();
+      expectTypeOf(error).toEqualTypeOf<AbortedError>();
     }
   });
 
   test("isTimeoutError narrows to TimeoutError", () => {
     const error: unknown = {};
     if (isTimeoutError(error)) {
-      expectTypeOf(error).toExtend<TimeoutError>();
+      expectTypeOf(error).toEqualTypeOf<TimeoutError>();
     }
   });
 

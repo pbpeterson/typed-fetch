@@ -1,7 +1,9 @@
 import { spawn } from "node:child_process";
-import { dirname, join } from "node:path";
+import { existsSync, symlinkSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test } from "vitest";
+import { createScratchDir } from "./lib/scratch-dir.mjs";
 import {
   cjsAssertions,
   consumerTsconfig,
@@ -609,4 +611,95 @@ describe("import hygiene", () => {
     });
     expect(JSON.parse(report)).toEqual({ leaked: 0, exit: 0, sigint: 0, sigterm: 0 });
   }, 30000);
+});
+
+// ---------------------------------------------------------------------------
+// The gate must RUN. Everything above is pure: it feeds recorded probe records
+// to the mappers and judges. None of it proves that
+// `node scripts/check-consumer.mjs` still reaches main().
+//
+// That distinction is not hypothetical here. A lexical isMain guard once made
+// every gate in this repository print nothing and exit 0 through a symlink, and
+// CI reads that as a pass (CHANGELOG.md:286-296). The fix added a shared helper
+// AND a "the gate runs" test — but only to four of the six gates. This one and
+// `check-deno-consumer` were left with the negative half only ("importing the
+// gate does nothing"), which a guard that never fires also satisfies.
+//
+// check-consumer is the gate that packs the tarball, installs it, and exercises
+// the exports map across formats. `ci.yml` and `release.yml` both invoke it, so
+// a regression here publishes with packaging unverified.
+// ---------------------------------------------------------------------------
+const gateScriptDir = dirname(fileURLToPath(import.meta.url));
+const gateRepoRoot = resolve(gateScriptDir, "..");
+const CHECK_CONSUMER = join(gateScriptDir, "check-consumer.mjs");
+
+const gateLinks = createScratchDir("tf-check-consumer-link-");
+afterAll(() => gateLinks.dispose());
+
+/** main()'s first act, printed before it packs anything. */
+const REACHED_MAIN = /▸ Packing /;
+
+/**
+ * Start the gate and resolve as soon as it has PROVED it reached main(), then
+ * kill it.
+ *
+ * A full run packs a tarball and npm-installs it. This test is about the entry
+ * guard, not the probes, so it must not pay for them — and the marker it waits
+ * for is printed before the first expensive call.
+ *
+ * @param {string} entry
+ * @returns {Promise<boolean>}
+ */
+function reachesMain(entry) {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, [entry], {
+      cwd: gateRepoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let settled = false;
+    const settle = (value) => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGKILL");
+      resolvePromise(value);
+    };
+
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      if (REACHED_MAIN.test(stdout)) settle(true);
+    });
+    child.on("error", reject);
+    // A guard that never fires exits 0 having printed nothing at all.
+    child.on("close", () => settle(REACHED_MAIN.test(stdout)));
+  });
+}
+
+describe.skipIf(process.platform === "win32")("check-consumer — the gate runs", () => {
+  test.each([
+    ["its real path", () => CHECK_CONSUMER],
+    [
+      "a symlinked checkout directory",
+      () => {
+        const linked = join(gateLinks.path, "checkout");
+        if (!existsSync(linked)) symlinkSync(gateRepoRoot, linked);
+        return join(linked, "scripts", "check-consumer.mjs");
+      },
+    ],
+    [
+      "a symlinked script file",
+      () => {
+        const linked = join(gateLinks.path, "check-consumer.mjs");
+        if (!existsSync(linked)) symlinkSync(CHECK_CONSUMER, linked);
+        return linked;
+      },
+    ],
+  ])(
+    "reaches main() when started through %s",
+    async (_name, entry) => {
+      expect(await reachesMain(entry())).toBe(true);
+    },
+    30000,
+  );
 });

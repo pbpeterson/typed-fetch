@@ -368,24 +368,49 @@ export function errorBodyOf(response: Response): ErrorBody {
     //    next: this await lasts as long as a teed sibling is held, and a reader
     //    admitted during that window would take a stream already going away.
     cancelled = true;
-    // Swallow a stream-level failure, the same as `tee().release()` below. A
-    // truncated response or a connection reset mid-body errors the body stream,
-    // and `stream.cancel()` then rejects with that stored error. The caller
-    // asked to DISCARD these bytes, and an errored stream dropped its source
-    // when it errored — nothing is left to release, and nothing here is
-    // actionable.
+
+    // Publish the in-flight cancellation BEFORE the stream can run any of it.
+    // `ReadableStreamCancel` invokes the underlying source's cancel algorithm
+    // SYNCHRONOUSLY, inside the `stream.cancel(reason)` call below. For a
+    // consumer-constructed `ReadableStream` that algorithm is consumer code,
+    // and it can call back in here. Assigning `cancelling` only after
+    // `stream.cancel()` RETURNED left that re-entrant call looking at
+    // `cancelled = true` and `cancelling = undefined`: it took step 2 and
+    // reported success while this call was still waiting for the real release
+    // — precisely what step 1 exists to prevent.
     //
-    // Swallow at the SOURCE, not around the `await`. `cancel` is an async
-    // function, so the promise it returns and the derived promise the repeated
-    // call gets from `return cancelling` are both distinct objects from
-    // `pending`; a `.catch()` on `pending` alone leaves those two unhandled.
-    // Under Node's default `--unhandled-rejections=throw`, one dropped cleanup
-    // call then ends the process.
-    const pending = stream.cancel(reason).catch(() => {});
-    cancelling = pending;
-    await pending;
-    // `cancelling` names the IN-FLIGHT cancellation; a settled one is `cancelled`.
-    cancelling = undefined;
+    // A separate deferred, not the stream's own promise, because the stream's
+    // promise does not exist yet at the moment it must already be observable.
+    // It only ever resolves, so `return cancelling` cannot produce a rejection
+    // for anyone to leave unhandled.
+    let settleCancelling!: () => void;
+    cancelling = new Promise<void>((resolve) => {
+      settleCancelling = resolve;
+    });
+
+    try {
+      // Swallow a stream-level failure, the same as `tee().release()` below. A
+      // truncated response or a connection reset mid-body errors the body
+      // stream, and `stream.cancel()` then rejects with that stored error. The
+      // caller asked to DISCARD these bytes, and an errored stream dropped its
+      // source when it errored — nothing is left to release, and nothing here
+      // is actionable.
+      //
+      // Swallow at the SOURCE, not around the `await`. `cancel` is an async
+      // function, so the promise it returns and the derived promise the
+      // repeated call gets from `return cancelling` are both distinct objects
+      // from this one; a `.catch()` further out leaves those two unhandled.
+      // Under Node's default `--unhandled-rejections=throw`, one dropped
+      // cleanup call then ends the process.
+      await stream.cancel(reason).catch(() => {});
+    } finally {
+      // `cancelling` names the IN-FLIGHT cancellation; a settled one is
+      // `cancelled`. Clear it before releasing the waiters, so a waiter that
+      // resumes and calls `cancel()` again takes step 2 rather than awaiting a
+      // promise that has already settled.
+      cancelling = undefined;
+      settleCancelling();
+    }
   }
 
   function tee(): TeedErrorBody {

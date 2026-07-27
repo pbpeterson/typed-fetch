@@ -51,9 +51,12 @@ export class AbortedError extends Error {
     // before it becomes the string every log line carries. undici rejects a
     // credentialed URL with a TypeError whose message contains the PASSWORD,
     // and that message is copied here verbatim. See `./redact-url`.
-    const url = options?.url ?? "";
+    //
+    // OWN properties only, on every slot read here. See `./network-error` for
+    // what a polluted `Object.prototype` otherwise puts into the record.
+    const url = options && Object.hasOwn(options, "url") ? (options.url ?? "") : "";
     super(redactUrlInMessage(message, url));
-    if (options && "cause" in options) {
+    if (options && Object.hasOwn(options, "cause")) {
       // `defineProperty`, not an assignment: `cause` must be non-enumerable,
       // exactly as `new Error(message, { cause })` defines it. See
       // `./network-error` for what an enumerable one leaks.
@@ -64,7 +67,7 @@ export class AbortedError extends Error {
         configurable: true,
       });
     }
-    if (options && "reason" in options) {
+    if (options && Object.hasOwn(options, "reason")) {
       // Non-enumerable for the same reason, plus one of its own: the reason is
       // whatever the caller passed to `controller.abort(reason)`. It can be a
       // cyclic object, and an enumerable one makes `JSON.stringify(error)`

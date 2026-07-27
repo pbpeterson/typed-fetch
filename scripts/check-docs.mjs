@@ -42,35 +42,48 @@ const repoRoot = resolve(scriptDir, "..");
 // Markdown without changing line counts, so diagnostics still point at the
 // original source line.
 //
-// The Markdown roster is hand-maintained (each entry is a deliberate public
-// document). The JSDoc side is NOT: it globs every file under src/, because a
-// hand-maintained list silently under-reports. It listed only `src/index.ts`,
-// so the published `clone()` example in `src/errors/base-http-error.ts` shipped
-// with four TS errors (undefined `CustomHttpError`, undefined `error`, an
-// implicit `any`) that this guard exists to catch and never looked at.
+// The JSDoc side globs every file under src/, because a hand-maintained list
+// silently under-reports. It listed only `src/index.ts`, so the published
+// `clone()` example in `src/errors/base-http-error.ts` shipped with four TS
+// errors (undefined `CustomHttpError`, undefined `error`, an implicit `any`)
+// that this guard exists to catch and never looked at.
+//
+// The Markdown side then made the same mistake one directory over. This list is
+// deliberately IDENTICAL to `check-doc-style.mjs`'s `STYLE_MARKDOWN_SOURCES`,
+// and `gatherDocSources()` globs `docs/` exactly as that gate does, because the
+// two gates cover one declared scope: `docs/writing-standard.md` puts "the
+// files under `docs/`" inside it, and `CONTRIBUTING.md` says this gate extracts
+// fenced TypeScript from "every documentation source". Diverging rosters made
+// that claim false and left `docs/adr/0002`'s fence uncompiled.
+//
+// `PLAN.md` and `SECURITY.md` are outside BOTH rosters, which is the writing
+// standard's own scope, not an oversight.
 export const DOC_MARKDOWN_SOURCES = [
   "README.md",
   "CHANGELOG.md",
   "CONTRIBUTING.md",
+  "CONTEXT.md",
+  "RELEASING.md",
   "skills/typed-fetch/SKILL.md",
   ".claude/skills/typed-fetch-maintainer/SKILL.md",
 ];
 
 /**
- * Every `.ts` file under src/, relative to the repo root, sorted for stable
- * reporting.
+ * Every file with the given extension under `dir`, relative to the repo root,
+ * sorted for stable reporting.
  * @param {string} dir
  * @param {string} prefix
+ * @param {string} extension
  * @returns {string[]}
  */
-function collectSourceFiles(dir, prefix) {
+function collectFiles(dir, prefix, extension) {
   /** @type {string[]} */
   const found = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
-      found.push(...collectSourceFiles(join(dir, entry.name), rel));
-    } else if (entry.name.endsWith(".ts")) {
+      found.push(...collectFiles(join(dir, entry.name), rel, extension));
+    } else if (entry.name.endsWith(extension)) {
       found.push(rel);
     }
   }
@@ -471,7 +484,11 @@ function gatherDocSources() {
   const docs = [];
   const roster = [
     ...DOC_MARKDOWN_SOURCES.map((file) => ({ file, format: /** @type {const} */ ("markdown") })),
-    ...collectSourceFiles(join(repoRoot, "src"), "src").map((file) => ({
+    ...collectFiles(join(repoRoot, "docs"), "docs", ".md").map((file) => ({
+      file,
+      format: /** @type {const} */ ("markdown"),
+    })),
+    ...collectFiles(join(repoRoot, "src"), "src", ".ts").map((file) => ({
       file,
       format: /** @type {const} */ ("jsdoc"),
     })),

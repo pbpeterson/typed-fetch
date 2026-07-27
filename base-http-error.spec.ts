@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, test, expect, vi } from "vitest";
 import { BaseHttpError, NotFoundError, UnknownHttpError } from "./src/errors";
 import { ownsResponseSymbol } from "./src/errors/brand";
@@ -1363,5 +1363,48 @@ describe("BaseHttpError.clone() — an inherited identity is lent, never recorde
     expect(later.message).toBe("HTTP 200 OK");
 
     await Promise.all([error.cancel(), later.cancel()]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test IDs are load-bearing. `src/errors/base-http-error.ts:472` cites one by
+// ID ("BH-20 pins the path that only the `finally` covers"), so an ID that
+// names two tests makes that reference ambiguous — and the reader has no way
+// to tell which one the comment meant.
+//
+// `RI-18` and `RI-19` each named two different tests before this guard existed.
+// ---------------------------------------------------------------------------
+describe("test IDs", () => {
+  test("no ID names two tests, in any spec file", () => {
+    const specDir = new URL("./", import.meta.url);
+    const specFiles = readdirSync(specDir)
+      .filter((name) => name.endsWith(".spec.ts"))
+      .toSorted();
+
+    // The suite's own guard against a vacuous guard: a glob that matches
+    // nothing would report perfect uniqueness.
+    expect(specFiles.length).toBeGreaterThan(5);
+
+    /** @see the `PREFIX-NN:` convention used by the sequenced describes. */
+    const declaration = /\btest(?:\.each|\.skipIf)?\s*\(\s*[`"']([A-Z]{2}-\d+):/g;
+    /** @type {Map<string, string[]>} */
+    const owners = new Map();
+
+    for (const file of specFiles) {
+      const source = readFileSync(new URL(file, specDir), "utf8");
+      for (const [, id] of source.matchAll(declaration)) {
+        owners.set(id, [...(owners.get(id) ?? []), file]);
+      }
+    }
+
+    // Same guard, one level down: a regex that stopped matching would also
+    // report perfect uniqueness.
+    expect(owners.size).toBeGreaterThan(50);
+
+    const duplicated = [...owners]
+      .filter(([, files]) => files.length > 1)
+      .map(([id, files]) => `${id} (${files.join(", ")})`);
+
+    expect(duplicated).toEqual([]);
   });
 });

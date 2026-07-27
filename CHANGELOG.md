@@ -2,6 +2,44 @@
 
 ## [Unreleased]
 
+### Fixed
+
+1. A request header value the platform REFUSES no longer reaches
+   `NetworkError.message`. undici reports a refused header by quoting the value
+   back (`Headers.append: "…" is an invalid header value.`), and that message
+   was copied verbatim, carrying an `Authorization` or `Cookie` value into
+   `message`, `toJSON()`, `util.inspect`, the fatal-exception printer, and
+   `String(error)`. The value is replaced with `<redacted>`, which also removes
+   the raw CR or LF that made the message a log-injection primitive. Only
+   refused values are struck out, and the definition is the platform's: the
+   Fetch Standard forbids NUL, CR, and LF inside a header value and normalizes
+   edge whitespace away rather than refusing it. An accepted value never
+   reaches a rejection message, and striking every held value would replace
+   `1` or `application/json` wherever they appeared.
+2. `typedFetch` no longer rejects when the request input is `Request`-shaped and
+   its `url` answers with a value that is not a string. `requestUrl` normalizes
+   the read, so the envelope returns `{ response: null, error }` as documented
+   and `error.url` — declared `readonly string` — can no longer hold a number
+   that then flows into `redactUrl` and into the `toJSON()` record.
+3. `NetworkError`, `AbortedError`, and `TimeoutError` read `cause`, `reason`,
+   and `url` as OWN properties of their options object. A polluted
+   `Object.prototype` could forge a cause and put a URL the request never
+   touched into the `toJSON()` record. `typedFetch` itself was unaffected: it
+   always builds an own-property literal.
+4. `error.cancel()` re-entered from the body stream's own cancel algorithm now
+   settles with the first call instead of reporting success while the real
+   release is outstanding. `ReadableStreamCancel` runs the underlying source's
+   algorithm synchronously, so a consumer-constructed stream could call back
+   before the in-flight call was observable.
+5. `isResponse` no longer records a status or headers for a value it goes on to
+   REFUSE. Presented with the same object twice — first incomplete, then
+   completed and reporting a failure — the recorded status from the refused
+   call decided the second, and a failed request escaped through the success
+   branch. Every structural check now runs before the identity reads. This also
+   changes which exception becomes the `NetworkError` cause when a response has
+   several hostile getters: the body's shape is inspected before any identity
+   field.
+
 ## [2.0.0] - 2026-07-26
 
 This is a **major**, and most of the breaks are in runtime behavior.

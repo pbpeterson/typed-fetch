@@ -357,11 +357,10 @@ files are for editors and readers; do not rely on them for CI enforcement.
 
 The 40 concrete error classes are plain, hand-written source. There is no
 code generator — adding a status code is a mechanical edit across a fixed set
-of files. The work is repetitive. The **roster tests in `roster-sync.spec.ts`
-catch most omissions**, but they do not catch every one. See
-"What the roster tests catch" at the end of this section for the test that
-covers each step, and for the one step no test covers. Follow the existing 404
-(`NotFoundError`) as a template.
+of files. The work is repetitive, and **every step of it is enforced by a
+test**. See "What the roster tests catch" at the end of this section for the
+test that covers each step. Follow the existing 404 (`NotFoundError`) as a
+template.
 
 To add a new status code — say `NNN <Status Text>` as an `XxxError` client
 error — do all of the following:
@@ -408,9 +407,9 @@ error — do all of the following:
      `test.each` that sends one live request per status code and asserts the
      class `typedFetch` resolves with.
 
-     CAUTION: No test enforces this row. If you omit it, `test.each` runs one
-     case fewer and the suite still passes, so the new status code never goes
-     through a real request.
+     The test named "errorCases covers the whole roster" enforces this row: it
+     compares the table against `allErrors` and names the missing status, so
+     omitting it fails the suite rather than quietly running one case fewer.
 
    - the cardinality assertions in `roster-sync.spec.ts` count
      `allErrors.length`, so there are no magic numbers to bump. The test
@@ -453,11 +452,15 @@ number/string"`.
 the suite stayed green. The test named "errorCases covers the whole roster"
 now compares that table against `allErrors` and names the missing status. Status
 407 is the one documented exception, because Node's fetch rejects a 407 at the
-network level before a response exists; it has its own direct-construction test.
+network level before a response exists; it is covered by its own test, which
+drives an injected `fetch` that resolves a 407 response. Constructing the class
+by hand was considered and rejected there: it proves only what
+`error-classes.spec.ts` already proves for all 40 classes, and proves nothing
+about the status-to-class lookup.
 
-So the invariant that the roster is complete and every class carries its exact
-literal `status`/`statusText` is enforced by the test suite, not by a
-generator. Coverage of the new status code by a live request is not.
+So the invariant that the roster is complete, that every class carries its exact
+literal `status`/`statusText`, and that each status code is exercised through a
+request, is enforced by the test suite rather than by a generator.
 
 Registering a new error class this way is a `major` release — see the semver
 policy below.

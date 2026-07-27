@@ -13,7 +13,7 @@ never released and a connection that is never returned.
 
 Until this decision, the whole question was answered by one table read:
 
-```ts
+```ts no-check
 if (!teed.adopt(bodies.get(copy))) { … }
 ```
 

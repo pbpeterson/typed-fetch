@@ -169,6 +169,12 @@ describe("typedFetch", () => {
     expect(init).toBeDefined();
     expect(init && "fetch" in init).toBe(false);
     expect(init).toMatchObject({ method: "POST" });
+    // The PLAIN READ. The comment below used to claim this was covered while
+    // the three assertions after it checked the `has` trap and the sanitized
+    // target instead — deleting the `get` trap's `fetch` arm left the whole
+    // suite green. `Reflect.get(options, …)` in that trap forwards to the
+    // ORIGINAL options object, which does carry the key.
+    expect((init as Record<string, unknown> | undefined)?.fetch).toBeUndefined();
     // The proxy traps hide `fetch` from a plain read, but the sanitized target
     // must not carry the descriptor either: reflection over the init object is
     // part of what a fetch implementation may legitimately do.
@@ -370,6 +376,117 @@ describe("typedFetch", () => {
     expect(result.error).toBeInstanceOf(NetworkError);
     expect(result.error?.cause).toBe(cause);
     expect(result.error?.url).toBe("");
+  });
+
+  // `requestUrl` is total in BOTH directions a request input can fail. The test
+  // above covers the throwing one. These cover the quiet one: `isRequest`
+  // accepts anything tagged `[object Request]`, and a genuine subclass can
+  // override the getter, so `url` can answer with a value that is not a string
+  // without throwing at all. That value used to reach `NetworkError.url` —
+  // declared `readonly string` — and flow on into `redactUrl` and `toJSON()`.
+  test.each([
+    [
+      "a Request-tagged object",
+      (): Request =>
+        ({
+          [Symbol.toStringTag]: "Request",
+          get url() {
+            return 42;
+          },
+        }) as unknown as Request,
+    ],
+    [
+      "a genuine Request subclass",
+      (): Request => {
+        class ForeignRequest extends Request {
+          override get url(): string {
+            return 42 as unknown as string;
+          }
+        }
+        return new ForeignRequest("https://example.invalid/subclass");
+      },
+    ],
+  ])("%s whose url is not a string yields a string url, never a rejection", async (_l, make) => {
+    const cause = new Error("transport refused");
+
+    const result = await typedFetch(make(), {
+      fetch: (async () => {
+        throw cause;
+      }) as unknown as typeof fetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+    expect(typeof result.error?.url).toBe("string");
+    expect(result.error?.url).toBe("");
+  });
+
+  test("a Request-shaped input whose url coerces by throwing does not reject", async () => {
+    // The quiet failure's sharp edge: `redactUrlInMessage` calls `replaceAll`
+    // with the url, which performs ToString on it. A hostile `toString` threw
+    // there — inside the catch block, past the point the envelope can absorb
+    // it — and `typedFetch` rejected instead of returning an error value.
+    const hostileInput = {
+      [Symbol.toStringTag]: "Request",
+      get url() {
+        return {
+          toString() {
+            throw new Error("hostile toString");
+          },
+        };
+      },
+    } as unknown as Request;
+
+    const result = await typedFetch(hostileInput, {
+      fetch: (async () => {
+        throw new Error("transport refused");
+      }) as unknown as typeof fetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.url).toBe("");
+  });
+
+  // ── A refused header value never reaches the error ──────────────────────
+  // The platform reports a header it refused by quoting the value back, and
+  // that message is copied verbatim into `NetworkError.message`. These pin the
+  // COLLECTION half — that `typedFetch` reads the caller's `headers` and hands
+  // the refused values to the classifier. `disclosure-channels.spec.ts` pins
+  // what happens to them once it has.
+  test.each([
+    ["a record", (v: string) => ({ authorization: v })],
+    ["an array of pairs", (v: string) => [["authorization", v]] as [string, string][]],
+  ])("a refused header value supplied as %s stays out of the message", async (_label, make) => {
+    // A wrapped base64 credential: the LF is what makes the platform refuse it,
+    // and refusal is the only way a header value reaches a message at all.
+    const secret = "Basic AAAA\nsk_live_END_TO_END_SECRET";
+
+    const result = await typedFetch("https://example.invalid/refused-header", {
+      headers: make(secret) as never,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.message).not.toContain("sk_live_END_TO_END_SECRET");
+    expect(result.error?.message).not.toContain("\n");
+    expect(result.error?.message).toContain("<redacted>");
+  });
+
+  test("unreadable headers leave the message unredacted rather than breaking the envelope", async () => {
+    // Collection is best effort by construction. A `headers` getter that throws
+    // is one more thing the envelope absorbs; it must not become a rejection.
+    const options = {
+      get headers(): never {
+        throw new Error("hostile headers getter");
+      },
+    };
+
+    const result = await typedFetch("https://example.invalid/hostile-headers", options as never);
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
   });
 
   // ── Fix 3: the envelope also covers response inspection ────────────────
@@ -993,14 +1110,24 @@ describe("typedFetch", () => {
     const cause = new Error("headers getter exploded");
     const releaseCause = new Error("body getter exploded");
     const hostileResponse = new Response("payload-that-is-still-open", { status: 404 });
+    const realBody = hostileResponse.body;
     Object.defineProperty(hostileResponse, "headers", {
       get() {
         throw cause;
       },
     });
+    // The body must survive VALIDATION and fail during RELEASE, which is the
+    // only arrangement that reaches the property under test. `isResponse`
+    // checks the body's shape before it reads any identity field — it must not
+    // file a status against a value it is still deciding on — so a getter that
+    // threw on its first read would fail validation and become the reported
+    // cause itself, never reaching the release path at all.
+    let bodyReads = 0;
     Object.defineProperty(hostileResponse, "body", {
       get() {
-        throw releaseCause;
+        bodyReads += 1;
+        if (bodyReads > 1) throw releaseCause;
+        return realBody;
       },
     });
     const stubFetch = vi.fn(async () => hostileResponse) as unknown as typeof fetch;
@@ -2744,5 +2871,56 @@ describe("typedFetch — the first successful identity reads are recorded", () =
     expect(second.error.message).toContain("HTTP 420 FIRST (https://first.test/x)");
     expect(second.error.url).toBe("https://first.test/x");
     expect(reads).toEqual({ status: 1, statusText: 1, url: 1, headers: 2 });
+  });
+
+  test("TF-21: a REFUSED value has no identity filed against it", async () => {
+    // The recording rule is "the first successful read fixes A RESPONSE's
+    // identity". `isResponse` used to read and record `status` and `headers`
+    // BEFORE the checks that can still refuse the value, so it also filed an
+    // identity against things it went on to reject.
+    //
+    // That is reachable across two calls holding the SAME object: a response
+    // shaped value missing `json` earns its NetworkError while quietly filing
+    // `status: 200`; completed and re-presented as a 404, it is accepted, and
+    // `statusOf` answers with the recorded 200. `status >= 400` is then false
+    // and a failed request escapes through the success branch. The
+    // success-surface check cannot catch it either — it validates the same
+    // recorded scalars.
+    const shapeshifter = {
+      [Symbol.toStringTag]: "Response",
+      body: null,
+      bodyUsed: false,
+      headers: new Headers({ "content-type": "application/json" }),
+      ok: true,
+      redirected: false,
+      status: 200,
+      statusText: "OK",
+      type: "basic",
+      url: "https://example.invalid/shapeshifter",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone: () => shapeshifter,
+      formData: async () => new FormData(),
+      text: async () => "",
+      // `json` is absent, which is what makes the first call refuse it.
+    } as unknown as Response & { json?: () => Promise<unknown> };
+
+    const fetch = resolving(shapeshifter);
+
+    const refused = await typedFetch("https://example.invalid/shapeshifter", { fetch });
+    expect(refused.response).toBe(null);
+    expect(refused.error).toBeInstanceOf(NetworkError);
+
+    // The same object, now complete and reporting a failure.
+    shapeshifter.json = async () => ({});
+    Object.defineProperty(shapeshifter, "status", { value: 404, configurable: true });
+    Object.defineProperty(shapeshifter, "ok", { value: false, configurable: true });
+
+    const accepted = await typedFetch("https://example.invalid/shapeshifter", { fetch });
+
+    expect(accepted.response).toBe(null);
+    expect(accepted.error).toBeInstanceOf(NotFoundError);
+    if (!isHttpError(accepted.error)) throw new Error("expected an HTTP error");
+    expect(accepted.error.status).toBe(404);
   });
 });

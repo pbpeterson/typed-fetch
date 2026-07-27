@@ -34,9 +34,12 @@ export class TimeoutError extends Error {
     // before it becomes the string every log line carries. undici rejects a
     // credentialed URL with a TypeError whose message contains the PASSWORD,
     // and that message is copied here verbatim. See `./redact-url`.
-    const url = options?.url ?? "";
+    //
+    // OWN properties only, on every slot read here. See `./network-error` for
+    // what a polluted `Object.prototype` otherwise puts into the record.
+    const url = options && Object.hasOwn(options, "url") ? (options.url ?? "") : "";
     super(redactUrlInMessage(message, url));
-    if (options && "cause" in options) {
+    if (options && Object.hasOwn(options, "cause")) {
       // `defineProperty`, not an assignment: `cause` must be non-enumerable,
       // exactly as `new Error(message, { cause })` defines it. See
       // `./network-error` for what an enumerable one leaks.

@@ -133,9 +133,15 @@ Words this codebase already uses, some of them only implicitly until now.
   values, and type-only exports read from the built `.d.mts`). Changing it is a
   deliberate, reviewed act.
 - **Channel** — one mechanism through which an error's data reaches a reader.
-  Seven exist: `JSON.stringify` with `toJSON`, `util.inspect` with `console.*`,
-  the fatal-exception printer, `toString`, `structuredClone`, a test runner's
-  diff and assertion output, and `Object.keys` with the spread.
+  Seven exist, and they are exactly the seven `disclosure-channels.spec.ts`
+  numbers: `JSON.stringify` with `toJSON`, `util.inspect` with `console.*`,
+  `toString` with template interpolation, the `message` on its own,
+  own enumerable properties (`Object.keys` and the spread), `structuredClone`
+  with `postMessage`, and the fatal-exception printer.
+
+  A test runner's diff and assertion output is **not** on this list. It is a
+  residual, recorded below: it reads own property names including
+  non-enumerable ones, so it cannot satisfy the rule every channel here does.
   **A disclosure decision applies to the channel set, never to one channel.**
   `toJSON()` was fixed to withhold header values while `util.inspect` printed
   them in full, because only one of the two had been considered. The inventory

@@ -173,6 +173,28 @@ function isResponse(value: unknown): value is Response {
   }
   if (!FOREIGN_RESPONSE_FIELDS.every((field) => field in value)) return false;
 
+  // EVERY structural verdict comes first, and the identity reads come after.
+  //
+  // The reads below RECORD what they read, permanently and per value, so that
+  // the status which selects the error class is the same one that reaches
+  // `error.status`, `error.message`, and `toJSON()`. Recording before the
+  // verdict meant recording for a value this function then REFUSED: an
+  // injected implementation could resolve a response-shaped object missing
+  // `json`, take the NetworkError it earned, and — having had `status: 200`
+  // filed against that object — later present the same object, now complete
+  // and reporting `404`, and be answered with the recorded 200. The success
+  // branch validates the RECORDED scalars, so it could not catch it either.
+  //
+  // The rule the recording implements is "the first successful read fixes A
+  // RESPONSE's identity". A value that is not a response has no identity to
+  // fix, so nothing may be filed against it.
+  if (!hasCallableMethods(value, FOREIGN_RESPONSE_METHODS)) return false;
+  if (!hasCompatibleForeignBody(value)) return false;
+  // `bodyUsed` drives body ownership on both success and error paths. Let its
+  // getter's own exception reach the envelope instead of replacing that cause
+  // with the generic incompatible-Response error.
+  if (typeof Reflect.get(value, "bodyUsed", value) !== "boolean") return false;
+
   // Record status before another identity field, as the class-selection path
   // does. The call below typedFetch reuses this value.
   statusOf(value as Response);
@@ -184,13 +206,6 @@ function isResponse(value: unknown): value is Response {
   // requires the iterable Headers operations. Let the getter's own exception
   // escape to the envelope instead of hiding the real cause.
   headersOf(value as Response);
-
-  if (!hasCallableMethods(value, FOREIGN_RESPONSE_METHODS)) return false;
-  if (!hasCompatibleForeignBody(value)) return false;
-  // `bodyUsed` drives body ownership on both success and error paths. Let its
-  // getter's own exception reach the envelope instead of replacing that cause
-  // with the generic incompatible-Response error.
-  if (typeof Reflect.get(value, "bodyUsed", value) !== "boolean") return false;
 
   validatedResponseStructures.add(value);
   return true;
@@ -433,12 +448,81 @@ function snapshotRequestInit(
   });
 }
 
+/**
+ * The requested URL as a string, or the empty string when none can be resolved.
+ *
+ * Total by construction, and total in BOTH directions a request input can fail.
+ * `String(input)` throws for a `Symbol` and for a hostile `toString`, which the
+ * `catch` covers. A `Request`'s `url` is the other half: `isRequest` accepts
+ * anything tagged `[object Request]`, and a subclass can override the getter, so
+ * `input.url` can answer with a number, an object, or a `Symbol` without
+ * throwing at all. Normalizing it here is what keeps `NetworkError.url` — typed
+ * `readonly string` — from holding a non-string that then flows into
+ * `redactUrl` and into the `toJSON()` record.
+ *
+ * The normalization is `response-identity`'s {@link textOf} rule, for the same
+ * reason it exists there: `String()` cannot promise not to throw, so a value
+ * that is not already a string is not coerced, it is dropped.
+ */
 function requestUrl(input: FetchInput): string {
   try {
-    return isRequest(input) ? input.url : String(input);
+    const raw: unknown = isRequest(input) ? input.url : String(input);
+    return typeof raw === "string" ? raw : "";
   } catch {
     return "";
   }
+}
+
+/**
+ * The characters the Fetch Standard forbids inside a header value.
+ *
+ * A value carrying one is REFUSED by the platform, and refusal is the only way
+ * a header value reaches a rejection message. Leading and trailing HTTP
+ * whitespace is normalized away instead of refused, so these three characters
+ * are the whole of the rule — verified against undici, which reports the
+ * refusal by quoting the value back.
+ *
+ * Spelled as `includes` calls rather than a character class, because a regexp
+ * literal carrying a raw NUL is unreadable in a diff and in a review.
+ */
+function isRefusedHeaderValue(value: string): boolean {
+  return value.includes("\0") || value.includes("\r") || value.includes("\n");
+}
+
+/**
+ * The header values the platform must refuse, collected from the caller's
+ * `headers` so `classifyRequestFailure` can strike them out of the message the
+ * platform hands back.
+ *
+ * Total: a hostile `headers` — a throwing getter, an exotic iterator, a Proxy —
+ * cannot make the envelope reject. What cannot be read cannot be redacted, and
+ * the URL pass in `NetworkError` still runs.
+ *
+ * BEST EFFORT, the same posture `redactUrlInMessage` states: this reads
+ * `headers` once, and a getter that answers differently on the read `fetch`
+ * performed leaves a value unredacted. The read happens on the failure path
+ * only, so the success path pays nothing.
+ */
+function refusedHeaderValues(headers: unknown): readonly string[] {
+  const refused: string[] = [];
+  const consider = (value: unknown): void => {
+    if (typeof value === "string" && isRefusedHeaderValue(value)) refused.push(value);
+  };
+  try {
+    if (headers === null || typeof headers !== "object") return refused;
+    // A `Headers` instance and an array of name/value pairs are both iterable
+    // and both yield pairs. A plain record is neither, and is read by value.
+    if (typeof (headers as Iterable<unknown>)[Symbol.iterator] === "function") {
+      for (const entry of headers as Iterable<unknown>) {
+        if (Array.isArray(entry)) consider(entry[1]);
+      }
+      return refused;
+    }
+    for (const value of Object.values(headers as Record<string, unknown>)) consider(value);
+  } catch {
+    // Unreadable headers are not a reason to break the envelope.
+  }
+  return refused;
 }
 
 /**
@@ -622,9 +706,23 @@ export async function typedFetch<JsonReturnType>(
     // Which failure this is — timeout, abort, or network — is decided by
     // `classifyRequestFailure`. The governing signal is the authority there,
     // never the rejection's `.name`.
+    // The header values the platform refused, so the message it handed back
+    // can be stripped of them. Read HERE rather than before the request: it is
+    // needed only on this path, and a `headers` getter that throws is one more
+    // thing the envelope must absorb rather than re-raise. A `Request` passed
+    // as the input needs no pass — its headers were validated when it was
+    // constructed, so none of them can be a refused value.
+    let refusedValues: readonly string[] = [];
+    try {
+      refusedValues = refusedHeaderValues(options.headers);
+    } catch {
+      // A throwing `headers` getter leaves the message unredacted rather than
+      // breaking the envelope. `NetworkError` still redacts the URL.
+    }
+
     return {
       response: null,
-      error: classifyRequestFailure(err, signal, resolvedRequestUrl),
+      error: classifyRequestFailure(err, signal, resolvedRequestUrl, refusedValues),
     };
   }
 }

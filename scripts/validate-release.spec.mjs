@@ -283,3 +283,93 @@ describe("engines floor policy", () => {
     expect(minimum.slice(1, 4).join(".")).toBe(exact);
   });
 });
+
+/** Compare two [major, minor, patch] version tuples, missing components read as 0. */
+const compareVersions = (a, b) => {
+  for (let i = 0; i < 3; i += 1) {
+    const difference = (a[i] ?? 0) - (b[i] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+};
+
+// ---------------------------------------------------------------------------
+// `.tool-versions` is the Node a contributor actually gets in this checkout.
+// It pinned 20.15.0 while `oxlint` and `oxfmt` both declare
+// `^20.19.0 || >=22.12.0`, so the pinned version was one no devDependency
+// would admit — and `node-version: 20` in CI resolves to the LATEST 20.x, so
+// no job ever executed it. Both halves are checked here.
+// ---------------------------------------------------------------------------
+describe(".tool-versions", () => {
+  const pinned = () => {
+    const match = /^nodejs\s+(\d+)\.(\d+)\.(\d+)\s*$/m.exec(readRepoFile(".tool-versions"));
+    expect(match, ".tool-versions must pin a three-component nodejs version").not.toBe(null);
+    return match.slice(1, 4).map(Number);
+  };
+
+  /**
+   * Does `version` satisfy `range`?
+   *
+   * Understands only the forms this repository's devDependencies actually
+   * declare, and THROWS on anything else rather than returning true. A range
+   * parser that quietly passes what it cannot read is not a guard — it is a
+   * test that reports success for a question it never asked.
+   *
+   * @param {number[]} version
+   * @param {string} range
+   */
+  const satisfies = (version, range) =>
+    range.split("||").some((alternative) => {
+      const term = alternative.trim();
+      if (term === "*") return true;
+
+      const caret = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(term);
+      if (caret) {
+        const floor = caret.slice(1, 4).map(Number);
+        return version[0] === floor[0] && compareVersions(version, floor) >= 0;
+      }
+
+      const atLeast = /^>=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(term);
+      if (atLeast) {
+        return compareVersions(version, atLeast.slice(1, 4).map(Number)) >= 0;
+      }
+
+      // `4.x`, `20.x`, `20.19.x` — a wildcard on the trailing component.
+      const wildcard = /^(\d+)(?:\.(\d+))?\.x$/.exec(term);
+      if (wildcard) {
+        const [major, minor] = wildcard.slice(1, 3).map((part) => (part ? Number(part) : null));
+        return version[0] === major && (minor === null || version[1] === minor);
+      }
+
+      throw new Error(`unsupported engines range "${term}" — teach this check the new form`);
+    });
+
+  test("satisfies every devDependency's declared engines.node", () => {
+    const { devDependencies } = JSON.parse(readRepoFile("package.json"));
+    const version = pinned();
+
+    for (const name of Object.keys(devDependencies)) {
+      let engines;
+      try {
+        engines = JSON.parse(readRepoFile(`node_modules/${name}/package.json`)).engines?.node;
+      } catch {
+        continue; // Not installed in this environment; nothing to check.
+      }
+      if (!engines) continue;
+
+      expect(satisfies(version, engines), `${name} declares node ${engines}`).toBe(true);
+    }
+  });
+
+  test("is a Node major the CI matrix actually runs", () => {
+    const ci = readRepoFile(".github/workflows/ci.yml");
+    const matrix = /matrix:\s*\n\s*node-version:\s*\[([^\]]+)\]/.exec(ci);
+    expect(matrix, "ci.yml must declare a node-version matrix array").not.toBe(null);
+
+    const majors = matrix[1]
+      .split(",")
+      .map((entry) => Number.parseInt(entry.trim().replace(/^["']|["']$/g, ""), 10));
+
+    expect(majors).toContain(pinned()[0]);
+  });
+});

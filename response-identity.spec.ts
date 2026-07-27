@@ -467,7 +467,7 @@ describe("lendIdentity — an inherited identity, for one construction only", ()
     expect(() => revoke?.()).not.toThrow();
   });
 
-  test("RI-18: the revoke leaves the response exactly as this module found it", () => {
+  test("RI-22: the revoke leaves the response exactly as this module found it", () => {
     // THE GUARD, and the reason the handoff is a loan rather than a record.
     //
     // A custom Fetch implementation can answer `clone()` with a `Response` it
@@ -489,7 +489,7 @@ describe("lendIdentity — an inherited identity, for one construction only", ()
     expect(identityOf(response).url).toBe("https://victim.test/x");
   });
 
-  test("RI-19: statusOf never answers with a live loan", () => {
+  test("RI-23: statusOf never answers with a live loan", () => {
     // `statusOf` is the read on the SUCCESS path: `typedFetch` calls it for
     // every resolved response, including every 200. It is also the exact read a
     // poisoned table would reach. `identityOf` answers from the loan before it

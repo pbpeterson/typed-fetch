@@ -93,6 +93,19 @@ describe("redactUrlInMessage — a URL we already hold, removed from a foreign m
     expect(redactUrlInMessage("fetch failed", "https://api.test/x?t=SECRET")).toBe("fetch failed");
   });
 
+  test("a relative URL carries no userinfo, so the message keeps its path", () => {
+    // `userinfoOf` parses the url ABSOLUTELY and returns "" when that throws.
+    // A relative URL — `fetch("/v1/things")` is ordinary in a browser — always
+    // takes that path, and it is also the case where the first pass is a no-op
+    // (`redactUrl("/v1/things")` is `/v1/things`), so the second pass acts on
+    // an untouched message. Returning the url from that catch instead of ""
+    // would strike the whole path out of the very message it is meant to keep
+    // readable, and nothing failed.
+    expect(redactUrlInMessage("Failed to fetch /v1/things", "/v1/things")).toBe(
+      "Failed to fetch /v1/things",
+    );
+  });
+
   test("no URL to redact leaves the message alone", () => {
     expect(redactUrlInMessage("fetch failed", "")).toBe("fetch failed");
   });

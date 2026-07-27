@@ -109,6 +109,131 @@ describe("releaseResponseBody — unreachable-response cleanup", () => {
     expect(response.bodyUsed).toBe(true);
   });
 
+  // ── the ancestor walk, and the two ways it gives up ─────────────────
+  // `bodyForRelease`'s prototype walk was reachable by nothing: deleting the
+  // whole 18-line block, cycle guard and all, left the entire suite green. It
+  // is the last resort for a FOREIGN response whose visible `body` getter is
+  // hostile, so every test below builds one that is not a native `Response`.
+
+  test("falls back to an ancestor body getter when the visible one is hostile", () => {
+    let cancelled = false;
+    const ancestor = {};
+    Object.defineProperty(ancestor, "body", {
+      configurable: true,
+      get: () => ({
+        cancel() {
+          cancelled = true;
+        },
+      }),
+    });
+
+    const response = Object.create(ancestor) as Response;
+    Object.defineProperty(response, "body", {
+      configurable: true,
+      get() {
+        throw new Error("visible body getter exploded");
+      },
+    });
+
+    expect(() => releaseResponseBody(response)).not.toThrow();
+    expect(cancelled).toBe(true);
+  });
+
+  test("skips an ancestor getter that is also hostile and takes the next one", () => {
+    let cancelled = false;
+    const grandparent = {};
+    Object.defineProperty(grandparent, "body", {
+      configurable: true,
+      get: () => ({
+        cancel() {
+          cancelled = true;
+        },
+      }),
+    });
+
+    const parent = Object.create(grandparent) as object;
+    Object.defineProperty(parent, "body", {
+      configurable: true,
+      get() {
+        throw new Error("ancestor body getter exploded");
+      },
+    });
+
+    const response = Object.create(parent) as Response;
+    Object.defineProperty(response, "body", {
+      configurable: true,
+      get() {
+        throw new Error("visible body getter exploded");
+      },
+    });
+
+    expect(() => releaseResponseBody(response)).not.toThrow();
+    expect(cancelled).toBe(true);
+  });
+
+  test("gives up quietly when the chain itself refuses inspection", () => {
+    // The outer catch. A Proxy may refuse `getPrototypeOf` outright, and
+    // cleanup is best effort: it must return, not throw into the caller that
+    // was already handling a different failure.
+    const response = new Proxy(
+      {},
+      {
+        get(_target, property) {
+          if (property === "body") throw new Error("visible body getter exploded");
+          return undefined;
+        },
+        getPrototypeOf() {
+          throw new Error("prototype inspection refused");
+        },
+      },
+    ) as Response;
+
+    expect(() => releaseResponseBody(response)).not.toThrow();
+  });
+
+  test("a body whose cancel() throws falls through to destroy()", () => {
+    // `tryCancelBody` returning false from its catch is what lets the
+    // `destroy()` fallback run. Reporting the throwing call as a SUCCESS
+    // (`return true`) skipped that fallback and left the body unreleased,
+    // and no test noticed.
+    let destroyed = false;
+    const body = {
+      cancel() {
+        throw new Error("cancel exploded");
+      },
+      destroy() {
+        destroyed = true;
+      },
+    };
+
+    expect(() => releaseResponseBody({ body } as unknown as Response)).not.toThrow();
+    expect(destroyed).toBe(true);
+  });
+
+  test("a cancel() that returns a rejecting promise has its rejection silenced", async () => {
+    // Cleanup drops the promise it starts. Dropping a REJECTING one ends the
+    // process under Node's default `--unhandled-rejections=throw`, so a handler
+    // must be attached to whatever `cancel()` returned. That swallower was a
+    // never-invoked function in the coverage report.
+    let handlerInstalled = false;
+    const body = {
+      cancel() {
+        const pending = Promise.reject(new Error("stream already errored"));
+        return {
+          catch(handler: (reason: unknown) => void) {
+            handlerInstalled = true;
+            return pending.catch(handler);
+          },
+        };
+      },
+    };
+
+    releaseResponseBody({ body } as unknown as Response);
+    await Promise.resolve();
+
+    expect(handlerInstalled).toBe(true);
+  });
+
   test("bypasses an own body value that hides the native stream", () => {
     const response = new Response("payload");
     Object.defineProperty(response, "body", {
@@ -612,6 +737,58 @@ describe("errorBodyOf — tee() and its branches", () => {
     expect(raced).toBe("pending");
 
     await Promise.all([first, second, branch.cancel()]);
+  });
+
+  test("a cancel re-entered from the stream's own cancel algorithm settles with the first", async () => {
+    // The test above reaches step 1 through `tee()`, where a branch's cancel
+    // does not run the source algorithm until BOTH branches cancel — so
+    // `cancelling` is always published before any consumer code runs.
+    //
+    // This is the other door into step 1, and it opens earlier.
+    // `ReadableStreamCancel` invokes the underlying source's cancel algorithm
+    // SYNCHRONOUSLY, inside `stream.cancel(reason)`. For a
+    // consumer-constructed stream that algorithm is consumer code, running in
+    // the window before that call has even returned. Publishing `cancelling`
+    // only afterwards left a re-entrant call seeing `cancelled = true` and
+    // `cancelling = undefined`, so it took step 2 and resolved immediately —
+    // reporting a release that had not happened.
+    const order: string[] = [];
+    let releaseSource!: () => void;
+    const sourceReleased = new Promise<void>((resolve) => {
+      releaseSource = resolve;
+    });
+
+    let body: ErrorBody | undefined;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        void body?.cancel().then(() => {
+          order.push("repeated");
+        });
+        return sourceReleased;
+      },
+    });
+    body = errorBodyOf(new Response(stream));
+
+    const first = body.cancel().then(() => {
+      order.push("first");
+    });
+
+    // The inverted assertion this file uses elsewhere: the timer winning IS the
+    // pass, so a starved runner cannot flake it.
+    const settled = await Promise.race([
+      first.then(() => "settled"),
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 50)),
+    ]);
+
+    expect(settled).toBe("pending");
+    // The whole finding, in one line: neither call may report success while the
+    // source is still holding on.
+    expect(order).toEqual([]);
+
+    releaseSource();
+    await first;
+    expect(order).toContain("first");
+    expect(order).toContain("repeated");
   });
 
   test("cancelling one branch leaves the sibling readable", async () => {

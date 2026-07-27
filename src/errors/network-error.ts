@@ -56,9 +56,18 @@ export class NetworkError extends Error {
     // before it becomes the string every log line carries. undici rejects a
     // credentialed URL with a TypeError whose message contains the PASSWORD,
     // and that message is copied here verbatim. See `./redact-url`.
-    const url = options?.url ?? "";
+    //
+    // OWN properties only, on both slots. A bare `options?.url` and a bare
+    // `"cause" in options` each walk the prototype chain, so a single
+    // `Object.prototype.url = ...` write anywhere in the process puts a URL
+    // this request never touched into `toJSON()` — the record a logger ships
+    // off-box — and a polluted `cause` forges the chain underneath it. This is
+    // the guard `typedFetch` already applies to its `fetch` slot, applied to
+    // the slots its siblings read. `typedFetch` itself is unaffected either
+    // way: it always builds an own-property literal.
+    const url = options && Object.hasOwn(options, "url") ? (options.url ?? "") : "";
     super(redactUrlInMessage(message, url));
-    if (options && "cause" in options) {
+    if (options && Object.hasOwn(options, "cause")) {
       // `defineProperty`, not `this.cause = ...`. A plain assignment creates an
       // ENUMERABLE own property, while `new Error(message, { cause })` creates
       // a non-enumerable one. The difference is not cosmetic: an enumerable
