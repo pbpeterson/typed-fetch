@@ -85,7 +85,7 @@ function seededIdentity(overrides: Partial<ResponseIdentity> = {}): ResponseIden
   };
 }
 
-describe("statusOf — one read per response, ever", () => {
+describe("statusOf — the first successful read is recorded per response", () => {
   test("RI-01: three calls perform exactly one read", () => {
     const { response, counts } = countingResponse({ status: [420] });
 
@@ -131,7 +131,7 @@ describe("statusOf — one read per response, ever", () => {
   });
 });
 
-describe("identityOf — one read per field, per response, ever", () => {
+describe("identityOf — the first successful field reads are recorded per response", () => {
   test("RI-04: three calls read statusText, url, and headers exactly once each", () => {
     const { response, counts } = countingResponse({
       status: [404],
@@ -428,6 +428,30 @@ describe("lendIdentity — an inherited identity, for one construction only", ()
 
     revoke();
     expect(identityOf(response)).toBe(first);
+  });
+
+  test("RI-21: a loan cannot shadow fields recorded before a later getter failed", () => {
+    const cause = new Error("headers getter exploded");
+    const { response, counts } = countingResponse({
+      status: [420, 421],
+      statusText: ["FIRST", "SECOND"],
+      url: ["https://first.test/x", "https://second.test/y"],
+      headers: [throwing(cause), new Headers({ "x-later": "2" })],
+    });
+
+    expect(() => identityOf(response)).toThrow(cause);
+
+    const revoke = lendIdentity(response, seededIdentity({ status: 404 }));
+    const identity = identityOf(response);
+
+    expect(identity.status).toBe(420);
+    expect(identity.statusText).toBe("FIRST");
+    expect(identity.url).toBe("https://first.test/x");
+    expect(identity.headers.get("x-later")).toBe("2");
+    expect(counts).toEqual({ status: 1, statusText: 1, url: 1, headers: 2 });
+
+    revoke();
+    expect(identityOf(response)).toBe(identity);
   });
 
   test("RI-15: neither the loan nor its revoke throws for a non-object key", () => {

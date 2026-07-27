@@ -101,6 +101,21 @@ describe("type-level", () => {
     }>();
   });
 
+  test("TypedResponse exposes the stable Fetch baseline, not newer ambient additions", () => {
+    type ResponseHasBytes = "bytes" extends keyof TypedResponse<unknown> ? true : false;
+    type HeadersHaveGetSetCookie = "getSetCookie" extends keyof TypedResponse<unknown>["headers"]
+      ? true
+      : false;
+    type BodyHasValues = "values" extends keyof NonNullable<TypedResponse<unknown>["body"]>
+      ? true
+      : false;
+
+    expectTypeOf<ResponseHasBytes>().toEqualTypeOf<false>();
+    expectTypeOf<HeadersHaveGetSetCookie>().toEqualTypeOf<false>();
+    expectTypeOf<BodyHasValues>().toEqualTypeOf<false>();
+    expectTypeOf<Response>().toExtend<TypedResponse<unknown>>();
+  });
+
   // ── the options slots: replaced, not intersected ───────────────────
   // `RequestInit["method"]` is `string`. Intersecting it with the open union
   // collapsed the whole slot to bare `string` — `string & (HttpMethods | (string

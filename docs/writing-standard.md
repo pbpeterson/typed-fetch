@@ -13,8 +13,12 @@ Apply this standard to `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`,
 `CONTEXT.md`, `RELEASING.md`, both `SKILL.md` files, the files under `docs/`,
 and every public JSDoc comment in `src/`.
 
-Public JSDoc is attached to an exported declaration or a public member. A
-declaration marked `@internal` is outside this scope.
+An accepted ADR keeps the original Context, Decision, and Consequences as a
+historical record. Do not rewrite those sections for rules adopted later.
+Apply the current standard to amendments.
+
+Public JSDoc attaches to an exported declaration or a public member. This scope
+excludes a declaration marked `@internal` and all its members.
 
 Two limits on that scope:
 

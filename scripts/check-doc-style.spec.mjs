@@ -7,6 +7,7 @@ import {
   diffTermsTables,
   findRelativeLinks,
   findVocabularyViolations,
+  FROZEN_ADR_FILES,
   judgeDocStyle,
   parseTermsTable,
   README_FILE,
@@ -86,6 +87,17 @@ describe("toProseLines", () => {
       " * @internal",
       " */",
       "export const x = 1;",
+    );
+    expect(toProseLines(source, "jsdoc")).toEqual(["", "", "", "", ""]);
+  });
+
+  test("jsdoc format ignores members of an exported class marked @internal", () => {
+    const source = md(
+      "/** @internal */",
+      "export class Hidden {",
+      "  /** the canceled request */",
+      "  run(): void {}",
+      "}",
     );
     expect(toProseLines(source, "jsdoc")).toEqual(["", "", "", "", ""]);
   });
@@ -172,6 +184,28 @@ describe("findVocabularyViolations", () => {
     const line = "Do not write 'cancel the request'. A cancellation is an abort.";
     expect(findVocabularyViolations([doc(VOCABULARY_EXEMPT_FILES[0], line)])).toEqual([]);
     expect(findVocabularyViolations([doc("OTHER.md", line)]).length).toBeGreaterThan(0);
+  });
+
+  test("keeps a frozen ADR argument immutable and scans its amendments", () => {
+    const found = findVocabularyViolations([
+      doc(
+        FROZEN_ADR_FILES[0],
+        "The old argument has to stay unchanged.",
+        "",
+        "## Amendments",
+        "",
+        "The new amendment has to change.",
+      ),
+    ]);
+
+    expect(found).toEqual([
+      {
+        file: FROZEN_ADR_FILES[0],
+        line: 5,
+        rule: "normative-synonym",
+        match: "has to",
+      },
+    ]);
   });
 
   test("reports file, 1-based line, rule id, and the matched text", () => {

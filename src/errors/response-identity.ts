@@ -43,13 +43,19 @@
  *
  * ## Why status and partial identity fields have separate tables
  *
- * The success path must read `status` and NOTHING else. `typedFetch` consults
- * `status` on every resolved value, including every 200. Reading a whole
- * identity there would touch `statusText`, `url`, and `headers` on responses
- * that never become an error, allocate a record nobody reads, and — decisively —
- * turn a hostile `headers` getter on a successful response into a
- * `NetworkError`. That is a behavior change the suite already pins the opposite
- * way. So {@link statusOf} fills a status-only table.
+ * `typedFetch` must read `status` first, because that one field decides whether
+ * a response becomes an HTTP error. An HTTP error keeps the library's lenient
+ * identity normalization for injected implementations. A success must instead
+ * satisfy the exact public `TypedResponse` surface before the original object
+ * escapes. Even a platform response can carry own properties or a replaced
+ * prototype that shadow its native members, so native slots alone do not prove
+ * the visible surface.
+ *
+ * {@link statusOf} therefore fills a status-only table before class selection.
+ * On the success branch, {@link hasTypedResponseIdentityScalars} records the
+ * remaining identity reads through the per-field tables. On the HTTP-error
+ * branch, {@link identityOf} consumes the same tables while constructing the
+ * error. Neither path can consume one getter answer and later use another.
  *
  * {@link identityOf} records each remaining field immediately after that read
  * succeeds. It stores the whole record after every field succeeds. If a later
@@ -98,8 +104,8 @@
  * - The cost to accept: a test double that answers `url` with a `URL` OBJECT
  *   loses it. A double must answer with a string, as the platform does.
  *
- * The first successful `headers` read is passed through UNTOUCHED. The record
- * must not hold a copy. A shared copy would let one error edit another error's
+ * The first successful `headers` read passes through UNTOUCHED. The record must
+ * not hold a copy. A shared copy would let one error edit another error's
  * headers. `BaseHttpError` prevents that aliasing by making one copy per error.
  *
  * The value is not normalized. A value the `Headers` constructor refuses makes
@@ -108,7 +114,7 @@
  * ## Residuals, stated rather than left undiscovered
  *
  * An inherited identity is SCOPED, in two directions that a reader must not
- * confuse with the read-once guarantee above. It reaches AT MOST the copy
+ * confuse with the first-successful-read guarantee above. It reaches AT MOST the copy
  * `clone()` builds, and never anything else. Two further cases keep it from
  * reaching even that copy: a branch that already carries a RECORDED identity,
  * where {@link lendIdentity} refuses the loan, and a nested `clone()` whose
@@ -157,9 +163,17 @@ export interface ResponseIdentity {
 /**
  * The status-only cache, filled by {@link statusOf} on the class-selection path
  * in `src/index.ts` and read again by {@link identityOf} inside the constructor.
- * It exists so the success path can read `status` and nothing else.
+ * It lets class selection happen before success-surface validation and before
+ * HTTP-error construction reads the remaining identity.
  */
 const statusByResponse = new WeakMap<object, number>();
+
+/**
+ * Whether each normalized identity field originally had the scalar type the
+ * public success response promises. HTTP errors deliberately use the normalized
+ * values, while successes consult these facts before escaping.
+ */
+const numericStatusByResponse = new WeakMap<object, boolean>();
 
 /** The whole record, filled the first time an error is actually built from the response. */
 const identityByResponse = new WeakMap<object, ResponseIdentity>();
@@ -171,8 +185,21 @@ const identityByResponse = new WeakMap<object, ResponseIdentity>();
  * first successful read authoritative when the same response is tried again.
  */
 const statusTextByResponse = new WeakMap<object, string>();
+const stringStatusTextByResponse = new WeakMap<object, boolean>();
 const urlByResponse = new WeakMap<object, string>();
+const stringUrlByResponse = new WeakMap<object, boolean>();
 const headersByResponse = new WeakMap<object, Headers>();
+
+/** Has any successful identity read already claimed this response? */
+function hasRecordedIdentityField(response: object): boolean {
+  return (
+    statusByResponse.has(response) ||
+    statusTextByResponse.has(response) ||
+    urlByResponse.has(response) ||
+    headersByResponse.has(response) ||
+    identityByResponse.has(response)
+  );
+}
 
 /**
  * Identities LENT to a response for the duration of one construction, and taken
@@ -244,9 +271,71 @@ export function statusOf(response: Response): number {
   const recorded = statusByResponse.get(response);
   if (recorded !== undefined) return recorded;
 
-  const status = Number(response.status);
+  const rawStatus = response.status as unknown;
+  const status = Number(rawStatus);
+  numericStatusByResponse.set(response, typeof rawStatus === "number");
   statusByResponse.set(response, status);
   return status;
+}
+
+/** Read and record `statusText`, including its original scalar type. */
+function statusTextOf(response: Response, key: object | undefined): string {
+  if (key === undefined) return textOf(response.statusText);
+  return recordedField(statusTextByResponse, key, () => {
+    const rawStatusText = response.statusText as unknown;
+    stringStatusTextByResponse.set(key, typeof rawStatusText === "string");
+    return textOf(rawStatusText);
+  });
+}
+
+/** Read and record `url`, including its original scalar type. */
+function urlOf(response: Response, key: object | undefined): string {
+  if (key === undefined) return textOf(response.url);
+  return recordedField(urlByResponse, key, () => {
+    const rawUrl = response.url as unknown;
+    stringUrlByResponse.set(key, typeof rawUrl === "string");
+    return textOf(rawUrl);
+  });
+}
+
+/**
+ * The response headers, with the first successful read recorded immediately.
+ *
+ * Response validation uses this function before class selection. A later error
+ * constructor must receive that same value rather than reading a shifting
+ * getter again.
+ *
+ * @internal
+ */
+export function headersOf(response: Response): Headers {
+  if (!keyable(response)) return (response as Response).headers;
+  return recordedField(headersByResponse, response, () => response.headers);
+}
+
+/**
+ * Whether the three cached identity scalars have the types promised by a
+ * successful {@link Response}.
+ *
+ * HTTP errors keep the longstanding normalization contract: numeric strings
+ * can still select an HTTP error class, while non-string text fields become
+ * empty strings. A success cannot use those normalized values, because the
+ * original object itself escapes as the public response. This helper records
+ * the remaining first reads and reports their original types.
+ *
+ * @internal
+ */
+export function hasTypedResponseIdentityScalars(response: Response): boolean {
+  if (!keyable(response)) return false;
+
+  statusOf(response);
+  statusTextOf(response, response);
+  urlOf(response, response);
+
+  return (
+    numericStatusByResponse.get(response) === true &&
+    stringStatusTextByResponse.get(response) === true &&
+    stringUrlByResponse.get(response) === true
+  );
 }
 
 /**
@@ -258,9 +347,10 @@ export function statusOf(response: Response): number {
  * four. Repeated calls return the SAME record object, so two errors built from
  * one response report one identity.
  *
- * The read order is `status`, `statusText`, `url`, `headers`. The order is
- * observable only when two of them throw, in which case it decides which one
- * becomes the `cause` — a case no contract names.
+ * Response validation reads and records `status` and `headers` before an
+ * HTTP-error constructor checks the remaining identity fields. The order
+ * matters only when more than one getter throws; it decides which exception
+ * becomes the `cause`.
  *
  * A LENT identity answers before a recorded one, and before any read. That is
  * the {@link lendIdentity} handoff: while `clone()` is building the copy, the
@@ -281,20 +371,11 @@ export function identityOf(response: Response): ResponseIdentity {
   }
 
   const status = statusOf(response);
-  const statusText =
-    key === undefined
-      ? textOf(response.statusText)
-      : recordedField(statusTextByResponse, key, () => textOf(response.statusText));
-  const url =
-    key === undefined
-      ? textOf(response.url)
-      : recordedField(urlByResponse, key, () => textOf(response.url));
+  const statusText = statusTextOf(response, key);
+  const url = urlOf(response, key);
   // Passed through, never copied: see the module header on the aliasing hazard
   // a shared copy would create between two errors built from one response.
-  const headers =
-    key === undefined
-      ? response.headers
-      : recordedField(headersByResponse, key, () => response.headers);
+  const headers = headersOf(response);
 
   const identity: ResponseIdentity = { status, statusText, url, headers };
 
@@ -375,7 +456,7 @@ function noRevoke(): void {}
  *   branch's, so the two disagree.
  *
  *   That is silent copy divergence, and it is NOT the poisoning above. The
- *   branch's own getters are read exactly once, the record that read produces is
+ *   the tables record the branch's first successful getter reads, that record is
  *   true about the branch, and a later request that resolves the branch still
  *   reports its own status. The case needs a double that lies twice over: it
  *   answers `clone()` with a `Response` it did not create, and it answers with
@@ -404,7 +485,7 @@ function noRevoke(): void {}
  */
 export function lendIdentity(response: Response, identity: ResponseIdentity): () => void {
   if (!keyable(response)) return noRevoke;
-  if (identityByResponse.has(response)) return noRevoke;
+  if (hasRecordedIdentityField(response)) return noRevoke;
 
   lentByResponse.set(response, identity);
   return () => {

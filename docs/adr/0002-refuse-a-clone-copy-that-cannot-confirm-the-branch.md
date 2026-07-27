@@ -5,12 +5,11 @@
 
 ## Context
 
-`BaseHttpError.clone()` **tees** the error body. It hands the **branch** to the
-`recreate` callback. It must then decide whether the returned copy took that
-branch.
-
-The platform frees the teed **source** only after every branch is released. An
-orphaned branch keeps its stream and connection open.
+`BaseHttpError.clone()` **tees** the error body, hands the **branch** to the
+`recreate` callback, and then has to decide one thing: did the returned copy
+actually take that branch? The platform frees the teed **source** only once
+every branch is read or canceled, so a branch nobody owns is a stream that is
+never released and a connection that is never returned.
 
 Until this decision, the whole question was answered by one table read:
 
@@ -45,9 +44,9 @@ original.cancel() => PENDING
 `branch.bodyUsed === false` is the mechanical signature of an **orphan**. A
 released branch reports `bodyUsed === true` synchronously, because `release()`
 calls `branch.body.cancel()` and `Response.bodyUsed` flips inside that call.
-The cost is one pinned connection and one unreleased stream per cloned error.
-There is no recovery path. The original `cancel()` never settles, and the copy
-cannot release the branch.
+The cost is one pinned connection and one unreleased stream per cloned error,
+and there is no recovery path: `cancel()` on the original error never settles,
+and the branch cannot be released through the copy either.
 
 The same hole returned `null` from `error.clone(() => null)`. `copy === this` is
 false, `claimsThisCopy(null)` is false, `bodies.get(null)` is `undefined`, and
@@ -75,8 +74,9 @@ other object that lacks the member.
 **(a) Keep the lenient accept.** Treat "cannot answer" as consent, exactly as
 today, and document the residual hole.
 
-**(b) Release the branch and throw.** Treat "cannot answer" as "not confirmed".
-Release the branch first, then throw a `TypeError` that names the fix.
+**(b) Release the branch and throw.** Treat "cannot answer" as "not confirmed",
+release the branch first so the original error stays usable, and throw a
+`TypeError` that names the cause and the fix.
 
 ## Decision
 
@@ -113,11 +113,12 @@ about the shape of the failure, not about preference.
 
 ### The repository decided this exact question once already
 
-The Proxy and delegate guard broke a previously accepted case. It addressed the
-same `undefined` table result and the same orphaned-branch consequence.
-
-That guard is the precedent. Choosing policy (a) would reverse the same trade
-inside the same method and release.
+The Proxy and delegate guard in `clone()` broke a previously-accepted case, for
+the identical `undefined`-from-the-table ambiguity, with the identical
+consequence recorded verbatim in `CHANGELOG.md`: "one pinned connection and one
+unreleased stream per cloned error, with no recovery path". That guard is the
+precedent. Choosing (a) now would decide the same trade-off the opposite way, in
+the same method, in the same release.
 
 ### Who policy (b) breaks
 
@@ -176,7 +177,7 @@ for every consumer holding two copies. A future question about a branch takes a
 This decision rests on the asymmetry above and on the release window that was
 open when it was taken. Revisit it if **any** of the following becomes true:
 
-1. **The fix must ship as a patch on a released line.** This is the one
+1. **The fix has to ship as a patch on a released line.** This is the one
    condition that flips the decision outright. Had this landed as a patch on
    `1.1.x`, policy (a) would have been mandatory: a patch must not refuse input
    that the released minor accepted. A future backport to a maintenance branch
@@ -194,7 +195,7 @@ open when it was taken. Revisit it if **any** of the following becomes true:
 4. **The stamping stops being reliable across formats.** If bundlers routinely
    drop the prototype side effects, "cannot answer" stops meaning "older copy"
    and starts meaning "same version, broken build". The message would then be
-   actively misleading, and the detection must move somewhere a bundler cannot
+   actively misleading, and the detection has to move somewhere a bundler cannot
    remove.
 
 Superseding this ADR means writing a new one — see [README.md](./README.md).

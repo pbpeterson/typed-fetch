@@ -3,13 +3,19 @@ import { installInspect } from "./inspect";
 import { redactUrl, redactUrlInMessage } from "./redact-url";
 
 /**
- * Represents a network-level failure (DNS, connection refused, TLS handshake,
- * redirect, etc.). Aborts and timeouts have their own error classes.
+ * Represents a request failure or an incompatible result from a custom Fetch
+ * implementation. Aborts and timeouts have their own error classes.
  *
- * Unlike HTTP errors, a `NetworkError` has no status code or response body
- * because the request never reached the server. The original error thrown
- * by `fetch` is preserved on {@link cause}, and the requested URL on
- * {@link url}.
+ * Unlike HTTP errors, a `NetworkError` has no status code or body methods.
+ * Most cases have no response: DNS, connection refusal, TLS, redirect, and
+ * request-construction failures. A custom Fetch can instead resolve a value
+ * that does not satisfy the response contract. `typedFetch` releases any body
+ * it can reach before it returns the error.
+ *
+ * For a rejected request, {@link cause} holds the original Fetch rejection.
+ * For an incompatible resolved value, it holds the validation failure or the
+ * exception thrown while inspecting that value. {@link url} holds the requested
+ * URL.
  *
  * This class also covers permanent request-construction failures. Examples
  * include an invalid URL, a forbidden method, and a malformed header name.
@@ -19,9 +25,9 @@ import { redactUrl, redactUrlInMessage } from "./redact-url";
  * refused connection, and a reset connection. `NetworkError` does not classify
  * the failure as permanent or transient.
  *
- * No portable test separates them. `cause` holds the rejection from `fetch`.
- * Every kind can use `TypeError`, so `cause instanceof TypeError` does not
- * classify the failure. Deno supplies no nested `cause` or error code.
+ * No portable test separates permanent and transient request rejections. Every
+ * kind can use `TypeError`, so `cause instanceof TypeError` does not classify
+ * the failure. Deno supplies no nested `cause` or error code.
  *
  * A blind retry loop repeats permanent failures forever. Put the retry policy
  * in a layer that knows whether the input is a program constant or user data.

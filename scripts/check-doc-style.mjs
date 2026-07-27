@@ -87,6 +87,17 @@ export const STYLE_MARKDOWN_SOURCES = [
 // An inline allow-marker was considered and rejected: machinery for one file.
 export const VOCABULARY_EXEMPT_FILES = [WRITING_STANDARD_FILE];
 
+/**
+ * Accepted ADRs whose original argument predates the current vocabulary gate.
+ *
+ * The ADR policy forbids rewriting that argument. The scan starts at
+ * `## Amendments`, whose later prose follows the current writing standard.
+ */
+export const FROZEN_ADR_FILES = [
+  "docs/adr/0001-keep-the-http-error-roster-hand-written.md",
+  "docs/adr/0002-refuse-a-clone-copy-that-cannot-confirm-the-branch.md",
+];
+
 // ---------------------------------------------------------------------------
 // THE DECISION, part 1 of 4: prose extraction.
 // Pure. One output line per input line, so every index is a source location.
@@ -169,18 +180,22 @@ function publicJSDocProseLines(source) {
   );
   const kept = source.split("").map((char) => (char === "\n" ? "\n" : " "));
 
-  /** @param {ts.Node} node */
+  /**
+   * @param {ts.Node} node
+   * @returns {boolean}
+   */
   function keepJSDoc(node) {
     const docs = /** @type {readonly ts.JSDoc[] | undefined} */ (node.jsDoc);
     const doc = docs?.at(-1);
-    if (!doc) return;
-    if (doc.tags?.some((tag) => tag.tagName.text === "internal")) return;
+    if (!doc) return true;
+    if (doc.tags?.some((tag) => tag.tagName.text === "internal")) return false;
     for (let index = doc.pos; index < doc.end; index += 1) kept[index] = source[index];
+    return true;
   }
 
   /** @param {ts.Node} node */
   function keepPublicShape(node) {
-    keepJSDoc(node);
+    if (!keepJSDoc(node)) return;
 
     if (
       ts.isClassDeclaration(node) ||
@@ -311,7 +326,12 @@ export function findVocabularyViolations(docs) {
   for (const { file, format, source } of docs) {
     if (VOCABULARY_EXEMPT_FILES.includes(file)) continue;
     const lines = toProseLines(source, format);
+    const firstMutableLine = FROZEN_ADR_FILES.includes(file)
+      ? lines.findIndex((line) => /^## Amendments\s*$/.test(line))
+      : 0;
+    const scanFrom = firstMutableLine === -1 ? lines.length : firstMutableLine;
     for (const [index, text] of lines.entries()) {
+      if (index < scanFrom) continue;
       for (const rule of VOCABULARY_RULES) {
         const hit = text.match(rule.pattern);
         if (hit) violations.push({ file, line: index + 1, rule: rule.id, match: hit[0] });

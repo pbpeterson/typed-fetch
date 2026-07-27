@@ -21,9 +21,11 @@ attestation.
   else publishes.
 - The tag workflow first calls `.github/workflows/ci.yml` as a reusable
   workflow. Its Node 20/22/24, security, Bun, Deno, and Node-floor (20.0.0) jobs
-  must all pass before the publish job can start. The Deno job installs the packed package by its
-  bare npm name and typechecks its public `.d.mts` declarations in addition to
-  the direct-dist runtime smoke.
+  must all pass before the publish job can start.
+
+  The Deno job installs the packed package by its bare npm name. It typechecks
+  the public `.d.mts` declarations and runs the direct-dist smoke.
+
 - After the shared checks pass and before publish dependencies are installed,
   `scripts/validate-release.mjs` fails the publish job unless all of these are
   true:
@@ -58,15 +60,17 @@ attestation.
 - `verify-pack` asserts every CJS, ESM, and declaration entry in the tarball;
   `check-consumer` installs that tarball into a scratch project and exercises
   both entry points, both module formats, and consumer typechecking.
-- The tarball ships `dist`, `errors/package.json`, and the three files npm adds
-  on its own: `package.json`, `README.md`, and `LICENSE`. `CHANGELOG.md` is
-  deliberately **not** among them. It is the largest file in the repository, it
-  grows with every release, and a consumer reaches it from the npm page, from
-  the repository, and from the "Upgrade from 1.x" link in `README.md`. Shipping
-  it would add its full size to every install to serve a document nobody reads
-  out of `node_modules`. `scripts/verify-pack.mjs` locks the file count, so this
-  decision is enforced rather than assumed: changing it means changing the count
-  there too.
+- The tarball ships `dist`, `errors/package.json`, and three files that npm adds.
+  Those files are `package.json`, `README.md`, and `LICENSE`.
+
+  `CHANGELOG.md` is deliberately absent. It is the largest repository file and
+  grows with every release. Consumers can reach it from npm, the repository, or
+  the README upgrade link. Shipping it would increase every installation for a
+  document not used from `node_modules`.
+
+  `scripts/verify-pack.mjs` locks the file count. Changing this decision
+  therefore requires a deliberate count change.
+
 - Only the publish job receives `id-token: write`, and only after the reusable
   CI and every repeated publish gate pass does it run
   `npm publish --provenance --access public --tag <dist-tag>`. A prerelease such
@@ -75,16 +79,16 @@ attestation.
   `prepublishOnly` lifecycle hook. The hook **verifies** the artifact instead of
   producing it: `"prepublishOnly": "node scripts/verify-pack.mjs"`.
 
-  It used to run `npm run build`. That made the hook a net for a missing `dist/`,
-  but it also meant `npm publish` fired tsup with `clean: true` **after**
-  `verify-pack` and `check-consumer` had already inspected the directory. The
-  tarball npm uploaded was therefore a rebuild of the one the gates passed, not
-  that one. tsup is deterministic, so the bytes matched in practice — but the
-  gate no longer guarded the artifact it was pointed at.
+  It used to run `npm run build`. That protected against a missing `dist/`.
+  However, npm then ran tsup with `clean: true` after the artifact gates.
 
-  Verifying keeps the net and drops the rebuild: a `dist/` that is missing,
-  incomplete, or carrying a source leak fails the publish instead of being
-  silently regenerated. Do not put a build back in this hook.
+  The uploaded tarball therefore contained a rebuild. It did not contain the
+  directory inspected by `verify-pack` and `check-consumer`. tsup produced the
+  same bytes in practice, but the gates guarded a different build.
+
+  Verifying keeps the net and drops the rebuild. The hook rejects a missing,
+  incomplete, or leaking `dist/` instead of regenerating it. Do not put a build
+  back in this hook.
 
 - `--provenance --access public` attaches npm provenance (a verifiable link
   from the published tarball back to this workflow run and commit) and
@@ -147,11 +151,13 @@ Run every step, in order, for every release:
    ```
    `build` must precede every artifact gate because the tests, docs checker,
    tarball validator, and scratch consumer inspect `dist/`.
-   For local parity with the Deno CI job, also run
-   `pnpm check-deno-consumer` after `pnpm build` when Deno 2 is installed. This
-   gate needs Deno 2 to resolve the unpublished local tarball from
-   `node_modules`. The tag workflow enforces it regardless of local runtime
-   availability.
+   For local parity with the Deno CI job, run these commands after the build:
+   ```bash
+   pnpm check-deno-consumer
+   pnpm smoke:deno
+   ```
+   The consumer gate requires Deno 2. It resolves the unpublished local tarball
+   from `node_modules`. The tag workflow enforces all three validations.
    For parity with the `node-min-smoke` job, also run
    `pnpm smoke:node-min` — but ONLY with a real Node **20.0.0** binary. The
    script warns instead of failing on a newer runtime, so running it on your

@@ -9,17 +9,16 @@
  *
  * A deny list of sensitive query keys fails here for the reason it failed for
  * headers: the dangerous key is the one this library has never heard of.
- * {@link redactUrl} is structural instead — it keeps origin and path and drops
- * every value slot: userinfo, the whole query, and the fragment.
+ * {@link redactUrl} is structural instead. It keeps the origin and path of a
+ * hierarchical URL. It drops userinfo, the whole query, and the fragment.
  *
- * RESIDUAL, stated rather than hidden: a secret placed in a PATH SEGMENT of an
- * `http:` or `https:` URL (`/reset/RESET_TOKEN`) survives. Dropping the path
- * too would leave `url` at the origin, which destroys the only thing the field
- * is for — telling concurrent failures apart. Path is treated as structure,
- * query as value.
+ * RESIDUAL, stated rather than hidden: a secret in a hierarchical PATH SEGMENT
+ * (`https://host/reset/RESET_TOKEN`) survives. Dropping the path would leave
+ * `url` at the origin. That would prevent it from distinguishing concurrent
+ * failures. The redactor treats a path as structure and a query as value.
  *
  * That trade only holds where the path NAMES something. A `data:` or `blob:`
- * URL carries its payload in the path instead, so those are reduced to the
+ * URL carries its payload in the path instead, so the redactor keeps only the
  * scheme.
  *
  * The full href is never lost: `error.url` still holds it, exactly as
@@ -53,7 +52,7 @@ function stripValues(parsed: URL): URL {
  * path. A `data:` URL carries its bytes there, and a `blob:` URL carries an
  * unguessable handle to them. Emitting either verbatim would put the thing this
  * module exists to remove into `message` and into the `toJSON()` record, so an
- * opaque URL is reduced to its scheme.
+ * the redactor reduces an opaque URL to its scheme.
  */
 const HIERARCHICAL_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:", "ftp:", "file:"]);
 
@@ -65,7 +64,7 @@ const HIERARCHICAL_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:", "ftp:"
  * parses as neither is emitted as a percent-encoded PATH — never as the raw
  * string, so a query or fragment hidden in it is still dropped.
  *
- * An opaque scheme is reduced to the scheme alone. See
+ * The redactor reduces an opaque URL to its scheme alone. See
  * {@link HIERARCHICAL_PROTOCOLS}.
  */
 export function redactUrl(url: string): string {

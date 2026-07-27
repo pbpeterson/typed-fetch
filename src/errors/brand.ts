@@ -103,7 +103,7 @@ export function brand(prototype: object, brandSymbol: symbol): void {
  * The brands above answer "what kind of thing is this?". That question has a
  * fixed answer per class, so a `true` placed on a prototype settles it. This
  * one asks about ONE instance and ONE `Response`, so only the instance can
- * answer it, and the answer must be computed. A marker cannot carry it.
+ * compute the answer. A marker cannot carry it.
  *
  * ## Why it must cross copies
  *

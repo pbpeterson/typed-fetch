@@ -6,14 +6,14 @@
 
 This is a **major**, and most of the breaks are in runtime behavior.
 
-The baseline is `1.0.0`, not `1.1.0`. `1.1.0` was prepared in this repository.
+The baseline is `1.0.0`, not `1.1.0`. This repository prepared `1.1.0`.
 It was never published to npm or tagged. Read its section below. Every consumer
 upgrades `1.0.0` → `2.0.0`. The migration delta combines this section with the
 `[1.1.0]` section.
 
-The numbered list below is written against `1.1.0`. One item does not reach a
-`1.0.0` consumer. The `clone(recreate)` callback narrowed by break 4 was added
-in `1.1.0`. Every other item applies from `1.0.0` unchanged.
+The numbered list below compares against `1.1.0`. One item does not reach a
+`1.0.0` consumer. Version `1.1.0` added the `clone(recreate)` callback that break
+4 narrows. Every other item applies from `1.0.0` unchanged.
 
 These runtime changes remove behavior that `1.1.0` had.
 
@@ -29,16 +29,17 @@ These runtime changes remove behavior that `1.1.0` had.
    `null` yields a `NetworkError` instead of an HTTP error.
 6. `typedFetch` reads the `fetch` override as an own property of `options`. An
    override that arrives through the prototype chain is ignored.
-7. `typedFetch` reads a response's `status`, `statusText`, and `url` once each,
-   and it converts `status` to a number. A custom Fetch implementation whose
-   getters answer differently on a second read, or that answers `status` with a
-   string, produces a different error.
+7. `typedFetch` records the first successful read of `status`, `statusText`,
+   `url`, and `headers`. It converts `status` to a number. A custom Fetch
+   implementation can therefore produce a different error.
 8. A custom Fetch implementation must resolve with a platform `Response` or a
    compatible polyfill. Other values yield a `NetworkError`.
 
-One break is compile-time. `TypedFetchOptions["headers"]` rejects `undefined`
-as a header value, so code that compiled against `1.1.0` on a Node consumer
-without `lib.dom` no longer compiles.
+Two breaks are compile-time.
+
+- `TypedFetchOptions["headers"]` rejects `undefined` as a header value.
+- `TypedResponse` names a stable response baseline instead of extending the
+  ambient `Response` type.
 
 Read the migration table before you upgrade.
 
@@ -54,13 +55,23 @@ Read the migration table before you upgrade.
 | `clone(recreate)` refuses a non-object result          | A `TypeError` names what the callback returned                         | Return the new error itself                                            |
 | A string `status` from a custom Fetch                  | The error class changes from `UnknownHttpError` to the dedicated class | Assert on `error.status` as a number                                   |
 | A non-string `statusText` or `url` from a custom Fetch | The field is the empty string                                          | Answer with a string, as the platform does                             |
-| Identity is read once                                  | A test double with a counting getter records one read                  | Update the count in the test                                           |
+| The library records identity fields                    | A successful getter runs once per response                             | Update the count in the test                                           |
 | `headers: null` from a custom Fetch                    | The result is a `NetworkError`                                         | Give the response a real `Headers` value                               |
 | A custom Fetch resolves a non-`Response`               | The result is a `NetworkError`                                         | Return a platform `Response` or compatible polyfill                    |
 | `fetch` must be an own property                        | The request goes to the global `fetch`                                 | Write `{ ...options, fetch }` or `Object.assign(options, { fetch })`   |
 | `headers` rejects `undefined`                          | TS2322 or TS2375 on a Node consumer without `lib.dom`                  | Write `...(token ? { Authorization: token } : {})`                     |
+| `TypedResponse` uses a stable baseline                 | New ambient Fetch members are not promised                             | Narrow or cast when the target runtime provides a newer member         |
 
 ### Breaking
+
+- `TypedResponse` no longer extends the ambient `Response` type. It explicitly
+  names the Fetch surface available on Node 20.0, the package runtime floor.
+
+  A newer TypeScript library can add `Response.bytes()` or
+  `Headers.getSetCookie()` before every supported runtime implements them.
+  Inheriting that type made a toolchain update silently expand this package's
+  promise. The runtime value remains the unmodified platform response. Narrow
+  or cast it when the target runtime provides a newer member.
 
 - `error.headers` and `error.url` are no longer enumerable own properties. They
   now carry the descriptor the platform gives `Error.cause`: readable and
@@ -115,20 +126,46 @@ Read the migration table before you upgrade.
 - `clone(recreate)` refuses a callback result that is not an object.
   `clone(() => null)` resolved with `null` and stranded the branch. It now
   throws a `TypeError` that names what the callback returned.
-- `typedFetch` reads `status`, `statusText`, and `url` once per response. A
-  custom Fetch implementation whose getters answer differently on a second read
-  no longer produces an error whose class, message, and `status` disagree. The
-  first successful read decides all three. Each field is recorded immediately,
-  so a later getter failure cannot cause an earlier field to be read again.
+- `typedFetch` records the first successful read of `status`, `statusText`,
+  `url`, and `headers`. This prevents an error class and its fields from using
+  different answers. A failed getter can run again. Earlier successful fields
+  remain recorded. Response validation reads `headers` through the same cache.
+  An identity loan cannot shadow any complete or partial record.
 - A custom Fetch implementation must resolve with a platform `Response` or a
   standards-compatible polyfill. A string, bare object, or partial test double
-  now yields `NetworkError`. Before, it could escape as typed success. A
-  platform response is recognized through its own `status` getter. A foreign one
-  is recognized when it tags itself `[object Response]` and exposes the members
-  this library reads: `body`, `bodyUsed`, `headers`, `ok`, `redirected`,
-  `status`, `statusText`, `url`, and the methods `arrayBuffer`, `blob`, `clone`,
-  `json`, and `text`. `node-fetch` and `cross-fetch` satisfy this set.
-  `whatwg-fetch` does not, because it exposes no `body` stream.
+  now yields `NetworkError`. Before, it could escape as typed success.
+  `NetworkError.cause` holds the validation or inspection failure on this path.
+
+  `typedFetch` recognizes a platform response through the platform's `status`
+  getter. A foreign response must tag itself `[object Response]`. It must expose `body`,
+  `bodyUsed`, `headers`, `ok`, `redirected`, `status`, `statusText`, `type`, and
+  `url`. It must also expose `arrayBuffer`, `blob`, `clone`, `formData`, `json`,
+  and `text`. Its body must be `null` or a WHATWG `ReadableStream`.
+
+  Every response must expose those operational members and report `bodyUsed` as
+  a boolean. This also rejects own properties or a replaced prototype that hides
+  a platform response's native surface. Before `typedFetch` returns a success,
+  its headers must expose the standard iterable operations. It also requires
+  boolean `ok` and `redirected`, numeric `status`, string `statusText` and `url`,
+  and a standard response `type`. A mismatch yields `NetworkError`. HTTP errors
+  retain the identity and `HeadersInit` normalization below.
+
+  Validation occurs at handoff. `typedFetch` returns the same object without
+  freezing it or adding a Proxy. A custom implementation must keep its getters
+  and members compatible after validation.
+
+  Rejection cleanup now uses captured platform operations when a modified native
+  response hides `body`, replaces its prototype, or shadows the stream's
+  `cancel`. It restores a temporarily repaired response prototype. A foreign
+  response follows normal property precedence and releases its nearest visible
+  body, not a different ancestor's body. A foreign Node stream still falls back
+  to `destroy()`. Cleanup remains best effort when a hostile object refuses both
+  native access and scoped prototype repair.
+
+  `node-fetch` and `cross-fetch` use a Node stream in Node.js. They also omit
+  required members. `whatwg-fetch` exposes no WHATWG body stream. These
+  implementations now yield `NetworkError`.
+
 - `typedFetch` converts `status` to a number before it compares it with 400. A
   custom Fetch implementation that answers `status` with `"404"` now resolves
   with `NotFoundError` and a numeric `status` of `404`. It resolved with
@@ -237,19 +274,22 @@ Read the migration table before you upgrade.
   `private`, or `must-revalidate`, which are response directives. Removing a
   name is not breaking: it still type-checks as a custom name with a string
   value, verified under both the DOM and the no-DOM profile.
-- `error.message` and the `toJSON()` record hold a redacted URL: the origin and
-  the path, with the userinfo, the query string, and the fragment removed. A
-  query string routinely carries a credential, and `message` is the string every
-  log line, crash dump, and test failure carries. A deny list of sensitive query
-  keys fails for the reason it failed for header names. The dangerous key is the
-  one this library has never heard of. The whole query is dropped instead.
+- `error.message` and the `toJSON()` record hold a redacted URL. A hierarchical
+  URL keeps its origin and path. An opaque URL keeps only its scheme. Both drop
+  userinfo, the query string, and the fragment.
+
+  A query string routinely carries a credential, and `message` reaches every
+  log line, crash dump, and test failure. A deny list of sensitive query keys
+  fails for the reason it failed for header names. The dangerous key is the one
+  this library has never heard of. The redactor drops the whole query instead.
   `error.url` still holds the full href, exactly as `error.headers` still holds
   every header value. A URL with no userinfo, query, or fragment produces a
-  byte-identical message. A secret in a path segment still reaches the message
-  and the record. Dropping the path would reduce `url` to the origin and remove
-  the only thing the field is for. This is not a break. The semver
+  byte-identical message. A secret in a hierarchical path segment still reaches
+  the message and record. Dropping that path would prevent request correlation.
+  This is not a break. The semver
   contract already states that `error.message` text can change in any release,
   and `toJSON()` ships for the first time in this release.
+
 - `TypedFetchOptions` replaces the native `method` and `headers` slots instead
   of intersecting with them. An intersection with `RequestInit["method"]`
   (`string`) collapses the union, so `method: "…"` offered zero completions
@@ -274,32 +314,35 @@ Read the migration table before you upgrade.
   the promise a repeated call derives from it are both distinct objects from the
   one the `.catch()` was attached to; a single dropped cleanup call left a
   rejection unhandled, and Node's default `--unhandled-rejections=throw` turns
-  that into an exit-1 crash. The failure is now swallowed at the source.
+  that into an exit-1 crash. Cleanup now catches the failure at its source.
 - `typedFetch` releases the response body when reading `status` off an injected
   `fetch` implementation throws. The guard added in `1.1.0` started below the
   status read, so a hostile getter stranded a live body with no owner — the
   caller receives `response: null` and never gets a handle to it. Related, on
-  the same lines: `status` is now read once into a local, so a getter reporting
-  a different value on a second read can no longer select an error class that
-  answers a status the branch was never taken on; and the release itself is
-  wrapped, so a throwing `body` getter can no longer replace the cause being
-  reported.
-- The governing `AbortSignal` is read once. `typedFetch` read `options.signal`
-  twice while resolving it: once to test it against `undefined`, once to take
-  its value. An injected options object whose `signal` getter answered
-  differently on the second read left the library holding no signal, and
-  `classifyRequestFailure` consults that signal as the authority. A real abort
-  was reported as a `NetworkError`, and an `AbortSignal.timeout` never reached
-  `TimeoutError`. The value is now taken into a local, exactly as `status` is.
+  the same lines: `statusOf` now records the first successful read. A getter
+  reporting a different value later cannot select a class that reports another
+  status. Cleanup catches its own failures, so a throwing `body` getter cannot
+  replace the reported cause.
+- `typedFetch` reads the governing `AbortSignal` once and materializes it in the
+  `RequestInit` given to the transport. Previously, `typedFetch` and the
+  transport could read different values from one getter. Classification could
+  then use a signal that did not govern the request.
+
+  A real abort could become `NetworkError`. A later signal could also abort a
+  request that the recorded signal did not govern. The captured value now
+  controls both the transport and classification.
+
 - `error.message` and the `toJSON()` record no longer carry the payload of an
-  opaque URL. The redaction keeps the path because it names the resource, which
-  is what tells concurrent failures apart. A `data:` URL carries its bytes in
-  the path instead, and a `blob:` URL an unguessable handle to them, so
-  `redactUrl` emitted both in full — a `NetworkError` for
-  `data:text/plain,SECRET` put `SECRET` in the message and in the record. The
-  path is kept for `http:`, `https:`, `ws:`, `wss:`, `ftp:`, and `file:`. Every
-  other scheme is reduced to the scheme alone. `error.url` still holds the full
-  href.
+  opaque URL. Hierarchical URLs keep paths because those paths identify
+  resources. A `data:` URL instead carries its bytes in the path. A `blob:` URL
+  carries an unguessable handle there.
+
+  `redactUrl` previously emitted both values. A `NetworkError` for
+  `data:text/plain,SECRET` therefore exposed `SECRET` in its message and record.
+  Paths remain for `http:`, `https:`, `ws:`, `wss:`, `ftp:`, and `file:`.
+  The redactor reduces every other scheme to that scheme. `error.url` keeps the
+  full href.
+
 - `NetworkError` no longer copies a password into `message`. undici rejects a
   URL that carries credentials with a `TypeError` whose message contains the URL
   verbatim. That message was copied into `message`, and from there into the
@@ -373,8 +416,7 @@ Read the migration table before you upgrade.
   its connection on its own. The threshold is an internal buffer size.
 - `README.md` documents the constructors of `NetworkError`, `AbortedError`, and
   `TimeoutError`. Their properties were documented and their signatures were
-  not, so a consumer who fabricated one in a test was forced to read
-  `dist/errors/index.d.ts`.
+  not, so test authors inspected `dist/errors/index.d.ts` for those signatures.
 - `README.md` shows how a wrapper merges headers. The previous wrapper example
   passed `options` straight through. The naive `{ ...options?.headers }` spread
   type-checks, and it silently drops every entry of a `Headers` instance.
@@ -389,8 +431,8 @@ Read the migration table before you upgrade.
   It now runs `scripts/verify-pack.mjs`, which fails a missing or incomplete
   `dist/` instead of silently regenerating it.
 - The Deno job pins `deno-version: v2.x`. `scripts/check-deno-consumer.mjs`
-  refuses anything below Deno 2, so the major the release is validated against
-  was decided by an action default in a workflow that pins every action by SHA.
+  refuses anything below Deno 2. Previously, an action default selected the
+  validated major, although the workflow pins every action by SHA.
 - `errors/package.json`, the Node 10 resolution stub, declares
   `"sideEffects": false` like the root manifest. A bundler that reads the stub
   as the description file for `@pbpeterson/typed-fetch/errors` can now treat the
@@ -434,7 +476,7 @@ Read the migration table before you upgrade.
   not appear. Three channels cannot be closed, and each is asserted as a
   residual. `cause` survives `structuredClone` and the fatal-exception printer.
   vitest's assertion-message stringifier reads non-enumerable own property
-  names. A secret in a URL path segment survives redaction by design.
+  names. A secret in a hierarchical URL path survives redaction by design.
 - `scripts/check-consumer.mjs` gains a sixth typecheck pass, `node-eopt`: no
   DOM, `@types/node`, and `exactOptionalPropertyTypes: true`, compiling
   `typedFetch(url, { fetch: maybeFetch })` against the published declarations.
@@ -475,11 +517,9 @@ Read the migration table before you upgrade.
   the heading resolves through, and no other gate reads the footer. The base of
   the `[X.Y.Z]:` range stays unchecked, because this gate cannot see the
   previous version. `RELEASING.md` gains the matching checklist step.
-- The suite grows from 833 cases to 1161, in 22 files.
-  `response-identity.spec.ts` is new and drives the identity module directly,
-  with no error class: counting getters pin one read per response, and the rest
-  pin the `Number()` conversion, the empty string for a `statusText` or a `url`
-  that is not a string, the identity a cloned branch inherits, and partial
+- `response-identity.spec.ts` is new and drives the identity module directly.
+  Counting getters pin the first successful read per response. Other cases pin
+  numeric conversion, text normalization, clone inheritance, and partial
   identity failures.
   `base-http-error.spec.ts` gains the `clone()` decision table — one case per
   refusal condition, each closed by one helper that asserts the teed branch
@@ -886,16 +926,17 @@ conventional SemVer governs. Everything else here is a fix.
   of `AbortedError`/`TimeoutError`. The governing signal is now resolved from
   either slot. Precedence matches native `fetch(request, init)`: an
   options-slot `signal` overrides the `Request`'s own signal entirely.
-- **A `Request` object passed in the `options` slot is no longer corrupted.**
+- **A `Request` object passed in the `options` slot keeps its WebIDL state.**
   A `Request` is a host exotic object: its `method`, `headers`, `body`, and
   `signal` are prototype getters, not own enumerable properties. The
   `options.fetch` change (b00380e) introduced an object rest spread
   (`const { fetch, ...init } = options`) that copied none of them, silently
   downgrading `typedFetch(url, new Request(url, { method: "POST", ... }))` to a
   bodyless, header-less `GET` and dropping the abort signal (so a pre-aborted
-  or timed-out `Request` produced no error at all). A `Request` is now passed
-  through to `fetch()` untouched; the spread only applies on the plain-object
-  options path.
+  or timed-out `Request` produced no error at all). A proxy now preserves the
+  original prototype and delegates getters to the original object. The
+  governing signal is the exception: the proxy materializes the captured value
+  for the transport.
 - The README no longer documents an "Error Response Bodies" pattern that
   reads the body with `error.json()` and then calls `error.clone()` — that
   order throws `TypeError: Response.clone: Body has already been consumed`.

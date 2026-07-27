@@ -141,5 +141,4 @@ jobs:
       # resolve the public exports map and .d.mts declarations, not just JS.
       - run: pnpm check-deno-consumer
       # Separate direct-dist smoke: syntax + runtime behavior in Deno.
-      - run: deno check scripts/smoke/deno.ts
-      - run: deno run --allow-net scripts/smoke/deno.ts
+      - run: pnpm smoke:deno

@@ -26,7 +26,7 @@ response-identity.ts    → records the first successful read of each Response
                           identity field (INTERNAL)
 error-body.ts           → internal single-use body lifecycle (see below)
 known-http-error.ts     → internal branded base for the 40 dedicated classes
-network-error.ts        → NetworkError with cause (original fetch rejection)
+network-error.ts        → NetworkError with request or response-contract cause
 aborted-error.ts        → AbortedError (controller.abort()); NOT NetworkError
 timeout-error.ts        → TimeoutError (AbortSignal.timeout()); NOT NetworkError
 unknown-http-error.ts   → any status >= 400 not in the map (non-literal status)
@@ -37,11 +37,11 @@ index.ts                → re-export barrel for the ./errors subpath
 
 ## Core flow (src/index.ts)
 
-1. Inside the request `try`, read an optional `options.fetch` override. When
-   present, build a descriptor/prototype-preserving facade that hides the
-   extension while a proxy delegates property reads to the original receiver;
-   otherwise forward `options` unchanged. Resolve the effective abort signal
-   with realm-safe `Request` detection.
+1. Inside the request `try`, read an optional own `options.fetch` override.
+   Capture the effective abort signal once, using realm-safe `Request`
+   detection. Pass a prototype-preserving proxy to the transport so it sees
+   that captured signal. When an override is present, the proxy also hides the
+   extension while delegating other reads to the original receiver.
 2. `const res = await fetchImpl(url, init)` inside the `try`, which also covers
    option getters and normalization. `src/request-failure.ts` then classifies
    any failure as `AbortedError` (original rejection as `cause`), `TimeoutError`
@@ -52,8 +52,18 @@ index.ts                → re-export barrel for the ./errors subpath
    node-fetch@3) builds its own abort error. `reason ?? err` then decides
    timeout vs abort. An aborted signal alone is never sufficient.
 3. Validate `res` as a platform `Response` or standards-compatible polyfill.
-   Any other value becomes `NetworkError`. Then use `statusOf(res) >= 400` to
-   select the mapped class or `UnknownHttpError`.
+   Any other value becomes `NetworkError`. A foreign response must expose the
+   stable baseline promised by `TypedResponse`; `node-fetch`, `cross-fetch`,
+   and `whatwg-fetch` do not. The `NetworkError` cause holds the validation or
+   inspection failure. Before class selection, validate the body and reader
+   surface, including platform responses with shadowing properties. Use
+   `statusOf(res) >= 400` to select the mapped class or `UnknownHttpError`.
+   Before returning success, also validate iterable headers and the exact scalar
+   types promised by `TypedResponse`. Return the same object; do not freeze or
+   proxy it. A custom implementation must keep validated members compatible
+   after handoff. If validation rejects, `releaseResponseBody` must bypass
+   shadowed native `body` and `cancel` members before trying a Node stream's
+   `destroy()`.
 
    `src/errors/response-identity.ts` records each successful field read
    immediately. A later getter failure cannot make an earlier field run again.
@@ -203,8 +213,8 @@ export change needs `pnpm build && pnpm test -u`.
 
 **CONTRIBUTING.md, "The gates", is the authoritative list and run order.** Run
 every gate before you commit. With Deno 2 installed, also run
-`pnpm check-deno-consumer` after `pnpm build` — the manual `node_modules` mode
-requires Deno 2. Facts that live only here:
+`pnpm check-deno-consumer` and `pnpm smoke:deno` after `pnpm build`. The manual
+`node_modules` mode requires Deno 2. Facts that live only here:
 
 - `pnpm typecheck` uses `tsconfig.test.json` — it includes the root `*.spec.ts` files so `expectTypeOf` assertions are real. Plain `tsc --noEmit` skips them. Spec files must stay at the repo root: the include glob is root-only, and one test reads `src/errors/base-http-error.ts` via a CWD-relative path.
 - Tests hit a real local HTTP server (no mocks). Query params drive responses: `?status=`, `?body=`, `?header=Key:Value`.

@@ -89,14 +89,19 @@ Each result carries one non-null value. A successful result has `response` and
 | ---------------------- | ----------------------------------------------------------------------- |
 | A dedicated HTTP error | A known HTTP error: a status of 400 or more that has a dedicated class. |
 | `UnknownHttpError`     | An unknown HTTP error: a status of 400 or more with no dedicated class. |
-| `NetworkError`         | No HTTP response exists. DNS failure, connection refused, or CORS.      |
+| `NetworkError`         | Request failure or incompatible custom Fetch result.                    |
 | `AbortedError`         | An `AbortSignal` aborted the request, through `controller.abort()`.     |
 | `TimeoutError`         | `AbortSignal.timeout(ms)` aborted the request.                          |
 
 Notes on the union:
 
 - A known HTTP error class, such as `NotFoundError`, has a literal-typed `status` and `statusText`. `UnknownHttpError` has a plain `number` status.
-- `NetworkError` also covers a permanent request-construction failure, such as an invalid URL or the `CONNECT` method. It also covers a transient failure, such as a DNS failure or a refused connection. No portable test separates the two: `error.cause` is a `TypeError` for every kind of failure, and on Deno there is no `cause` at all. A blind retry loop keyed on `NetworkError` retries the permanent failures forever. Put the retry policy in a layer that knows the request.
+- `NetworkError` covers permanent request-construction failures and transient
+  request failures. No portable test separates those rejected-request cases.
+  It also covers an incompatible result from a custom Fetch implementation.
+  In that case, `cause` holds the validation or inspection failure.
+  A blind retry loop repeats permanent failures. Put retry policy in a layer
+  that knows the request. Deno's rejection supplies no nested cause or code.
 - `AbortedError` and `TimeoutError` do not extend `NetworkError`. `isNetworkError()` returns `false` for both. Use the dedicated guards.
 - `error.url` is present on every member of the union. It is the empty string when no URL could be resolved. Read it without narrowing.
 - Only a status of 400 or more is an HTTP error. `typedFetch` converts `status`
@@ -169,7 +174,7 @@ if (!error) {
 } else if (isAbortError(error)) {
   // controller.abort() aborted the request.
 } else if (isNetworkError(error)) {
-  // No HTTP response exists. error.cause holds the original rejection.
+  // No usable HTTP response exists. Inspect cause only for diagnostics.
 }
 ```
 
@@ -281,6 +286,18 @@ The implementation must resolve with a platform `Response` or a
 standards-compatible polyfill. A partial response object resolves with
 `NetworkError`.
 
+A success must expose the exact members and scalar types promised by
+`TypedResponse`, including boolean state fields, numeric `status`, string
+identity fields, and a standard response `type`. This rule also covers own
+properties that shadow a platform response.
+
+`typedFetch` validates once and returns the same response object. A custom
+implementation must not change a validated member afterwards.
+
+`node-fetch`, `cross-fetch`, and `whatwg-fetch` do not satisfy this response
+contract. Their response bodies or public members differ from the platform
+surface that `TypedResponse` promises.
+
 ```typescript
 import { typedFetch, isHttpError } from "@pbpeterson/typed-fetch";
 
@@ -322,6 +339,10 @@ dedicated HTTP error classes. The error classes alone are available from
 The exported types are `TypedResponse`, `TypedFetchOptions`,
 `TypedFetchReturnType`, `HttpMethods`, `ClientErrors`, `ServerErrors`, and
 `TypedFetchError`.
+
+`TypedResponse` names the response baseline supported by Node 20.0. It types
+`json()` and keeps that type through `clone()`. The runtime value can expose
+newer platform members.
 
 NOTE: `TypedFetchOptions["headers"]` gives header-name autocomplete. It
 suggests common names, and it validates no name and no value. The type behind

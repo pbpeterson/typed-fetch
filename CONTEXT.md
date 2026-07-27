@@ -46,20 +46,20 @@ defined term is correct here.
 Words this codebase already uses, some of them only implicitly until now.
 
 - **Identity** — the four fields an HTTP error takes from its `Response`:
-  `status`, `statusText`, `url`, and `headers`. Each successful read is recorded
-  immediately in a `WeakMap`. A later failure cannot cause an earlier field to
-  be read again.
+  `status`, `statusText`, `url`, and `headers`. The identity module records each
+  successful read immediately in a `WeakMap`. A later failure cannot cause an
+  earlier field to run again.
 
   The recorded status selects the error class. The same value appears in
   `error.status`, `error.message`, and the `toJSON()` record.
 
   The copy from `clone()` inherits the original error's identity when the same
   package **copy** builds both. The identity is **lent** to the **branch** during
-  construction. It is removed when construction ends.
+  construction. The lender removes it when construction ends.
 
-  The record is normalized where an injected `Response` can differ. `status`
-  uses `Number()` on the single read. Non-string `statusText` and `url` values
-  become empty strings.
+  The identity module normalizes fields where an injected `Response` can differ.
+  `status` uses `Number()` on its first successful read. Non-string `statusText`
+  and `url` values become empty strings.
 
 - **Error body** — the body of the `Response` that produced an HTTP error. A
   single-use stream owned by `src/errors/error-body.ts`. Every error body must
@@ -127,8 +127,8 @@ Words this codebase already uses, some of them only implicitly until now.
 - **Gate** — a check that must pass before a PR merges (`pnpm lint`,
   `format:check`, `check-doc-style`, `typecheck`, `build`, `test`, `check-docs`,
   `verify-pack`, `check-consumer`, `audit:prod`, `audit`). CI adds
-  `check-deno-consumer` and `smoke:node-min`. CONTRIBUTING holds the
-  authoritative list and the order to run them in.
+  `check-deno-consumer`, `smoke:deno`, `smoke:node-min`, and a Bun runtime
+  smoke. CONTRIBUTING holds the authoritative list and run order.
 - **Frozen surface** — the public export set, snapshotted on two axes (runtime
   values, and type-only exports read from the built `.d.mts`). Changing it is a
   deliberate, reviewed act.
@@ -163,9 +163,9 @@ Words this codebase already uses, some of them only implicitly until now.
   keeps. `cause` survives `structuredClone` and the fatal-exception printer,
   because both are platform algorithms with no hook. vitest's assertion-message
   stringifier reads own property names including non-enumerable ones, and it
-  short-circuits errors before its custom-inspect branch. A secret in a URL path
-  segment survives redaction by design, because dropping the path would reduce
-  `url` to the origin.
+  short-circuits errors before its custom-inspect branch. A secret in the path
+  of a hierarchical URL survives redaction by design. Dropping that path would
+  reduce the URL to its origin.
 
   The other two are limits on a guarantee rather than disclosures, and they
   are named here so the next reader meets them as decisions.
@@ -209,11 +209,11 @@ Words this codebase already uses, some of them only implicitly until now.
     nothing to do with it.
 
 - **Structure and value** — the rule that decides what a channel may carry.
-  `headers` emits names, never values. `url` emits the origin and the path,
-  never the userinfo, the query, or the fragment. Every redaction names the
-  property that holds the full thing. Read `error.headers` for header values,
-  `error.url` for the full href, and `error.cause` or `error.reason` for the
-  platform detail.
+  `headers` emits names, never values. A hierarchical `url` emits the origin and
+  path. It never emits userinfo, a query, or a fragment. An opaque URL emits
+  only its scheme. Every redaction names the property that holds the full
+  value. Read `error.headers`, `error.url`, `error.cause`, or `error.reason` for
+  deliberate access.
 
 ## The modules
 
@@ -222,7 +222,10 @@ index.ts                      public barrel — deliberately small
 src/index.ts                  typedFetch + the guards; owns the envelope and
                               the transport seam. The `fetch` override is read
                               as an OWN property, never through the prototype
-                              chain.
+                              chain. `typedFetch` captures the governing signal
+                              once and materializes it for the transport. It
+                              validates the visible Response surface before
+                              handoff, then returns the same object unmodified.
 src/request-failure.ts        classifies a rejected request attempt as an
                               abort, a timeout, or a network failure. The
                               AbortSignal is the authority, never the
@@ -235,10 +238,13 @@ src/http-status-codes.ts      statusCodeErrorMap — a ReadonlyMap DERIVED from
                               the roster, not a source of truth. INTERNAL.
 src/errors/base-http-error    HTTP error IDENTITY: status, statusText, url,
                               headers, message. Delegates the body.
-src/errors/response-identity  the four identity fields of one Response, read
-                              once each. INTERNAL — never export it from a
-                              barrel.
+src/errors/response-identity  records the first successful read of each
+                              Response identity field. INTERNAL — never export
+                              it from a barrel.
 src/errors/error-body         the response-body lifecycle: claim, cancel, tee.
+                              Rejection cleanup can use captured Response and
+                              ReadableStream operations when own properties or
+                              replaced prototypes hide a native live body.
                               INTERNAL — never export it from a barrel.
 src/errors/known-http-error   the branded base the 40 dedicated classes
                               extend. INTERNAL — it is what isKnownHttpError

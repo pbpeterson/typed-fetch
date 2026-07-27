@@ -1,5 +1,5 @@
 import { describe, test, expect, expectTypeOf } from "vitest";
-import { errorBodyOf, type ErrorBody } from "./src/errors/error-body";
+import { errorBodyOf, releaseResponseBody, type ErrorBody } from "./src/errors/error-body";
 
 /**
  * A response whose body records whether it was cancelled and whether anything
@@ -93,6 +93,165 @@ function erroredBodyResponse(): { response: Response; state: { cancelled: boolea
   });
   return { response: new Response(body), state };
 }
+
+describe("releaseResponseBody — unreachable-response cleanup", () => {
+  test("bypasses a hostile own body getter on a native response", () => {
+    const response = new Response("payload");
+    const cause = new Error("body getter exploded");
+    Object.defineProperty(response, "body", {
+      configurable: true,
+      get() {
+        throw cause;
+      },
+    });
+
+    expect(() => releaseResponseBody(response)).not.toThrow();
+    expect(response.bodyUsed).toBe(true);
+  });
+
+  test("bypasses an own body value that hides the native stream", () => {
+    const response = new Response("payload");
+    Object.defineProperty(response, "body", {
+      configurable: true,
+      value: null,
+    });
+
+    releaseResponseBody(response);
+
+    expect(response.bodyUsed).toBe(true);
+  });
+
+  test("recovers the native body after the Response prototype is replaced", () => {
+    const { response, state } = trackedResponse();
+    Object.setPrototypeOf(response, {});
+
+    releaseResponseBody(response);
+
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBe(false);
+  });
+
+  test("uses the stream intrinsic when an own cancel value hides it", () => {
+    const { response, state } = trackedResponse();
+    const body = response.body;
+    if (!body) throw new Error("expected a response body");
+    Object.defineProperty(body, "cancel", {
+      configurable: true,
+      value: null,
+    });
+
+    releaseResponseBody(response);
+
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBe(false);
+  });
+
+  test("uses the stream intrinsic instead of an own no-op cancel function", () => {
+    const { response, state } = trackedResponse();
+    const body = response.body;
+    if (!body) throw new Error("expected a response body");
+    let shadowCalls = 0;
+    Object.defineProperty(body, "cancel", {
+      configurable: true,
+      value() {
+        shadowCalls += 1;
+      },
+    });
+
+    releaseResponseBody(response);
+
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBe(false);
+    expect(shadowCalls).toBe(0);
+  });
+
+  test("uses the stream intrinsic after its prototype is replaced", () => {
+    const { response, state } = trackedResponse();
+    const body = response.body;
+    if (!body) throw new Error("expected a response body");
+    const replacement = {};
+    Object.setPrototypeOf(body, replacement);
+
+    releaseResponseBody(response);
+
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBe(false);
+    expect(Object.getPrototypeOf(body)).toBe(replacement);
+  });
+
+  test("releases the nearest visible inherited body, not an ancestor body", () => {
+    let visibleCancelCalls = 0;
+    let ancestorCancelCalls = 0;
+    const visibleBody = {
+      cancel() {
+        visibleCancelCalls += 1;
+      },
+    };
+    const ancestorBody = {
+      cancel() {
+        ancestorCancelCalls += 1;
+      },
+    };
+    const ancestor = Object.create(null, {
+      body: {
+        configurable: true,
+        get: () => ancestorBody,
+      },
+    });
+    const nearest = Object.create(ancestor, {
+      body: {
+        configurable: true,
+        get: () => visibleBody,
+      },
+    });
+    const response = Object.create(nearest) as Response;
+
+    releaseResponseBody(response);
+
+    expect(visibleCancelCalls).toBe(1);
+    expect(ancestorCancelCalls).toBe(0);
+  });
+
+  test("destroys a foreign Node stream that has no cancel method", () => {
+    let destroyed = false;
+    const response = {
+      body: {
+        destroy() {
+          destroyed = true;
+        },
+      },
+    } as unknown as Response;
+
+    releaseResponseBody(response);
+
+    expect(destroyed).toBe(true);
+  });
+
+  test("reads a successful cancel method once and does not also destroy", () => {
+    let cancelReads = 0;
+    let cancelled = false;
+    let destroyed = false;
+    const body = {
+      get cancel() {
+        cancelReads += 1;
+        return () => {
+          cancelled = true;
+          return Promise.resolve();
+        };
+      },
+      destroy() {
+        destroyed = true;
+      },
+    };
+    const response = { body } as unknown as Response;
+
+    releaseResponseBody(response);
+
+    expect(cancelReads).toBe(1);
+    expect(cancelled).toBe(true);
+    expect(destroyed).toBe(false);
+  });
+});
 
 describe("errorBodyOf — the readers are single-use", () => {
   test("second read throws a clear TypeError, not the platform's opaque one", async () => {

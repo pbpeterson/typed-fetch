@@ -16,7 +16,7 @@ import {
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
 import { classifyRequestFailure } from "./request-failure";
-import { statusOf } from "./errors/response-identity";
+import { hasTypedResponseIdentityScalars, headersOf, statusOf } from "./errors/response-identity";
 import { releaseResponseBody } from "./errors/error-body";
 
 /** Realm-safe Request detection for iframe, node:vm, and duplicated-runtime inputs. */
@@ -34,18 +34,15 @@ function isRequest(value: unknown): value is Request {
 /**
  * The members a foreign `Response` must expose to be accepted.
  *
- * This is the set this library CONSUMES, and nothing beyond it. `formData` and
- * `type` were required here once and are not any more: `node-fetch@2` (and
- * `cross-fetch`, which wraps it) implements neither, so requiring them turned
- * the documented `fetch` injection seam into a `NetworkError` for every
- * request through it, including a successful 200.
+ * The success branch returns this value as {@link TypedResponse}, so validation
+ * must cover the standard response surface promised to the caller, not only
+ * the members this library reads before returning it. `node-fetch@2` lacks
+ * `formData`, `type`, and a WHATWG body stream. Accepting it makes
+ * `error.cancel()` fail and leaves a success value without members its type
+ * promises.
  *
- * `body` and `redirected` stay required. They are what separates a Fetch
- * implementation this library can drive from one it cannot: `error.cancel()`
- * and `clone()` are built on the body stream, so a polyfill without one —
- * `whatwg-fetch` is the notable case — would be accepted only to fail later,
- * at a point where the caller already holds the error. A `Request` also lacks
- * `status`, `statusText`, `ok`, and `redirected`, so this set excludes one.
+ * A `Request` also lacks `status`, `statusText`, `ok`, `redirected`, and
+ * `type`, so this set excludes one.
  */
 const FOREIGN_RESPONSE_FIELDS = [
   "body",
@@ -55,9 +52,95 @@ const FOREIGN_RESPONSE_FIELDS = [
   "redirected",
   "status",
   "statusText",
+  "type",
   "url",
 ];
-const FOREIGN_RESPONSE_METHODS = ["arrayBuffer", "blob", "clone", "json", "text"];
+const FOREIGN_RESPONSE_METHODS = [
+  "arrayBuffer",
+  "blob",
+  "clone",
+  "formData",
+  "json",
+  "text",
+] as const;
+const FOREIGN_RESPONSE_BODY_METHODS = [
+  "cancel",
+  "getReader",
+  "pipeThrough",
+  "pipeTo",
+  "tee",
+] as const;
+const FOREIGN_RESPONSE_HEADERS_METHODS = [
+  "append",
+  "delete",
+  "entries",
+  "forEach",
+  "get",
+  "has",
+  "keys",
+  "set",
+  "values",
+] as const;
+const FOREIGN_RESPONSE_TYPES = new Set([
+  "basic",
+  "cors",
+  "default",
+  "error",
+  "opaque",
+  "opaqueredirect",
+]);
+
+/** Values whose full operational baseline `isResponse` already checked. */
+const validatedResponseStructures = new WeakSet<object>();
+
+function isObjectLike(value: unknown): value is object {
+  return value !== null && (typeof value === "object" || typeof value === "function");
+}
+
+function hasCallableMethods(value: unknown, methods: readonly PropertyKey[]): boolean {
+  if (!isObjectLike(value)) return false;
+  return methods.every((method) => typeof Reflect.get(value, method, value) === "function");
+}
+
+function hasCompatibleForeignBody(value: object): boolean {
+  const body = Reflect.get(value, "body", value) as unknown;
+  if (body === null) return true;
+  return (
+    isObjectLike(body) &&
+    typeof Reflect.get(body, "locked", body) === "boolean" &&
+    hasCallableMethods(body, FOREIGN_RESPONSE_BODY_METHODS)
+  );
+}
+
+function hasCompatibleForeignHeaders(headers: unknown): boolean {
+  return (
+    hasCallableMethods(headers, FOREIGN_RESPONSE_HEADERS_METHODS) &&
+    isObjectLike(headers) &&
+    typeof Reflect.get(headers, Symbol.iterator, headers) === "function"
+  );
+}
+
+/**
+ * Validate the complete visible surface before a response escapes as success.
+ *
+ * Identity fields pass through their first-read cache, so this check cannot
+ * consume one getter answer and return a later one. `isResponse` already checked
+ * the non-scalar surface. HTTP errors do not call this helper, so they retain
+ * identity normalization. This is a handoff check, not a membrane: typedFetch
+ * returns this same object, and its implementation must keep the accepted
+ * surface compatible afterwards.
+ */
+function hasCompatibleSuccessSurface(response: Response): boolean {
+  if (!validatedResponseStructures.has(response)) return false;
+  if (!hasCompatibleForeignHeaders(headersOf(response))) return false;
+  if (!hasTypedResponseIdentityScalars(response)) return false;
+
+  return (
+    typeof Reflect.get(response, "ok", response) === "boolean" &&
+    typeof Reflect.get(response, "redirected", response) === "boolean" &&
+    FOREIGN_RESPONSE_TYPES.has(Reflect.get(response, "type", response) as string)
+  );
+}
 
 /**
  * Realm-safe `Response` validation.
@@ -70,12 +153,14 @@ function isResponse(value: unknown): value is Response {
   if (value === null || (typeof value !== "object" && typeof value !== "function")) {
     return false;
   }
+
+  let hasPlatformSlots = false;
   try {
     if (typeof Response !== "undefined") {
       const getter = Object.getOwnPropertyDescriptor(Response.prototype, "status")?.get;
       if (typeof getter === "function") {
         Reflect.apply(getter, value, []);
-        return true;
+        hasPlatformSlots = true;
       }
     }
   } catch {
@@ -83,17 +168,32 @@ function isResponse(value: unknown): value is Response {
     // slots. Check its public Response shape below.
   }
 
-  try {
-    if (Object.prototype.toString.call(value) !== "[object Response]") return false;
-    return (
-      FOREIGN_RESPONSE_FIELDS.every((field) => field in value) &&
-      FOREIGN_RESPONSE_METHODS.every(
-        (method) => typeof (value as Record<string, unknown>)[method] === "function",
-      )
-    );
-  } catch {
+  if (!hasPlatformSlots && Object.prototype.toString.call(value) !== "[object Response]") {
     return false;
   }
+  if (!FOREIGN_RESPONSE_FIELDS.every((field) => field in value)) return false;
+
+  // Record status before another identity field, as the class-selection path
+  // does. The call below typedFetch reuses this value.
+  statusOf(value as Response);
+
+  // `headers` is part of HTTP error identity. Read it through the same cache the
+  // constructor uses, so validation cannot consume the first answer and then
+  // build the error from a second one. An HTTP error deliberately accepts every
+  // HeadersInit the Headers constructor accepts; the success-surface check later
+  // requires the iterable Headers operations. Let the getter's own exception
+  // escape to the envelope instead of hiding the real cause.
+  headersOf(value as Response);
+
+  if (!hasCallableMethods(value, FOREIGN_RESPONSE_METHODS)) return false;
+  if (!hasCompatibleForeignBody(value)) return false;
+  // `bodyUsed` drives body ownership on both success and error paths. Let its
+  // getter's own exception reach the envelope instead of replacing that cause
+  // with the generic incompatible-Response error.
+  if (typeof Reflect.get(value, "bodyUsed", value) !== "boolean") return false;
+
+  validatedResponseStructures.add(value);
+  return true;
 }
 
 /**
@@ -227,16 +327,45 @@ export function isKnownHttpError(error: unknown): error is ClientErrors | Server
   }
 }
 
+type TypedResponseHeaders = Pick<
+  Headers,
+  (typeof FOREIGN_RESPONSE_HEADERS_METHODS)[number] | typeof Symbol.iterator
+>;
+
+type TypedResponseBody = Pick<
+  ReadableStream<Uint8Array>,
+  "locked" | (typeof FOREIGN_RESPONSE_BODY_METHODS)[number]
+>;
+
 /**
- * A `Response` whose `json()` (and `clone()`) carry the expected body type.
+ * The stable Fetch response baseline returned by {@link typedFetch}.
  *
- * {@link json} provides a compile-time type only; it does not validate the
- * payload. Body readers retain native `Response` behavior and may reject for
- * malformed/empty JSON or an already-consumed body.
+ * This interface deliberately names the surface supported by every runtime at
+ * the package floor. It does not inherit additions from the TypeScript version
+ * that builds the package, such as `Response.bytes()` or
+ * `Headers.getSetCookie()`, because Node 20.0 does not provide those additions.
+ *
+ * The runtime value remains the Fetch implementation's original, unmodified
+ * response and can expose newer members. {@link json} provides a compile-time
+ * type only; it does not validate the payload. Body readers retain native
+ * behavior and may reject for malformed or consumed data.
  */
-export interface TypedResponse<JsonReturnType> extends Response {
+export interface TypedResponse<JsonReturnType> {
+  readonly body: TypedResponseBody | null;
+  readonly bodyUsed: boolean;
+  readonly headers: TypedResponseHeaders;
+  readonly ok: boolean;
+  readonly redirected: boolean;
+  readonly status: number;
+  readonly statusText: string;
+  readonly type: "basic" | "cors" | "default" | "error" | "opaque" | "opaqueredirect";
+  readonly url: string;
+  arrayBuffer(): Promise<ArrayBuffer>;
+  blob(): Promise<Blob>;
+  formData(): Promise<FormData>;
   /** Parse JSON with an unchecked compile-time result type; native body-read errors still reject. */
   json(): Promise<JsonReturnType>;
+  text(): Promise<string>;
   /** Clone the response while preserving the typed {@link json} method. */
   clone(): TypedResponse<JsonReturnType>;
 }
@@ -256,19 +385,47 @@ type FetchParams = Parameters<typeof fetch>;
 
 type FetchInput = FetchParams[0];
 
-function withoutFetchOverride(options: TypedFetchOptions): RequestInit {
+function snapshotRequestInit(
+  options: TypedFetchOptions,
+  signal: AbortSignal | null | undefined,
+  removeFetchOverride: boolean,
+): RequestInit {
+  if (!removeFetchOverride) {
+    // No extension must be hidden, so the original object can remain the proxy
+    // target. This preserves reflection and avoids inspecting every descriptor
+    // on a potentially exotic RequestInit.
+    return new Proxy(options, {
+      get(target, property) {
+        return property === "signal" ? signal : Reflect.get(target, property, target);
+      },
+    });
+  }
+
   const descriptors = Object.getOwnPropertyDescriptors(options);
   delete descriptors.fetch;
+
+  // A WebIDL dictionary is normally read by the transport. `typedFetch` also
+  // needs the signal to classify a rejection, so letting the getter run once
+  // here and again inside fetch can produce two different authorities. Shadow
+  // an own or inherited signal with the captured value on the proxy target.
+  descriptors.signal = {
+    value: signal,
+    writable: true,
+    enumerable: descriptors.signal?.enumerable ?? true,
+    configurable: true,
+  };
   const sanitizedTarget = Object.create(Object.getPrototypeOf(options), descriptors) as RequestInit;
 
   // The proxy target exposes the same descriptors/prototype for reflection but
-  // deliberately omits the extension. Ordinary reads delegate to the original
-  // object with the original receiver: prototype getters backed by WebIDL
-  // internal slots or JavaScript private fields would reject a descriptor-only
-  // clone because that clone does not carry those slots.
+  // can omit the extension. Ordinary reads delegate to the original object with
+  // the original receiver: prototype getters backed by WebIDL internal slots or
+  // JavaScript private fields would reject a descriptor-only clone because that
+  // clone does not carry those slots. `signal` is the one snapshotted exception.
   return new Proxy(sanitizedTarget, {
     get(_target, property) {
-      return property === "fetch" ? undefined : Reflect.get(options, property, options);
+      if (property === "signal") return signal;
+      if (property === "fetch") return undefined;
+      return Reflect.get(options, property, options);
     },
     has(_target, property) {
       return property === "fetch" ? false : Reflect.has(options, property);
@@ -372,12 +529,6 @@ export async function typedFetch<JsonReturnType>(
     // members it declares.
     const hasFetchOverride = Object.hasOwn(options, "fetch");
     const fetchImpl = (hasFetchOverride ? options.fetch : undefined) ?? fetch;
-    // Fetch reads RequestInit as a WebIDL dictionary, so inherited properties
-    // and prototype getters are part of the input. Preserve its prototype and
-    // descriptors when removing this library's `fetch` extension; an object
-    // spread would silently drop inherited `method`, `headers`, `body`, or
-    // `signal` values. Without an override, pass the original object untouched.
-    const init = hasFetchOverride ? withoutFetchOverride(options) : options;
 
     // The AbortSignal can arrive via EITHER slot: the `options`/`init` (its
     // `.signal`), OR a `Request` passed as the first argument (`url.signal`).
@@ -389,13 +540,20 @@ export async function typedFetch<JsonReturnType>(
     // `classifyRequestFailure` consults, so a second read that answered
     // `undefined` would classify a real abort as a `NetworkError` and a timeout
     // as neither.
-    const initSignal = init.signal;
+    const initSignal = options.signal;
     signal =
       initSignal !== undefined
         ? (initSignal ?? undefined)
         : isRequest(url)
           ? url.signal
           : undefined;
+
+    // Fetch reads RequestInit as a WebIDL dictionary, so inherited properties
+    // and prototype getters are part of the input. Preserve both while removing
+    // this library's `fetch` extension and materializing the signal snapshot.
+    // An object spread would silently drop inherited method, headers, body, or
+    // signal values.
+    const init = snapshotRequestInit(options, initSignal, hasFetchOverride);
 
     const res = await fetchImpl(url, init);
 
@@ -404,14 +562,11 @@ export async function typedFetch<JsonReturnType>(
     // or a hostile identity getter must surface as an error VALUE instead of
     // rejecting or escaping through the typed success branch.
     //
-    // `status` is read ONCE PER RESPONSE, by `statusOf`, which records the
-    // value it read. The constructor and `UnknownHttpError` then answer with
-    // that same value instead of reading the response again, so the status that
-    // selected the error class is the status in `error.status`, in
-    // `error.message`, and in the `toJSON()` record. Once matters because a
-    // getter is free to report a different value on a second read, and a class
-    // selected on one read whose fields come from another answers a status this
-    // branch was never taken on.
+    // The first successful `status` read is recorded per response by
+    // `statusOf`. The constructor and `UnknownHttpError` reuse that value, so
+    // the status that selects the class also reaches `error.status`,
+    // `error.message`, and `toJSON()`. A getter that throws can be retried. A
+    // successful getter cannot later select a different class.
     //
     // The read stays INSIDE the block below, because it can still throw — a
     // hostile getter, or a `valueOf` that throws during the numeric conversion
@@ -427,6 +582,11 @@ export async function typedFetch<JsonReturnType>(
           response: null,
           error: ErrorClass ? new ErrorClass(res) : new UnknownHttpError(res),
         };
+      }
+      if (!hasCompatibleSuccessSurface(res)) {
+        throw new TypeError(
+          "The fetch implementation resolved a Response with an incompatible public surface.",
+        );
       }
     } catch (cause) {
       // The line above reads `status` (and converts it, which a hostile

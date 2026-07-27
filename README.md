@@ -18,15 +18,27 @@ Body readers are separate operations. `json()`, `text()`, `blob()`, and `arrayBu
 
 ### Upgrade from 1.x
 
-Version 2.0 has breaking changes. Most are runtime behavior, and they reach a consumer through logging, through `clone()`, or through a custom Fetch implementation:
+Version 2.0 has breaking changes. Most affect runtime behavior. They reach a
+consumer through logging, `clone()`, or a custom Fetch implementation.
 
 - **`headers`, `url`, `cause`, and `reason` are no longer enumerable.** A log built from `{ ...error }` loses them. Call `error.toJSON()`, or read each field by name.
 - **`error.headers` is a copy.** A write through it no longer reaches the response.
-- **`clone(recreate)` refuses a callback result that cannot own the cloned body branch.** That covers a non-object, a wrapper such as a Proxy, an error built from a different response, and a copy that cannot confirm it took the branch. Return the new error itself.
-- **A custom Fetch implementation must resolve with a `Response`.** A partial test double resolves with a `NetworkError` instead of escaping as typed success. It must also answer `status`, `statusText`, `url`, and `headers` consistently, because each field is read once.
-- **`TypedFetchOptions["headers"]` rejects `undefined` as a header value.** This is the one compile-time break. Write `...(token ? { Authorization: token } : {})`.
+- **`clone(recreate)` refuses a callback result that cannot own the cloned body branch.**
+  This includes a non-object, a wrapper, a different response, and an
+  unconfirmed copy. Return the new error itself.
+- **A custom Fetch implementation must resolve with a compatible `Response`.**
+  A partial test double resolves with a `NetworkError`. The identity module
+  records the first successful read of each field. A modified platform
+  `Response` must expose the same compatible surface.
+- **`TypedResponse` uses a stable Fetch baseline.** It no longer inherits new
+  members from the ambient `Response` type.
+- **`TypedFetchOptions["headers"]` rejects `undefined` as a header value.**
+  Write `...(token ? { Authorization: token } : {})`.
 
-The migration table is in [CHANGELOG.md](https://github.com/pbpeterson/typed-fetch/blob/main/CHANGELOG.md#200---2026-07-26). Read the `1.1.0` section too: `1.1.0` was never published, so every consumer upgrades `1.0.0` → `2.0.0` and the real delta is the union of both sections.
+The migration table is in
+[CHANGELOG.md](https://github.com/pbpeterson/typed-fetch/blob/main/CHANGELOG.md#200---2026-07-26).
+Read the `1.1.0` section too. That version was never published. A consumer
+therefore upgrades from `1.0.0` to `2.0.0` through both change sets.
 
 ### Upgrade from 0.x
 
@@ -375,7 +387,7 @@ if (isHttpError(error)) {
 }
 ```
 
-`TypedResponse` has no `cancel()` method. This asymmetry with `error.cancel()` is deliberate. An HTTP error is this library's own object, so it can own the lifecycle of its body. A success `Response` is the platform's object, and this library returns it unmodified.
+`TypedResponse` has no `cancel()` method. This asymmetry with `error.cancel()` is deliberate. An HTTP error is this library's own object, so it can own the lifecycle of its body. A success `Response` belongs to the Fetch implementation, and this library returns the same object unmodified.
 
 ### Own the body lifecycle in one module
 
@@ -545,36 +557,46 @@ This behavior is the native `ReadableStream` behavior. The library keeps it deli
 
 ## Network failure, abort, and timeout procedures
 
-Three error classes represent a failure before an HTTP response:
+Three error classes represent a request attempt that produces no usable HTTP
+response:
 
-| Class          | Cause                                              | Guard              |
-| -------------- | -------------------------------------------------- | ------------------ |
-| `NetworkError` | DNS failure, refused connection, or redirect error | `isNetworkError()` |
-| `AbortedError` | `AbortController.abort()` aborted the request      | `isAbortError()`   |
-| `TimeoutError` | `AbortSignal.timeout()` aborted the request        | `isTimeoutError()` |
+| Class          | Cause                                               | Guard              |
+| -------------- | --------------------------------------------------- | ------------------ |
+| `NetworkError` | Request failure or incompatible custom Fetch result | `isNetworkError()` |
+| `AbortedError` | `AbortController.abort()` aborted the request       | `isAbortError()`   |
+| `TimeoutError` | `AbortSignal.timeout()` aborted the request         | `isTimeoutError()` |
 
-Each class keeps the original Fetch error in `cause`. `AbortedError` and `TimeoutError` do not extend `NetworkError`, so `isNetworkError()` is `false` for both.
+For a rejected request, each class keeps the original Fetch error in `cause`.
+For an incompatible resolved value, `NetworkError.cause` holds the validation
+or inspection failure.
+
+`AbortedError` and `TimeoutError` do not extend `NetworkError`, so
+`isNetworkError()` is `false` for both.
 
 Each of these errors also has a `url` value. Use this value to identify a failed request among concurrent requests.
 
-`error.url` holds the full href. `error.message` and the `toJSON()` record hold
-the origin and path. They remove userinfo, query strings, and fragments. A log
-line and a log record therefore agree.
+`error.url` holds the full href. For a hierarchical URL, `error.message` and the
+`toJSON()` record hold the origin and path. They remove userinfo, query strings,
+and fragments. A log line and a log record therefore agree.
 
 The path is kept because it names the resource, which is what tells concurrent
 failures apart. That holds for `http:`, `https:`, `ws:`, `wss:`, `ftp:`, and
-`file:`. An opaque scheme carries its payload in the path instead, so a `data:`
-or `blob:` URL is reduced to the scheme alone.
+`file:`. An opaque scheme carries its payload in the path instead. The redactor
+therefore keeps only `data:` or `blob:`.
 
 ### Network failures
 
 `NetworkError` also represents an error that occurs before a network connection. Examples include an invalid URL, a forbidden method, and an invalid header name.
 
+A custom Fetch implementation can also produce `NetworkError` after it
+resolves. This happens when its value does not satisfy the response contract or
+an identity getter throws. The library releases any reachable body first.
+
 These input errors are permanent. A DNS failure, a refused connection, and a reset connection are transient. `NetworkError` covers both kinds, and it does not tell you which one you hold.
 
-No portable test separates them. `error.cause` holds the rejection from
-`fetch`. Every kind can produce a `TypeError`, so `cause instanceof TypeError`
-does not classify the failure.
+For rejected requests, no portable test separates permanent and transient
+failures. `error.cause` holds the Fetch rejection. Every kind can produce a
+`TypeError`, so `cause instanceof TypeError` does not classify the failure.
 
 The platforms diverge further. On Deno, these failures use a bare `TypeError`
 without a `cause` or error code.
@@ -751,15 +773,23 @@ The optional `fetch` property sets a custom Fetch implementation. Use it for tes
 
 This rule differs from every other option. `method`, `headers`, `body`, and
 `signal` are WebIDL dictionary members. The platform reads them through the
-prototype chain, and `typedFetch` preserves that behavior.
+prototype chain. `typedFetch` preserves that behavior for `method`, `headers`,
+and `body`.
+
+`typedFetch` reads `signal` once. It materializes that value in the
+`RequestInit` given to the transport. Classification and transport therefore
+use the same signal.
 
 `fetch` is this library's extension. It selects the transport.
 
 A single `Object.prototype.fetch = …` write anywhere in the process would otherwise redirect every request in it. That includes a call that passes no options object at all. The write would also hand the caller's `Authorization` header to whoever performed it.
 
-When `options` has no own `fetch` property, `typedFetch` gives the original object to native `fetch` without a change.
+Before the request, `typedFetch` creates a proxy that keeps the original
+prototype and property descriptors. Reads delegate to the original object.
+This preserves inherited properties and WebIDL getters.
 
-When `options` has an own `fetch` property, `typedFetch` removes that property before it calls the implementation. It keeps the prototype, the inherited properties, and the WebIDL getters, because `fetch` reads `RequestInit` as a WebIDL dictionary.
+When `options` has an own `fetch`, the proxy hides that property from the
+implementation. The proxy also replaces `signal` reads with the captured value.
 
 `fetch` names `undefined` explicitly, so a value of type `typeof fetch | undefined` assigns to it under `exactOptionalPropertyTypes`.
 
@@ -781,13 +811,41 @@ A custom Fetch implementation is not trusted input. It must resolve with a
 platform `Response` or a standards-compatible polyfill. A partial test double
 or another value resolves with a `NetworkError` whose `cause` is a `TypeError`.
 
-A platform `Response` is accepted through its own `status` getter. A foreign
-implementation is accepted when it tags itself `[object Response]` and exposes
-the members this library reads: `body`, `bodyUsed`, `headers`, `ok`,
-`redirected`, `status`, `statusText`, and `url`, plus the methods
-`arrayBuffer`, `blob`, `clone`, `json`, and `text`. `node-fetch` and
-`cross-fetch` satisfy this. `whatwg-fetch` does not, because it exposes no
-`body` stream, which `error.cancel()` and `clone()` are built on.
+`typedFetch` accepts a platform `Response` through the platform's `status`
+getter. A foreign implementation must tag itself `[object Response]`.
+
+The visible response must include `body`, `bodyUsed`, `headers`, `ok`,
+`redirected`, `status`, `statusText`, `type`, and `url`. Required methods include
+`arrayBuffer`, `blob`, `clone`, `formData`, `json`, and `text`. The same checks
+catch own properties or a replaced prototype that hides a platform response's
+native surface.
+
+Every response must report `bodyUsed` as a boolean. Before a success can escape,
+`ok` and `redirected` must also be booleans, `status` must be a number,
+`statusText` and `url` must be strings, and `type` must be a standard response
+type. A mismatch resolves with `NetworkError`.
+
+Before success, the `headers` value must expose the standard iterable `Headers`
+operations. An HTTP error can instead normalize any `HeadersInit` that the
+platform's `Headers` constructor accepts. The body must be `null` or a WHATWG
+`ReadableStream` on both paths.
+
+These members form the stable `TypedResponse` baseline. The runtime value may
+expose newer Fetch members, but the public type does not promise them.
+
+Validation describes the handoff moment. `typedFetch` returns the same response
+object; it does not freeze it or put it behind a Proxy. A custom implementation
+that changes a validated getter or member afterwards violates the response
+contract, just as one that mutates the object after returning it does.
+
+When validation rejects a modified platform response, cleanup bypasses a
+shadowed `body` or stream `cancel` member through captured platform operations.
+This releases the body when the native slots remain reachable. Cleanup stays
+best effort when a hostile object also refuses prototype inspection or repair.
+
+`node-fetch` and `cross-fetch` use a Node stream in Node.js. They also omit
+required members. `whatwg-fetch` exposes no WHATWG body stream. These
+implementations do not satisfy the response contract.
 
 `typedFetch` inspects the response inside the result envelope. If an identity
 getter throws, `typedFetch` resolves with a `NetworkError`. Its `cause` holds
@@ -797,8 +855,10 @@ the thrown value.
 `headers` immediately. A later getter failure cannot cause an earlier field to
 be read again. The first successful read decides the error identity.
 
-`statusText` and `url` become empty strings when the implementation answers
-with values that are not strings.
+On the HTTP-error path, `statusText` and `url` become empty strings when the
+implementation answers with values that are not strings. `status` undergoes
+numeric conversion before class selection. This normalization never lets an
+incompatible success escape.
 
 You can give a `Request` in the `url` position. `typedFetch` keeps its method, headers, signal, and Node.js body.
 
@@ -866,6 +926,9 @@ async function api<T>(path: string, options?: TypedFetchOptions): Promise<TypedF
 ```
 
 - `TypedResponse` gives typed `json()` and `clone()` methods.
+- `TypedResponse` names the Fetch response baseline available on Node 20.0.
+  The runtime value remains the Fetch implementation's original response and
+  may expose newer methods.
 - `TypedFetchReturnType` is the result union from `typedFetch`.
 - `TypedFetchOptions` extends `RequestInit` and adds the Fetch override.
 - `HttpMethods` gives method suggestions. It omits `CONNECT` and `TRACE`, because the Fetch specification forbids them and native `fetch` throws a `TypeError` for them.
@@ -945,9 +1008,15 @@ if (isHttpError(error)) {
 
 `headers` holds header names, never values. A response carries values a log must not keep: `set-cookie` holds the session, and a custom header holds whatever the server chose to put there. A logger calls `toJSON()` on whatever it is handed, so the record cannot carry a value that nobody judged. A deny list does not solve this, because the dangerous name is the one this library has never heard of.
 
-`url` follows the same rule. The record holds the origin and the path. The userinfo, the query string, and the fragment are dropped, because a query routinely carries a credential such as `?access_token=` or a signed `?X-Amz-Signature=`. A deny list of query keys fails for the reason a deny list of header names fails. `error.url` still holds the full href.
+`url` follows the same rule. For a hierarchical URL, the record holds the
+origin and path. It drops userinfo, the query string, and the fragment.
 
-The path is kept, so a secret placed in a path segment still reaches the record. Dropping the path would reduce `url` to the origin and remove the only thing the field is for.
+An opaque URL carries its payload in the path. The record therefore keeps only
+its scheme. `error.url` still holds the full href.
+
+A hierarchical path is kept, so a secret in a path segment reaches the record.
+Dropping the path would reduce `url` to the origin and prevent request
+correlation.
 
 A repeated `set-cookie` appears once per arrival, so `["set-cookie", "set-cookie"]` tells you the server sent two. Every other repeated name is combined into one entry by the platform, and its values are joined with a comma. Two `warning` headers therefore produce one `"warning"` entry. Read `error.headers` for the values, and `error.headers.getSetCookie()` for the cookies.
 
@@ -1016,9 +1085,14 @@ An instance built by a different package copy is accepted when that copy confirm
 
 ### `NetworkError`, `AbortedError`, and `TimeoutError`
 
-These classes represent a failure before an HTTP response. They do not extend `BaseHttpError`, and they have no body methods.
+These classes represent an attempt that produces no usable HTTP response. They
+do not extend `BaseHttpError`, and they have no body methods.
 
-All three classes have `message`, `cause`, and `url`. Thus code can read `error.url` from every member of `TypedFetchError`.
+All three classes have `message`, `cause`, and `url`. For rejected requests,
+`cause` holds the Fetch rejection. `NetworkError.cause` can instead hold a
+custom-response validation or inspection failure.
+
+Code can read `error.url` from every member of `TypedFetchError`.
 
 `AbortedError` also has `reason`.
 

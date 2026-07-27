@@ -5,10 +5,10 @@
  * open, which pins the underlying connection until the runtime collects it.
  * That contract, and everything that enforces it, lives here rather than on the
  * error classes — they carry HTTP identity (status, statusText, url, headers,
- * message), this carries the one-shot stream. Three consecutive rounds of
- * defects lived in this lifecycle (a locked-body guard the readers missed,
- * Bun's `bodyUsed` divergence, a tee branch stranded by a failed clone, a body
- * consumed outside the library); all four are now reachable — and testable —
+ * message), this carries the one-shot stream. Past defects in this lifecycle
+ * include a locked-body guard the readers missed, Bun's `bodyUsed` divergence,
+ * a tee branch stranded by a failed clone, a body consumed outside the library,
+ * and native cleanup hidden by shadowing. Each is reachable — and testable —
  * from this file alone, without constructing an error at all.
  *
  * The `Response` never leaves. It is captured in a closure, not stored as a
@@ -117,49 +117,152 @@ export interface ErrorBody {
  * An injected `Response.clone()` can return a real branch with a hostile own
  * getter or value. Its native prototype getter still owns the internal stream.
  */
-function bodyForRelease(response: Response): ReadableStream<Uint8Array> | null | undefined {
+type ReleasableBody = {
+  cancel?: () => unknown;
+  destroy?: () => unknown;
+};
+
+/**
+ * Platform operations captured before an injected response can shadow them.
+ *
+ * A native object keeps its internal slots after `Object.setPrototypeOf`
+ * removes the public prototype chain. Calling these operations directly still
+ * reaches those slots. Foreign implementations fail the brand check and fall
+ * through to their visible methods below.
+ */
+const nativeResponseBodyGetter =
+  typeof Response === "undefined"
+    ? undefined
+    : Object.getOwnPropertyDescriptor(Response.prototype, "body")?.get;
+const nativeResponsePrototype = typeof Response === "undefined" ? undefined : Response.prototype;
+const nativeReadableStreamCancel =
+  typeof ReadableStream === "undefined" ? undefined : ReadableStream.prototype.cancel;
+const nativeReadableStreamLockedGetter =
+  typeof ReadableStream === "undefined"
+    ? undefined
+    : Object.getOwnPropertyDescriptor(ReadableStream.prototype, "locked")?.get;
+
+function bodyForRelease(response: Response): ReleasableBody | null | undefined {
+  if (typeof nativeResponseBodyGetter === "function") {
+    try {
+      return Reflect.apply(nativeResponseBodyGetter, response, []) as ReleasableBody | null;
+    } catch {
+      // Node's WebIDL brand check also requires Response.prototype in the
+      // chain. A native object can keep its slots after that chain is replaced,
+      // so make one scoped attempt with the captured prototype and restore it.
+      if (nativeResponsePrototype !== undefined) {
+        try {
+          const originalPrototype = Object.getPrototypeOf(response) as object | null;
+          Object.setPrototypeOf(response, nativeResponsePrototype);
+          try {
+            return Reflect.apply(nativeResponseBodyGetter, response, []) as ReleasableBody | null;
+          } finally {
+            Object.setPrototypeOf(response, originalPrototype);
+          }
+        } catch {
+          // Not a repairable native Response. Inspect its own chain.
+        }
+      }
+    }
+  }
+
+  // Respect normal property resolution first. For a foreign response with
+  // several inherited body getters, this is the same nearest getter validation
+  // inspected. A cleanup walk must not silently switch to an ancestor's body.
+  try {
+    return response.body;
+  } catch {
+    // The visible getter is hostile. Search behind it for a usable fallback.
+  }
+
   try {
     const seen = new Set<object>();
     let prototype = Object.getPrototypeOf(response) as object | null;
-    let found = false;
-    let body: ReadableStream<Uint8Array> | null | undefined;
     while (prototype && !seen.has(prototype)) {
       seen.add(prototype);
       const descriptor = Object.getOwnPropertyDescriptor(prototype, "body");
       if (typeof descriptor?.get === "function") {
         try {
-          body = Reflect.apply(descriptor.get, response, []) as ReadableStream<Uint8Array> | null;
-          found = true;
+          return Reflect.apply(descriptor.get, response, []) as ReleasableBody | null;
         } catch {
-          // A custom prototype can also be hostile. Keep looking for the
-          // native getter behind it.
+          // This getter is also hostile. Try the next ancestor.
         }
       }
       prototype = Object.getPrototypeOf(prototype) as object | null;
     }
-    if (found) return body;
   } catch {
     // A Proxy can refuse prototype inspection. Cleanup remains best effort.
   }
 
+  return undefined;
+}
+
+/** Start one cancellation and silence a rejection without retrying the call. */
+function tryCancelBody(body: ReleasableBody, cancelMethod: unknown): boolean {
+  if (typeof cancelMethod !== "function") return false;
+
+  let pending: unknown;
   try {
-    return response.body;
+    pending = Reflect.apply(cancelMethod, body, []) as unknown;
   } catch {
-    return undefined;
+    return false;
+  }
+
+  try {
+    if (pending !== null && (typeof pending === "object" || typeof pending === "function")) {
+      const catchMethod = Reflect.get(pending, "catch", pending) as unknown;
+      if (typeof catchMethod === "function") {
+        void Reflect.apply(catchMethod, pending, [() => {}]);
+      }
+    }
+  } catch {
+    // Cancellation already started. Cleanup must not call it twice merely
+    // because a hostile thenable hid its rejection handler.
+  }
+  return true;
+}
+
+/** Whether this runtime's ReadableStream intrinsics accept the body. */
+function isNativeReadableStream(body: ReleasableBody): boolean {
+  if (typeof nativeReadableStreamLockedGetter !== "function") return false;
+  try {
+    Reflect.apply(nativeReadableStreamLockedGetter, body, []);
+    return true;
+  } catch {
+    return false;
   }
 }
 
 /**
  * Release an unreachable body without allowing cleanup to replace the cause.
  *
+ * A value rejected by `isResponse` can still carry a Node readable stream.
+ * Such a stream has `destroy()` instead of the WHATWG `cancel()` method.
+ *
  * @internal
  */
 export function releaseResponseBody(response: Response): void {
+  const body = bodyForRelease(response);
+  if (!body) return;
+
+  // Prefer the captured operation for a confirmed native stream. An own
+  // callable can be just as broken as a missing one: it can throw after a side
+  // effect or return without releasing anything.
+  if (isNativeReadableStream(body) && tryCancelBody(body, nativeReadableStreamCancel)) {
+    return;
+  }
+
+  let visibleCancel: unknown;
   try {
-    const pending = bodyForRelease(response)?.cancel();
-    if (pending && typeof pending.catch === "function") {
-      void pending.catch(() => {});
-    }
+    visibleCancel = body.cancel;
+  } catch {
+    // A foreign body can hide its release method. Try destroy() below.
+  }
+  if (tryCancelBody(body, visibleCancel)) return;
+
+  try {
+    const destroyMethod = body.destroy;
+    if (typeof destroyMethod === "function") Reflect.apply(destroyMethod, body, []);
   } catch {
     // The response or stream is not usable enough to release.
   }

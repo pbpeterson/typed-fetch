@@ -1,4 +1,6 @@
 import { describe, test, expect, expectTypeOf, vi } from "vitest";
+import { createRequire } from "node:module";
+import { Readable } from "node:stream";
 import { useTestServer } from "./fixtures/http-server";
 import { allErrors } from "./fixtures/error-roster";
 import {
@@ -67,6 +69,18 @@ const { url } = useTestServer();
 
 /** An injected fetch that resolves an arbitrary value, `Response` or not. */
 const respondingWith = (value: unknown) => (async () => value) as unknown as typeof fetch;
+
+type NodeFetchResponse = Response & { readonly body: Readable };
+
+const nodeRequire = createRequire(import.meta.url);
+const NodeFetchResponse = (
+  nodeRequire("node-fetch") as {
+    Response: new (
+      body?: unknown,
+      init?: { status?: number; headers?: Record<string, string> },
+    ) => NodeFetchResponse;
+  }
+).Response;
 
 // ── typedFetch ───────────────────────────────────────────────────────
 
@@ -417,38 +431,426 @@ describe("typedFetch", () => {
     });
 
     expect(result.error).toBe(null);
+    expect(result.response).toBe(polyfill);
     expect(await result.response?.json()).toEqual({ source: "polyfill" });
   });
 
-  // `node-fetch@2` — and `cross-fetch`, which wraps it — implements neither
-  // `formData` nor `type`. Requiring them turned the documented injection seam
-  // into a `NetworkError` for every request through it, including this 200.
-  test("a foreign Response without formData or type stays supported", async () => {
-    const nodeFetchShape = {
+  test.each([
+    ["bodyUsed", "false"],
+    ["ok", "true"],
+    ["redirected", 0],
+    ["status", "200"],
+    ["statusText", { text: "OK" }],
+    ["type", "invalid"],
+    ["url", new URL("https://polyfill.test/")],
+  ])(
+    "a foreign success with an incompatible %s scalar never escapes as TypedResponse",
+    async (field, incompatibleValue) => {
+      const polyfill = {
+        body: null,
+        bodyUsed: false,
+        headers: new Headers(),
+        ok: true,
+        redirected: false,
+        status: 200,
+        statusText: "OK",
+        type: "basic",
+        url: "https://polyfill.test/",
+        arrayBuffer: async () => new ArrayBuffer(0),
+        blob: async () => new Blob(),
+        clone() {
+          return this;
+        },
+        formData: async () => new FormData(),
+        json: async () => ({ source: "polyfill" }),
+        text: async () => "polyfill",
+        [Symbol.toStringTag]: "Response",
+        [field]: incompatibleValue,
+      } as unknown as Response;
+
+      const result = await typedFetch("https://example.invalid/polyfill-scalars", {
+        fetch: respondingWith(polyfill),
+      });
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expect(result.error?.cause).toBeInstanceOf(TypeError);
+    },
+  );
+
+  test("a foreign NaN status cannot bypass success-scalar validation", async () => {
+    const polyfill = {
       body: null,
       bodyUsed: false,
       headers: new Headers(),
-      ok: true,
+      ok: "true",
       redirected: false,
-      status: 200,
-      statusText: "OK",
-      url: "https://node-fetch.test/",
+      status: Number.NaN,
+      statusText: "Unknown",
+      type: "basic",
+      url: "https://polyfill.test/",
       arrayBuffer: async () => new ArrayBuffer(0),
       blob: async () => new Blob(),
       clone() {
         return this;
       },
-      json: async () => ({ source: "node-fetch" }),
-      text: async () => "node-fetch",
+      formData: async () => new FormData(),
+      json: async () => ({}),
+      text: async () => "",
       [Symbol.toStringTag]: "Response",
     } as unknown as Response;
 
-    const result = await typedFetch<{ source: string }>("https://example.invalid/node-fetch", {
-      fetch: respondingWith(nodeFetchShape),
+    const result = await typedFetch("https://example.invalid/polyfill-scalars", {
+      fetch: respondingWith(polyfill),
     });
 
-    expect(result.error).toBe(null);
-    expect(await result.response?.json()).toEqual({ source: "node-fetch" });
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBeInstanceOf(TypeError);
+  });
+
+  test("foreign rejection releases the visible inherited body, not an ancestor body", async () => {
+    let visibleCancelCalls = 0;
+    let ancestorCancelCalls = 0;
+    const visibleBody = new ReadableStream<Uint8Array>({
+      cancel() {
+        visibleCancelCalls += 1;
+      },
+    });
+    const ancestorBody = new ReadableStream<Uint8Array>({
+      cancel() {
+        ancestorCancelCalls += 1;
+      },
+    });
+    const ancestor = Object.create(null, {
+      body: {
+        configurable: true,
+        get: () => ancestorBody,
+      },
+    });
+    const nearest = Object.create(ancestor, {
+      body: {
+        configurable: true,
+        get: () => visibleBody,
+      },
+    });
+    const polyfill = Object.assign(Object.create(nearest) as object, {
+      bodyUsed: false,
+      headers: new Headers(),
+      ok: "true",
+      redirected: false,
+      status: 200,
+      statusText: "OK",
+      type: "basic",
+      url: "https://polyfill.test/",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone() {
+        return this;
+      },
+      formData: async () => new FormData(),
+      json: async () => ({}),
+      text: async () => "",
+      [Symbol.toStringTag]: "Response",
+    }) as unknown as Response;
+
+    const result = await typedFetch("https://example.invalid/polyfill-body", {
+      fetch: respondingWith(polyfill),
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(visibleCancelCalls).toBe(1);
+    expect(ancestorCancelCalls).toBe(0);
+  });
+
+  test("a throwing foreign success scalar getter remains the NetworkError cause", async () => {
+    const cause = new Error("ok getter exploded");
+    const polyfill = {
+      body: null,
+      bodyUsed: false,
+      headers: new Headers(),
+      get ok(): boolean {
+        throw cause;
+      },
+      redirected: false,
+      status: 200,
+      statusText: "OK",
+      type: "basic",
+      url: "https://polyfill.test/",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone() {
+        return this;
+      },
+      formData: async () => new FormData(),
+      json: async () => ({}),
+      text: async () => "",
+      [Symbol.toStringTag]: "Response",
+    } as unknown as Response;
+
+    const result = await typedFetch("https://example.invalid/polyfill-scalars", {
+      fetch: respondingWith(polyfill),
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+  });
+
+  test("a throwing foreign bodyUsed getter remains the NetworkError cause", async () => {
+    const cause = new Error("bodyUsed getter exploded");
+    const polyfill = {
+      body: null,
+      get bodyUsed(): boolean {
+        throw cause;
+      },
+      headers: new Headers(),
+      ok: true,
+      redirected: false,
+      status: 200,
+      statusText: "OK",
+      type: "basic",
+      url: "https://polyfill.test/",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone() {
+        return this;
+      },
+      formData: async () => new FormData(),
+      json: async () => ({}),
+      text: async () => "",
+      [Symbol.toStringTag]: "Response",
+    } as unknown as Response;
+
+    const result = await typedFetch("https://example.invalid/polyfill-scalars", {
+      fetch: respondingWith(polyfill),
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+  });
+
+  test.each([
+    ["bodyUsed", "false"],
+    ["ok", "true"],
+    ["redirected", 0],
+    ["status", "200"],
+    ["statusText", { text: "OK" }],
+    ["type", "invalid"],
+    ["url", new URL("https://platform.test/")],
+  ])(
+    "a platform Response with an incompatible own %s scalar never escapes as TypedResponse",
+    async (field, incompatibleValue) => {
+      const response = new Response(null, { status: 200 });
+      Object.defineProperty(response, field, {
+        configurable: true,
+        value: incompatibleValue,
+      });
+
+      const result = await typedFetch("https://example.invalid/platform-scalars", {
+        fetch: respondingWith(response),
+      });
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expect(result.error?.cause).toBeInstanceOf(TypeError);
+    },
+  );
+
+  test.each([
+    ["body", {}],
+    ["headers", null],
+    ["json", null],
+  ])(
+    "a platform Response with an incompatible own %s member never escapes as TypedResponse",
+    async (field, incompatibleValue) => {
+      const response = new Response(null, { status: 200 });
+      Object.defineProperty(response, field, {
+        configurable: true,
+        value: incompatibleValue,
+      });
+
+      const result = await typedFetch("https://example.invalid/platform-members", {
+        fetch: respondingWith(response),
+      });
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expect(result.error?.cause).toBeInstanceOf(TypeError);
+    },
+  );
+
+  test("a platform Response with a replaced prototype never escapes as TypedResponse", async () => {
+    const { stream, cancelCalls } = liveBody();
+    const response = new Response(stream, { status: 200 });
+    const replacement = {};
+    Object.setPrototypeOf(response, replacement);
+
+    const result = await typedFetch("https://example.invalid/platform-prototype", {
+      fetch: respondingWith(response),
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBeInstanceOf(TypeError);
+    expect(cancelCalls()).toBe(1);
+    expect(Object.getPrototypeOf(response)).toBe(replacement);
+  });
+
+  test("a platform Response with a shadowed stream cancel still releases its body", async () => {
+    const { stream, cancelCalls } = liveBody();
+    const response = new Response(stream, { status: 200 });
+    const body = response.body;
+    if (!body) throw new Error("expected a response body");
+    Object.defineProperty(body, "cancel", {
+      configurable: true,
+      value: null,
+    });
+
+    const result = await typedFetch("https://example.invalid/platform-stream", {
+      fetch: respondingWith(response),
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBeInstanceOf(TypeError);
+    expect(cancelCalls()).toBe(1);
+  });
+
+  test("a platform HTTP response with a broken reader never creates an unusable HTTP error", async () => {
+    const response = new Response(null, { status: 404 });
+    Object.defineProperty(response, "json", {
+      configurable: true,
+      value: null,
+    });
+
+    const result = await typedFetch("https://example.invalid/platform-members", {
+      fetch: respondingWith(response),
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBeInstanceOf(TypeError);
+  });
+
+  test("a throwing platform success member getter remains the NetworkError cause", async () => {
+    const cause = new Error("headers getter exploded");
+    const response = new Response(null, { status: 200 });
+    Object.defineProperty(response, "headers", {
+      configurable: true,
+      get() {
+        throw cause;
+      },
+    });
+
+    const result = await typedFetch("https://example.invalid/platform-members", {
+      fetch: respondingWith(response),
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+  });
+
+  test("a foreign Response records its first successful headers read", async () => {
+    const firstHeaders = new Headers({ "x-identity": "first" });
+    const secondHeaders = new Headers({ "x-identity": "second" });
+    let headerReads = 0;
+    const polyfill = {
+      body: null,
+      bodyUsed: false,
+      get headers() {
+        headerReads += 1;
+        return headerReads === 1 ? firstHeaders : secondHeaders;
+      },
+      ok: false,
+      redirected: false,
+      status: 404,
+      statusText: "Not Found",
+      type: "basic",
+      url: "https://polyfill.test/missing",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone() {
+        return this;
+      },
+      formData: async () => new FormData(),
+      json: async () => ({}),
+      text: async () => "",
+      [Symbol.toStringTag]: "Response",
+    } as unknown as Response;
+
+    const result = await typedFetch("https://example.invalid/polyfill-headers", {
+      fetch: respondingWith(polyfill),
+    });
+
+    expect(result.error).toBeInstanceOf(NotFoundError);
+    expect(isHttpError(result.error) && result.error.headers.get("x-identity")).toBe("first");
+    expect(headerReads).toBe(1);
+    if (isHttpError(result.error)) await result.error.cancel();
+  });
+
+  test("a throwing foreign headers getter remains the NetworkError cause", async () => {
+    const cause = new Error("headers getter exploded");
+    const polyfill = {
+      body: null,
+      bodyUsed: false,
+      get headers(): Headers {
+        throw cause;
+      },
+      ok: false,
+      redirected: false,
+      status: 404,
+      statusText: "Not Found",
+      type: "basic",
+      url: "https://polyfill.test/missing",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone() {
+        return this;
+      },
+      formData: async () => new FormData(),
+      json: async () => ({}),
+      text: async () => "",
+      [Symbol.toStringTag]: "Response",
+    } as unknown as Response;
+
+    const result = await typedFetch("https://example.invalid/polyfill-headers", {
+      fetch: respondingWith(polyfill),
+    });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(cause);
+  });
+
+  test("node-fetch@2 is refused and its Node stream is destroyed", async () => {
+    const response = new NodeFetchResponse(Readable.from(["payload"]), { status: 404 });
+    const stream = response.body;
+
+    // Close the two obvious surface gaps so this regression reaches the body
+    // compatibility check. A Node Readable must not become a typed WHATWG
+    // Response merely because an adapter decorates the missing members.
+    Object.defineProperties(response, {
+      formData: {
+        configurable: true,
+        value: async () => new FormData(),
+      },
+      type: {
+        configurable: true,
+        value: "default",
+      },
+    });
+
+    const result = await typedFetch("https://example.invalid/node-fetch", {
+      fetch: respondingWith(response),
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBeInstanceOf(TypeError);
+    expect(stream.destroyed).toBe(true);
   });
 
   // A `Request` carries `body`, `bodyUsed`, `headers`, `url`, and every read
@@ -893,28 +1295,21 @@ describe("typedFetch", () => {
     }
   });
 
-  // The governing signal is the authority every classification below depends
-  // on, so it is read ONCE and kept, exactly as the response identity is. A
-  // second read of the same untrusted slot could answer `undefined` and
-  // downgrade a real abort to a `NetworkError`.
-  test("options.signal is read once: a changing getter cannot downgrade an abort", async () => {
-    const controller = new AbortController();
+  test("the signal snapshot prevents native fetch from downgrading an abort", async () => {
+    const governing = new AbortController();
+    const later = new AbortController();
     const reason = new Error("route change");
-    controller.abort(reason);
+    governing.abort(reason);
 
     let reads = 0;
     const options = {
       get signal() {
         reads += 1;
-        return reads === 1 ? controller.signal : undefined;
+        return reads === 1 ? governing.signal : later.signal;
       },
-      // A spec-exact runtime rejects with the signal's own reason.
-      fetch: (async () => {
-        throw reason;
-      }) as unknown as typeof fetch,
     } as unknown as TypedFetchOptions;
 
-    const result = await typedFetch(url({ status: 200 }), options);
+    const result = await typedFetch("data:text/plain,ok", options);
 
     expect(reads).toBe(1);
     expect(result.response).toBe(null);
@@ -924,6 +1319,27 @@ describe("typedFetch", () => {
     if (isAbortError(result.error)) {
       expect(result.error.reason).toBe(reason);
     }
+  });
+
+  test("the signal snapshot prevents a later abort from governing native fetch", async () => {
+    const governing = new AbortController();
+    const later = new AbortController();
+    const laterReason = new Error("must stay ignored");
+    later.abort(laterReason);
+
+    let reads = 0;
+    const options = {
+      get signal() {
+        reads += 1;
+        return reads === 1 ? governing.signal : later.signal;
+      },
+    } as unknown as TypedFetchOptions;
+
+    const result = await typedFetch("data:text/plain,ok", options);
+
+    expect(reads).toBe(1);
+    expect(result.error).toBe(null);
+    expect(await result.response?.text()).toBe("ok");
   });
 
   test("AbortSignal.timeout() against a slow route → TimeoutError, not NetworkError", async () => {
@@ -1429,12 +1845,10 @@ describe("typedFetch", () => {
     expectTypeOf(headers).toExtend<TypedFetchOptions["headers"]>();
   });
 
-  // The fetch override is the ONE path that does not hand `options` to fetch
-  // untouched: `withoutFetchOverride` rebuilds it as a proxy over a descriptor
-  // clone. Every header form must survive that rebuild BY IDENTITY, because the
-  // proxy delegates the read to the original object instead of copying it. A
-  // server observes nothing here — the injected fetch performs no request — so
-  // this is the one header test that reads the init object.
+  // `snapshotRequestInit` rebuilds options as a proxy over a descriptor clone.
+  // Every header form must survive that rebuild BY IDENTITY, because the proxy
+  // delegates each read to the original object. A server observes nothing here:
+  // the injected fetch performs no request. This test therefore reads the init.
   test("the fetch override rebuild forwards every headers form by identity", async () => {
     const stubFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
 
@@ -1468,15 +1882,15 @@ describe("typedFetch", () => {
     expect(initFromTuples?.headers).toBe(tuplePairs);
   });
 
-  // ── Request objects passed as `options` (host-exotic-object passthrough) ──
+  // ── Request objects passed as `options` keep their WebIDL state ─────────
   // A `Request`'s `method`/`headers`/`body`/`signal` are prototype getters,
   // not own enumerable properties. When a `Request` is passed in the `options`
   // slot, object rest spread (`...init`) copies NONE of them, silently
   // downgrading every request to a bodyless, header-less GET and dropping the
-  // abort signal. These tests pass the `Request` as the second argument — the
-  // exact slot the spread corrupts — and prove it now reaches fetch untouched.
-  // Each fails on the pre-fix (spread) implementation.
-  describe("Request passed as the options argument is preserved (not spread away)", () => {
+  // abort signal. The proxy delegates to the original Request, except that it
+  // materializes the governing signal. These tests prove that no WebIDL state
+  // is lost.
+  describe("Request passed as the options argument keeps its WebIDL state", () => {
     test("an augmented Request can carry a fetch override without losing WebIDL state", async () => {
       const target = url({ status: 200 });
       const stubFetch = vi.fn<typeof fetch>((input, init) => fetch(input, init));
@@ -1547,7 +1961,7 @@ describe("typedFetch", () => {
       expect(echoed && decodeURIComponent(echoed)).toBe("payload");
     });
 
-    test("pre-aborted signal via Request → AbortedError (init.signal?.aborted reads the Request getter)", async () => {
+    test("pre-aborted signal via Request → AbortedError", async () => {
       const target = url({ status: 200 });
       const controller = new AbortController();
       const reason = new Error("cancel");
@@ -1810,7 +2224,7 @@ function expectIdentityAgrees(error: BaseHttpError, status: number): void {
   expect(error.toJSON().status).toBe(status);
 }
 
-describe("typedFetch — the response identity is read once per response", () => {
+describe("typedFetch — the first successful identity reads are recorded", () => {
   test("TF-01: the reported cycle 420 -> 200 -> 201 gives one answer, not three", async () => {
     const { response, reads } = cyclingResponse("status", [420, 200, 201], {
       status: 200,
@@ -1894,12 +2308,16 @@ describe("typedFetch — the response identity is read once per response", () =>
       Class: UnknownHttpError,
       expected: 599,
     },
-    { label: '"200" stays on the success branch', status: "200", outcome: "success" },
+    { label: '"200" cannot escape with a string status', status: "200", outcome: "network" },
     { label: "NaN stays on the success branch", status: NaN, outcome: "success" },
     { label: "-1 stays on the success branch", status: -1, outcome: "success" },
-    { label: "true stays on the success branch", status: true, outcome: "success" },
-    { label: "null stays on the success branch", status: null, outcome: "success" },
-    { label: "undefined stays on the success branch", status: undefined, outcome: "success" },
+    { label: "true cannot escape as a numeric status", status: true, outcome: "network" },
+    { label: "null cannot escape as a numeric status", status: null, outcome: "network" },
+    {
+      label: "undefined cannot escape as a numeric status",
+      status: undefined,
+      outcome: "network",
+    },
     {
       label: "Infinity -> UnknownHttpError",
       status: Infinity,
@@ -1938,9 +2356,8 @@ describe("typedFetch — the response identity is read once per response", () =>
     });
 
     if (outcome === "success") {
-      // The stance the library states and this suite already enforces: only a
-      // read that THROWS becomes a NetworkError. A value that converts to
-      // less than 400, or to NaN, reaches the caller unchanged.
+      // A numeric value that compares below 400, or numeric NaN, can satisfy
+      // the stable success surface and reaches the caller unchanged.
       expect(result.error).toBe(null);
       return;
     }
@@ -2261,7 +2678,7 @@ describe("typedFetch — the response identity is read once per response", () =>
     await result.error.cancel();
   });
 
-  test("TF-19: the numeric conversion is part of the single read", async () => {
+  test("TF-19: numeric conversion is part of the first successful read", async () => {
     let valueOfCalls = 0;
     const status = {
       valueOf() {

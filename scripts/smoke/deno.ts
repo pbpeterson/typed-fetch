@@ -32,21 +32,23 @@ try {
   if (!isKnownHttpError(error)) {
     throw new Error(`expected a known HTTP error, got ${JSON.stringify(error)}`);
   }
-  // isKnownHttpError proved the shape at runtime; read the documented fields.
-  const knownError = error as { readonly name: string; readonly status: number };
-  if (knownError.name !== "NotFoundError") {
-    throw new Error(
-      `expected error.name to be "NotFoundError", got ${JSON.stringify(knownError.name)}`,
-    );
+  // The direct .mjs import carries inferred JavaScript types rather than the
+  // package's .d.mts predicates. `instanceof` gives Deno's checker the same
+  // concrete class that the runtime smoke expects.
+  if (!(error instanceof NotFoundError)) {
+    throw new Error(`expected a NotFoundError, got ${JSON.stringify(error)}`);
   }
-  if (knownError.status !== 404) {
-    throw new Error(`expected error.status to be 404, got ${JSON.stringify(knownError.status)}`);
+  if (error.name !== "NotFoundError") {
+    throw new Error(`expected error.name to be "NotFoundError", got ${JSON.stringify(error.name)}`);
+  }
+  if (error.status !== 404) {
+    throw new Error(`expected error.status to be 404, got ${JSON.stringify(error.status)}`);
   }
 
   // Releasing an unread error body must work here too.
   // An explicit reason: `deno check` reads the parameter list from the
   // emitted .mjs, where the optionality lives in the .d.mts only.
-  await (error as { cancel: (reason?: unknown) => Promise<void> }).cancel("smoke");
+  await error.cancel("smoke");
 
   // The mirror of the Bun case. Deno keeps `bodyUsed` false while a reader
   // holds the stream, so here the lock IS distinguishable from a consumed body

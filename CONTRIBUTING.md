@@ -60,6 +60,15 @@ typechecking the package's public `.d.mts` declarations by bare package name.
 Run that command locally too when Deno 2 is installed. Deno 1 cannot resolve
 an unpublished local tarball through the required manual `node_modules` mode.
 
+For full Deno parity, run both package scripts after the build:
+
+```bash
+pnpm check-deno-consumer
+pnpm smoke:deno
+```
+
+The smoke script performs both the direct `deno check` and runtime probe.
+
 If `pnpm format:check` fails, run `pnpm format` to fix it in place, then
 re-check.
 
@@ -203,7 +212,8 @@ and no `tsc`, so it runs before `pnpm build` and fails in milliseconds. It
 accumulates three classes of violation and prints all of them:
 
 For TypeScript, it scans JSDoc on exported declarations and public members.
-Private, protected, non-exported, and `@internal` declarations are excluded.
+The scanner excludes private, protected, non-exported, and `@internal`
+declarations.
 
 1. **A relative link in `README.md`.** This file is the only document in the npm
    tarball. Links to repository files must use absolute URLs. A `#fragment`
@@ -220,8 +230,9 @@ stripped first, so `` `cancelled` `` — the variable in
 `src/errors/error-body.ts` — is never flagged as prose, and a Markdown link
 printed inside backticks is not read as a link.
 
-`docs/writing-standard.md` is exempt from the vocabulary rules. It is the one
-document that must state a forbidden phrase to forbid it.
+`docs/writing-standard.md` is exempt from the vocabulary rules. It must state a
+forbidden phrase to forbid it. The original argument in a frozen ADR is also
+excluded. Its amendments remain in scope.
 
 **What it cannot see.** Two limits, both deliberate, and both pinned by a test in
 `scripts/check-doc-style.spec.mjs`.
@@ -286,8 +297,8 @@ _are_ asserted to work across entries and formats.
 
 ### How a release gate is shaped
 
-Every gate under `scripts/` is **one file** with three parts and exactly one
-seam:
+Except for the two-phase Deno gate described below, every gate under `scripts/`
+is **one file** with three parts and exactly one seam:
 
 ```
         ┌── adapter ──┐   ┌─ pure decision ─┐   ┌── thin main ──┐
@@ -329,9 +340,14 @@ split each gate across two files instead of one readable file), and
 `scripts/lib/` holds only _plumbing_ — scratch directories and npm
 pack/install — never policy.
 
-`check-deno-consumer.mjs` applies the same structure. Its pure decision checks
-the Deno version requirement. The adapter records the `deno check` exit as an
-I/O fact, and the thin `main` owns the report.
+`check-deno-consumer.mjs` is a deliberate two-phase exception. Its main first
+reads `deno --version` and gives that fact to the pure `judgeDenoVersion`
+decision. An unsupported runtime stops before package and network work.
+
+After that decision passes, the adapter packs and installs the artifact. It
+then runs `deno check`; a nonzero subprocess exit is an I/O outcome. The main
+reports success or the captured exception. The spec attaches to the only policy
+seam and separately proves that importing the gate performs no work.
 
 Note that `pnpm typecheck` does **not** cover `scripts/`: `tsconfig.test.json`
 has no `allowJs`/`checkJs`. The `// @ts-check` comments and JSDoc types in these
@@ -491,7 +507,7 @@ The body lifecycle is a seam between two modules. `src/errors/base-http-error.ts
 owns HTTP error identity — `status`, `statusText`, `url`, `headers`, and the
 message line. `src/errors/error-body.ts` owns the single-use body.
 
-Identity is read through `src/errors/response-identity.ts`.
+`src/errors/response-identity.ts` reads and records identity.
 `statusOf(response)` answers the class-selection read in `src/index.ts`.
 `identityOf(response)` answers the whole record inside the error constructors.
 
