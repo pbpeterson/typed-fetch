@@ -319,6 +319,30 @@ export function errorBodyOf(response: Response): ErrorBody {
     readStarted = true;
   }
 
+  /**
+   * Run the platform reader, and give the claim back if it never ran at all.
+   *
+   * `readStarted` is latched before the reader, because a read that HAS started
+   * must refuse every later reader and make `cancel()` a no-op. A reader that
+   * throws SYNCHRONOUSLY never touched the stream, so latching it there stranded
+   * the body: `cancel()` took its `readStarted` early return and reported
+   * success while the stream stayed unread, unlocked, and open.
+   *
+   * A REJECTED promise is not this case and is not rolled back — the read
+   * genuinely started, and the bytes are gone whatever the rejection says.
+   *
+   * A no-op for a platform `Response`, whose readers do not throw synchronously.
+   * It is the injected-`fetch` seam that admits one.
+   */
+  function startRead<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return run();
+    } catch (cause) {
+      readStarted = false;
+      throw cause;
+    }
+  }
+
   async function cancel(reason?: unknown): Promise<void> {
     // 1. A repeated cancel settles WITH the in-flight one. Returning early
     //    here would report success while the first call is still waiting for
@@ -389,6 +413,24 @@ export function errorBodyOf(response: Response): ErrorBody {
     });
 
     try {
+      // Reach the stream the way {@link releaseResponseBody} does, for the same
+      // reason: the visible `cancel` is not necessarily the platform's. An own
+      // callable can be a no-op that returns a resolved promise, and this call
+      // would then report a released body while the source is still open —
+      // the connection leak this module exists to prevent, reported as success.
+      let pending: unknown;
+      try {
+        pending =
+          isNativeReadableStream(stream as unknown as ReleasableBody) &&
+          typeof nativeReadableStreamCancel === "function"
+            ? Reflect.apply(nativeReadableStreamCancel, stream, [reason])
+            : stream.cancel(reason);
+      } catch {
+        // The call itself failed, synchronously. There is no promise to await,
+        // and a body whose own release method throws is one this library cannot
+        // release — the same dead end `releaseResponseBody` accepts.
+      }
+
       // Swallow a stream-level failure, the same as `tee().release()` below. A
       // truncated response or a connection reset mid-body errors the body
       // stream, and `stream.cancel()` then rejects with that stored error. The
@@ -402,7 +444,12 @@ export function errorBodyOf(response: Response): ErrorBody {
       // from this one; a `.catch()` further out leaves those two unhandled.
       // Under Node's default `--unhandled-rejections=throw`, one dropped
       // cleanup call then ends the process.
-      await stream.cancel(reason).catch(() => {});
+      //
+      // `Promise.resolve(pending)`, never `pending.catch(…)`: a `cancel` that
+      // answers with a non-thenable used to make THIS function reject with a
+      // `TypeError` about reading `catch` of undefined — turning the swallow
+      // into the very unhandled rejection the paragraph above describes.
+      await Promise.resolve(pending).catch(() => {});
     } finally {
       // `cancelling` names the IN-FLIGHT cancellation; a settled one is
       // `cancelled`. Clear it before releasing the waiters, so a waiter that
@@ -456,19 +503,19 @@ export function errorBodyOf(response: Response): ErrorBody {
     },
     async json<T = unknown>(): Promise<T> {
       claim("json");
-      return response.json();
+      return startRead(() => response.json() as Promise<T>);
     },
     async text(): Promise<string> {
       claim("text");
-      return response.text();
+      return startRead(() => response.text());
     },
     async blob(): Promise<Blob> {
       claim("blob");
-      return response.blob();
+      return startRead(() => response.blob());
     },
     async arrayBuffer(): Promise<ArrayBuffer> {
       claim("arrayBuffer");
-      return response.arrayBuffer();
+      return startRead(() => response.arrayBuffer());
     },
     cancel,
     tee,

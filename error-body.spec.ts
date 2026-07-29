@@ -508,6 +508,87 @@ describe("errorBodyOf — cancel() releases without buffering", () => {
     await expect(body.cancel()).resolves.toBeUndefined();
     await expect(body.cancel()).resolves.toBeUndefined();
   });
+
+  // ── The stream's own `cancel` is untrusted, the same as the Response ────
+  // `hasCompatibleForeignBody` requires `cancel` to be CALLABLE, not correct.
+  // These three shapes all reach `cancel()` step 5 through an injected `fetch`,
+  // and each used to defeat a different half of the release.
+  test.each([
+    ["returns a non-thenable", () => undefined],
+    [
+      "throws synchronously",
+      () => {
+        throw new Error("cancel exploded");
+      },
+    ],
+    ["is a no-op that resolves", async () => undefined],
+  ])("a body whose own cancel() %s still resolves and still releases", async (_label, shadow) => {
+    const { response, state } = trackedResponse();
+    const real = response.body as ReadableStream<Uint8Array>;
+    Object.defineProperty(response, "body", {
+      configurable: true,
+      value: new Proxy(real, {
+        get(target, property) {
+          if (property === "cancel") return shadow;
+          const value = Reflect.get(target, property, target) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
+    });
+    const body = errorBodyOf(response);
+
+    // A non-thenable used to reject with `Cannot read properties of undefined
+    // (reading 'catch')`, which under Node's default unhandled-rejection mode
+    // ends the process for a fire-and-forget cleanup call.
+    await expect(body.cancel()).resolves.toBeUndefined();
+
+    // And the source is genuinely released: the captured intrinsic runs even
+    // when the visible `cancel` refuses to.
+    expect(state.cancelled).toBe(true);
+    expect(state.pulled).toBe(false);
+  });
+});
+
+describe("errorBodyOf — a reader that throws synchronously", () => {
+  test("gives the claim back, so the body can still be cancelled", async () => {
+    // `readStarted` latches BEFORE the platform reader, because a read that has
+    // started must refuse every later reader. A reader that throws
+    // synchronously never touched the stream, and latching it there left the
+    // body unreadable AND uncancellable: `cancel()` took the `readStarted`
+    // early return and reported success over an open connection.
+    const { response, state } = trackedResponse();
+    Object.defineProperty(response, "text", {
+      configurable: true,
+      value: () => {
+        throw new Error("reader exploded");
+      },
+    });
+    const body = errorBodyOf(response);
+
+    await expect(body.text()).rejects.toThrowError("reader exploded");
+
+    // The claim came back, so a second reader is admitted rather than refused
+    // with the single-use message.
+    expect(new TextDecoder().decode(await body.arrayBuffer())).toBe("payload");
+    expect(state.pulled).toBe(true);
+  });
+
+  test("a REJECTED reader keeps the claim, because that read did start", async () => {
+    const { response } = trackedResponse();
+    Object.defineProperty(response, "text", {
+      configurable: true,
+      value: async () => {
+        throw new Error("read failed mid-stream");
+      },
+    });
+    const body = errorBodyOf(response);
+
+    await expect(body.text()).rejects.toThrowError("read failed mid-stream");
+
+    // The bytes are gone whatever the rejection says.
+    await expect(body.json()).rejects.toThrowError(/single-use/);
+    await expect(body.cancel()).resolves.toBeUndefined();
+  });
 });
 
 describe("errorBodyOf — cancel() on a body whose stream already failed", () => {
