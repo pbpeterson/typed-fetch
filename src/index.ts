@@ -195,17 +195,31 @@ function isResponse(value: unknown): value is Response {
   // with the generic incompatible-Response error.
   if (typeof Reflect.get(value, "bodyUsed", value) !== "boolean") return false;
 
-  // Record status before another identity field, as the class-selection path
-  // does. The call below typedFetch reuses this value.
-  statusOf(value as Response);
-
   // `headers` is part of HTTP error identity. Read it through the same cache the
   // constructor uses, so validation cannot consume the first answer and then
   // build the error from a second one. An HTTP error deliberately accepts every
   // HeadersInit the Headers constructor accepts; the success-surface check later
   // requires the iterable Headers operations. Let the getter's own exception
   // escape to the envelope instead of hiding the real cause.
+  //
+  // This read is ALSO a refusal point — a throwing getter is how H-13 refuses a
+  // value — so it runs BEFORE the status read, not after. Reading status first
+  // filed a status against a value this function then refused, which is the
+  // very thing the paragraph above forbids, reached through the other door:
+  // the same object, completed and re-presented as a 404, was answered with the
+  // recorded 200 and escaped through the success branch.
   headersOf(value as Response);
+
+  // Record status LAST of the identity reads, once nothing further can refuse
+  // the value. The call below typedFetch reuses this value, and it is the read
+  // that selects the error class.
+  //
+  // RESIDUAL, stated rather than hidden: `headers` can still be filed against a
+  // value a throwing `status` getter then refuses. Unlike status, `headers`
+  // selects no class and gates no branch, so a stale one cannot move a request
+  // across the 400 boundary. Closing it too needs a two-phase commit in
+  // `response-identity`, which costs more than the failure it prevents.
+  statusOf(value as Response);
 
   validatedResponseStructures.add(value);
   return true;

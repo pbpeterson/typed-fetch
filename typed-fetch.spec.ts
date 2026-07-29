@@ -2956,4 +2956,49 @@ describe("typedFetch — the first successful identity reads are recorded", () =
     if (!isHttpError(accepted.error)) throw new Error("expected an HTTP error");
     expect(accepted.error.status).toBe(404);
   });
+
+  test("TF-22: a value refused by the headers read has no status filed against it", async () => {
+    // TF-21's rule, reached through the other door. `isResponse` used to read
+    // `status` and then `headers`, but the `headers` read is ITSELF a refusal
+    // point (H-13: a throwing getter answers with a NetworkError). So a value
+    // refused there had already had its status filed.
+    //
+    // Across two calls holding the same object that flips the envelope: a 200
+    // filed during a refused call, re-presented once the getter recovers and
+    // the object reports 404, answers with the recorded 200 — and a failed
+    // request escapes through the success branch.
+    let headersThrow = true;
+    let status = 200;
+    const base = new Response("{}", { status: 200 });
+    const response = new Proxy(base, {
+      get(target, property) {
+        if (property === "headers") {
+          if (headersThrow) throw new Error("headers getter exploded");
+          return new Headers({ "content-type": "application/json" });
+        }
+        if (property === "status") return status;
+        if (property === "ok") return status < 400;
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    const fetch = resolving(response);
+
+    const refused = await typedFetch("https://example.invalid/late-refusal", { fetch });
+    expect(refused.response).toBe(null);
+    expect(refused.error).toBeInstanceOf(NetworkError);
+
+    // The same object, now readable and reporting a failure.
+    headersThrow = false;
+    status = 404;
+
+    const accepted = await typedFetch("https://example.invalid/late-refusal", { fetch });
+
+    expect(accepted.response).toBe(null);
+    expect(accepted.error).toBeInstanceOf(NotFoundError);
+    if (!isHttpError(accepted.error)) throw new Error("expected an HTTP error");
+    expect(accepted.error.status).toBe(404);
+    await accepted.error.cancel();
+  });
 });
