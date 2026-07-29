@@ -66,32 +66,33 @@ scenario fails.
 
 ### In scope
 
-| Row  | The implementation's behavior                                             | What the caller gets           |
-| ---- | ------------------------------------------------------------------------- | ------------------------------ |
-| H-01 | The implementation resolves a value that is not an object                 | `NetworkError`                 |
-| H-02 | The implementation resolves an object that only spoofs the Response tag   | `NetworkError`                 |
-| H-03 | The implementation resolves a Response missing a body reader              | `NetworkError`                 |
-| H-04 | The implementation resolves a Response whose body is not a stream         | `NetworkError`                 |
-| H-05 | The implementation resolves a Response whose bodyUsed is not a boolean    | `NetworkError`                 |
-| H-06 | A status getter answers differently on a second read                      | the dedicated HTTP error class |
-| H-07 | A status getter throws                                                    | `NetworkError`                 |
-| H-08 | A status that compares below 400, including NaN, is still a success       | the response, unchanged        |
-| H-09 | A status outside the roster becomes UnknownHttpError, not a guess         | `UnknownHttpError`             |
-| H-10 | A fractional status is not truncated into a real one                      | `UnknownHttpError`             |
-| H-11 | A statusText that is not a string is normalized, never coerced            | the dedicated HTTP error class |
-| H-12 | A url that is not a string is normalized, never coerced                   | the dedicated HTTP error class |
-| H-13 | A headers getter throws                                                   | `NetworkError`                 |
-| H-14 | A value refused once has no identity filed against it                     | `NetworkError`                 |
-| H-15 | The implementation rejects with a value that is not an error              | `NetworkError`                 |
-| H-16 | The implementation throws before it returns a promise                     | `NetworkError`                 |
-| H-17 | The governing signal is the authority on an abort, not the rejection name | `AbortedError`                 |
-| H-18 | An unrelated failure while the signal is aborted stays a network failure  | `NetworkError`                 |
-| H-19 | A timeout is classified by the shape the platform produces                | `TimeoutError`                 |
-| H-20 | A polyfill that rejects with its own AbortError, not the signal reason    | `AbortedError`                 |
-| H-21 | An options object whose property read throws                              | `NetworkError`                 |
-| H-22 | A fetch override inherited from a polluted prototype is never used        | `NetworkError`                 |
-| H-23 | A Request-shaped input whose url is not a string                          | `NetworkError`                 |
-| H-24 | A header value the platform refuses never reaches the message             | `NetworkError`                 |
+| Row  | The implementation's behavior                                                           | What the caller gets           |
+| ---- | --------------------------------------------------------------------------------------- | ------------------------------ |
+| H-01 | The implementation resolves a value that is not an object                               | `NetworkError`                 |
+| H-02 | The implementation resolves an object that only spoofs the Response tag                 | `NetworkError`                 |
+| H-03 | The implementation resolves a Response missing a body reader                            | `NetworkError`                 |
+| H-04 | The implementation resolves a Response whose body is not a stream                       | `NetworkError`                 |
+| H-05 | The implementation resolves a Response whose bodyUsed is not a boolean                  | `NetworkError`                 |
+| H-06 | A status getter answers differently on a second read                                    | the dedicated HTTP error class |
+| H-07 | A status getter throws                                                                  | `NetworkError`                 |
+| H-08 | A status that compares below 400, including NaN, is still a success                     | the response, unchanged        |
+| H-09 | A status outside the roster becomes UnknownHttpError, not a guess                       | `UnknownHttpError`             |
+| H-10 | A fractional status is not truncated into a real one                                    | `UnknownHttpError`             |
+| H-11 | A statusText that is not a string is normalized, never coerced                          | the dedicated HTTP error class |
+| H-12 | A url that is not a string is normalized, never coerced                                 | the dedicated HTTP error class |
+| H-13 | A headers getter throws                                                                 | `NetworkError`                 |
+| H-14 | A value refused once has no identity filed against it                                   | `NetworkError`                 |
+| H-15 | The implementation rejects with a value that is not an error                            | `NetworkError`                 |
+| H-16 | The implementation throws before it returns a promise                                   | `NetworkError`                 |
+| H-17 | The governing signal is the authority on an abort, not the rejection name               | `AbortedError`                 |
+| H-18 | An unrelated failure while the signal is aborted stays a network failure                | `NetworkError`                 |
+| H-19 | A timeout is classified by the shape the platform produces                              | `TimeoutError`                 |
+| H-20 | A polyfill that rejects with its own AbortError, not the signal reason                  | `AbortedError`                 |
+| H-21 | An options object whose property read throws                                            | `NetworkError`                 |
+| H-22 | A fetch override inherited from a polluted prototype is never used                      | `NetworkError`                 |
+| H-23 | A Request-shaped input whose url is not a string                                        | `NetworkError`                 |
+| H-24 | A header value the platform refuses never reaches the message                           | `NetworkError`                 |
+| H-25 | A refused header value is redacted as the platform normalizes it, not as it was written | `NetworkError`                 |
 
 Two decisions about a hostile implementation live in their own records and are
 in scope by reference, not repeated here:

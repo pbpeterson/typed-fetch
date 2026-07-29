@@ -458,6 +458,19 @@ describe("typedFetch", () => {
   test.each([
     ["a record", (v: string) => ({ authorization: v })],
     ["an array of pairs", (v: string) => [["authorization", v]] as [string, string][]],
+    // The platform NORMALIZES leading and trailing HTTP whitespace away before
+    // it validates, and quotes the normalized value back. Collecting the
+    // caller's string meant `replaceAll` searched for something the message
+    // never contained, and the credential survived. A key read from a file has
+    // exactly this shape.
+    ["a record whose value is padded", (v: string) => ({ authorization: `\t${v}\n` })],
+    [
+      "an array of pairs whose value is padded",
+      (v: string) => [["authorization", ` ${v}\r\n`]] as [string, string][],
+    ],
+    // WebIDL converts a non-string to a ByteString with `String()`. A JavaScript
+    // caller reaches this by forwarding Node's `string | string[]` headers.
+    ["a record whose value is not a string", (v: string) => ({ authorization: [v] })],
   ])("a refused header value supplied as %s stays out of the message", async (_label, make) => {
     // A wrapped base64 credential: the LF is what makes the platform refuse it,
     // and refusal is the only way a header value reaches a message at all.
@@ -471,6 +484,26 @@ describe("typedFetch", () => {
     expect(result.error).toBeInstanceOf(NetworkError);
     expect(result.error?.message).not.toContain("sk_live_END_TO_END_SECRET");
     expect(result.error?.message).not.toContain("\n");
+    expect(result.error?.message).toContain("<redacted>");
+  });
+
+  // `isRefusedHeaderValue` is three disjuncts, and only the LF one was ever
+  // exercised. Either of the other two could be deleted with the whole suite
+  // green, and a credential carrying a CR or a NUL would then travel into
+  // `message` — the leak AND the log-injection primitive, reopened.
+  test.each([
+    ["LF", "\n"],
+    ["CR", "\r"],
+    ["NUL", "\0"],
+  ])("a header value refused for an interior %s stays out of the message", async (_label, char) => {
+    const result = await typedFetch("https://example.invalid/refused-header", {
+      headers: { authorization: `Basic AAAA${char}sk_live_CONTROL_CHAR_SECRET` },
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.message).not.toContain("sk_live_CONTROL_CHAR_SECRET");
+    expect(result.error?.message).not.toContain(char);
     expect(result.error?.message).toContain("<redacted>");
   });
 

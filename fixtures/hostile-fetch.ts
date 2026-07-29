@@ -356,6 +356,21 @@ export const HOSTILE_SCENARIOS: readonly HostileScenario[] = [
       if (message.includes("\n")) throw new Error("a raw newline reached the message");
     },
   },
+  {
+    id: "H-25",
+    title:
+      "A refused header value is redacted as the platform normalizes it, not as it was written",
+    // The platform strips leading and trailing HTTP whitespace BEFORE it
+    // validates, and quotes the stripped value back. Searching the message for
+    // the caller's string found nothing, and the credential survived.
+    options: () => ({ headers: { authorization: "\tBasic AAAA\nsk_live_NORMALIZED\r\n" } }),
+    outcome: { kind: "network" },
+    verify: (error) => {
+      const message = (error as { message: string }).message;
+      if (message.includes("sk_live_NORMALIZED")) throw new Error("the value reached the message");
+      if (message.includes("\n")) throw new Error("a raw newline reached the message");
+    },
+  },
 ] as const;
 
 export { URL_UNDER_TEST };

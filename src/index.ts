@@ -477,16 +477,52 @@ function requestUrl(input: FetchInput): string {
  * The characters the Fetch Standard forbids inside a header value.
  *
  * A value carrying one is REFUSED by the platform, and refusal is the only way
- * a header value reaches a rejection message. Leading and trailing HTTP
- * whitespace is normalized away instead of refused, so these three characters
- * are the whole of the rule — verified against undici, which reports the
- * refusal by quoting the value back.
+ * a header value reaches a rejection message — verified against undici, which
+ * reports the refusal by quoting the value back.
+ *
+ * The test applies to the NORMALIZED value, never the caller's string. See
+ * {@link normalizeHeaderValue}: the two differ, and testing the wrong one is
+ * wrong in both directions.
  *
  * Spelled as `includes` calls rather than a character class, because a regexp
  * literal carrying a raw NUL is unreadable in a diff and in a review.
  */
 function isRefusedHeaderValue(value: string): boolean {
   return value.includes("\0") || value.includes("\r") || value.includes("\n");
+}
+
+/** Leading and trailing HTTP whitespace: HT, LF, CR, SP. */
+const HTTP_WHITESPACE = /^[\t\n\r ]+|[\t\n\r ]+$/g;
+
+/**
+ * A header value as the PLATFORM sees it.
+ *
+ * Two conversions run before validation does, and both change the string the
+ * refusal message quotes back:
+ *
+ *  - WebIDL converts the value to a `ByteString`, which is `String(value)`. A
+ *    JavaScript caller reaches this with the `string | string[]` shape Node's
+ *    `req.headers` produces.
+ *  - The Fetch Standard then strips leading and trailing HTTP whitespace, and
+ *    validates what is left.
+ *
+ * Skipping this was wrong in both directions. A padded credential —
+ * `"Basic AAAA\nsk_live_…\n"`, the shape a key read from a file has — is
+ * refused for the interior LF, but quoted back WITHOUT the trailing one, so a
+ * search for the caller's raw string found nothing and the credential reached
+ * `NetworkError.message`. And a value padded with ONLY whitespace tested as
+ * refused while the platform accepts it, which put an arbitrary string on the
+ * strike list for an unrelated message.
+ *
+ * Total: `String()` throws for a Symbol and for a hostile `toString`. A value
+ * that cannot be read cannot be redacted, and the URL pass still runs.
+ */
+function normalizeHeaderValue(value: unknown): string | null {
+  try {
+    return (typeof value === "string" ? value : String(value)).replace(HTTP_WHITESPACE, "");
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -506,7 +542,13 @@ function isRefusedHeaderValue(value: string): boolean {
 function refusedHeaderValues(headers: unknown): readonly string[] {
   const refused: string[] = [];
   const consider = (value: unknown): void => {
-    if (typeof value === "string" && isRefusedHeaderValue(value)) refused.push(value);
+    const normalized = normalizeHeaderValue(value);
+    if (normalized === null || !isRefusedHeaderValue(normalized)) return;
+    // BOTH forms, longest first. undici quotes the normalized value; a platform
+    // that quotes the caller's string back is not ruled out, and the raw form
+    // contains the normalized one, so striking it first cannot leave a tail.
+    if (typeof value === "string" && value !== normalized) refused.push(value);
+    refused.push(normalized);
   };
   try {
     if (headers === null || typeof headers !== "object") return refused;
