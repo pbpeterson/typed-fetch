@@ -125,6 +125,13 @@ describe("isKnownHttpError", () => {
   });
 
   test("false for UnknownHttpError, NetworkError, plain Error, and non-errors", () => {
+    // Status 404, not an unmapped one. Every negative case here used a status
+    // OUTSIDE the roster, so a guard that consulted only `statusCodeErrorMap`
+    // answered `false` for the same reason the real one does — and the brand
+    // check it is supposed to pin could be deleted with the suite still green.
+    // A 404 separates them: the status is in the roster, the brand is not on
+    // this object, and only the brand check can tell.
+    expect(isKnownHttpError(new UnknownHttpError(new Response(null, { status: 404 })))).toBe(false);
     expect(isKnownHttpError(new UnknownHttpError(new Response(null, { status: 420 })))).toBe(false);
     expect(isKnownHttpError(new NetworkError("fail"))).toBe(false);
     expect(isKnownHttpError(new Error("something"))).toBe(false);

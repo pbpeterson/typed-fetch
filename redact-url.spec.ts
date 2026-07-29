@@ -113,7 +113,15 @@ describe("redactUrlInMessage — a URL we already hold, removed from a foreign m
   test("a `$` in the path is not treated as a replacement pattern", () => {
     // `String.replaceAll` with a STRING replacement interprets `$&`, `$'`, …;
     // this uses a function replacer, so a `$` survives literally.
-    const url = "https://api.test/a$b/c?t=SECRET";
-    expect(redactUrlInMessage(`at ${url}`, url)).toBe("at https://api.test/a$b/c");
+    //
+    // The pattern has to be a REAL one. `$b` is not special to `replaceAll`, so
+    // a version of this test using it passed just as well with a string
+    // replacement — it proved nothing. `$&` is the whole match, so a string
+    // replacement would reinsert the full unredacted url, secret and all.
+    const url = "https://api.test/a$&b/c?t=SECRET";
+    const redacted = redactUrlInMessage(`at ${url}`, url);
+
+    expect(redacted).toBe("at https://api.test/a$&b/c");
+    expect(redacted).not.toContain("SECRET");
   });
 });

@@ -249,6 +249,12 @@ describe("error class consistency", () => {
 
     expect(instance).toBeInstanceOf(BaseHttpError);
     expect(instance).toBeInstanceOf(Error);
+    // Per class, not once for the roster. `isKnownHttpError` is the guard the
+    // README tells consumers to narrow with, and it keys off a brand carried by
+    // each class. Asserting it for a single sample left 39 classes free to lose
+    // the brand with the suite green — and a real 423 from `typedFetch` would
+    // then report `false`.
+    expect(isKnownHttpError(instance)).toBe(true);
   });
 
   test.each(allErrors)(
