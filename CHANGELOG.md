@@ -9,7 +9,7 @@
   and the options object untrusted. How far the library distrusts them is now a
   decision rather than an open question:
   [ADR 0003](./docs/adr/0003-the-untrusted-fetch-conformance-boundary.md) names
-  24 in-scope behaviors and what the caller gets for each, and eight that are
+  25 in-scope behaviors and what the caller gets for each, and eight that are
   permanently out of scope with the reason each cannot be closed. No runtime
   behavior changed; every row records what the library already did.
 
@@ -55,6 +55,39 @@
    changes which exception becomes the `NetworkError` cause when a response has
    several hostile getters: the body's shape is inspected before any identity
    field.
+6. A refused header value is now redacted as the platform NORMALIZES it, not as
+   the caller wrote it. The Fetch Standard strips leading and trailing HTTP
+   whitespace before it validates, and undici quotes the stripped value back —
+   so a credential padded with a newline, the shape a key read from a file has,
+   was searched for in a message that never contained it and reached
+   `NetworkError.message` intact. The value is also read the way WebIDL reads
+   it (`String()`), which covers the `string | string[]` shape a JavaScript
+   caller forwards from Node's `req.headers`. The same change removes a false
+   positive in the other direction: a value padded with ONLY whitespace is
+   accepted by the platform and is no longer put on the strike list.
+   (ADR 0003, row H-25.)
+7. `isResponse` records the status LAST of the identity reads. Reading `headers`
+   is itself a refusal point — a throwing getter answers with a `NetworkError`,
+   ADR 0003 row H-13 — so a status was still filed against a value the function
+   then refused. Item 5 above closed that across the structural checks; this
+   closes it across the identity reads. The same object presented twice, first
+   with a throwing `headers` getter and then complete and reporting `404`, was
+   answered with the recorded `200` and escaped through the success branch.
+8. `error.cancel()` no longer rejects when the body stream's own `cancel()`
+   answers with a non-thenable or throws synchronously. It rejected with a
+   `TypeError` about reading `catch` of `undefined`, which under Node's default
+   `--unhandled-rejections=throw` ends the process for a fire-and-forget
+   cleanup call — the exact failure the swallow was written to prevent. The
+   release now prefers the captured `ReadableStream.prototype.cancel`, so an
+   own `cancel` that resolves without releasing anything can no longer report a
+   freed connection that is still open.
+9. A body reader that throws SYNCHRONOUSLY gives the claim back. `readStarted`
+   latches before the platform reader, because a read that has started must
+   refuse every later reader — but a reader that threw never touched the
+   stream, and the latch left the body both unreadable and uncancellable:
+   `cancel()` took its `readStarted` early return and reported success over an
+   open connection. A REJECTED reader still keeps the claim; those bytes are
+   gone.
 
 ## [2.0.0] - 2026-07-26
 
