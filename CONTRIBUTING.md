@@ -353,19 +353,34 @@ Note that `pnpm typecheck` does **not** cover `scripts/`: `tsconfig.test.json`
 has no `allowJs`/`checkJs`. The `// @ts-check` comments and JSDoc types in these
 files are for editors and readers; do not rely on them for CI enforcement.
 
+## Read the audit ledger before reporting a defect
+
+[docs/audit-ledger.md](./docs/audit-ledger.md) records what has already been
+audited here: the evidence a finding must carry, the areas that were examined
+and found clean with the reasoning, and the reports that are correct about the
+code and still not defects because the trade was weighed and taken.
+
+This exists because a reviewer asked to find something finds something. Over
+twenty passes have run over this code, and the same reports returned each time —
+not because they were wrong once, but because nothing recorded that they had
+been settled. Add to the ledger when a pass settles something new.
+
+A finding that clears the bar and contradicts a ledger entry is welcome. It
+should name the entry and say why the reasoning there fails.
+
 ## Do not propose a new defense against a hostile `fetch` on its own
 
 `typedFetch` takes a `fetch` option, so the resolved value, the rejection, the
 signal, and the options object are all untrusted. The natural reaction, on
 finding one more thing a hostile implementation could do, is to add one more
-guard. Twenty-four percent of this repository's recent history is that reaction,
+guard. Seventeen percent of this repository's recent history is that reaction,
 and each guard became the surface the next round aimed at.
 
 How far the distrust goes is now a decision, not an open question. Read
 [ADR 0003](./docs/adr/0003-the-untrusted-fetch-conformance-boundary.md) first.
 A hostile-input report is exactly one of three things:
 
-1. **Already a row.** The in-scope table names 24 behaviors and what the caller
+1. **Already a row.** The in-scope table names 25 behaviors and what the caller
    gets for each. `fixtures/hostile-fetch.ts` drives every one end to end.
 2. **Out of scope, permanently.** The ADR lists eight, with the reason each
    cannot be closed or is not worth closing. A report that the library does not

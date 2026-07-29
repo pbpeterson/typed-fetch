@@ -9,7 +9,9 @@ description: >-
 
 # Using typed-fetch
 
-`typedFetch` wraps native `fetch`. It takes the same arguments (URL or `Request`, `RequestInit`).
+`typedFetch` wraps native `fetch`. It takes the same first argument (URL or `Request`) and a
+`TypedFetchOptions`, which is `RequestInit` with the `headers` and `method` slots replaced. Type a
+wrapper's own parameter as `TypedFetchOptions`, not `RequestInit` — see the README limitation.
 
 `typedFetch` resolves with a discriminated union. It does not reject for a
 request failure. Body readers are separate native operations, and they do

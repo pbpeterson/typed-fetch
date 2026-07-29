@@ -96,8 +96,10 @@ Words this codebase already uses, some of them only implicitly until now.
 - **Brand** — a `Symbol.for`-keyed marker stamped on a root error prototype so
   the guards recognize a value across copies. The authority on "did this library
   make this?" — not `instanceof`, and not assignability.
-- **The ownership query** — the one `Symbol.for`-keyed member that is callable
-  rather than a marker: `ownsResponse`, stamped on `BaseHttpError.prototype`,
+- **The ownership query** — the one member under this package's OWN
+  `Symbol.for` keys that is callable rather than a marker (the inspect hook is
+  callable too, but its key is the platform's):
+  `ownsResponse`, stamped on `BaseHttpError.prototype`,
   answering "do you own this exact `Response`?". It is the cross-copy
   counterpart of `ErrorBody.owns`. A brand cannot carry it, because a brand has
   one answer per class and this one is computed per instance and per response.
@@ -239,7 +241,8 @@ src/request-failure.ts        classifies a rejected request attempt as an
 src/headers.ts                StrictHeaders / TypedHeaders — autocomplete
                               only, no validation. INTERNAL.
 src/methods.ts                HttpMethods; excludes CONNECT and TRACE, which
-                              the Fetch spec forbids. INTERNAL.
+                              the Fetch spec forbids. PUBLIC: the root barrel
+                              re-exports the type.
 src/http-status-codes.ts      statusCodeErrorMap — a ReadonlyMap DERIVED from
                               the roster, not a source of truth. INTERNAL.
 src/errors/base-http-error    HTTP error IDENTITY: status, statusText, url,

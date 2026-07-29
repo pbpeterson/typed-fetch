@@ -1221,6 +1221,7 @@ All three classes define `toJSON()`. The record is `{ name, message, url }`.
 - A status of `0` stays on the success branch. Check `response.ok` or `response.type` for an opaque response.
 - `AbortSignal.any()` requires Node 20.3 or a later version.
 - Body semantics follow the runtime. On Bun a bare reader lock reports the body as used, so `cancel()` resolves instead of rejecting.
+- A value typed `RequestInit` is not assignable to `TypedFetchOptions` without `lib.dom`. `@types/node` types `HeadersInit`'s record arm as all-optional, so its values are `string | undefined`, and this library rejects `undefined` on every header name — a header set to `undefined` reaches the wire as the literal string `"undefined"`. Type a wrapper's own parameter as `TypedFetchOptions` instead, which is what the examples above do. Passing an object literal is unaffected.
 
 ### Non-goals
 

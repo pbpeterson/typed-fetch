@@ -439,6 +439,32 @@ export async function optionalHeader(): Promise<void> {
 }
 `;
 
+// The PRICE of the `undefined` rejection above, pinned rather than left
+// accidental — and compiled ONLY on the no-DOM profile, because `lib.dom`'s own
+// `HeadersInit` has no optional-valued arm and the assignment succeeds there.
+//
+// Rejecting `undefined` means undici's all-optional `HeaderRecord` is not
+// assignable either, so a value typed `RequestInit` is not assignable to
+// `TypedFetchOptions` on the profile this package targets first. A wrapper
+// types its own parameter as `TypedFetchOptions`, which is what the README
+// examples do. This file is where the trade is visible: restoring `RequestInit`
+// assignability means deleting the directive in `CONSUMER_NO_DOM_TS`, and this
+// directive would go unused in the same edit.
+const CONSUMER_REQUEST_INIT_TS = `
+import { typedFetch, type TypedFetchOptions } from "${PKG_NAME}";
+
+declare const nativeInit: RequestInit;
+export async function fromNativeInit(): Promise<void> {
+  // @ts-expect-error - RequestInit["headers"] admits string | undefined values
+  await typedFetch("https://example.test/x", nativeInit);
+}
+
+// The documented workaround, which must keep compiling.
+export async function fromTypedOptions(init: TypedFetchOptions = {}): Promise<void> {
+  await typedFetch("https://example.test/x", init);
+}
+`;
+
 // The DI seam under `exactOptionalPropertyTypes`. The README presents `fetch`
 // as the way to inject a test double, and the value a project actually holds is
 // often `typeof fetch | undefined` (a config field, an optional constructor
@@ -509,7 +535,7 @@ export const TYPECHECK_PASSES = [
     moduleResolution: "nodenext",
     lib: ["ES2023"],
     types: ["node"],
-    files: ["consumer.nodom.ts"],
+    files: ["consumer.nodom.ts", "consumer.reqinit.ts"],
   },
   // The same consumer with DOM also present.
   {
@@ -1040,6 +1066,7 @@ function main() {
 
   writeFileSync(join(consumer, "consumer.api.ts"), CONSUMER_TS);
   writeFileSync(join(consumer, "consumer.nodom.ts"), CONSUMER_NO_DOM_TS);
+  writeFileSync(join(consumer, "consumer.reqinit.ts"), CONSUMER_REQUEST_INIT_TS);
   writeFileSync(join(consumer, "consumer.eopt.ts"), CONSUMER_EOPT_TS);
   writeFileSync(join(consumer, "cross-format.cts"), CONSUMER_CJS_CTS);
   writeFileSync(join(consumer, "cross-format.mts"), CONSUMER_ESM_MTS);
