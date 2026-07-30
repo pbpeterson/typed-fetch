@@ -509,15 +509,18 @@ function requestUrl(input: FetchInput): string {
 }
 
 /**
- * The characters the Fetch Standard forbids inside a header value.
+ * The characters the Fetch Standard forbids inside a header name or a header
+ * value.
  *
- * A value carrying one is REFUSED by the platform, and refusal is the only way
- * a header value reaches a rejection message — verified against undici, which
- * reports the refusal by quoting the value back.
+ * A part carrying one is REFUSED by the platform, and refusal is the only way
+ * a header name or value reaches a rejection message — verified against undici,
+ * which reports the refusal by quoting the part back.
  *
- * The test applies to the NORMALIZED value, never the caller's string. See
- * {@link normalizeHeaderValue}: the two differ, and testing the wrong one is
- * wrong in both directions.
+ * WHAT is tested differs by part, because the platform's own preprocessing
+ * does. A VALUE is tested after normalization, never as the caller wrote it —
+ * see {@link considerHeaderValue}, where the two differ and testing the wrong
+ * one is wrong in both directions. A NAME is tested exactly as the caller wrote
+ * it: nothing is stripped off a name before it is validated.
  *
  * Spelled as `includes` calls rather than a character class, because a regexp
  * literal carrying a raw NUL is unreadable in a diff and in a review.
@@ -530,39 +533,26 @@ function isRefusedHeaderValue(value: string): boolean {
 const HTTP_WHITESPACE = /^[\t\n\r ]+|[\t\n\r ]+$/g;
 
 /**
- * A header value as the PLATFORM sees it.
+ * A header name or value as a STRING — the first of the two steps WebIDL calls
+ * a `ByteString` conversion, and the only one this collector can perform.
  *
- * Two conversions run before validation does, and both change the string the
- * refusal message quotes back:
+ * `ByteString` is `ToString(V)` FOLLOWED BY a range check: a code point above
+ * 255 is a `TypeError`, not a conversion. `String(value)` is therefore step one
+ * of two. A JavaScript caller reaches it with the `string | string[]` shape
+ * Node's `req.headers` produces.
  *
- *  - WebIDL converts the value to a `ByteString`. That is `ToString(V)` FOLLOWED
- *    BY a range check — a code point above 255 is a `TypeError`, not a
- *    conversion — so `String(value)` is step one of two. A JavaScript caller
- *    reaches this with the `string | string[]` shape Node's `req.headers`
- *    produces.
- *  - The Fetch Standard then strips leading and trailing HTTP whitespace, and
- *    validates what is left.
- *
- * The range check is why "a refused value is exactly a value carrying NUL, CR,
- * or LF" is a statement about THIS collector's bound, not about the platform's:
- * a non-Latin-1 value is refused too, and is classified here as accepted. That
+ * The range check is why "a refused part is exactly a part carrying NUL, CR, or
+ * LF" is a statement about THIS collector's bound, not about the platform's: a
+ * non-Latin-1 part is refused too, and is classified here as accepted. That
  * costs nothing today, because the `ByteString` rejection quotes an index and a
- * code point rather than the value, so there is no echo to strike.
+ * code point rather than the part, so there is no echo to strike.
  *
- * Skipping this was wrong in both directions. A padded credential —
- * `"Basic AAAA\nsk_live_…\n"`, the shape a key read from a file has — is
- * refused for the interior LF, but quoted back WITHOUT the trailing one, so a
- * search for the caller's raw string found nothing and the credential reached
- * `NetworkError.message`. And a value padded with ONLY whitespace tested as
- * refused while the platform accepts it, which put an arbitrary string on the
- * strike list for an unrelated message.
- *
- * Total: `String()` throws for a Symbol and for a hostile `toString`. A value
+ * Total: `String()` throws for a Symbol and for a hostile `toString`. A part
  * that cannot be read cannot be redacted, and the URL pass still runs.
  */
-function normalizeHeaderValue(value: unknown): string | null {
+function stringifyHeaderPart(value: unknown): string | null {
   try {
-    return (typeof value === "string" ? value : String(value)).replace(HTTP_WHITESPACE, "");
+    return typeof value === "string" ? value : String(value);
   } catch {
     return null;
   }
@@ -583,6 +573,13 @@ function normalizeHeaderValue(value: unknown): string | null {
  * channel rather than a disclosure one — but a gateway that builds a name from
  * request data makes it both.
  *
+ * NAMES AND VALUES NORMALIZE DIFFERENTLY, and each is collected the way the
+ * platform reads it. A value is stripped of leading and trailing HTTP
+ * whitespace before it is validated; a name is not. One shared path could only
+ * be wrong for one of them, and it was: the value normalizer erased an edge CR
+ * or LF off a name and filed it as accepted. See `considerHeaderName` and
+ * `considerHeaderValue` below.
+ *
  * The bound stays the platform's, not a heuristic: only a string carrying NUL,
  * CR, or LF is struck. A name refused merely for holding a space is echoed
  * intact, because it forges nothing and striking it would cost the diagnostic.
@@ -598,13 +595,44 @@ function normalizeHeaderValue(value: unknown): string | null {
  */
 function refusedHeaderValues(headers: unknown): readonly string[] {
   const refused: string[] = [];
-  const consider = (value: unknown): void => {
-    const normalized = normalizeHeaderValue(value);
-    if (normalized === null || !isRefusedHeaderValue(normalized)) return;
+  /**
+   * A NAME is tested as the caller wrote it. Nothing is stripped off a name
+   * before the platform validates it: it must match the `field-name` token
+   * production whole, so an edge CR or LF is a refusal and is quoted back.
+   *
+   * Running a name through the VALUE normalizer erased exactly the character
+   * that made it refused — `"\nX-Foo"` normalized to `"X-Foo"`, which tests as
+   * accepted — so the name was left off the strike list and the raw newline
+   * went into `NetworkError.message`. Only an INTERIOR newline survived that
+   * normalization, which is why the interior case looked covered.
+   */
+  const considerHeaderName = (value: unknown): void => {
+    const name = stringifyHeaderPart(value);
+    if (name === null || !isRefusedHeaderValue(name)) return;
+    refused.push(name);
+  };
+  /**
+   * A VALUE is tested as the PLATFORM normalizes it. The Fetch Standard strips
+   * leading and trailing HTTP whitespace off a value and validates what is
+   * left, and undici quotes that stripped form back.
+   *
+   * Skipping the strip was wrong in both directions. A padded credential —
+   * `"Basic AAAA\nsk_live_…\n"`, the shape a key read from a file has — is
+   * refused for the interior LF but quoted back WITHOUT the trailing one, so a
+   * search for the caller's raw string found nothing and the credential reached
+   * `NetworkError.message`. And a value padded with ONLY whitespace tested as
+   * refused while the platform accepts it, which put an arbitrary string on the
+   * strike list for an unrelated message.
+   */
+  const considerHeaderValue = (value: unknown): void => {
+    const raw = stringifyHeaderPart(value);
+    if (raw === null) return;
+    const normalized = raw.replace(HTTP_WHITESPACE, "");
+    if (!isRefusedHeaderValue(normalized)) return;
     // BOTH forms, longest first. undici quotes the normalized value; a platform
     // that quotes the caller's string back is not ruled out, and the raw form
     // contains the normalized one, so striking it first cannot leave a tail.
-    if (typeof value === "string" && value !== normalized) refused.push(value);
+    if (raw !== normalized) refused.push(raw);
     refused.push(normalized);
   };
   try {
@@ -621,14 +649,14 @@ function refusedHeaderValues(headers: unknown): readonly string[] {
         // the value with two calls would exhaust a one-shot inner iterable on
         // the first and hand the second nothing.
         const [name, value] = pairMembers(entry);
-        consider(name);
-        consider(value);
+        considerHeaderName(name);
+        considerHeaderValue(value);
       }
       return refused;
     }
     for (const [name, value] of Object.entries(headers as Record<string, unknown>)) {
-      consider(name);
-      consider(value);
+      considerHeaderName(name);
+      considerHeaderValue(value);
     }
   } catch {
     // Unreadable headers are not a reason to break the envelope.

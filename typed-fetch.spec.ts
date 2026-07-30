@@ -541,6 +541,45 @@ describe("typedFetch", () => {
     expect(result.error?.message).toContain("<redacted>");
   });
 
+  // A NAME gets no whitespace normalization. The Fetch Standard strips leading
+  // and trailing HTTP whitespace out of a VALUE before it validates; a name
+  // must match the `field-name` token production exactly as the caller wrote
+  // it. Running a name through the VALUE's normalizer erased the very CR or LF
+  // that made it refused, so the collector filed it as accepted and the raw
+  // newline went back into `message`. The interior case above never reaches
+  // this: only an edge newline is normalized away.
+  const edgeRefusedNames = [
+    ["a leading LF", "\nX-EDGE_NAME_SECRET"],
+    ["a trailing LF", "X-EDGE_NAME_SECRET\n"],
+    ["a leading CR", "\rX-EDGE_NAME_SECRET"],
+    ["a trailing CR", "X-EDGE_NAME_SECRET\r"],
+  ] as const;
+  const refusedNameContainers = [
+    ["a record", (n: string) => ({ [n]: "v" })],
+    ["an array of pairs", (n: string) => [[n, "v"]]],
+    ["an inner pair that is a Set", (n: string) => [new Set([n, "v"])]],
+  ] as const;
+
+  test.each(
+    refusedNameContainers.flatMap(([container, make]) =>
+      edgeRefusedNames.map(([position, name]) => [position, container, name, make] as const),
+    ),
+  )(
+    "a header name refused for %s, supplied as %s, cannot forge a log line",
+    async (_position, _container, name, make) => {
+      const result = await typedFetch("https://example.invalid/refused-header", {
+        headers: make(name) as never,
+      });
+
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expect(result.error?.message).not.toContain("EDGE_NAME_SECRET");
+      expect(result.error?.message).not.toContain("\r");
+      expect(result.error?.message).not.toContain("\n");
+      expect(result.error?.message).toContain("<redacted>");
+      expect(result.error?.message).toContain("invalid header name");
+    },
+  );
+
   test("a name refused for something that forges nothing is left readable", async () => {
     // The bound is the platform's, not "anything refused". A name holding a
     // space is invalid and echoed back, but it injects nothing, and striking it

@@ -376,7 +376,12 @@ export const HOSTILE_SCENARIOS: readonly HostileScenario[] = [
     title: "A refused header name cannot forge a log line either",
     // A name is refused on the same footing as a value, and quoted back the
     // same way. Collecting only values left the raw CRLF in the message.
-    options: () => ({ headers: { "X-Foo\r\nSet-Cookie: forged=1": "v" } as never }),
+    //
+    // The EDGE newlines are load-bearing. A name gets no whitespace
+    // normalization — only a value does — and running one through the value's
+    // normalizer erased an edge CR or LF, filed the name as accepted, and put
+    // the raw newline back in the message. An interior-only name never sees it.
+    options: () => ({ headers: { "\nX-Foo\r\nSet-Cookie: forged=1\r": "v" } as never }),
     outcome: { kind: "network" },
     verify: (error) => {
       const message = (error as { message: string }).message;
