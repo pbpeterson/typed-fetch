@@ -70,9 +70,27 @@ re-open one should read the reasoning first and say what it gets wrong.
 - **Signal, abort, and timeout interleaving.** The abort state is snapshotted
   under one guard. A network failure that merely coincides with an abort stays a
   `NetworkError`, and the three synchronous steps in the catch admit no
-  interleaving.
+  interleaving. Note the premise moved: `normalizeHeaderValue` calls `String()`,
+  so caller `toString`/`Symbol.toPrimitive` code CAN run there now. It is
+  synchronous, so the conclusion holds.
 - **Header-container coverage** matches WebIDL's `HeadersInit` conversion for a
-  record, an array of pairs, and a `Headers` instance.
+  record, an array of pairs, a `Headers` instance, an inner pair that is any
+  iterable rather than an `Array`, and a callable carrying own enumerable
+  properties. Names and values are both collected. The residual is a ONE-SHOT
+  inner iterable, exhausted by `fetch` before the failure path reads it — pinned
+  by a test so it cannot become silent.
+- **The spec claims in `src/`.** 22 statements about the Fetch Standard, WebIDL,
+  the Streams Standard, and the URL Standard were checked against the
+  specification text and against an executed probe. 20 were correct, including
+  the NUL/CR/LF refusal set, the whitespace normalization set,
+  `FOREIGN_RESPONSE_TYPES` against the IDL enum, `signal: null` detaching, the
+  synchronous `ReadableStreamCancel` chain, and the abort-reason mapping. The
+  two that were wrong are fixed (the `ByteString` range check and the
+  `getSetCookie` premise).
+- **The ordinary paths.** HEAD and 404 with a null body, 204 and 304 on the
+  success branch, an opaque response's real shape against
+  `hasTypedResponseIdentityScalars`, `method` normalization, a used `Request`,
+  and GET with a body. All behave as documented.
 
 ### The body lifecycle
 
@@ -95,6 +113,58 @@ re-open one should read the reasoning first and say what it gets wrong.
 - **`releaseResponseBody`** is hardened against hostile own getters, a replaced
   prototype, a shadowed `cancel`, a non-thenable return, a Proxy that refuses the
   prototype walk, and a non-Response argument.
+- **`stageIdentity`'s rollback** drops exactly the tables the refused call wrote,
+  and `IDENTITY_TABLES` is the whole set a successful read can write. A field
+  fixed by an earlier ACCEPTED call survives, which is what keeps TF-20 true.
+
+### What mutation testing measured
+
+The suite was scored mechanically: 1580 mutations enumerated from the
+TypeScript AST across every file under `src/`, each run against the 14 root spec
+files. Two things are worth carrying forward.
+
+- **The 40 status classes, `known-http-error`, and `unknown-http-error` score
+  100%.** The hand-written roster and its per-class assertions leave nothing
+  unprotected.
+- **The survivors that mattered were 11 gaps where the code was RIGHT and
+  nothing defended it.** Every one now has a test, and each test was verified to
+  fail against the mutation and pass against the real source: the three
+  `userinfo` shapes, the `cors`/`opaque`/`opaqueredirect` response types, the
+  399 side of the 400 boundary, the tag gate and the field-presence gate, a
+  `bodyUsed` that is not a boolean, a live UNaborted signal, the native-versus-
+  visible stream release, the `readStarted` early return, and both `inspect`
+  signposts.
+
+A large share of the remaining survivors are EQUIVALENT MUTANTS — provably
+unable to change behavior. They cluster in three places, and a future pass
+should recognise them rather than re-report them: null and primitive guards
+that sit in front of a `try`/`catch` which already returns the same verdict;
+`typeof x === "function"` checks on intrinsics captured at module load, where
+`Reflect.apply` would throw into the same `catch`; and `writable`/`configurable`
+descriptor flags on prototype members no consumer path rewrites (`enumerable` is
+killed everywhere it matters). `scripts/**` cannot participate at all — those
+specs import from `scripts/*.mjs` and never touch `src/`.
+
+### Other runtimes
+
+Measured, not assumed, on Deno 1.46.3 and Bun 1.3.13 against both constructed
+and network-backed responses.
+
+- **The Bun `bodyUsed` divergence is real and stated correctly.** A bare
+  `getReader()` sets `bodyUsed` on Bun and not on Node or Deno, and the
+  dependent behavior follows: `cancel()` on an externally locked body resolves
+  on Bun and rejects on Node and Deno. `bodyUsed` also latches after
+  `releaseLock()` on Bun, and Bun's own `Response.text()` then throws, so the
+  refusal is correct rather than a false negative.
+- **Identity, redaction, `toJSON`, the five guards, class selection, and the
+  success-surface check are byte-identical** on Deno and Bun to Node.
+- **The inspect channel holds on all three.** `Deno.inspect` and `Bun.inspect`
+  both honour `Symbol.for("nodejs.util.inspect.custom")`, and no address, header
+  value, or URL query leaks through inspect, `toJSON`, `JSON.stringify`,
+  `Object.keys`, the spread, `structuredClone`, or `String(error)`.
+- **The Node floor is set by undici, not by a JS API.** The newest built-in
+  `src/` uses is `Object.hasOwn` (Node 16.9). The floor is 20.13.0 because
+  `Response.clone()` has the wrong tee polarity below it — see the CHANGELOG.
 
 ### Disclosure
 

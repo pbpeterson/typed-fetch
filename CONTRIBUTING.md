@@ -380,7 +380,7 @@ How far the distrust goes is now a decision, not an open question. Read
 [ADR 0003](./docs/adr/0003-the-untrusted-fetch-conformance-boundary.md) first.
 A hostile-input report is exactly one of three things:
 
-1. **Already a row.** The in-scope table names 25 behaviors and what the caller
+1. **Already a row.** The in-scope table names 26 behaviors and what the caller
    gets for each. `fixtures/hostile-fetch.ts` drives every one end to end.
 2. **Out of scope, permanently.** The ADR lists eight, with the reason each
    cannot be closed or is not worth closing. A report that the library does not
