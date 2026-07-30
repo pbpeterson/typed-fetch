@@ -3069,4 +3069,63 @@ describe("typedFetch — the first successful identity reads are recorded", () =
     expect(accepted.error.status).toBe(404);
     await accepted.error.cancel();
   });
+
+  test("TF-23: a value refused by a LATER identity read keeps nothing from the earlier one", async () => {
+    // Ordering the identity reads cannot close this on its own. Whichever runs
+    // first is filed before the second can refuse the value, so a refused call
+    // always left something behind; reading `headers` before `status` only
+    // moved WHICH field was stranded.
+    //
+    // A stranded `headers` is not harmless. `hasCompatibleSuccessSurface` reads
+    // through the same cache, so it validated the `Headers` from the refused
+    // call — and a value whose `headers` is a plain `{ notHeaders: true }`
+    // escaped as a typed success whose `headers` had no `get`.
+    let statusThrows = true;
+    const shapeshifter: Record<string, unknown> = {
+      [Symbol.toStringTag]: "Response",
+      body: null,
+      bodyUsed: false,
+      ok: true,
+      redirected: false,
+      statusText: "OK",
+      type: "basic",
+      url: "https://example.invalid/late-identity",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone: () => shapeshifter,
+      formData: async () => new FormData(),
+      json: async () => ({}),
+      text: async () => "",
+    };
+    Object.defineProperty(shapeshifter, "headers", {
+      configurable: true,
+      get: () => new Headers({ "content-type": "application/json" }),
+    });
+    Object.defineProperty(shapeshifter, "status", {
+      configurable: true,
+      get() {
+        if (statusThrows) throw new Error("status getter exploded");
+        return 200;
+      },
+    });
+
+    const fetch = resolving(shapeshifter as unknown as Response);
+
+    const refused = await typedFetch("https://example.invalid/late-identity", { fetch });
+    expect(refused.error).toBeInstanceOf(NetworkError);
+
+    // The same object, now honest and STABLE — plain data properties, no
+    // shifting getter — but carrying a `headers` that is not a `Headers`.
+    statusThrows = false;
+    Object.defineProperty(shapeshifter, "status", { configurable: true, value: 200 });
+    Object.defineProperty(shapeshifter, "headers", {
+      configurable: true,
+      value: { notHeaders: true },
+    });
+
+    const second = await typedFetch("https://example.invalid/late-identity", { fetch });
+
+    expect(second.response).toBe(null);
+    expect(second.error).toBeInstanceOf(NetworkError);
+  });
 });

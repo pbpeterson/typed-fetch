@@ -387,6 +387,62 @@ export function identityOf(response: Response): ResponseIdentity {
 function noRevoke(): void {}
 
 /**
+ * Every table a successful identity read writes. The staging rollback below is
+ * the only reason this list exists as a list, and a new table that is not added
+ * here is a table a refused call can still leave behind.
+ *
+ * Typed as the two operations the rollback performs, so a `WeakMap` holding any
+ * value type is a member without a cast.
+ */
+const IDENTITY_TABLES: readonly {
+  has(key: object): boolean;
+  delete(key: object): boolean;
+}[] = [
+  statusByResponse,
+  numericStatusByResponse,
+  statusTextByResponse,
+  stringStatusTextByResponse,
+  urlByResponse,
+  stringUrlByResponse,
+  headersByResponse,
+  identityByResponse,
+];
+
+/**
+ * STAGE the identity reads of one validation, and return the rollback.
+ *
+ * "The first successful read fixes A RESPONSE's identity" — and a value this
+ * library goes on to REFUSE is not a response, so nothing may survive from a
+ * refused call. Recording each field as it is read is what keeps a later
+ * getter from changing an earlier answer, but every read is also a point where
+ * the NEXT read can still refuse the value, so the records must be revocable
+ * until the validation as a whole succeeds.
+ *
+ * Reading `headers` before `status` moved which field a refusal could strand;
+ * it could not stop one being stranded. A response whose `status` getter throws
+ * had its `headers` filed anyway, and the same object presented again — honest
+ * and stable, reporting a plain `{ notHeaders: true }` — was validated against
+ * the `Headers` from the refused call. `hasCompatibleSuccessSurface` reads
+ * through this same cache, so it saw the stale copy and let a value escape as a
+ * typed success whose `headers` had no `get`.
+ *
+ * The rollback removes only what THIS call recorded. A field already fixed by
+ * an earlier accepted call is that response's identity and stays.
+ */
+export function stageIdentity(response: Response): () => void {
+  if (!keyable(response)) return noRevoke;
+
+  const key: object = response;
+  const held = IDENTITY_TABLES.map((table) => table.has(key));
+
+  return () => {
+    for (const [index, table] of IDENTITY_TABLES.entries()) {
+      if (!held[index]) table.delete(key);
+    }
+  };
+}
+
+/**
  * LEND a response the identity it inherits, for the duration of one
  * construction, and return the revoke that takes the loan back.
  *

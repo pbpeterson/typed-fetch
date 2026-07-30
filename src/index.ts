@@ -16,7 +16,12 @@ import {
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
 import { classifyRequestFailure } from "./request-failure";
-import { hasTypedResponseIdentityScalars, headersOf, statusOf } from "./errors/response-identity";
+import {
+  hasTypedResponseIdentityScalars,
+  headersOf,
+  stageIdentity,
+  statusOf,
+} from "./errors/response-identity";
 import { releaseResponseBody } from "./errors/error-body";
 
 /** Realm-safe Request detection for iframe, node:vm, and duplicated-runtime inputs. */
@@ -202,24 +207,27 @@ function isResponse(value: unknown): value is Response {
   // requires the iterable Headers operations. Let the getter's own exception
   // escape to the envelope instead of hiding the real cause.
   //
-  // This read is ALSO a refusal point — a throwing getter is how H-13 refuses a
-  // value — so it runs BEFORE the status read, not after. Reading status first
-  // filed a status against a value this function then refused, which is the
-  // very thing the paragraph above forbids, reached through the other door:
-  // the same object, completed and re-presented as a 404, was answered with the
-  // recorded 200 and escaped through the success branch.
-  headersOf(value as Response);
-
-  // Record status LAST of the identity reads, once nothing further can refuse
-  // the value. The call below typedFetch reuses this value, and it is the read
-  // that selects the error class.
+  // Each of these reads is ALSO a refusal point — a throwing getter is how
+  // H-13 refuses a value — so they are STAGED. Ordering them alone cannot fix
+  // this: whichever runs first is filed before the second can refuse, and the
+  // refused value keeps it. Reading `headers` first and `status` last only
+  // moved which field was stranded, and a stranded `headers` is not harmless:
+  // `hasCompatibleSuccessSurface` reads through this same cache, so the stale
+  // copy from a refused call let a value escape as a typed success whose
+  // `headers` had no `get`.
   //
-  // RESIDUAL, stated rather than hidden: `headers` can still be filed against a
-  // value a throwing `status` getter then refuses. Unlike status, `headers`
-  // selects no class and gates no branch, so a stale one cannot move a request
-  // across the 400 boundary. Closing it too needs a two-phase commit in
-  // `response-identity`, which costs more than the failure it prevents.
-  statusOf(value as Response);
+  // The rollback drops only what this call recorded, so a field fixed by an
+  // earlier ACCEPTED call is still that response's identity.
+  const rollback = stageIdentity(value as Response);
+  try {
+    headersOf(value as Response);
+    statusOf(value as Response);
+  } catch (cause) {
+    rollback();
+    // Let the getter's own exception escape to the envelope instead of hiding
+    // the real cause behind the generic incompatible-Response error.
+    throw cause;
+  }
 
   validatedResponseStructures.add(value);
   return true;
