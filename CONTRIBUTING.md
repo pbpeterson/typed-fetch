@@ -5,7 +5,7 @@ library — contributions should stay small and mechanical too.
 
 ## Prerequisites
 
-- **Node.js >= 20** (`engines.node` in `package.json`).
+- **Node.js 20.13.0 or later** (`engines.node` in `package.json`).
 - **pnpm**, pinned to an exact version via `packageManager` in `package.json`
   (currently `pnpm@10.33.0`). If you use [corepack](https://nodejs.org/api/corepack.html),
   it will pick up the pinned version automatically.
@@ -42,7 +42,7 @@ Before opening a PR, all of these must pass:
 ```bash
 pnpm lint            # oxlint
 pnpm format:check    # oxfmt --check
-pnpm check-doc-style # links, controlled vocabulary, README Terms table (no build needed)
+pnpm check-doc-style # links, vocabulary, Terms table, Node floor (no build needed)
 pnpm typecheck       # tsc --noEmit -p tsconfig.test.json
 pnpm build           # tsup — confirm the package actually builds
 pnpm test            # vitest run — includes checks against the built dist/
@@ -209,7 +209,7 @@ manually. `check-docs` only proves the TypeScript example is well-formed.
 
 `scripts/check-doc-style.mjs` reads the documents as text. It needs no `dist/`
 and no `tsc`, so it runs before `pnpm build` and fails in milliseconds. It
-accumulates three classes of violation and prints all of them:
+accumulates four classes of violation and prints all of them:
 
 For TypeScript, it scans JSDoc on exported declarations and public members.
 The scanner excludes private, protected, non-exported, and `@internal`
@@ -224,9 +224,12 @@ declarations.
    terms as the controlled vocabulary in `docs/writing-standard.md`, in the same
    order, and each README meaning must begin with the standard's meaning. A
    README meaning can append one package-specific sentence.
+4. **A current Node.js floor that has drifted.** Current operational documents
+   must state the complete floor from `engines.node`. Major-only forms are
+   ambiguous and fail this check.
 
-Rules 1 and 2 read the same prose. Fenced code blocks and inline code spans are
-stripped first, so `` `cancelled` `` — the variable in
+Rules 1, 2, and 4 read prose. Fenced code blocks are stripped first. Rules 1
+and 2 also strip inline code spans, so `` `cancelled` `` — the variable in
 `src/errors/error-body.ts` — is never flagged as prose, and a Markdown link
 printed inside backticks is not read as a link.
 
@@ -635,6 +638,6 @@ export, or `status`/`statusText`. In short:
   `error.name` / `error.statusText` are.
 - Removing or renaming a named export, or changing a class's `status` /
   `statusText` literal, is `major`.
-- Dropping a supported Node major version is `major`.
+- Raising the minimum Node.js version is `major`.
 
 Full detail: [`RELEASING.md`](./RELEASING.md#semver-policy).

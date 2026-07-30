@@ -99,9 +99,10 @@ jobs:
   # The declared engines floor, actually executed. `node-version: 20` resolves
   # to the LATEST 20.x, so the matrix job above never runs the floor — which is
   # how the README's AbortSignal.any() recipe (Node 20.3.0+) went unnoticed
-  # against an `engines: >=20` floor, and how clone() + cancel() deadlocking on
-  # undici 5.x went unnoticed for longer. The toolchain does NOT run here: build
-  # and pack on 22, then switch to the floor and exercise the artifact only.
+  # against the former `engines: >=20` floor, and how clone() + cancel()
+  # deadlocking on undici 5.x went unnoticed for longer. The toolchain does NOT
+  # run here: build and pack on 22, then switch to the floor and exercise the
+  # artifact only.
   node-min-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 10

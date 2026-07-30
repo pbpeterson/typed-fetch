@@ -24,7 +24,7 @@ reject.
 - The success body is not pre-parsed. Call `response.json()` or `response.text()`.
 - `error.message` is diagnostic. Code must not parse it or assert on it. Branch on the error class or on `error.status`.
 - Every HTTP error carries a body. Read it or cancel it. See "Error response bodies".
-- `typedFetch` runs anywhere native `fetch` exists: Node 20+, browsers, Cloudflare Workers, Deno, and Bun.
+- `typedFetch` runs anywhere native `fetch` exists: Node.js 20.13.0 or later, browsers, Cloudflare Workers, Deno, and Bun.
 
 ## Basic usage
 
@@ -342,7 +342,7 @@ The exported types are `TypedResponse`, `TypedFetchOptions`,
 `TypedFetchReturnType`, `HttpMethods`, `ClientErrors`, `ServerErrors`, and
 `TypedFetchError`.
 
-`TypedResponse` names the response baseline supported by Node 20.0. It types
+`TypedResponse` names the response baseline supported by Node.js 20.13.0. It types
 `json()` and keeps that type through `clone()`. The runtime value can expose
 newer platform members.
 

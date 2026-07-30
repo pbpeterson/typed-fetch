@@ -5,10 +5,12 @@ import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, test } from "vitest";
 import {
   diffTermsTables,
+  findNodeFloorViolations,
   findRelativeLinks,
   findVocabularyViolations,
   FROZEN_ADR_FILES,
   judgeDocStyle,
+  NODE_FLOOR_FILES,
   parseTermsTable,
   README_FILE,
   toProseLines,
@@ -430,6 +432,93 @@ describe("diffTermsTables", () => {
   });
 });
 
+describe("findNodeFloorViolations", () => {
+  const RANGE = ">=20.13.0";
+  const hits = (...lines) => findNodeFloorViolations([doc(README_FILE, ...lines)], RANGE);
+
+  test("accepts the complete floor and an unrelated measured Node.js version", () => {
+    expect(
+      hits(
+        "Use Node.js 20.13.0 or a later version.",
+        "Measured on Node 20.15.0 with ten requests.",
+      ),
+    ).toEqual([]);
+  });
+
+  test("flags a major-only plus form even when the exact floor appears elsewhere", () => {
+    expect(hits("Use Node 20+.", "The package floor is 20.13.0.")).toContainEqual({
+      file: README_FILE,
+      line: 1,
+      rule: "major-only",
+      match: "Node 20+",
+      expected: "20.13.0",
+    });
+  });
+
+  test("flags a major-only reader instruction", () => {
+    const found = hits("Use Node.js 20 or a later version.", "The floor is 20.13.0.");
+    expect(found.map((hit) => hit.rule)).toContain("major-only");
+  });
+
+  test("flags a major-only engines range", () => {
+    const found = findNodeFloorViolations(
+      [doc("RELEASING.md", "Node engines stay `>=20`.", "The floor is 20.13.0.")],
+      RANGE,
+    );
+    expect(found.map((hit) => hit.rule)).toContain("major-only");
+  });
+
+  test("flags a wrong complete version in a floor statement", () => {
+    const found = hits("The Node.js floor is 20.0.0.", "Use Node.js 20.13.0 or a later version.");
+    expect(found).toContainEqual({
+      file: README_FILE,
+      line: 1,
+      rule: "wrong-version",
+      match: "20.0.0",
+      expected: "20.13.0",
+    });
+  });
+
+  test("requires the exact floor in every current operational document", () => {
+    expect(hits("This document names no runtime version.")).toEqual([
+      {
+        file: README_FILE,
+        line: 0,
+        rule: "missing-exact",
+        match: "",
+        expected: "20.13.0",
+      },
+    ]);
+  });
+
+  test("ignores a historical release record", () => {
+    expect(
+      findNodeFloorViolations(
+        [doc("CHANGELOG.md", "Node 20+ was the supported range for this release.")],
+        RANGE,
+      ),
+    ).toEqual([]);
+  });
+
+  test("ignores a major-only form inside a fenced example", () => {
+    expect(hits("The package floor is 20.13.0.", FENCE + "text", "Use Node 20+.", FENCE)).toEqual(
+      [],
+    );
+  });
+
+  test("rejects an engines range shape that the writing policy does not define", () => {
+    expect(findNodeFloorViolations([], "^20.13.0")).toEqual([
+      {
+        file: "package.json",
+        line: 0,
+        rule: "invalid-range",
+        match: "^20.13.0",
+        expected: ">=X.Y.Z",
+      },
+    ]);
+  });
+});
+
 describe("judgeDocStyle", () => {
   const TERMS = md(
     "| Term    | Meaning          |",
@@ -437,17 +526,25 @@ describe("judgeDocStyle", () => {
     "| rejects | A promise fails. |",
   );
   const clean = () => ({
-    docs: [doc("CONTRIBUTING.md", "A signal can abort the request.")],
+    docs: [
+      doc(
+        "CONTRIBUTING.md",
+        "Use Node.js 20.13.0 or a later version.",
+        "A signal can abort the request.",
+      ),
+    ],
     readmeSource: TERMS,
     standardSource: TERMS,
+    nodeRange: ">=20.13.0",
   });
 
-  test("a clean corpus is ok with three empty results", () => {
+  test("a clean corpus is ok with four empty results", () => {
     const verdict = judgeDocStyle(clean());
     expect(verdict.ok).toBe(true);
     expect(verdict.relativeLinks).toEqual([]);
     expect(verdict.vocabulary).toEqual([]);
     expect(verdict.terms.missing).toEqual([]);
+    expect(verdict.nodeFloor).toEqual([]);
   });
 
   test("ok is false when only the links fail", () => {
@@ -459,7 +556,13 @@ describe("judgeDocStyle", () => {
   test("ok is false when only the vocabulary fails", () => {
     const verdict = judgeDocStyle({
       ...clean(),
-      docs: [doc("CONTRIBUTING.md", "The cancellation is late.")],
+      docs: [
+        doc(
+          "CONTRIBUTING.md",
+          "Use Node.js 20.13.0 or a later version.",
+          "The cancellation is late.",
+        ),
+      ],
     });
     expect(verdict.ok).toBe(false);
     expect(verdict.vocabulary).toHaveLength(1);
@@ -471,18 +574,29 @@ describe("judgeDocStyle", () => {
     expect(verdict.terms.unparsed).toEqual([README_FILE]);
   });
 
-  test("all three failing are reported in ONE verdict", () => {
-    // The accumulating contract: a thrown error would truncate the report to
-    // the first failure (CONTRIBUTING.md:255-259).
+  test("ok is false when only the Node.js floor fails", () => {
     const verdict = judgeDocStyle({
-      docs: [doc("CONTRIBUTING.md", "The cancellation is late.")],
+      ...clean(),
+      docs: [doc("CONTRIBUTING.md", "Use Node 20+.")],
+    });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.nodeFloor.length).toBeGreaterThan(0);
+  });
+
+  test("all four failing are reported in ONE verdict", () => {
+    // The accumulating contract: a thrown error would truncate the report to
+    // the first failure (CONTRIBUTING.md → "How a release gate is shaped").
+    const verdict = judgeDocStyle({
+      docs: [doc("CONTRIBUTING.md", "Use Node 20+. The cancellation is late.")],
       readmeSource: md("[a](./LICENSE)"),
       standardSource: TERMS,
+      nodeRange: ">=20.13.0",
     });
     expect(verdict.ok).toBe(false);
     expect(verdict.relativeLinks).toHaveLength(1);
     expect(verdict.vocabulary).toHaveLength(1);
     expect(verdict.terms.unparsed).toEqual([README_FILE]);
+    expect(verdict.nodeFloor.length).toBeGreaterThan(0);
   });
 
   test("missing files are policy facts in the accumulating verdict", () => {
@@ -496,9 +610,28 @@ describe("judgeDocStyle", () => {
     // correct, not a violation.
     const verdict = judgeDocStyle({
       ...clean(),
-      docs: [doc("CONTRIBUTING.md", "Read [the standard](./docs/writing-standard.md).")],
+      docs: [
+        doc(
+          "CONTRIBUTING.md",
+          "Use Node.js 20.13.0 or a later version.",
+          "Read [the standard](./docs/writing-standard.md).",
+        ),
+      ],
     });
     expect(verdict.ok).toBe(true);
+  });
+});
+
+describe("NODE_FLOOR_FILES", () => {
+  test("contains only current operational documents", () => {
+    expect(NODE_FLOOR_FILES).toEqual([
+      README_FILE,
+      "CONTRIBUTING.md",
+      "RELEASING.md",
+      "skills/typed-fetch/SKILL.md",
+      ".claude/skills/typed-fetch-maintainer/SKILL.md",
+      "docs/audit-ledger.md",
+    ]);
   });
 });
 

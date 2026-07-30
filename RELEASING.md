@@ -20,7 +20,7 @@ attestation.
 - `.github/workflows/release.yml` triggers on `push: tags: ["v*"]` — nothing
   else publishes.
 - The tag workflow first calls `.github/workflows/ci.yml` as a reusable
-  workflow. Its Node 20/22/24, security, Bun, Deno, and Node-floor (20.0.0) jobs
+  workflow. Its Node 20/22/24, security, Bun, Deno, and Node-floor (20.13.0) jobs
   must all pass before the publish job can start.
 
   The Deno job installs the packed package by its bare npm name. It typechecks
@@ -159,7 +159,7 @@ Run every step, in order, for every release:
    The consumer gate requires Deno 2. It resolves the unpublished local tarball
    from `node_modules`. The tag workflow enforces all three validations.
    For parity with the `node-min-smoke` job, also run
-   `pnpm smoke:node-min` — but ONLY with a real Node **20.0.0** binary. The
+   `pnpm smoke:node-min` — but ONLY with a real Node **20.13.0** binary. The
    script warns instead of failing on a newer runtime, so running it on your
    default Node proves nothing about the `engines` floor.
 3. **Commit the release candidate and open a PR:**
@@ -224,8 +224,8 @@ the rule, not intuition.
 5. **Every publish gets a `v<version>` git tag**, and the tag push is what
    triggers the release workflow. No untagged npm versions, ever (see
    [why this document exists](#why-this-document-exists)).
-6. **Node engines stay `>=20`.** Dropping support for a Node major version is
-   a `major` release.
+6. **Node engines stay `>=20.13.0`.** Raising the minimum Node.js version is a
+   `major` release.
 7. **A `Symbol.for` key that crosses package copies is a contract between
    package versions. Never change the meaning of an existing key. A new
    question gets a new key.** `Symbol.for` resolves to one symbol for the whole

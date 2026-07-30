@@ -6,6 +6,9 @@ The style is inspired by aviation maintenance manuals. Those manuals are read
 under pressure, by people who work in a second or third language. This package
 has readers in the same position.
 
+The direct English is intentional. A restricted vocabulary and repeated terms
+help international readers reach the same meaning.
+
 NOTE: This document does not claim conformance with ASD-STE100 or any other
 formal standard. It borrows the ideas only.
 
@@ -38,6 +41,22 @@ other repository file must be an absolute URL, or a reader who opens it from
 
 The documentation must let a reader find a procedure, apply it, and know what
 happens next. It must not ask the reader to infer a rule from an example.
+
+## Compatibility facts
+
+Machine-readable files are the sources for compatibility facts. `package.json`
+is the source for the current Node.js floor.
+
+Write all three version components in current compatibility prose. For a range
+of `>=X.Y.Z`, write "Node.js X.Y.Z or later" in reader instructions.
+
+Do not shorten the value to the major version. A minor version can be required
+for correct behavior.
+
+`pnpm check-doc-style` compares current operational documents with this field.
+
+Historical release records keep the compatibility statement that applied to
+that release.
 
 ## Language rules
 

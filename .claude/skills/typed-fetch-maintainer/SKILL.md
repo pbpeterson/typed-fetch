@@ -243,9 +243,9 @@ every gate before you commit. With Deno 2 installed, also run
   Never replace it with an object spread: inherited/WebIDL properties,
   private-backed getters, and cross-realm `Request` behavior must survive, and
   accessor failures must stay inside the error envelope.
-- CI verifies Node 20, 22, and 24, a Node-floor job pinned to 20.0.0, plus Bun
+- CI verifies Node 20, 22, and 24, a Node-floor job pinned to 20.13.0, plus Bun
   and Deno. The floor job runs `pnpm smoke:node-min`, which proves nothing
-  unless it runs on a real Node 20.0.0 binary — on a newer runtime it warns
+  unless it runs on a real Node 20.13.0 binary — on a newer runtime it warns
   instead of failing. Browser and edge support follows from the Web-standard-only
   implementation, but a runtime is not verified until its smoke test exists.
   Keep Node APIs outside production source.

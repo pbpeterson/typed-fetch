@@ -33,8 +33,8 @@ Read `CONTRIBUTING.md` for the gates. Then, before reporting anything:
 
 - **State the trigger.** The exact input or sequence, not a shape.
 - **State the wrong outcome.** What a caller observes, not what could go wrong.
-- **Check the suite.** Grep for a test that already asserts it. 1294 tests pass;
-  a great many findings are already pinned.
+- **Check the suite.** Grep for a test that already asserts it. The suite has
+  extensive regression coverage, and many findings are already pinned.
 - **Prefer a failing test to an argument.** If a failing test cannot be written,
   it is not a finding yet.
 - **An empty result is a good result.** Reporting nothing is a valid outcome of
@@ -163,7 +163,7 @@ and network-backed responses.
   value, or URL query leaks through inspect, `toJSON`, `JSON.stringify`,
   `Object.keys`, the spread, `structuredClone`, or `String(error)`.
 - **The Node floor is set by undici, not by a JS API.** The newest built-in
-  `src/` uses is `Object.hasOwn` (Node 16.9). The floor is 20.13.0 because
+  `src/` uses is `Object.hasOwn` (Node 16.9). The Node.js floor is 20.13.0 because
   `Response.clone()` has the wrong tee polarity below it — see the CHANGELOG.
 
 ### Disclosure
@@ -230,7 +230,7 @@ Correct about the code. Not defects.
 
 2. **`TypedResponse<T>` is not assignable to `Response`,** because it does not
    promise `bytes()`. Promising it would hand consumers a method that does not
-   exist on the Node 20.0 floor this package declares.
+   exist on the Node.js 20.13.0 floor this package declares.
 
 3. **A brand can be forged or stripped.** `Symbol.for` is process-global and an
    instance-level property can shadow a prototype one. Both require the consumer

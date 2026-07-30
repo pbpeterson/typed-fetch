@@ -61,12 +61,12 @@ if (order > 0) {
     `${MINIMUM.join(".")} floor. This run does NOT prove floor support.`;
   if (process.env.CI) {
     // In CI the whole point of this job is the floor. If the runtime is not
-    // 20.0.0, the setup-node step is misconfigured and a green run would be a
+    // 20.13.0, the setup-node step is misconfigured and a green run would be a
     // lie — fail rather than warn.
     console.error(`${notice} Refusing to report a pass in CI.`);
     process.exit(1);
   }
-  // Locally, a developer may not have a 20.0.0 binary. Say so loudly instead
+  // Locally, a developer may not have a 20.13.0 binary. Say so loudly instead
   // of failing, so the smoke stays runnable during development.
   console.warn(`${notice}`);
 }

@@ -2,33 +2,38 @@
 // @ts-check
 
 // ---------------------------------------------------------------------------
-// check-doc-style.mjs — read the documentation as TEXT and enforce the three
+// check-doc-style.mjs — read the documentation as TEXT and enforce the four
 // rules of `docs/writing-standard.md` that a regular expression can decide.
 //
 // WHY THIS EXISTS, AND WHY IT IS NOT `check-docs`
 //   `check-docs` compiles fenced TypeScript against `dist/`, so it needs a
-//   build and it takes seconds. None of the three checks below needs `dist/`
+//   build and it takes seconds. None of the four checks below needs `dist/`
 //   and none needs `tsc`. Folding them into `check-docs` would put a
 //   relative-link typo behind a full build, which is the wrong feedback loop;
-//   splitting them into three gates would give three files that read the same
-//   corpus and print three reports. So: one extra gate, running BEFORE
+//   splitting them into four gates would give four files that read the same
+//   corpus and print four reports. So: one extra gate, running BEFORE
 //   `pnpm build`, failing in milliseconds.
 //
 // WHAT IT DECIDES
 //   1. A relative link in `README.md`. `README.md` is the only document in the
 //      npm tarball, so a link to any other repository file must be an absolute
-//      URL (`docs/writing-standard.md:26-28`). A `#fragment` is allowed.
+//      URL (`docs/writing-standard.md` → README link rule). A `#fragment` is
+//      allowed.
 //   2. A controlled-vocabulary violation in PROSE. A request is aborted; an
 //      error body is canceled.
 //   3. A README Terms table that has drifted from the controlled vocabulary in
 //      `docs/writing-standard.md`.
+//   4. A current Node.js floor that has drifted from `engines.node`.
 //
-//   Both text rules read the same prose. `toProseLines` strips fenced blocks
-//   and inline code spans, so `` `cancelled` `` — the variable in
+//   Rules 1 and 2 read the same prose. `toProseLines` strips fenced blocks and
+//   inline code spans, so `` `cancelled` `` — the variable in
 //   `src/errors/error-body.ts` — is never flagged as prose, and a Markdown link
 //   printed inside backticks is not read as a link. Rule 1 used to scan the raw
 //   line, and the asymmetry was a defect in rule 1: it flagged a document for
 //   showing an example of the thing it forbids.
+//
+//   Rule 4 also strips fenced blocks, but it keeps inline code. Compatibility
+//   ranges normally use inline code, and the gate must compare those values.
 //
 // WHAT IT CANNOT SEE
 //   The rules are lexical, and they are also LINE-BY-LINE. Both limits are
@@ -69,9 +74,12 @@ export const README_FILE = "README.md";
 /** The source of the controlled vocabulary. The README Terms table copies it. */
 export const WRITING_STANDARD_FILE = "docs/writing-standard.md";
 
-// The writing standard's own scope, verbatim (`docs/writing-standard.md:12-14`),
-// minus the two globbed parts. Hand-maintained, exactly like `check-docs`'s
-// Markdown roster: each entry is a deliberate public document.
+/** The machine-readable source for the supported Node.js range. */
+export const PACKAGE_FILE = "package.json";
+
+// The writing standard's own scope, minus the two globbed parts. Hand-maintained,
+// exactly like `check-docs`'s Markdown roster: each entry is a deliberate
+// public document.
 export const STYLE_MARKDOWN_SOURCES = [
   README_FILE,
   "CHANGELOG.md",
@@ -80,6 +88,21 @@ export const STYLE_MARKDOWN_SOURCES = [
   "RELEASING.md",
   "skills/typed-fetch/SKILL.md",
   ".claude/skills/typed-fetch-maintainer/SKILL.md",
+];
+
+/**
+ * Current operational documents that state the Node.js floor.
+ *
+ * Historical release records are not here. Their old compatibility statements
+ * remain correct for the releases that they describe.
+ */
+export const NODE_FLOOR_FILES = [
+  README_FILE,
+  "CONTRIBUTING.md",
+  "RELEASING.md",
+  "skills/typed-fetch/SKILL.md",
+  ".claude/skills/typed-fetch-maintainer/SKILL.md",
+  "docs/audit-ledger.md",
 ];
 
 // `docs/writing-standard.md` is the ONE document that must write a forbidden
@@ -99,7 +122,7 @@ export const FROZEN_ADR_FILES = [
 ];
 
 // ---------------------------------------------------------------------------
-// THE DECISION, part 1 of 4: prose extraction.
+// THE DECISION, part 1 of 5: prose extraction.
 // Pure. One output line per input line, so every index is a source location.
 // ---------------------------------------------------------------------------
 
@@ -109,8 +132,8 @@ export const FROZEN_ADR_FILES = [
 
 /**
  * Replace an inline code span with a single space. A code span holds code
- * identifiers, which `docs/writing-standard.md:18-20` exempts from the
- * vocabulary: `` `cancelled` `` names a variable and must not be flagged.
+ * identifiers, which the writing standard exempts from the vocabulary:
+ * `` `cancelled` `` names a variable and must not be flagged.
  *
  * An UNMATCHED backtick is left alone. Treating it as an opener would swallow
  * the rest of the line and silently stop scanning real prose.
@@ -261,7 +284,7 @@ export function toProseLines(source, format) {
 }
 
 // ---------------------------------------------------------------------------
-// THE DECISION, part 2 of 4: the controlled vocabulary.
+// THE DECISION, part 2 of 5: the controlled vocabulary.
 // ---------------------------------------------------------------------------
 
 /** @typedef {{ id: string, pattern: RegExp, message: string }} VocabularyRule */
@@ -274,8 +297,8 @@ const V = "cancel(?:s|ed|led|ing|ling)?";
  *
  * `stop-the-request` matches only `the`. It began as
  * `stop (the|a|an|this|that|every) request` and flagged `README.md:41` and
- * `docs/writing-standard.md:78` — "An `AbortSignal` stops a request", which is
- * the canonical DEFINITION of the term in both Terms tables. The standard
+ * the writing standard — "An `AbortSignal` stops a request", which is the
+ * canonical DEFINITION of the term in both Terms tables. The standard
  * forbids the phrase "stop the request" specifically, so the rule does too.
  * @type {VocabularyRule[]}
  */
@@ -342,7 +365,7 @@ export function findVocabularyViolations(docs) {
 }
 
 // ---------------------------------------------------------------------------
-// THE DECISION, part 3 of 4: links in README.md.
+// THE DECISION, part 3 of 5: links in README.md.
 // ---------------------------------------------------------------------------
 
 /** A link target that carries a scheme, e.g. `https:`, `http:`, `mailto:`. */
@@ -392,7 +415,7 @@ export function findRelativeLinks(source) {
 }
 
 // ---------------------------------------------------------------------------
-// THE DECISION, part 4 of 4: the README Terms table against the standard.
+// THE DECISION, part 4 of 5: the README Terms table against the standard.
 // ---------------------------------------------------------------------------
 
 /** @typedef {{ term: string, meaning: string }} TermRow */
@@ -494,6 +517,105 @@ export function termsAgree(diff) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// THE DECISION, part 5 of 5: current Node.js floor against package.json.
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {{
+ *   file: string,
+ *   line: number,
+ *   rule: "invalid-range" | "missing-exact" | "major-only" | "wrong-version",
+ *   match: string,
+ *   expected: string,
+ * }} NodeFloorViolation
+ */
+
+/**
+ * Find current compatibility prose that disagrees with `engines.node`.
+ *
+ * This check is deliberately narrower than a SemVer parser. The package policy
+ * uses one range shape: `>=X.Y.Z`. A different shape needs a policy decision
+ * before the documents can describe it.
+ *
+ * @param {StyleDoc[]} docs
+ * @param {string} nodeRange
+ * @returns {NodeFloorViolation[]}
+ */
+export function findNodeFloorViolations(docs, nodeRange) {
+  const range = nodeRange.match(/^>=\s*(\d+)\.(\d+)\.(\d+)$/);
+  if (!range) {
+    return [
+      {
+        file: PACKAGE_FILE,
+        line: 0,
+        rule: "invalid-range",
+        match: nodeRange,
+        expected: ">=X.Y.Z",
+      },
+    ];
+  }
+
+  const floor = `${range[1]}.${range[2]}.${range[3]}`;
+  const major = range[1];
+  const majorOnlyPatterns = [
+    new RegExp(`\\bNode(?:\\.js)?\\s+${major}\\+`, "i"),
+    new RegExp(
+      `\\bNode(?:\\.js)?\\s+${major}\\s+(?:or\\s+(?:a\\s+)?later(?:\\s+version)?|is\\s+the\\s+minimum\\s+version)\\b`,
+      "i",
+    ),
+    new RegExp(`\\bNode(?:\\.js)?[^\\n]{0,16}>=\\s*${major}(?!\\.)`, "i"),
+    new RegExp(`\\bNode-floor\\s*\\(\\s*${major}(?!\\.)`, "i"),
+  ];
+  const floorContext =
+    /\b(?:Node(?:\.js)?[- ]floor|minimum version|pinned to|real Node|baseline supported by|Node engines stay)\b/i;
+  const exactVersion = /\b(\d+)\.(\d+)\.(\d+)\b/g;
+  /** @type {NodeFloorViolation[]} */
+  const violations = [];
+
+  for (const { file, source } of docs) {
+    if (!NODE_FLOOR_FILES.includes(file)) continue;
+    const lines = maskFencedBlocks(source.split("\n"));
+
+    if (!lines.some((line) => line.includes(floor))) {
+      violations.push({
+        file,
+        line: 0,
+        rule: "missing-exact",
+        match: "",
+        expected: floor,
+      });
+    }
+
+    for (const [index, line] of lines.entries()) {
+      const majorOnly = majorOnlyPatterns.map((pattern) => line.match(pattern)).find(Boolean);
+      if (majorOnly) {
+        violations.push({
+          file,
+          line: index + 1,
+          rule: "major-only",
+          match: majorOnly[0],
+          expected: floor,
+        });
+      }
+
+      if (!floorContext.test(line)) continue;
+      for (const match of line.matchAll(exactVersion)) {
+        if (match[1] !== major || match[0] === floor) continue;
+        violations.push({
+          file,
+          line: index + 1,
+          rule: "wrong-version",
+          match: match[0],
+          expected: floor,
+        });
+      }
+    }
+  }
+
+  return violations;
+}
+
 /**
  * THE verdict. This gate ACCUMULATES, so it returns a record and never throws:
  * an exception carries one message, and the report must print every failure
@@ -507,6 +629,7 @@ export function termsAgree(diff) {
  *   docs: StyleDoc[],
  *   readmeSource: string,
  *   standardSource: string,
+ *   nodeRange: string,
  *   missingFiles?: string[],
  * }} input
  * @returns {{
@@ -514,23 +637,33 @@ export function termsAgree(diff) {
  *   relativeLinks: { line: number, target: string }[],
  *   vocabulary: { file: string, line: number, rule: string, match: string }[],
  *   terms: TermsDiff,
+ *   nodeFloor: NodeFloorViolation[],
  *   ok: boolean,
  * }}
  */
-export function judgeDocStyle({ docs, readmeSource, standardSource, missingFiles = [] }) {
+export function judgeDocStyle({
+  docs,
+  readmeSource,
+  standardSource,
+  nodeRange,
+  missingFiles = [],
+}) {
   const relativeLinks = findRelativeLinks(readmeSource);
   const vocabulary = findVocabularyViolations(docs);
   const terms = diffTermsTables(parseTermsTable(readmeSource), parseTermsTable(standardSource));
+  const nodeFloor = findNodeFloorViolations(docs, nodeRange);
   return {
     missingFiles,
     relativeLinks,
     vocabulary,
     terms,
+    nodeFloor,
     ok:
       missingFiles.length === 0 &&
       relativeLinks.length === 0 &&
       vocabulary.length === 0 &&
-      termsAgree(terms),
+      termsAgree(terms) &&
+      nodeFloor.length === 0,
   };
 }
 
@@ -597,7 +730,15 @@ function main() {
   const byFile = new Map(docs.map((d) => [d.file, d.source]));
   const readmeSource = byFile.get(README_FILE) ?? "";
   const standardSource = byFile.get(WRITING_STANDARD_FILE) ?? "";
-  const verdict = judgeDocStyle({ docs, readmeSource, standardSource, missingFiles });
+  const packageJson = JSON.parse(readFileSync(join(repoRoot, PACKAGE_FILE), "utf8"));
+  const nodeRange = packageJson.engines?.node ?? "";
+  const verdict = judgeDocStyle({
+    docs,
+    readmeSource,
+    standardSource,
+    nodeRange,
+    missingFiles,
+  });
 
   console.log(`check-doc-style: scanned ${docs.length} documentation sources`);
 
@@ -644,12 +785,26 @@ function main() {
     }
   }
 
+  if (verdict.nodeFloor.length > 0) {
+    console.error(`\ncheck-doc-style: ${verdict.nodeFloor.length} Node.js floor violation(s)`);
+    for (const hit of verdict.nodeFloor) {
+      const location = hit.line === 0 ? hit.file : `${hit.file}:${hit.line}`;
+      if (hit.rule === "missing-exact") {
+        console.error(`  ${location} [${hit.rule}] expected ${hit.expected}`);
+        continue;
+      }
+      console.error(`  ${location} [${hit.rule}] "${hit.match}" (expected ${hit.expected})`);
+    }
+  }
+
   if (!verdict.ok) {
     console.error("\nRead docs/writing-standard.md, then fix the documents.");
     process.exit(1);
   }
 
-  console.log("check-doc-style: OK — links, controlled vocabulary, and the Terms table agree.");
+  console.log(
+    "check-doc-style: OK — links, controlled vocabulary, Terms table, and Node floor agree.",
+  );
 }
 
 // Importing this module must do nothing at all. isMainModule resolves symlinks

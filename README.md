@@ -90,7 +90,9 @@ Install the package:
 npm install @pbpeterson/typed-fetch
 ```
 
-Use Node.js 20 or a later version. You can also use a browser, Deno, Bun, or an edge runtime with native Fetch.
+Use Node.js 20.13.0 or later.
+
+You can also use a browser, Deno, Bun, or an edge runtime with native Fetch.
 
 ### Agent skill
 
@@ -727,7 +729,7 @@ if (isAbortError(error)) {
 
 The first signal that aborts decides the result. A manual abort resolves with `AbortedError`. The deadline resolves with `TimeoutError`.
 
-`AbortSignal.any()` requires Node 20.3 or a later version. The package floor is Node 20.13.0, so this procedure is available on every supported version.
+`AbortSignal.any()` requires Node.js 20.3.0 or later. The package floor is Node.js 20.13.0, so this procedure is available on every supported version.
 
 On an older runtime, use one signal. Give `AbortSignal.timeout()` for a deadline, or a controller signal for a manual abort.
 
@@ -1223,7 +1225,8 @@ All three classes define `toJSON()`. The record is `{ name, message, url }`.
 - `error.json<T>()` and `response.json<T>()` are unchecked compile-time casts. They perform no runtime validation.
 - The `headers` and `method` types give autocomplete only. They validate no name and no value.
 - A status of `0` stays on the success branch. Check `response.ok` or `response.type` for an opaque response.
-- `AbortSignal.any()` requires Node 20.3 or a later version.
+- `AbortSignal.any()` requires Node.js 20.3.0 or later. The package floor
+  is Node.js 20.13.0, so every supported Node.js version provides it.
 - Body semantics follow the runtime. On Bun a bare reader lock reports the body as used, so `cancel()` resolves instead of rejecting.
 - A value typed `RequestInit` is not assignable to `TypedFetchOptions` without `lib.dom`. `@types/node` types `HeadersInit`'s record arm as all-optional, so its values are `string | undefined`, and this library rejects `undefined` on every header name — a header set to `undefined` reaches the wire as the literal string `"undefined"`. Type a wrapper's own parameter as `TypedFetchOptions` instead, which is what the examples above do. Passing an object literal is unaffected.
 
@@ -1250,7 +1253,7 @@ This library does not include these features:
 5. A removed or renamed export requires a major release.
 6. A change to a `status` literal requires a major release.
 7. A matching `vX.Y.Z` Git tag must start each npm release.
-8. Node.js 20 is the minimum version. A higher minimum requires a major release.
+8. Node.js 20.13.0 is the minimum version. A higher minimum requires a major release.
 9. A `Symbol.for` key that crosses package copies is a contract between package versions. Its meaning never changes, and a new question gets a new key. A change to an existing key makes `clone(recreate)` throw a `TypeError` for an install that holds two package copies.
 
 Keep a `default` branch in a known-status switch. A newer package version can move a status from `UnknownHttpError` to a dedicated class, and the `default` branch keeps that code correct.
