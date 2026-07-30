@@ -9,7 +9,7 @@
   and the options object untrusted. How far the library distrusts them is now a
   decision rather than an open question:
   [ADR 0003](./docs/adr/0003-the-untrusted-fetch-conformance-boundary.md) names
-  25 in-scope behaviors and what the caller gets for each, and eight that are
+  26 in-scope behaviors and what the caller gets for each, and eight that are
   permanently out of scope with the reason each cannot be closed. No runtime
   behavior changed; every row records what the library already did.
 
@@ -88,6 +88,70 @@
    `cancel()` took its `readStarted` early return and reported success over an
    open connection. A REJECTED reader still keeps the claim; those bytes are
    gone.
+10. Identity reads are STAGED, and a refused value keeps nothing. Ordering them
+    could never close this: whichever read ran first was filed before the second
+    could refuse the value. Reading `headers` before `status` only moved which
+    field was stranded — and a stranded `headers` is not harmless, because
+    `hasCompatibleSuccessSurface` reads through the same cache. A response whose
+    `status` getter threw had its `headers` filed anyway, and the same object
+    presented again, honest and stable but carrying a `headers` that was not a
+    `Headers`, escaped as a typed success whose `headers` had no `get`. The
+    rollback drops only what the refused call recorded; a field fixed by an
+    earlier accepted call is still that response's identity.
+11. A refused header NAME no longer reaches the message. A name is refused on
+    the same footing as a value and quoted back the same way, so
+    `{ "X-Foo\r\nSet-Cookie: forged=1": "v" }` put a raw CRLF into `message` —
+    the log-forging half of the hazard that item 1 closed for values. The bound
+    stays the platform's: a name refused merely for holding a space is echoed
+    intact, because it forges nothing. (ADR 0003, row H-26.)
+12. Header containers WebIDL accepts are read the way WebIDL reads them. A
+    `sequence` is converted through the value's own iterator, so
+    `[new Set([name, value])]` is a valid pair — and `Array.isArray` refused it,
+    which put the credential back in the message. A callable carrying own
+    enumerable properties is a record to the platform for the same reason.
+    A one-shot inner iterable stays a stated residual: `fetch` consumed it
+    first, and there is nothing left to read.
+13. `redactUrlInMessage` no longer rewrites the parts of a message that are not
+    the URL. `replaceAll` has no notion of how distinctive its needle is, and
+    the needle is the caller's url — which can be one character. `typedFetch("a")`
+    rejects with `Failed to parse URL from a`, and because `redactUrl("a")` is
+    `/a` the pass fired and rewrote every `a` in the platform's own wording:
+    `F/ailed to p/arse URL from /a`. The pass is now bounded the way the header
+    pass already was — it runs when the url can hold a secret at all, which a
+    relative url does only when it spells a userinfo, a query, or a fragment.
+    Nothing was disclosed; the redacted form is redacted by construction. The
+    one relative-url test this function had used a path whose redacted form is
+    identical, which is exactly the shape that dodges it.
+
+### Changed
+
+- **`engines.node` is now `>=20.13.0`.** The declared floor was `>=20`, and it
+  was wrong: on Node 20.0 through 20.12 the two-branch cleanup this package
+  documents — `await Promise.all([error.cancel(), copy.cancel()])` — never
+  settles, and 16 of this repository's own tests fail. undici 5.x gives
+  `Response.clone()` the opposite tee polarity, so cancelling the branch hangs
+  forever while cancelling the source returns at once; undici 6.13.0, which
+  ships in Node 20.13.0, has the polarity this library was written against.
+  Raw `ReadableStream.tee()` is correct on every runtime measured, so the
+  comments calling this "native `ReadableStream` behavior" described `clone()`,
+  not the primitive.
+
+  `scripts/smoke/node-min.mjs` is the gate that exists to execute the floor, and
+  it ran for months without ever calling `clone()`. It does now, with a timeout,
+  because the failure mode is a hang and a hung smoke reports nothing.
+
+### Documented (corrections)
+
+- `TypedResponse` omits `Response.bytes()` and `Headers.getSetCookie()` for
+  DIFFERENT reasons, and the second was stated wrongly. `bytes()` is absent from
+  the floor. `getSetCookie()` is present there — undici has shipped it since
+  5.19 — and is omitted because a foreign response is not validated for it.
+  `error.headers` is a real `Headers`, so it is available there.
+- The `ByteString` conversion is `ToString` FOLLOWED BY a range check, not
+  `String(value)` alone. A value above Latin-1 is refused by the platform and
+  classified as accepted by the collector; that costs nothing today, because the
+  rejection quotes an index and a code point rather than the value. Three files
+  reasoned from the shorter version of this sentence.
 
 ## [2.0.0] - 2026-07-26
 
