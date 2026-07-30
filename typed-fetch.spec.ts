@@ -3070,6 +3070,99 @@ describe("typedFetch — the first successful identity reads are recorded", () =
     await accepted.error.cancel();
   });
 
+  // ── Gates the suite named but never pinned ──────────────────────────────
+  // Each of these was a mutation that survived the whole suite: the code was
+  // right and nothing protected it.
+
+  test.each(["cors", "opaque", "opaqueredirect", "default", "error"])(
+    "a success whose response.type is %s is accepted, not refused",
+    async (type) => {
+      // Node only ever produces `basic` and `default`, so `FOREIGN_RESPONSE_TYPES`
+      // was asserted for those two alone. Blanking the `cors` member turned
+      // EVERY genuine cross-origin success into an incompatible-surface
+      // NetworkError — the widest blast radius in the file, invisible here.
+      const response = new Response("{}", { status: 200 });
+      Object.defineProperty(response, "type", { configurable: true, value: type });
+
+      const result = await typedFetch("https://example.invalid/type", {
+        fetch: resolving(response),
+      });
+
+      expect(result.error).toBe(null);
+      expect(result.response?.type).toBe(type);
+    },
+  );
+
+  test("a status of 399 is a success — the boundary is pinned from BELOW too", async () => {
+    // `400 → 401` was killed; `400 → 399` was not. Nothing asserted that the
+    // largest status below the boundary stays on the success branch.
+    const response = new Response("{}", { status: 399 });
+
+    const result = await typedFetch("https://example.invalid/399", {
+      fetch: resolving(response),
+    });
+
+    expect(result.error).toBe(null);
+    expect(result.response?.status).toBe(399);
+  });
+
+  test("a structurally complete object with no Response tag is refused", async () => {
+    // The tag gate could be made to never refuse, and a plain object with the
+    // whole surface then became a NotFoundError — or, on the success path, a
+    // TypedResponse.
+    const untagged = {
+      body: null,
+      bodyUsed: false,
+      headers: new Headers(),
+      ok: false,
+      redirected: false,
+      status: 404,
+      statusText: "Not Found",
+      type: "basic",
+      url: "https://example.invalid/untagged",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone: () => untagged,
+      formData: async () => new FormData(),
+      json: async () => ({}),
+      text: async () => "",
+    };
+
+    const result = await typedFetch("https://example.invalid/untagged", {
+      fetch: resolving(untagged as unknown as Response),
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+  });
+
+  test("a Response-tagged double missing ok, redirected, and type is refused", async () => {
+    // The FOREIGN_RESPONSE_FIELDS presence gate. Without it a 404 double
+    // missing three fields became a NotFoundError instead of a NetworkError.
+    const partial = {
+      [Symbol.toStringTag]: "Response",
+      body: null,
+      bodyUsed: false,
+      headers: new Headers(),
+      status: 404,
+      statusText: "Not Found",
+      url: "https://example.invalid/partial",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone: () => partial,
+      formData: async () => new FormData(),
+      json: async () => ({}),
+      text: async () => "",
+    };
+
+    const result = await typedFetch("https://example.invalid/partial", {
+      fetch: resolving(partial as unknown as Response),
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+  });
+
   test("TF-23: a value refused by a LATER identity read keeps nothing from the earlier one", async () => {
     // Ordering the identity reads cannot close this on its own. Whichever runs
     // first is filed before the second can refuse the value, so a refused call

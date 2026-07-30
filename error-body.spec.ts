@@ -549,6 +549,75 @@ describe("errorBodyOf — cancel() releases without buffering", () => {
   });
 });
 
+describe("errorBodyOf — the native-vs-visible release choice", () => {
+  test("a FOREIGN stream is released through its own cancel, not the intrinsic", async () => {
+    // The choice at the release step is a branch, and forcing it either way
+    // survived the whole suite. Forcing the captured
+    // `ReadableStream.prototype.cancel` onto a foreign stream makes the
+    // `Reflect.apply` throw into the swallowing catch: `cancel()` resolves
+    // while the source is never released — the leak this module exists to
+    // prevent, reported as success.
+    let cancelled = false;
+    const foreignStream = {
+      locked: false,
+      cancel: async () => {
+        cancelled = true;
+      },
+      getReader: () => ({}),
+      pipeThrough: () => ({}),
+      pipeTo: async () => undefined,
+      tee: () => [],
+    };
+    const response = {
+      bodyUsed: false,
+      body: foreignStream,
+      json: async () => ({}),
+      text: async () => "",
+      blob: async () => new Blob(),
+      arrayBuffer: async () => new ArrayBuffer(0),
+      clone: () => response,
+    } as unknown as Response;
+
+    await expect(errorBodyOf(response).cancel()).resolves.toBeUndefined();
+
+    expect(cancelled).toBe(true);
+  });
+});
+
+describe("errorBodyOf — cancel() after OUR OWN completed read", () => {
+  test("resolves even when the runtime leaves the stream locked and bodyUsed false", async () => {
+    // The `readStarted` early return exists because a completed read leaves the
+    // stream locked on some runtimes, and the lock test below it would then
+    // reject. Removing it made `cancel()` reject with the locked-by-a-reader
+    // TypeError after this library's own successful read — contradicting the
+    // documented idempotence — and nothing in the suite noticed, because a real
+    // Node `Response` sets `bodyUsed` too.
+    const { response } = trackedResponse();
+    const realStream = response.body as ReadableStream<Uint8Array>;
+    let readFinished = false;
+    Object.defineProperty(response, "body", {
+      configurable: true,
+      value: new Proxy(realStream, {
+        get(target, property) {
+          // The runtime shape the early return is written for: free before the
+          // read, locked by the finished read, and NOT reported as used.
+          if (property === "locked") return readFinished;
+          const value = Reflect.get(target, property, target) as unknown;
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
+    });
+    Object.defineProperty(response, "bodyUsed", { configurable: true, value: false });
+
+    const body = errorBodyOf(response);
+    expect(await body.text()).toBe("payload");
+    readFinished = true;
+
+    await expect(body.cancel()).resolves.toBeUndefined();
+    await expect(body.cancel()).resolves.toBeUndefined();
+  });
+});
+
 describe("errorBodyOf — a reader that throws synchronously", () => {
   test("gives the claim back, so the body can still be cancelled", async () => {
     // `readStarted` latches BEFORE the platform reader, because a read that has

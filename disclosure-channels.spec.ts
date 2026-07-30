@@ -436,6 +436,33 @@ describe("disclosure channels — cause and reason", () => {
     expect(inspect(new NetworkError("boom"))).not.toContain("read error.cause");
   });
 
+  // The `reason` twin of the case above. Only the `cause` negative was pinned,
+  // so forcing the `reason` guard to `true` printed
+  // `reason: '[not shown - read error.reason]'` on every NotFoundError and
+  // NetworkError — a signpost to a member they do not carry.
+  test.each([
+    ["a NetworkError", () => new NetworkError("boom")],
+    ["an HTTP error", () => new NotFoundError(new Response(null, { status: 404 }))],
+  ])("no reason signpost when %s carries none", (_label, make) => {
+    const rendered = inspect(make(), { depth: null });
+
+    expect(rendered).not.toContain("read error.reason");
+    expect(rendered).not.toContain("reason:");
+  });
+
+  test("a nested error renders its record until Node's own depth cut-off", () => {
+    // The hook matches Node's placeholder rule. Both `depth < 0` boundary
+    // mutations survived, and either one makes an error nested inside an object
+    // collapse to `[NetworkError]` a level EARLIER than a plain object would —
+    // the record vanishes from a log that Node would still have printed.
+    const error = new NetworkError("boom");
+
+    expect(inspect({ level1: error }, { depth: 1 })).toContain("NetworkError");
+    expect(inspect({ level1: error }, { depth: 1 })).not.toBe("[NetworkError]");
+    // At the cut-off Node prints the placeholder, and so does the hook.
+    expect(inspect({ a: { b: { c: error } } }, { depth: 0 })).toContain("[Object]");
+  });
+
   test("RESIDUAL: structuredClone carries the cause, and there is no hook", () => {
     // The HTML error serialization steps copy `cause`. `structuredClone` and
     // `postMessage` consult neither `toJSON` nor any inspect symbol, so this is

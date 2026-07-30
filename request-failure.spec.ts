@@ -120,6 +120,29 @@ describe("classifyRequestFailure — the abort gate", () => {
     expect(error.cause).toBe(unrelated);
   });
 
+  // The other half of "necessary": a signal that is PRESENT and never aborted.
+  // The module's headline contract is that an abort-shaped rejection cannot
+  // claim an abort the signal never confirmed — and every case pinning it
+  // passed `signal: undefined`, which reaches the early return in `abortState`
+  // rather than the `signal.aborted` read. Forcing that read to `true` was
+  // invisible to the whole suite.
+  test.each([
+    ["AbortError", new DOMException("Aborted", "AbortError"), "AbortedError"],
+    ["TimeoutError", new DOMException("The operation timed out.", "TimeoutError"), "TimeoutError"],
+  ])(
+    "a live, UNaborted signal refuses a rejection merely named %s",
+    (_label, rejection, wouldBe) => {
+      const signal = new AbortController().signal;
+      expect(signal.aborted).toBe(false);
+
+      const error = classifyRequestFailure(rejection, signal, URL_UNDER_TEST);
+
+      expect(error).toBeInstanceOf(NetworkError);
+      expect(error.name).not.toBe(wouldBe);
+      expect(error.cause).toBe(rejection);
+    },
+  );
+
   test("arm 2: a polyfill's OWN fresh DOMException is still the cancellation", () => {
     const reason = new Error("user navigated away");
     const polyfillAbort = new DOMException("Aborted", "AbortError");
