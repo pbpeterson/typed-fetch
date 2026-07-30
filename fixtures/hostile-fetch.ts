@@ -371,6 +371,21 @@ export const HOSTILE_SCENARIOS: readonly HostileScenario[] = [
       if (message.includes("\n")) throw new Error("a raw newline reached the message");
     },
   },
+  {
+    id: "H-26",
+    title: "A refused header name cannot forge a log line either",
+    // A name is refused on the same footing as a value, and quoted back the
+    // same way. Collecting only values left the raw CRLF in the message.
+    options: () => ({ headers: { "X-Foo\r\nSet-Cookie: forged=1": "v" } as never }),
+    outcome: { kind: "network" },
+    verify: (error) => {
+      const message = (error as { message: string }).message;
+      if (message.includes("Set-Cookie")) throw new Error("the name reached the message");
+      if (message.includes("\r") || message.includes("\n")) {
+        throw new Error("a raw newline reached the message");
+      }
+    },
+  },
 ] as const;
 
 export { URL_UNDER_TEST };

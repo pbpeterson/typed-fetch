@@ -540,9 +540,23 @@ function normalizeHeaderValue(value: unknown): string | null {
 }
 
 /**
- * The header values the platform must refuse, collected from the caller's
+ * The header strings the platform must refuse, collected from the caller's
  * `headers` so `classifyRequestFailure` can strike them out of the message the
  * platform hands back.
+ *
+ * NAMES AND VALUES BOTH. A name is refused on the same footing as a value — the
+ * Fetch Standard requires a name to match the `field-name` token production —
+ * and the platform quotes a refused name back exactly as it quotes a refused
+ * value: `Headers.append: "X-Foo\r\nSet-Cookie: evil=1" is an invalid header
+ * name.` Collecting only values left the raw CRLF in `message`, which is the
+ * log-forging half of the same hazard, reached through the other member of the
+ * pair. A name is not usually a credential, so this closes the injection
+ * channel rather than a disclosure one — but a gateway that builds a name from
+ * request data makes it both.
+ *
+ * The bound stays the platform's, not a heuristic: only a string carrying NUL,
+ * CR, or LF is struck. A name refused merely for holding a space is echoed
+ * intact, because it forges nothing and striking it would cost the diagnostic.
  *
  * Total: a hostile `headers` — a throwing getter, an exotic iterator, a Proxy —
  * cannot make the envelope reject. What cannot be read cannot be redacted, and
@@ -565,20 +579,67 @@ function refusedHeaderValues(headers: unknown): readonly string[] {
     refused.push(normalized);
   };
   try {
-    if (headers === null || typeof headers !== "object") return refused;
+    // `isObjectLike`, not `typeof === "object"`. WebIDL converts a `HeadersInit`
+    // record from ANY object, and a function is an object: a callable carrying
+    // own enumerable properties is a record to the platform, and skipping it
+    // left its values uncollected.
+    if (!isObjectLike(headers)) return refused;
     // A `Headers` instance and an array of name/value pairs are both iterable
     // and both yield pairs. A plain record is neither, and is read by value.
     if (typeof (headers as Iterable<unknown>)[Symbol.iterator] === "function") {
       for (const entry of headers as Iterable<unknown>) {
-        if (Array.isArray(entry)) consider(entry[1]);
+        // ONE pass over the entry, both members out of it. Reading the name and
+        // the value with two calls would exhaust a one-shot inner iterable on
+        // the first and hand the second nothing.
+        const [name, value] = pairMembers(entry);
+        consider(name);
+        consider(value);
       }
       return refused;
     }
-    for (const value of Object.values(headers as Record<string, unknown>)) consider(value);
+    for (const [name, value] of Object.entries(headers as Record<string, unknown>)) {
+      consider(name);
+      consider(value);
+    }
   } catch {
     // Unreadable headers are not a reason to break the envelope.
   }
   return refused;
+}
+
+/**
+ * Both members of one `sequence<sequence<ByteString>>` entry — the name and the
+ * value — read in a single pass.
+ *
+ * `Array.isArray` is not the test WebIDL applies. A `sequence` is converted
+ * through the value's OWN iterator, so `[new Set([name, value])]` and
+ * `[generatorOfTwoStrings()]` are both valid pair containers to the platform —
+ * and reading only real arrays left their members uncollected, which put the
+ * credential back in `NetworkError.message`.
+ *
+ * RESIDUAL, and the reason this is best effort: a ONE-SHOT iterable is already
+ * exhausted by the time this runs. `fetch` converted it first, and there is no
+ * second pass to read. That member cannot be collected by anything short of
+ * converting `headers` before the request, which would double every conversion
+ * on the success path to redact a message the success path never produces.
+ */
+function pairMembers(entry: unknown): readonly [unknown, unknown] {
+  if (Array.isArray(entry)) return [entry[0], entry[1]];
+  if (!isObjectLike(entry)) return [undefined, undefined];
+  if (typeof (entry as Iterable<unknown>)[Symbol.iterator] !== "function") {
+    return [undefined, undefined];
+  }
+
+  let name: unknown;
+  let value: unknown;
+  let index = 0;
+  for (const member of entry as Iterable<unknown>) {
+    if (index === 0) name = member;
+    else if (index === 1) value = member;
+    else break;
+    index += 1;
+  }
+  return [name, value];
 }
 
 /**

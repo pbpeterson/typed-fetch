@@ -471,6 +471,19 @@ describe("typedFetch", () => {
     // WebIDL converts a non-string to a ByteString with `String()`. A JavaScript
     // caller reaches this by forwarding Node's `string | string[]` headers.
     ["a record whose value is not a string", (v: string) => ({ authorization: [v] })],
+    // A `sequence` is converted through the value's OWN iterator, so an inner
+    // pair need not be an `Array`. Reading only real arrays left these two
+    // uncollected, and the credential went back into the message.
+    ["an inner pair that is a Set", (v: string) => [new Set(["authorization", v])]],
+    [
+      "an inner pair that is a Map's entry iterator",
+      (v: string) => [new Map([["authorization", v]]).entries().next().value],
+    ],
+    // WebIDL builds a record from ANY object, and a function is an object.
+    [
+      "a callable carrying own enumerable properties",
+      (v: string) => Object.assign(function noop() {}, { authorization: v }),
+    ],
   ])("a refused header value supplied as %s stays out of the message", async (_label, make) => {
     // A wrapped base64 credential: the LF is what makes the platform refuse it,
     // and refusal is the only way a header value reaches a message at all.
@@ -505,6 +518,61 @@ describe("typedFetch", () => {
     expect(result.error?.message).not.toContain("sk_live_CONTROL_CHAR_SECRET");
     expect(result.error?.message).not.toContain(char);
     expect(result.error?.message).toContain("<redacted>");
+  });
+
+  // A NAME is refused on the same footing as a value, and the platform quotes it
+  // back the same way. Collecting only values left the raw CRLF in `message` —
+  // the log-forging half of the hazard, through the other member of the pair.
+  test.each([
+    ["a record", (n: string) => ({ [n]: "v" })],
+    ["an array of pairs", (n: string) => [[n, "v"]]],
+    ["an inner pair that is a Set", (n: string) => [new Set([n, "v"])]],
+  ])("a refused header name supplied as %s cannot forge a log line", async (_label, make) => {
+    const name = "X-Foo\r\nSet-Cookie: session=forged";
+
+    const result = await typedFetch("https://example.invalid/refused-header", {
+      headers: make(name) as never,
+    });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.message).not.toContain("\r");
+    expect(result.error?.message).not.toContain("\n");
+    expect(result.error?.message).not.toContain("Set-Cookie");
+    expect(result.error?.message).toContain("<redacted>");
+  });
+
+  test("a name refused for something that forges nothing is left readable", async () => {
+    // The bound is the platform's, not "anything refused". A name holding a
+    // space is invalid and echoed back, but it injects nothing, and striking it
+    // would cost the diagnostic for no gain.
+    const result = await typedFetch("https://example.invalid/refused-header", {
+      headers: { "X Foo": "v" } as never,
+    });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.message).not.toContain("<redacted>");
+  });
+
+  test("a ONE-SHOT inner pair is the documented residual, not a silent success", async () => {
+    // `fetch` converted the generator first, so by the time the failure path
+    // reads `headers` there is nothing left to iterate. Collecting it would
+    // mean converting `headers` before the request and paying that cost on the
+    // success path, to redact a message the success path never produces.
+    //
+    // Pinned rather than left to rot: if a later change makes this redact, the
+    // residual in `pairValue` is stale and the comment must go with it.
+    const secret = "Basic AAAA\nsk_live_ONE_SHOT_RESIDUAL";
+    const pair = (function* () {
+      yield "authorization";
+      yield secret;
+    })();
+
+    const result = await typedFetch("https://example.invalid/refused-header", {
+      headers: [pair] as never,
+    });
+
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.message).toContain("sk_live_ONE_SHOT_RESIDUAL");
   });
 
   test("unreadable headers leave the message unredacted rather than breaking the envelope", async () => {

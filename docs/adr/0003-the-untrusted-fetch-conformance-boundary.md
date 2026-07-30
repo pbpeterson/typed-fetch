@@ -93,6 +93,7 @@ scenario fails.
 | H-23 | A Request-shaped input whose url is not a string                                        | `NetworkError`                 |
 | H-24 | A header value the platform refuses never reaches the message                           | `NetworkError`                 |
 | H-25 | A refused header value is redacted as the platform normalizes it, not as it was written | `NetworkError`                 |
+| H-26 | A refused header name cannot forge a log line either                                    | `NetworkError`                 |
 
 Two decisions about a hostile implementation live in their own records and are
 in scope by reference, not repeated here:
