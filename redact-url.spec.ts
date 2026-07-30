@@ -89,6 +89,24 @@ describe("redactUrlInMessage — a URL we already hold, removed from a foreign m
     expect(redacted).not.toContain("hunter2");
   });
 
+  // `userinfoOf` has three shapes and the suite only ever exercised one. Both
+  // halves of its guard and both arms of its ternary were free to be wrong: a
+  // password-only credential could return `""` (no second pass at all) and a
+  // username-only one could return `alice:@` (a needle that matches nothing).
+  // Either way the credential survives whenever the platform re-serialized the
+  // href, which is the case the second pass exists for.
+  test.each([
+    ["both halves", "http://alice:hunter2@api.test/v1", "hunter2"],
+    ["a password only", "http://:hunter2@api.test/v1", "hunter2"],
+    ["a username only", "http://alice@api.test/v1", "alice"],
+  ])("userinfo with %s is removed from a re-serialized message", (_label, url, secret) => {
+    // undici adds the default port, so the exact-href pass misses and only the
+    // userinfo pass can catch this.
+    const message = `connect failed: ${url.replace("api.test", "api.test:80")}`;
+
+    expect(redactUrlInMessage(message, url)).not.toContain(secret);
+  });
+
   test("a message that does not mention the URL is untouched", () => {
     expect(redactUrlInMessage("fetch failed", "https://api.test/x?t=SECRET")).toBe("fetch failed");
   });
@@ -108,6 +126,32 @@ describe("redactUrlInMessage — a URL we already hold, removed from a foreign m
 
   test("no URL to redact leaves the message alone", () => {
     expect(redactUrlInMessage("fetch failed", "")).toBe("fetch failed");
+  });
+
+  // `replaceAll` has no notion of how distinctive its needle is, and the needle
+  // here is the caller's url — which can be one character. The pass fired for a
+  // relative url whose redacted form differed by NORMALIZATION alone, and
+  // rewrote the platform's own wording: `typedFetch("a")` produced
+  // `F/ailed to p/arse URL from /a`.
+  //
+  // The earlier relative-url case used `/v1/things`, where the redacted form is
+  // identical and the pass is a no-op — the one shape that dodges this.
+  test.each([
+    ["a", "Failed to parse URL from a", "Failed to parse URL from a"],
+    ["from", "Failed to parse URL from from", "Failed to parse URL from from"],
+    ["URL", "Failed to parse URL from URL", "Failed to parse URL from URL"],
+  ])(
+    "a relative url with nothing to redact (%s) leaves the wording alone",
+    (url, message, want) => {
+      expect(redactUrlInMessage(message, url)).toBe(want);
+    },
+  );
+
+  test.each([
+    ["a query", "/v1/things?token=SECRET", "/v1/things"],
+    ["a fragment", "/v1/things#SECRET", "/v1/things"],
+  ])("a relative url carrying %s is still redacted", (_label, url, want) => {
+    expect(redactUrlInMessage(`Failed to fetch ${url}`, url)).toBe(`Failed to fetch ${want}`);
   });
 
   test("a `$` in the path is not treated as a replacement pattern", () => {

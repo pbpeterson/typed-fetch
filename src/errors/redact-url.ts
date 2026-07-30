@@ -97,6 +97,26 @@ function userinfoOf(url: string): string {
 }
 
 /**
+ * Does this URL carry a slot a secret can sit in?
+ *
+ * An ABSOLUTE URL always can — userinfo, query, fragment, and an opaque scheme
+ * whose whole body is the datum. A RELATIVE one only carries a slot when it
+ * spells one, and without a slot its redacted form differs from the original
+ * through normalization alone (`a` becomes `/a`), which is a rewrite with
+ * nothing to gain and a diagnostic to lose.
+ */
+function hasRedactableSlot(url: string): boolean {
+  try {
+    // The read is what makes this a parse rather than a discarded `new`.
+    // `URL.canParse` would say the same thing and is not on every runtime this
+    // module already supports through `try`/`catch`.
+    return Boolean(new URL(url).protocol);
+  } catch {
+    return url.includes("@") || url.includes("?") || url.includes("#");
+  }
+}
+
+/**
  * Replace a URL this error already holds wherever it appears in a message.
  *
  * `message` is not always ours. `classifyRequestFailure` copies the platform's
@@ -121,7 +141,21 @@ export function redactUrlInMessage(message: string, url: string): string {
   const redacted = redactUrl(url);
   // The replacer is a FUNCTION, not a string: a string replacement interprets
   // `$&`, `$'` and friends, and a path may legitimately contain `$`.
-  let out = url === redacted ? message : message.replaceAll(url, () => redacted);
+  //
+  // BOUNDED, the way `redactRefusedHeaderValues` is bounded. `replaceAll` has
+  // no notion of how distinctive its needle is, and this needle is the caller's
+  // url — which can be one character. `typedFetch("a")` rejects with
+  // `Failed to parse URL from a`; `redactUrl("a")` is `/a`, so the pass fired
+  // and rewrote every `a` in the platform's own wording:
+  // `F/ailed to p/arse URL from /a`.
+  //
+  // The pass only ever has work to do when the url carries a slot a secret can
+  // sit in. An absolute url always might. A RELATIVE one differs from its
+  // redacted form through normalization alone unless it holds a userinfo, a
+  // query, or a fragment — and with none of those there is nothing to remove,
+  // so running the replacement can only corrupt the diagnostic.
+  let out =
+    url === redacted || !hasRedactableSlot(url) ? message : message.replaceAll(url, () => redacted);
   const userinfo = userinfoOf(url);
   if (userinfo) out = out.replaceAll(userinfo, () => "");
   return out;
