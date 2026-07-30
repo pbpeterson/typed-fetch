@@ -70,13 +70,18 @@ re-open one should read the reasoning first and say what it gets wrong.
 - **Signal, abort, and timeout interleaving.** The abort state is snapshotted
   under one guard. A network failure that merely coincides with an abort stays a
   `NetworkError`, and the three synchronous steps in the catch admit no
-  interleaving. Note the premise moved: `normalizeHeaderValue` calls `String()`,
+  interleaving. Note the premise moved: `stringifyHeaderPart` calls `String()`,
   so caller `toString`/`Symbol.toPrimitive` code CAN run there now. It is
   synchronous, so the conclusion holds.
 - **Header-container coverage** matches WebIDL's `HeadersInit` conversion for a
   record, an array of pairs, a `Headers` instance, an inner pair that is any
   iterable rather than an `Array`, and a callable carrying own enumerable
-  properties. Names and values are both collected. The residual is a ONE-SHOT
+  properties. Names and values are both collected, and each is normalized the
+  way the platform normalizes it — a value stripped of edge HTTP whitespace, a
+  name not stripped at all. Sharing one normalizer was a defect, not a
+  simplification: it erased an edge CR or LF off a NAME and filed it as
+  accepted, and only an interior newline made it to the strike list. The
+  residual is a ONE-SHOT
   inner iterable, exhausted by `fetch` before the failure path reads it — pinned
   by a test so it cannot become silent.
 - **The spec claims in `src/`.** 22 statements about the Fetch Standard, WebIDL,

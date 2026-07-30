@@ -122,6 +122,18 @@
     Nothing was disclosed; the redacted form is redacted by construction. The
     one relative-url test this function had used a path whose redacted form is
     identical, which is exactly the shape that dodges it.
+14. A refused header NAME is collected as the caller wrote it, not as a VALUE
+    would be normalized. Item 11 collected names through the value normalizer,
+    which strips leading and trailing HTTP whitespace — and CR and LF are HTTP
+    whitespace. A name refused for an EDGE newline, `{ "\nX-Secret": "v" }` or
+    `{ "X-Secret\n": "v" }`, normalized to a name that tests as accepted, so it
+    never reached the strike list and undici's quoted echo carried the raw CR or
+    LF into `NetworkError.message` — the log-injection primitive item 11 was
+    written to close, reopened for every name whose newline sits at the edge.
+    Only an interior newline survived the normalization, which is the one shape
+    item 11's test used. Nothing normalizes a name before the platform validates
+    it, so nothing normalizes one here; values keep the normalization item 6
+    gave them. (ADR 0003, row H-26.)
 
 ### Changed
 
