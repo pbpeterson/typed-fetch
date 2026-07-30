@@ -926,9 +926,13 @@ async function api<T>(path: string, options?: TypedFetchOptions): Promise<TypedF
 ```
 
 - `TypedResponse` gives typed `json()` and `clone()` methods.
-- `TypedResponse` names the Fetch response baseline available on Node 20.0.
-  The runtime value remains the Fetch implementation's original response and
-  may expose newer methods.
+- `TypedResponse` names the Fetch response baseline available at the package
+  floor, Node 20.13.0, minus the members an accepted foreign response is not
+  validated for. `Response.bytes()` is absent from the floor;
+  `Headers.getSetCookie()` exists there but is not required of a polyfill, so
+  the success type does not promise it. The runtime value remains the Fetch
+  implementation's original response and may expose newer methods.
+  `error.headers` is a real `Headers`, so `getSetCookie()` is available there.
 - `TypedFetchReturnType` is the result union from `typedFetch`.
 - `TypedFetchOptions` extends `RequestInit` and adds the Fetch override.
 - `HttpMethods` gives method suggestions. It omits `CONNECT` and `TRACE`, because the Fetch specification forbids them and native `fetch` throws a `TypeError` for them.

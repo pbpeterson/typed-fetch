@@ -378,9 +378,22 @@ type TypedResponseBody = Pick<
  * The stable Fetch response baseline returned by {@link typedFetch}.
  *
  * This interface deliberately names the surface supported by every runtime at
- * the package floor. It does not inherit additions from the TypeScript version
- * that builds the package, such as `Response.bytes()` or
- * `Headers.getSetCookie()`, because Node 20.0 does not provide those additions.
+ * the package floor, and it does not inherit additions from the TypeScript
+ * version that builds the package. The two omissions have DIFFERENT reasons,
+ * and one of them used to be stated wrongly:
+ *
+ *  - `Response.bytes()` is absent from the floor. Promising it would hand a
+ *    consumer a method that does not exist there.
+ *  - `Headers.getSetCookie()` IS present on the floor — undici has shipped it
+ *    since 5.19, and it is on `Headers.prototype` in Node 20.0.0. It is omitted
+ *    for the other reason: {@link FOREIGN_RESPONSE_HEADERS_METHODS} does not
+ *    validate it, so an accepted standards-compatible polyfill need not have
+ *    it, and this type is what the success branch hands back for EVERY accepted
+ *    implementation, not only the platform's.
+ *
+ * `BaseHttpError.headers` is typed `Headers` rather than this type, because an
+ * error's headers are constructed here rather than handed through, so
+ * `error.headers.getSetCookie()` is available and documented.
  *
  * The runtime value remains the Fetch implementation's original, unmodified
  * response and can expose newer members. {@link json} provides a compile-time
@@ -522,11 +535,19 @@ const HTTP_WHITESPACE = /^[\t\n\r ]+|[\t\n\r ]+$/g;
  * Two conversions run before validation does, and both change the string the
  * refusal message quotes back:
  *
- *  - WebIDL converts the value to a `ByteString`, which is `String(value)`. A
- *    JavaScript caller reaches this with the `string | string[]` shape Node's
- *    `req.headers` produces.
+ *  - WebIDL converts the value to a `ByteString`. That is `ToString(V)` FOLLOWED
+ *    BY a range check — a code point above 255 is a `TypeError`, not a
+ *    conversion — so `String(value)` is step one of two. A JavaScript caller
+ *    reaches this with the `string | string[]` shape Node's `req.headers`
+ *    produces.
  *  - The Fetch Standard then strips leading and trailing HTTP whitespace, and
  *    validates what is left.
+ *
+ * The range check is why "a refused value is exactly a value carrying NUL, CR,
+ * or LF" is a statement about THIS collector's bound, not about the platform's:
+ * a non-Latin-1 value is refused too, and is classified here as accepted. That
+ * costs nothing today, because the `ByteString` rejection quotes an index and a
+ * code point rather than the value, so there is no echo to strike.
  *
  * Skipping this was wrong in both directions. A padded credential —
  * `"Basic AAAA\nsk_live_…\n"`, the shape a key read from a file has — is

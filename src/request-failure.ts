@@ -106,15 +106,20 @@ const REDACTED = "<redacted>";
  * of sensitive header names fails here for the reason it fails everywhere else
  * — the dangerous name is the one this library has never heard of.
  *
- * ONLY refused values are passed in, and the definition is the platform's, not
- * a heuristic. The Fetch Standard forbids NUL, CR, and LF inside a header
- * value and NORMALIZES leading and trailing HTTP whitespace away rather than
- * refusing it, so a refused value is exactly a value carrying one of those
- * three characters. That bound matters twice: an accepted value never reaches a
- * rejection message in the first place, and replacing every held value would
- * strike `1` or `application/json` wherever they appeared and destroy the
- * diagnostic. A value carrying a CR or an LF is never a substring of a message
- * by accident.
+ * ONLY refused strings are passed in — names and values both — and the
+ * definition is the platform's, not a heuristic. The Fetch Standard forbids
+ * NUL, CR, and LF inside a header value and NORMALIZES leading and trailing
+ * HTTP whitespace away rather than refusing it.
+ *
+ * The collector's bound is NARROWER than "everything the platform refuses", and
+ * deliberately so. WebIDL also refuses a value above Latin-1 and the Standard
+ * refuses a name that is not a token, and neither is collected: the first is
+ * reported by index and code point rather than by echo, and the second forges
+ * nothing. What is struck is exactly what carries one of those three
+ * characters, because that bound matters twice — replacing every held string
+ * would strike `1` or `application/json` wherever they appeared and destroy the
+ * diagnostic, and a string carrying a CR or an LF is never a substring of a
+ * message by accident.
  *
  * RESIDUAL, stated rather than hidden: a platform that echoes an ACCEPTED
  * header value in some other rejection message is not covered, and neither are
