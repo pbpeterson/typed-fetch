@@ -727,9 +727,9 @@ if (isAbortError(error)) {
 
 The first signal that aborts decides the result. A manual abort resolves with `AbortedError`. The deadline resolves with `TimeoutError`.
 
-`AbortSignal.any()` requires Node 20.3 or a later version. The package floor is Node 20, so this procedure is not available on Node 20.0 to 20.2.
+`AbortSignal.any()` requires Node 20.3 or a later version. The package floor is Node 20.13.0, so this procedure is available on every supported version.
 
-On those versions, use one signal. Give `AbortSignal.timeout()` for a deadline, or a controller signal for a manual abort.
+On an older runtime, use one signal. Give `AbortSignal.timeout()` for a deadline, or a controller signal for a manual abort.
 
 You can also combine the two manually. Make one controller, and abort it from a timer and from your own code:
 

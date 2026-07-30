@@ -2,24 +2,27 @@
 // Node this package supports.
 //
 // WHY THIS EXISTS
-//   `engines.node` is `>=20`, but CI's `node-version: 20` resolves to the
+//   `engines.node` is `>=20.13.0`, but CI's `node-version: 20` resolves to the
 //   LATEST 20.x, so the declared floor was never actually executed. That gap
-//   already hid one real problem: the README's `AbortSignal.any()` deadline
-//   recipe needs Node 20.3.0, while the floor is 20.0.0. This smoke pins the
-//   floor exactly.
+//   already hid two real problems: the README's `AbortSignal.any()` deadline
+//   recipe needs Node 20.3.0, and `clone()` + `cancel()` DEADLOCKS below
+//   20.13.0, because undici 5.x gives `Response.clone()` the opposite tee
+//   polarity — cancelling the branch never settles. That second one is what set
+//   the floor where it is, and step 6 below is what would have caught it: this
+//   smoke ran the floor for months without ever calling `clone()`.
 //
 // The toolchain (vitest, tsup, oxlint) does NOT run here — only the shipped
 // artifact does. Build and pack on a current Node, then switch to the floor
 // and run this file against the installed tarball or dist/.
 //
-// Run with:  <node-20.0.0>/bin/node scripts/smoke/node-min.mjs
+// Run with:  <node-20.13.0>/bin/node scripts/smoke/node-min.mjs
 // Requires:  pnpm build (dist/index.mjs must exist)
 
 import http from "node:http";
 import process from "node:process";
 import { typedFetch, isHttpError, isKnownHttpError, isNetworkError } from "../../dist/index.mjs";
 
-const MINIMUM = [20, 0, 0];
+const MINIMUM = [20, 13, 0];
 
 // Compare the running Node version against MINIMUM component by component and
 // return -1 (below the floor), 0 (exactly the floor), or 1 (above the floor).
@@ -124,6 +127,20 @@ try {
   // 5. A transport failure is a value, not a rejection.
   const refused = await typedFetch("http://127.0.0.1:1/nope");
   assert(isNetworkError(refused.error), `expected a NetworkError, got ${refused.error.name}`);
+
+  // 6. The documented two-branch cleanup SETTLES. This is the step that pins
+  //    the floor: `clone()` tees the body, and on undici 5.x (Node 20.0-20.12)
+  //    cancelling the branch never settles, so the README's own
+  //    `Promise.all([error.cancel(), copy.cancel()])` hangs forever. A timeout
+  //    rather than a bare await, because the failure mode is a hang and a hung
+  //    smoke reports nothing.
+  const teed = await typedFetch(`${base}/missing`);
+  const copy = teed.error.clone();
+  const settled = await Promise.race([
+    Promise.all([teed.error.cancel(), copy.cancel()]).then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
+  ]);
+  assert(settled, "clone() + Promise.all(cancel, cancel) must settle at the floor");
 
   console.log(`node-min smoke: OK on Node ${process.versions.node}`);
 } finally {
