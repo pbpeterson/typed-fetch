@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-30
+
 ### Documented
 
 - **The untrusted-`fetch` conformance boundary.** `typedFetch` invites an
@@ -165,7 +167,7 @@
   rejection quotes an index and a code point rather than the value. Three files
   reasoned from the shorter version of this sentence.
 
-## [2.0.0] - 2026-07-26
+### Release context
 
 This is a **major**, and most of the breaks are in runtime behavior.
 
