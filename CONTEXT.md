@@ -231,7 +231,10 @@ src/index.ts                  typedFetch + the guards; owns the envelope and
                               the transport seam. The `fetch` override is read
                               as an OWN property, never through the prototype
                               chain. `typedFetch` captures the governing signal
-                              once and materializes it for the transport. It
+                              and request headers once. It materializes exotic
+                              header iterables so the transport and redactor
+                              consume the same values. It captures the abort
+                              state before any failure-path caller code. It
                               validates the visible Response surface before
                               handoff, then returns the same object unmodified.
 src/request-failure.ts        classifies a rejected request attempt as an

@@ -15,7 +15,7 @@ import {
 } from "./errors/brand";
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
-import { classifyRequestFailure } from "./request-failure";
+import { classifyRequestFailure, snapshotAbortState } from "./request-failure";
 import {
   hasTypedResponseIdentityScalars,
   headersOf,
@@ -438,21 +438,25 @@ type FetchInput = FetchParams[0];
 function snapshotRequestInit(
   options: TypedFetchOptions,
   signal: AbortSignal | null | undefined,
+  headers: unknown,
+  replaceHeaders: boolean,
   removeFetchOverride: boolean,
 ): RequestInit {
-  if (!removeFetchOverride) {
+  if (!removeFetchOverride && !replaceHeaders) {
     // No extension must be hidden, so the original object can remain the proxy
     // target. This preserves reflection and avoids inspecting every descriptor
     // on a potentially exotic RequestInit.
     return new Proxy(options, {
       get(target, property) {
-        return property === "signal" ? signal : Reflect.get(target, property, target);
+        if (property === "signal") return signal;
+        if (property === "headers") return headers;
+        return Reflect.get(target, property, target);
       },
     });
   }
 
   const descriptors = Object.getOwnPropertyDescriptors(options);
-  delete descriptors.fetch;
+  if (removeFetchOverride) delete descriptors.fetch;
 
   // A WebIDL dictionary is normally read by the transport. `typedFetch` also
   // needs the signal to classify a rejection, so letting the getter run once
@@ -464,23 +468,88 @@ function snapshotRequestInit(
     enumerable: descriptors.signal?.enumerable ?? true,
     configurable: true,
   };
+  if (replaceHeaders || Reflect.has(options, "headers")) {
+    descriptors.headers = {
+      value: headers as TypedFetchOptions["headers"],
+      writable: true,
+      enumerable: descriptors.headers?.enumerable ?? true,
+      configurable: true,
+    };
+  }
   const sanitizedTarget = Object.create(Object.getPrototypeOf(options), descriptors) as RequestInit;
 
   // The proxy target exposes the same descriptors/prototype for reflection but
-  // can omit the extension. Ordinary reads delegate to the original object with
-  // the original receiver: prototype getters backed by WebIDL internal slots or
-  // JavaScript private fields would reject a descriptor-only clone because that
-  // clone does not carry those slots. `signal` is the one snapshotted exception.
+  // can omit the extension or replace an exotic headers iterable. Ordinary
+  // reads delegate to the original object with the original receiver: prototype
+  // getters backed by WebIDL internal slots or JavaScript private fields would
+  // reject a descriptor-only clone because that clone does not carry those
+  // slots. `signal` and `headers` are the two snapshotted exceptions.
   return new Proxy(sanitizedTarget, {
     get(_target, property) {
       if (property === "signal") return signal;
-      if (property === "fetch") return undefined;
+      if (property === "headers") return headers;
+      if (property === "fetch" && removeFetchOverride) return undefined;
       return Reflect.get(options, property, options);
     },
     has(_target, property) {
-      return property === "fetch" ? false : Reflect.has(options, property);
+      return property === "fetch" && removeFetchOverride ? false : Reflect.has(options, property);
     },
   });
+}
+
+const ARRAY_ITERATOR = Array.prototype[Symbol.iterator];
+
+/**
+ * Whether a HeadersInit iterable can be read again after the transport consumes
+ * it. The three ordinary public forms keep their identity: a native `Headers`,
+ * a plain record (which is not iterable), and an array of array pairs using the
+ * built-in iterators. Exotic iterables are snapshotted once instead.
+ */
+function hasReplayableHeaderIteration(headers: object, iterator: unknown): boolean {
+  try {
+    if (
+      typeof Headers !== "undefined" &&
+      headers instanceof Headers &&
+      iterator === Headers.prototype[Symbol.iterator]
+    ) {
+      return true;
+    }
+    if (!Array.isArray(headers) || iterator !== ARRAY_ITERATOR) return false;
+    for (let index = 0; index < headers.length; index += 1) {
+      const entry = headers[index];
+      if (!Array.isArray(entry) || Reflect.get(entry, Symbol.iterator, entry) !== ARRAY_ITERATOR) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Materialize one exotic header pair without coercing either member. */
+function snapshotHeaderPair(entry: unknown): unknown {
+  if (!isObjectLike(entry)) return entry;
+  const iterator = Reflect.get(entry, Symbol.iterator, entry) as unknown;
+  if (typeof iterator !== "function") return entry;
+  if (Array.isArray(entry) && iterator === ARRAY_ITERATOR) return entry;
+  return Array.from(entry as Iterable<unknown>);
+}
+
+/**
+ * Make a one-shot HeadersInit replayable for the failure-path redactor.
+ *
+ * This performs no ByteString conversion. The transport remains the authority
+ * on header validation and normalization; the snapshot only preserves the raw
+ * name/value members it will consume so the same members remain available if
+ * that conversion rejects and quotes one in its message.
+ */
+function snapshotRequestHeaders(headers: unknown): unknown {
+  if (!isObjectLike(headers)) return headers;
+  const iterator = Reflect.get(headers, Symbol.iterator, headers) as unknown;
+  if (typeof iterator !== "function") return headers;
+  if (hasReplayableHeaderIteration(headers, iterator)) return headers;
+  return Array.from(headers as Iterable<unknown>, snapshotHeaderPair);
 }
 
 /**
@@ -588,10 +657,10 @@ function stringifyHeaderPart(value: unknown): string | null {
  * cannot make the envelope reject. What cannot be read cannot be redacted, and
  * the URL pass in `NetworkError` still runs.
  *
- * BEST EFFORT, the same posture `redactUrlInMessage` states: this reads
- * `headers` once, and a getter that answers differently on the read `fetch`
- * performed leaves a value unredacted. The read happens on the failure path
- * only, so the success path pays nothing.
+ * BEST EFFORT, the same posture `redactUrlInMessage` states: a part whose
+ * conversion throws cannot be collected. The `headers` slot itself is captured
+ * once before the transport. Exotic iterables are made replayable there, so a
+ * one-shot outer container or inner pair remains available on this path.
  */
 function refusedHeaderValues(headers: unknown): readonly string[] {
   const refused: string[] = [];
@@ -674,11 +743,9 @@ function refusedHeaderValues(headers: unknown): readonly string[] {
  * and reading only real arrays left their members uncollected, which put the
  * credential back in `NetworkError.message`.
  *
- * RESIDUAL, and the reason this is best effort: a ONE-SHOT iterable is already
- * exhausted by the time this runs. `fetch` converted it first, and there is no
- * second pass to read. That member cannot be collected by anything short of
- * converting `headers` before the request, which would double every conversion
- * on the success path to redact a message the success path never produces.
+ * `snapshotRequestHeaders` materializes an exotic pair before the transport,
+ * so a one-shot iterable reaches this function as a replayable array. The
+ * ordinary array fast path stays for the three public HeadersInit forms.
  */
 function pairMembers(entry: unknown): readonly [unknown, unknown] {
   if (Array.isArray(entry)) return [entry[0], entry[1]];
@@ -774,6 +841,8 @@ export async function typedFetch<JsonReturnType>(
   options: TypedFetchOptions = {},
 ): Promise<TypedFetchReturnType<JsonReturnType>> {
   let signal: AbortSignal | undefined;
+  let requestHeaders: unknown;
+  let failureAbortState: ReturnType<typeof snapshotAbortState> | undefined;
   try {
     // OWN property only. `fetch` is this library's own extension, not a WebIDL
     // dictionary member, and reading it off the prototype chain turns a single
@@ -806,12 +875,28 @@ export async function typedFetch<JsonReturnType>(
           ? url.signal
           : undefined;
 
+    // Read the headers slot once, just as the signal slot above is read once.
+    // The transport and the failure-path redactor must see the same value: a
+    // getter that changes its answer, or an iterable that is exhausted by its
+    // first consumer, must not make a refused credential disappear before the
+    // redactor can strike it out of the platform's message.
+    const rawRequestHeaders = options.headers;
+    requestHeaders = rawRequestHeaders;
+    requestHeaders = snapshotRequestHeaders(rawRequestHeaders);
+
     // Fetch reads RequestInit as a WebIDL dictionary, so inherited properties
     // and prototype getters are part of the input. Preserve both while removing
-    // this library's `fetch` extension and materializing the signal snapshot.
+    // this library's `fetch` extension and materializing the signal and headers
+    // snapshots.
     // An object spread would silently drop inherited method, headers, body, or
     // signal values.
-    const init = snapshotRequestInit(options, initSignal, hasFetchOverride);
+    const init = snapshotRequestInit(
+      options,
+      initSignal,
+      requestHeaders,
+      requestHeaders !== rawRequestHeaders,
+      hasFetchOverride,
+    );
 
     const res = await fetchImpl(url, init);
 
@@ -847,6 +932,10 @@ export async function typedFetch<JsonReturnType>(
         );
       }
     } catch (cause) {
+      // Capture before body release: a hostile response can execute caller code
+      // from its body accessors, and that later code must not rewrite which
+      // failure already happened.
+      failureAbortState = snapshotAbortState(signal);
       // The line above reads `status` (and converts it, which a hostile
       // `valueOf` can make throw), and the error class reads `statusText`,
       // `url`, and `headers`; any of them can throw for an injected
@@ -865,6 +954,10 @@ export async function typedFetch<JsonReturnType>(
       error: null,
     };
   } catch (err) {
+    // FIRST on the failure path. URL resolution and header inspection below can
+    // execute caller code synchronously; neither gets to change the abort state
+    // that classifies the failure which brought execution here.
+    const capturedAbortState = failureAbortState ?? snapshotAbortState(signal);
     // The requested URL, so pre-response errors (which hold no `Response`) are
     // still distinguishable in logs — the correlation `BaseHttpError.url`
     // already gives HTTP errors. `FetchInput` is `string | URL | Request`; a
@@ -888,15 +981,22 @@ export async function typedFetch<JsonReturnType>(
     // constructed, so none of them can be a refused value.
     let refusedValues: readonly string[] = [];
     try {
-      refusedValues = refusedHeaderValues(options.headers);
+      refusedValues = refusedHeaderValues(requestHeaders);
     } catch {
-      // A throwing `headers` getter leaves the message unredacted rather than
-      // breaking the envelope. `NetworkError` still redacts the URL.
+      // A captured container that still refuses inspection leaves the message
+      // unredacted rather than breaking the envelope. `NetworkError` still
+      // redacts the URL.
     }
 
     return {
       response: null,
-      error: classifyRequestFailure(err, signal, resolvedRequestUrl, refusedValues),
+      error: classifyRequestFailure(
+        err,
+        signal,
+        resolvedRequestUrl,
+        refusedValues,
+        capturedAbortState,
+      ),
     };
   }
 }

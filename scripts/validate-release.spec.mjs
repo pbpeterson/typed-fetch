@@ -129,7 +129,7 @@ describe("validateRelease", () => {
 });
 
 describe("release workflow policy", () => {
-  test("publish depends on the reusable full CI workflow", () => {
+  test("packaging depends on the reusable full CI workflow and publish depends on packaging", () => {
     const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
     const releaseWorkflow = readFileSync(
       new URL("../.github/workflows/release.yml", import.meta.url),
@@ -139,8 +139,28 @@ describe("release workflow policy", () => {
     expect(ci).toMatch(/^on:\n\s+workflow_call:/m);
     expect(ci).toContain("pnpm check-deno-consumer");
     expect(releaseWorkflow).toMatch(/checks:\n(?:.|\n)*?uses: \.\/\.github\/workflows\/ci\.yml/);
-    expect(releaseWorkflow).toMatch(/publish:\n\s+needs: checks/);
+    expect(releaseWorkflow).toMatch(/package:\n\s+needs: checks/);
+    expect(releaseWorkflow).toMatch(/publish:\n\s+needs: package/);
     expect(releaseWorkflow.match(/id-token: write/g)).toHaveLength(1);
+  });
+
+  test("OIDC is confined to a minimal job that runs no repository or install scripts", () => {
+    const releaseWorkflow = readFileSync(
+      new URL("../.github/workflows/release.yml", import.meta.url),
+      "utf8",
+    );
+    const publishJob = releaseWorkflow.slice(releaseWorkflow.indexOf("  publish:\n"));
+
+    expect(publishJob).toContain("id-token: write");
+    expect(publishJob).toContain("actions/download-artifact@");
+    expect(publishJob).not.toContain("actions/checkout@");
+    expect(publishJob).not.toContain("pnpm install");
+    expect(publishJob).not.toContain("npm install");
+    expect(publishJob).not.toContain("pnpm build");
+    expect(publishJob).not.toContain("pnpm test");
+    expect(publishJob).not.toContain("prepublishOnly");
+    expect(publishJob).toContain("sha256sum -c SHA256SUMS");
+    expect(publishJob).toMatch(/npm-cli\.js publish[\s\S]*?--ignore-scripts/);
   });
 
   test("the publish step refuses an empty dist_tag", () => {
@@ -152,9 +172,9 @@ describe("release workflow policy", () => {
     // The dist-tag reaches npm through the environment. A raw `${{ }}` on the
     // command line vanishes when validate-release never wrote the output, and
     // `npm publish ... --tag` with nothing after it is a different command.
-    expect(releaseWorkflow).toContain("DIST_TAG: ${{ steps.release.outputs.dist_tag }}");
-    expect(releaseWorkflow).toMatch(/npm publish [^\n]*--tag "\$DIST_TAG"/);
-    expect(releaseWorkflow).not.toMatch(/npm publish [^\n]*\$\{\{/);
+    expect(releaseWorkflow).toContain("DIST_TAG: ${{ needs.package.outputs.dist_tag }}");
+    expect(releaseWorkflow).toMatch(/npm-cli\.js publish[\s\S]*?--tag "\$DIST_TAG"/);
+    expect(releaseWorkflow).not.toMatch(/npm-cli\.js publish[^\n]*\$\{\{/);
 
     // An empty value stops the job before npm sees it.
     expect(releaseWorkflow).toMatch(/\[ -n "\$DIST_TAG" \]/);

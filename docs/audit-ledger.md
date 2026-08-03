@@ -63,16 +63,17 @@ re-open one should read the reasoning first and say what it gets wrong.
 - **The options snapshot's proxy invariants.** A frozen `options` carrying an own
   `fetch` does not trip a proxy `get` invariant; the `signal` slot is always
   re-declared configurable and writable, and the trap delegates with `options`
-  as the receiver.
+  as the receiver. A frozen `options` carrying one-shot headers uses the
+  descriptor clone, so the replayable value never conflicts with the original
+  non-configurable descriptor.
 - **The init dictionary stays empty when the caller passes nothing**, so
   `typedFetch(request)` does not trip the Fetch Standard's "init is not empty"
   branch and does not detach the `Request`'s own signal.
 - **Signal, abort, and timeout interleaving.** The abort state is snapshotted
-  under one guard. A network failure that merely coincides with an abort stays a
-  `NetworkError`, and the three synchronous steps in the catch admit no
-  interleaving. Note the premise moved: `stringifyHeaderPart` calls `String()`,
-  so caller `toString`/`Symbol.toPrimitive` code CAN run there now. It is
-  synchronous, so the conclusion holds.
+  as the first operation in each failure catch. A network failure that merely
+  coincides with an abort stays a `NetworkError`. URL resolution, header
+  conversion, and response-body release can run caller code after that snapshot.
+  None can change the classification of the earlier failure.
 - **Header-container coverage** matches WebIDL's `HeadersInit` conversion for a
   record, an array of pairs, a `Headers` instance, an inner pair that is any
   iterable rather than an `Array`, and a callable carrying own enumerable
@@ -81,9 +82,9 @@ re-open one should read the reasoning first and say what it gets wrong.
   name not stripped at all. Sharing one normalizer was a defect, not a
   simplification: it erased an edge CR or LF off a NAME and filed it as
   accepted, and only an interior newline made it to the strike list. The
-  residual is a ONE-SHOT
-  inner iterable, exhausted by `fetch` before the failure path reads it — pinned
-  by a test so it cannot become silent.
+  `headers` slot is captured once. Exotic outer containers and inner pairs are
+  materialized without string conversion before the transport consumes them.
+  A one-shot iterable therefore remains available to the failure redactor.
 - **The spec claims in `src/`.** 22 statements about the Fetch Standard, WebIDL,
   the Streams Standard, and the URL Standard were checked against the
   specification text and against an executed probe. 20 were correct, including

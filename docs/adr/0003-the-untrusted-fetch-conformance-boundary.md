@@ -220,3 +220,26 @@ Any one of these should reopen the boundary. Nothing else should.
    and the scenarios there ever disagree without the suite failing, the binding
    is broken, and this record has degraded into the prose it was written to
    avoid.
+
+## Amendment — 2026-08-03: failure snapshots
+
+This amendment changes no row. It records two implementation requirements that
+the original H-18 and H-24 scenarios did not reach.
+
+H-18 requires the signal state from the start of the failure path. URL
+resolution, header conversion, and response-body release can execute caller
+code synchronously. The first operation in each failure catch now captures the
+signal state. Later caller code cannot reclassify the earlier failure.
+
+H-24 requires the transport and redactor to observe the same `headers` value.
+`typedFetch` now reads that slot once. A record, native `Headers`, or ordinary
+array of pairs keeps its identity. An exotic outer iterable or inner pair is
+materialized without string conversion before the transport consumes it.
+
+The materialization does not validate headers. It preserves raw members for a
+second read after the transport rejects. The transport remains the authority on
+ByteString conversion, normalization, and refusal.
+
+The regressions live in `typed-fetch.spec.ts`. They cover one-shot outer and
+inner iterables, URL reentrancy, header conversion reentrancy, and every message
+channel affected by the refused value.

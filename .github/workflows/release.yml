@@ -17,16 +17,15 @@ concurrency:
 jobs:
   checks:
     # Run the exact same Node 20/22/24, security, Bun, Deno, and Node-floor jobs as CI.
-    # `publish` cannot start unless every job in this reusable workflow passes.
+    # `package` cannot start unless every job in this reusable workflow passes.
     uses: ./.github/workflows/ci.yml
 
-  publish:
+  package:
     needs: checks
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    permissions:
-      contents: read
-      id-token: write # required for OIDC trusted publishing + provenance
+    outputs:
+      dist_tag: ${{ steps.release.outputs.dist_tag }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -67,15 +66,67 @@ jobs:
       - run: pnpm check-consumer
       - run: pnpm audit:prod
       - run: pnpm audit
+      # Create the exact package tarball after every gate has inspected the
+      # build. The publish job receives no checkout and runs no package scripts;
+      # it can only upload this immutable artifact.
+      - name: Stage package and pinned npm CLI
+        run: |
+          mkdir -p release-artifact/package release-artifact/npm-cli
+          npm pack --pack-destination release-artifact/package
+          npm pack npm@11.18.0 --ignore-scripts --pack-destination release-artifact/npm-cli
+          cd release-artifact
+          find . -type f -name '*.tgz' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: npm-release-artifacts
+          path: release-artifact
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write # required only here for OIDC trusted publishing + provenance
+    steps:
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22.23.1
+          package-manager-cache: false
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: npm-release-artifacts
+          path: release-artifact
       # The dist-tag reaches npm through the environment, not through raw
       # expression interpolation on the command line. If validate-release did not
-      # run, the step never wrote the output, and an empty value would leave npm
-      # with a bare `--tag`. Stop here instead, and name the cause.
+      # write the package-job output, an empty value would leave npm with a bare
+      # `--tag`. Stop here instead, and name the cause.
       - env:
-          DIST_TAG: ${{ steps.release.outputs.dist_tag }}
+          DIST_TAG: ${{ needs.package.outputs.dist_tag }}
         run: |
           [ -n "$DIST_TAG" ] || {
             echo "publish: dist_tag is empty; validate-release did not run." >&2
             exit 1
           }
-          npm publish --provenance --access public --tag "$DIST_TAG"
+          cd release-artifact
+          sha256sum -c SHA256SUMS
+
+          package_tarballs=(package/*.tgz)
+          npm_cli_tarballs=(npm-cli/*.tgz)
+          [ "${#package_tarballs[@]}" -eq 1 ] && [ -f "${package_tarballs[0]}" ] || {
+            echo "publish: expected exactly one package tarball." >&2
+            exit 1
+          }
+          [ "${#npm_cli_tarballs[@]}" -eq 1 ] && [ -f "${npm_cli_tarballs[0]}" ] || {
+            echo "publish: expected exactly one npm CLI tarball." >&2
+            exit 1
+          }
+
+          mkdir npm-cli-extracted
+          tar -xzf "${npm_cli_tarballs[0]}" -C npm-cli-extracted
+          node npm-cli-extracted/package/bin/npm-cli.js publish "${package_tarballs[0]}" \
+            --ignore-scripts --provenance --access public --tag "$DIST_TAG"

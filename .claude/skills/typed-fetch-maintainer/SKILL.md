@@ -38,15 +38,17 @@ index.ts                → re-export barrel for the ./errors subpath
 ## Core flow (src/index.ts)
 
 1. Inside the request `try`, read an optional own `options.fetch` override.
-   Capture the effective abort signal once, using realm-safe `Request`
-   detection. Pass a prototype-preserving proxy to the transport so it sees
-   that captured signal. When an override is present, the proxy also hides the
-   extension while delegating other reads to the original receiver.
+   Capture the effective abort signal and request headers once. Materialize an
+   exotic header iterable without string conversion, so the failure redactor
+   can read it after the transport. Pass a prototype-preserving proxy to the
+   transport so it sees those captured values. When an override is present, the
+   proxy also hides the extension.
 2. `const res = await fetchImpl(url, init)` inside the `try`, which also covers
    option getters and normalization. `src/request-failure.ts` then classifies
    any failure as `AbortedError` (original rejection as `cause`), `TimeoutError`
    (from `AbortSignal.timeout()`), or `NetworkError`. It never rethrows. The
-   abort path is taken when `err === signal.reason` OR the governing signal
+   abort state is captured before any failure-path caller code. The abort path
+   is taken when `err === signal.reason` OR the governing signal
    reports `aborted` and the rejection is error-shaped and named
    `"AbortError"`/`"TimeoutError"` — an injected fetch (whatwg-fetch,
    node-fetch@3) builds its own abort error. `reason ?? err` then decides
@@ -219,7 +221,7 @@ every gate before you commit. With Deno 2 installed, also run
 
 - `pnpm typecheck` uses `tsconfig.test.json` — it includes the root `*.spec.ts` files so `expectTypeOf` assertions are real. Plain `tsc --noEmit` skips them. Spec files must stay at the repo root: the include glob is root-only, and two tests read a source file via a CWD-relative path (`base-http-error.spec.ts` and `error-classes.spec.ts`, both reading `src/errors/base-http-error.ts`).
 - Tests hit a real local HTTP server (no mocks). Query params drive responses: `?status=`, `?body=`, `?header=Key:Value`.
-- How far the library distrusts an injected `fetch` is settled by `docs/adr/0003-the-untrusted-fetch-conformance-boundary.md`: 24 in-scope rows, 8 permanently out of scope. `fixtures/hostile-fetch.ts` drives every row and `conformance.spec.ts` binds the two lists together, so a new guard without an ADR row fails the suite. Read it before adding a hostile-input defense.
+- How far the library distrusts an injected `fetch` is settled by `docs/adr/0003-the-untrusted-fetch-conformance-boundary.md`: 26 in-scope rows, 8 permanently out of scope. `fixtures/hostile-fetch.ts` drives every row and `conformance.spec.ts` binds the two lists together, so a new guard without an ADR row fails the suite. Read it before adding a hostile-input defense.
 - 407 cannot go through Node's fetch (rejected at the network level) — tested through an injected `fetch` that resolves a 407 response, and deliberately excluded from `errorCases`. Direct construction was rejected there: it proves nothing about the status-to-class lookup.
 - Abort/timeout are exercised against the live server (`controller.abort()` and `AbortSignal.timeout()`), asserting `AbortedError`/`TimeoutError` and that `isNetworkError` is false for both.
 
@@ -239,10 +241,11 @@ every gate before you commit. With Deno 2 installed, also run
   `httpErrors` order (alphabetical by class name), not ascending status; nothing
   depends on that, because both call sites are key lookups.
 - `options.fetch` is stripped before the init reaches the underlying fetch, via
-  a sanitized facade/proxy that reads getters against the original receiver.
-  Never replace it with an object spread: inherited/WebIDL properties,
-  private-backed getters, and cross-realm `Request` behavior must survive, and
-  accessor failures must stay inside the error envelope.
+  a sanitized facade/proxy. It delegates ordinary getters to the original
+  receiver and supplies captured `signal` and `headers` values. Never replace it
+  with an object spread: inherited/WebIDL properties, private-backed getters,
+  and cross-realm `Request` behavior must survive. Accessor failures must stay
+  inside the error envelope.
 - CI verifies Node 20, 22, and 24, a Node-floor job pinned to 20.13.0, plus Bun
   and Deno. The floor job runs `pnpm smoke:node-min`, which proves nothing
   unless it runs on a real Node 20.13.0 binary — on a newer runtime it warns

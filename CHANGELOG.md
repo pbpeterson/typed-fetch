@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Security
+
+- `typedFetch` now snapshots one-shot header containers before the transport
+  consumes them. A refused value therefore remains available to the failure
+  redactor. Previously, a one-shot outer container or inner pair could be empty
+  on the failure path. The platform's quoted rejection then copied the value
+  into `NetworkError.message`, `stack`, JSON, `String(error)`, and inspect
+  output.
+- The release workflow now gives `id-token: write` to a minimal publish job.
+  Checkout, dependency installation, build, tests, audits, and packaging run in
+  a separate job without OIDC. The publish job verifies the artifact checksums
+  and publishes the prepared tarball with lifecycle scripts disabled.
+
+### Fixed
+
+- Request-failure classification now captures the governing signal state before
+  it resolves the request URL, inspects headers, or releases a response body.
+  Caller code in those operations can no longer turn an earlier unrelated
+  failure into an `AbortedError`.
+
 ## [2.0.0] - 2026-07-30
 
 ### Documented

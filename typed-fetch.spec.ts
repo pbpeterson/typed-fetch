@@ -1,6 +1,7 @@
 import { describe, test, expect, expectTypeOf, vi } from "vitest";
 import { createRequire } from "node:module";
 import { Readable } from "node:stream";
+import { inspect } from "node:util";
 import { useTestServer } from "./fixtures/http-server";
 import { allErrors } from "./fixtures/error-roster";
 import {
@@ -341,6 +342,34 @@ describe("typedFetch", () => {
     expect(hostileResponse.bodyUsed).toBe(true);
   });
 
+  test("body release cannot reclassify an earlier response-inspection failure as an abort", async () => {
+    const controller = new AbortController();
+    const cause = new Error("status getter exploded");
+    const body = new ReadableStream({
+      cancel() {
+        controller.abort(cause);
+      },
+    });
+    const hostileResponse = new Response(body, { status: 200 });
+    Object.defineProperty(hostileResponse, "status", {
+      get() {
+        throw cause;
+      },
+    });
+
+    const result = await typedFetch("https://example.invalid/reentrant-release", {
+      signal: controller.signal,
+      fetch: respondingWith(hostileResponse),
+    });
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isNetworkError(result.error)).toBe(true);
+    expect(isAbortError(result.error)).toBe(false);
+    expect(result.error?.cause).toBe(cause);
+  });
+
   test("turns a throwing fetch-override getter into a NetworkError value", async () => {
     const cause = new Error("fetch getter exploded");
     const options = Object.defineProperty({}, "fetch", {
@@ -592,14 +621,7 @@ describe("typedFetch", () => {
     expect(result.error?.message).not.toContain("<redacted>");
   });
 
-  test("a ONE-SHOT inner pair is the documented residual, not a silent success", async () => {
-    // `fetch` converted the generator first, so by the time the failure path
-    // reads `headers` there is nothing left to iterate. Collecting it would
-    // mean converting `headers` before the request and paying that cost on the
-    // success path, to redact a message the success path never produces.
-    //
-    // Pinned rather than left to rot: if a later change makes this redact, the
-    // residual in `pairValue` is stale and the comment must go with it.
+  test("a ONE-SHOT inner pair cannot disclose a refused value", async () => {
     const secret = "Basic AAAA\nsk_live_ONE_SHOT_RESIDUAL";
     const pair = (function* () {
       yield "authorization";
@@ -611,7 +633,40 @@ describe("typedFetch", () => {
     });
 
     expect(result.error).toBeInstanceOf(NetworkError);
-    expect(result.error?.message).toContain("sk_live_ONE_SHOT_RESIDUAL");
+    expect(result.error?.message).not.toContain("sk_live_ONE_SHOT_RESIDUAL");
+    expect(result.error?.message).not.toContain("\n");
+    expect(result.error?.message).toContain("<redacted>");
+  });
+
+  test("a ONE-SHOT outer header container cannot disclose a refused value", async () => {
+    const secret = "Basic AAAA\nsk_live_ONE_SHOT_OUTER_SECRET";
+    const headers = [["authorization", secret]] as [string, string][];
+    const oneShotIterator = headers[Symbol.iterator]();
+    Object.defineProperty(headers, Symbol.iterator, {
+      value: () => oneShotIterator,
+    });
+
+    // A frozen options object makes the original `headers` descriptor
+    // non-configurable and non-writable. Replacing its value through a Proxy
+    // whose target is the original object violates the Proxy get invariant.
+    const options = Object.freeze({ headers });
+    const result = await typedFetch("https://example.invalid/refused-header", options);
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    const error = result.error as NetworkError;
+    const renderedChannels = [
+      error.message,
+      error.stack ?? "",
+      String(error),
+      JSON.stringify(error),
+      inspect(error),
+    ];
+    for (const rendered of renderedChannels) {
+      expect(rendered).not.toContain("sk_live_ONE_SHOT_OUTER_SECRET");
+    }
+    expect(error.message).not.toContain("\n");
+    expect(error.message).toContain("<redacted>");
   });
 
   test("unreadable headers leave the message unredacted rather than breaking the envelope", async () => {
@@ -1761,6 +1816,58 @@ describe("typedFetch", () => {
     expect(isNetworkError(result.error)).toBe(true);
     expect(isAbortError(result.error)).toBe(false);
   });
+
+  test.each([
+    [
+      "the request URL",
+      (controller: AbortController, rejection: Error) => ({
+        url: {
+          toString() {
+            controller.abort(rejection);
+            return "https://example.invalid/reentrant-url";
+          },
+        } as unknown as string,
+        headers: undefined,
+      }),
+    ],
+    [
+      "a header conversion",
+      (controller: AbortController, rejection: Error) => ({
+        url: "https://example.invalid/reentrant-headers",
+        headers: [
+          [
+            "x-reentrant",
+            {
+              toString() {
+                controller.abort(rejection);
+                return "accepted";
+              },
+            },
+          ],
+        ] as never,
+      }),
+    ],
+  ])(
+    "caller code in %s cannot reclassify an earlier transport failure as an abort",
+    async (_label, makeInput) => {
+      const controller = new AbortController();
+      const rejection = new TypeError("unrelated transport failure");
+      const input = makeInput(controller, rejection);
+      const stubFetch = vi.fn(async () => Promise.reject(rejection)) as unknown as typeof fetch;
+
+      const result = await typedFetch(input.url, {
+        signal: controller.signal,
+        headers: input.headers,
+        fetch: stubFetch,
+      });
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expect(isNetworkError(result.error)).toBe(true);
+      expect(isAbortError(result.error)).toBe(false);
+      expect(result.error?.cause).toBe(rejection);
+    },
+  );
 
   // ── Fix 1c: `signal: null` detaches a url-slot Request's signal ────────
 

@@ -646,6 +646,8 @@ An explicit `signal: null` detaches the signal in a `Request`. An absent or `und
 
 An aborted signal alone is not sufficient. `typedFetch` resolves with a `NetworkError` when the rejection is unrelated to the abort. A `CONNECT` method or an invalid header name throws a `TypeError` during `Request` construction while the signal already reports an abort.
 
+`typedFetch` captures the signal state before it resolves the failure URL or inspects request headers. Caller code in those operations cannot reclassify an earlier failure.
+
 An error with the name `"AbortError"` stays a `NetworkError` when no signal reports an abort.
 
 ### Abort a request and read the reason
@@ -775,12 +777,16 @@ The optional `fetch` property sets a custom Fetch implementation. Use it for tes
 
 This rule differs from every other option. `method`, `headers`, `body`, and
 `signal` are WebIDL dictionary members. The platform reads them through the
-prototype chain. `typedFetch` preserves that behavior for `method`, `headers`,
-and `body`.
+prototype chain. `typedFetch` preserves that behavior for all four members.
 
 `typedFetch` reads `signal` once. It materializes that value in the
 `RequestInit` given to the transport. Classification and transport therefore
 use the same signal.
+
+`typedFetch` also reads `headers` once. A record, a native `Headers`, or an
+array of array pairs reaches the transport by identity. An exotic iterable is
+materialized without string conversion. This keeps one-shot outer containers
+and inner pairs available to redact a value that the platform refuses.
 
 `fetch` is this library's extension. It selects the transport.
 
@@ -791,7 +797,8 @@ prototype and property descriptors. Reads delegate to the original object.
 This preserves inherited properties and WebIDL getters.
 
 When `options` has an own `fetch`, the proxy hides that property from the
-implementation. The proxy also replaces `signal` reads with the captured value.
+implementation. The proxy replaces `signal` and `headers` reads with their
+captured values.
 
 `fetch` names `undefined` explicitly, so a value of type `typeof fetch | undefined` assigns to it under `exactOptionalPropertyTypes`.
 

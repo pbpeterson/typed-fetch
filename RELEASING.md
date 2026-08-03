@@ -21,13 +21,13 @@ attestation.
   else publishes.
 - The tag workflow first calls `.github/workflows/ci.yml` as a reusable
   workflow. Its Node 20/22/24, security, Bun, Deno, and Node-floor (20.13.0) jobs
-  must all pass before the publish job can start.
+  must all pass before the package job can start.
 
   The Deno job installs the packed package by its bare npm name. It typechecks
   the public `.d.mts` declarations and runs the direct-dist smoke.
 
-- After the shared checks pass and before publish dependencies are installed,
-  `scripts/validate-release.mjs` fails the publish job unless all of these are
+- After the shared checks pass and before package dependencies are installed,
+  `scripts/validate-release.mjs` fails the package job unless all of these are
   true:
   - package name, public repository, public access, and provenance metadata are
     the expected immutable publishing identity;
@@ -42,7 +42,7 @@ attestation.
   The gate does not check the base of the version range. It cannot see the
   previous version.
 
-- The publish job uses a GitHub-hosted runner, Node `22.23.1`, pnpm from the
+- The package job uses a GitHub-hosted runner, Node `22.23.1`, pnpm from the
   exact `packageManager` field, and npm `11.18.0`. Release dependencies are not
   restored from a package-manager cache. It installs the reviewed lockfile with
   `pnpm install --frozen-lockfile`, then runs:
@@ -57,6 +57,9 @@ attestation.
   9. `pnpm check-consumer`
   10. `pnpm audit:prod`
   11. `pnpm audit`
+- After the gates pass, the package job creates the package tarball. It also
+  downloads the pinned npm `11.18.0` CLI as a tarball. A SHA-256 manifest covers
+  both files before they enter one immutable workflow artifact.
 - `verify-pack` asserts every CJS, ESM, and declaration entry in the tarball;
   `check-consumer` installs that tarball into a scratch project and exercises
   both entry points, both module formats, and consumer typechecking.
@@ -71,10 +74,15 @@ attestation.
   `scripts/verify-pack.mjs` locks the file count. Changing this decision
   therefore requires a deliberate count change.
 
-- Only the publish job receives `id-token: write`, and only after the reusable
-  CI and every repeated publish gate pass does it run
-  `npm publish --provenance --access public --tag <dist-tag>`. A prerelease such
-  as `1.1.0-rc.1` uses `next`; a stable version uses `latest`.
+- Only the publish job receives `id-token: write`. It has no checkout and
+  installs no dependency. It downloads the prepared artifact, verifies its
+  SHA-256 manifest, and extracts the pinned npm CLI. It then publishes the
+  prepared package tarball with lifecycle scripts disabled.
+
+  The command is `npm publish <tarball> --ignore-scripts --provenance --access
+public --tag <dist-tag>`. A prerelease such as `1.1.0-rc.1` uses `next`; a
+  stable version uses `latest`.
+
 - The build is done by the **explicit `pnpm build` step above**, not by the
   `prepublishOnly` lifecycle hook. The hook **verifies** the artifact instead of
   producing it: `"prepublishOnly": "node scripts/verify-pack.mjs"`.
@@ -87,8 +95,10 @@ attestation.
   same bytes in practice, but the gates guarded a different build.
 
   Verifying keeps the net and drops the rebuild. The hook rejects a missing,
-  incomplete, or leaking `dist/` instead of regenerating it. Do not put a build
-  back in this hook.
+  incomplete, or leaking `dist/` instead of regenerating it. The package job
+  runs the hook while it creates the tarball. The publish job uses
+  `--ignore-scripts`, so it cannot execute repository lifecycle code with OIDC.
+  Do not put a build back in this hook.
 
 - `--provenance --access public` attaches npm provenance (a verifiable link
   from the published tarball back to this workflow run and commit) and
@@ -135,7 +145,7 @@ Run every step, in order, for every release:
    WARNING: That gate needs a tag ref, so it can run only after the irreversible
    push in step 6. Read the footer against this step before you tag.
 
-2. **Run the exact publish-job gates locally, in order:**
+2. **Run the exact package-job gates locally, in order:**
    ```bash
    pnpm lint
    pnpm format:check
@@ -193,7 +203,7 @@ Run every step, in order, for every release:
    shows the correct version, `latest`/`next` dist-tag, provenance badge, source
    commit, and workflow. Install the exact version in a clean consumer once.
    `pnpm verify-pack` is the authoritative dry-run manifest check; the release
-   workflow executes it again immediately before publication.
+   workflow executes it before staging the immutable publication artifact.
 
 ## Semver policy
 
