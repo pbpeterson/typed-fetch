@@ -3368,3 +3368,208 @@ describe("typedFetch — the first successful identity reads are recorded", () =
     expect(second.error).toBeInstanceOf(NetworkError);
   });
 });
+
+// ── Reflected request data never reaches an automatic channel ────────────
+//
+// The platform reports a request it refused by QUOTING the caller's value
+// back: a header name or value, the URL, the referrer, the method, an enum
+// slot. That message is copied into `NetworkError.message`, and from there
+// into every channel a reader sees by default.
+//
+// Redacting the echo cannot work. It requires reading the caller's value a
+// SECOND time, after the transport already consumed it, and every value below
+// answers differently on the second read. A getter, a `toString`, and a
+// mutable pair member each defeat the search string. The values that are not
+// header parts — the URL, the referrer, the method — were never redacted at
+// all.
+//
+// So the assertion is about the MESSAGE, not about a redaction: no request
+// input reaches `message`, `stack`, `String(error)`, `JSON.stringify(error)`,
+// or `util.inspect(error)`. The platform's own text stays reachable through
+// `error.cause`, which a caller reads deliberately.
+/**
+ * The five channels a reader reaches an error through without asking for a
+ * member by name. `util.inspect` runs with the library's hook installed, which
+ * is what `console.log(error)` uses; the hook signposts `cause` instead of
+ * printing it.
+ */
+function automaticChannels(error: unknown): readonly string[] {
+  const value = error as Error;
+  return [
+    value.message,
+    value.stack ?? "",
+    String(value),
+    JSON.stringify(value),
+    inspect(value, { depth: null }),
+  ];
+}
+
+function expectNoDisclosure(error: unknown, sentinel: string): void {
+  for (const rendered of automaticChannels(error)) {
+    expect(rendered, `a channel emitted ${sentinel}`).not.toContain(sentinel);
+  }
+  // The control characters are asserted on the two channels that are ONE line.
+  // A stack is many lines by construction, and `util.inspect` prints it, so a
+  // line-break assertion there tests the stack rather than the message.
+  // `JSON.stringify` escapes a break into two characters.
+  const message = (error as Error).message;
+  for (const rendered of [message, String(error)]) {
+    expect(rendered, "a channel emitted a raw line break").not.toContain("\n");
+    expect(rendered, "a channel emitted a raw carriage return").not.toContain("\r");
+    expect(rendered, "a channel emitted a raw NUL").not.toContain("\0");
+  }
+}
+
+describe("typedFetch — reflected request data stays out of the automatic channels", () => {
+  test("a header value read from a record getter that changes its answer", async () => {
+    // The redactor read this getter a second time, after the transport had
+    // already been refused, and was handed a different value. The search
+    // string it built therefore matched nothing in the message.
+    const secret = "Basic AAAA\nsk_live_RECORD_GETTER";
+    let reads = 0;
+    const headers = {
+      get authorization(): string {
+        reads += 1;
+        return reads === 1 ? secret : "Bearer harmless";
+      },
+    };
+
+    const result = await typedFetch("https://example.invalid/record-getter", {
+      headers: headers as never,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expectNoDisclosure(result.error, "sk_live_RECORD_GETTER");
+    // The escape hatch. `cause` is the platform's own error, read on purpose.
+    expect(String(result.error?.cause)).toContain("sk_live_RECORD_GETTER");
+  });
+
+  test("a header pair read from an outer array index that changes its answer", async () => {
+    // The library inspects the outer container before the transport, to decide
+    // whether it can be read again. That inspection IS a read, so a getter can
+    // answer it with an ordinary pair and answer the transport with a refused
+    // one.
+    const secret = "Basic AAAA\nsk_live_OUTER_INDEX_GETTER";
+    let reads = 0;
+    const headers: unknown[] = [];
+    Object.defineProperty(headers, 0, {
+      configurable: true,
+      enumerable: true,
+      get(): unknown {
+        reads += 1;
+        return reads === 2 ? ["authorization", secret] : ["authorization", "Bearer harmless"];
+      },
+    });
+
+    const result = await typedFetch("https://example.invalid/outer-index-getter", {
+      headers: headers as never,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expectNoDisclosure(result.error, "sk_live_OUTER_INDEX_GETTER");
+  });
+
+  test("a header value read from an inner pair index that changes its answer", async () => {
+    const secret = "Basic AAAA\nsk_live_INNER_INDEX_GETTER";
+    let reads = 0;
+    const pair: unknown[] = ["authorization"];
+    Object.defineProperty(pair, 1, {
+      configurable: true,
+      enumerable: true,
+      get(): unknown {
+        reads += 1;
+        return reads === 1 ? secret : "Bearer harmless";
+      },
+    });
+
+    const result = await typedFetch("https://example.invalid/inner-index-getter", {
+      headers: [pair] as never,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expectNoDisclosure(result.error, "sk_live_INNER_INDEX_GETTER");
+  });
+
+  test("a header value whose toString changes its answer", async () => {
+    // WebIDL converts a header value with `ToString`. The collector performs
+    // the same conversion a second time, so a `toString` with state hands the
+    // transport one value and the redactor another.
+    const secret = "Basic AAAA\nsk_live_VALUE_TO_STRING";
+    let reads = 0;
+    const value = {
+      toString(): string {
+        reads += 1;
+        return reads === 1 ? secret : "Bearer harmless";
+      },
+    };
+
+    const result = await typedFetch("https://example.invalid/value-to-string", {
+      headers: { authorization: value } as never,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expectNoDisclosure(result.error, "sk_live_VALUE_TO_STRING");
+  });
+
+  test("a request input whose toString changes its answer", async () => {
+    // undici quotes a credentialed URL back in full. `NetworkError` strikes
+    // out the URL it was TOLD about, and the input was serialized a second
+    // time to obtain it, so a `toString` with state defeats that too.
+    let reads = 0;
+    const input = {
+      toString(): string {
+        reads += 1;
+        return reads === 1
+          ? "https://alice:hunter2_URL_TO_STRING@example.invalid/first"
+          : "https://example.invalid/second";
+      },
+    };
+
+    const result = await typedFetch(input as unknown as string);
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expectNoDisclosure(result.error, "hunter2_URL_TO_STRING");
+  });
+
+  test("a referrer that carries a credential", async () => {
+    // The referrer is a second URL slot, and it was never redacted at all:
+    // `NetworkError` strikes out the REQUEST url, which this is not.
+    const result = await typedFetch("https://example.invalid/referrer", {
+      referrer: "ht!tp://alice:hunter2_REFERRER@ref.test/p",
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expectNoDisclosure(result.error, "hunter2_REFERRER");
+  });
+
+  test("a method that carries a CRLF sequence", async () => {
+    // The platform quotes a method it refuses. A raw CRLF in `message` forges
+    // a log line, and the forged line is the caller's own text.
+    const result = await typedFetch("https://example.invalid/method", {
+      method: "GET\r\nX-Injected: METHOD_CRLF_SENTINEL",
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expectNoDisclosure(result.error, "METHOD_CRLF_SENTINEL");
+  });
+
+  test("an enum slot the platform refuses and echoes", async () => {
+    // `mode`, `credentials`, `cache`, and `redirect` are echoed by the same
+    // rejection message. They can only hold a program constant today, and the
+    // set of them grows with the Standard.
+    const result = await typedFetch("https://example.invalid/enum", {
+      mode: "ENUM_SLOT_SENTINEL" as RequestMode,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expectNoDisclosure(result.error, "ENUM_SLOT_SENTINEL");
+  });
+});
