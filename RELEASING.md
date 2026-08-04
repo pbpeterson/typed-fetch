@@ -83,6 +83,14 @@ attestation.
 public --tag <dist-tag>`. A prerelease such as `1.1.0-rc.1` uses `next`; a
   stable version uses `latest`.
 
+  The tarball argument must be an ABSOLUTE path, and the workflow resolves it
+  with `realpath`. npm reads that argument as a package specifier, not as a
+  path. A specifier is a file only when it starts with `.`, `/`, `~/`, or a
+  drive letter. `package/<name>.tgz` starts with none of them, so npm reads it
+  as the GitHub shorthand `owner/repo` and runs `git ls-remote` against
+  `github.com`. The publish job has no checkout and no git credentials, so the
+  release fails there, after every gate has passed.
+
 - The build is done by the **explicit `pnpm build` step above**, not by the
   `prepublishOnly` lifecycle hook. The hook **verifies** the artifact instead of
   producing it: `"prepublishOnly": "node scripts/verify-pack.mjs"`.
@@ -95,9 +103,21 @@ public --tag <dist-tag>`. A prerelease such as `1.1.0-rc.1` uses `next`; a
   same bytes in practice, but the gates guarded a different build.
 
   Verifying keeps the net and drops the rebuild. The hook rejects a missing,
-  incomplete, or leaking `dist/` instead of regenerating it. The package job
-  runs the hook while it creates the tarball. The publish job uses
-  `--ignore-scripts`, so it cannot execute repository lifecycle code with OIDC.
+  incomplete, or leaking `dist/` instead of regenerating it.
+
+  CAUTION: The hook does NOT run in the release workflow. npm runs
+  `prepublishOnly` for `npm publish` only. `npm pack` does not run it, and the
+  publish job passes `--ignore-scripts`. The hook therefore protects a MANUAL
+  `npm publish` from a workstation, and nothing else.
+
+  The workflow protects itself with two explicit steps instead. The `pnpm
+verify-pack` gate checks what a pack would produce, and the staging step runs
+  `node scripts/verify-pack.mjs <tarball>` on the STAGED FILE — the exact
+  tarball it then hashes, uploads, and publishes. Those two steps are the net;
+  do not treat the lifecycle hook as one.
+
+  The publish job uses `--ignore-scripts`, so it cannot execute repository
+  lifecycle code with OIDC.
   Do not put a build back in this hook.
 
 - `--provenance --access public` attaches npm provenance (a verifiable link

@@ -347,49 +347,119 @@ export const HOSTILE_SCENARIOS: readonly HostileScenario[] = [
   },
   {
     id: "H-24",
-    title: "A header value the platform refuses never reaches the message",
+    title: "A platform rejection message is never copied into the error message",
+    // The platform reports a request it refused by QUOTING the caller's value
+    // back. Copying that message put a credential into `message`, and a raw LF
+    // with it. The message is a library constant now, whatever was refused.
     options: () => ({ headers: { authorization: "Basic AAAA\nsk_live_CONFORMANCE" } }),
     outcome: { kind: "network" },
     verify: (error) => {
-      const message = (error as { message: string }).message;
-      if (message.includes("sk_live_CONFORMANCE")) throw new Error("the value reached the message");
-      if (message.includes("\n")) throw new Error("a raw newline reached the message");
+      const { message, cause } = error as { message: string; cause: unknown };
+      if (message !== "Network error") throw new Error(`unexpected message: ${message}`);
+      // The diagnostic is not lost. It is reachable on purpose, and only there.
+      if (!String(cause).includes("sk_live_CONFORMANCE")) {
+        throw new Error("the platform error is not reachable through the cause");
+      }
     },
   },
   {
     id: "H-25",
-    title:
-      "A refused header value is redacted as the platform normalizes it, not as it was written",
-    // The platform strips leading and trailing HTTP whitespace BEFORE it
-    // validates, and quotes the stripped value back. Searching the message for
-    // the caller's string found nothing, and the credential survived.
-    options: () => ({ headers: { authorization: "\tBasic AAAA\nsk_live_NORMALIZED\r\n" } }),
+    title: "A refused method or referrer never reaches the message either",
+    // The header slots were redacted once; these two never were. Every slot the
+    // platform can echo is covered by the same rule now.
+    options: () => ({
+      method: "GET\r\nX-Injected: CONFORMANCE_METHOD",
+      referrer: "ht!tp://alice:CONFORMANCE_REFERRER@ref.test/p",
+    }),
     outcome: { kind: "network" },
     verify: (error) => {
       const message = (error as { message: string }).message;
-      if (message.includes("sk_live_NORMALIZED")) throw new Error("the value reached the message");
-      if (message.includes("\n")) throw new Error("a raw newline reached the message");
+      for (const sentinel of ["CONFORMANCE_METHOD", "CONFORMANCE_REFERRER", "\r", "\n"]) {
+        if (message.includes(sentinel)) throw new Error(`the message carries ${sentinel}`);
+      }
     },
   },
   {
     id: "H-26",
-    title: "A refused header name cannot forge a log line either",
-    // A name is refused on the same footing as a value, and quoted back the
-    // same way. Collecting only values left the raw CRLF in the message.
-    //
-    // The EDGE newlines are load-bearing. A name gets no whitespace
-    // normalization — only a value does — and running one through the value's
-    // normalizer erased an edge CR or LF, filed the name as accepted, and put
-    // the raw newline back in the message. An interior-only name never sees it.
-    options: () => ({ headers: { "\nX-Foo\r\nSet-Cookie: forged=1\r": "v" } as never }),
+    title: "A request input read twice cannot split the request from the error",
+    // The input used to be serialized once by the transport and once more to
+    // fill `error.url`. A `toString` with state sent the request to one URL and
+    // filed the error against another.
+    input: () => {
+      let reads = 0;
+      return {
+        toString() {
+          reads += 1;
+          return reads === 1
+            ? "https://conformance.invalid/first"
+            : "https://conformance.invalid/second";
+        },
+      } as unknown as string;
+    },
+    options: () => ({}),
     outcome: { kind: "network" },
     verify: (error) => {
-      const message = (error as { message: string }).message;
-      if (message.includes("Set-Cookie")) throw new Error("the name reached the message");
-      if (message.includes("\r") || message.includes("\n")) {
-        throw new Error("a raw newline reached the message");
+      const url = (error as { url: string }).url;
+      if (url !== "https://conformance.invalid/first") {
+        throw new Error(`the error was filed against ${url}`);
       }
     },
+  },
+  {
+    id: "H-27",
+    title: "A response getter that aborts the signal and throws is not an abort",
+    // Reading the resolved value is not the transport. A getter that aborts the
+    // signal and then throws an abort-shaped exception described a failure the
+    // abort never caused, and a retry policy reads that class.
+    options: () => {
+      const controller = new AbortController();
+      const response: Record<string, unknown> = {
+        [Symbol.toStringTag]: "Response",
+        body: null,
+        bodyUsed: false,
+        headers: new Headers(),
+        ok: true,
+        redirected: false,
+        statusText: "OK",
+        type: "basic",
+        url: URL_UNDER_TEST,
+        arrayBuffer: async () => new ArrayBuffer(0),
+        blob: async () => new Blob(),
+        clone: () => response,
+        formData: async () => new FormData(),
+        json: async () => ({}),
+        text: async () => "",
+      };
+      Object.defineProperty(response, "status", {
+        configurable: true,
+        get(): never {
+          controller.abort();
+          throw new DOMException("Aborted", "AbortError");
+        },
+      });
+      return { fetch: resolving(response), signal: controller.signal };
+    },
+    outcome: { kind: "network" },
+  },
+  {
+    id: "H-28",
+    title: "An options read that aborts the signal and throws is not an abort",
+    // The same rule on the other side of the transport. Building the init is
+    // not the request either.
+    options: () => {
+      const controller = new AbortController();
+      const target = {
+        fetch: resolving(new Response(null, { status: 200 })),
+        signal: controller.signal,
+      };
+      return new Proxy(target, {
+        ownKeys(): never {
+          controller.abort();
+          throw new DOMException("Aborted", "AbortError");
+        },
+      });
+    },
+    outcome: { kind: "network" },
   },
 ] as const;
 

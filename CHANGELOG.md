@@ -4,12 +4,31 @@
 
 ### Security
 
-- `typedFetch` now snapshots one-shot header containers before the transport
-  consumes them. A refused value therefore remains available to the failure
-  redactor. Previously, a one-shot outer container or inner pair could be empty
-  on the failure path. The platform's quoted rejection then copied the value
-  into `NetworkError.message`, `stack`, JSON, `String(error)`, and inspect
-  output.
+- **A request failure's `message` is now a library constant, such as
+  `Network error`.** The platform's rejection message is never copied. A
+  platform reports a request it refused by quoting the caller's value back — a
+  header name or value, the URL, the referrer, the method, or an enum member —
+  and that message reached `message`, `stack`, `String(error)`,
+  `JSON.stringify(error)`, and `util.inspect(error)`.
+
+  The previous release struck a refused header part back out of that message.
+  That could not hold: striking it out needs the caller's value a SECOND time,
+  after the transport has consumed it, and the second read is the caller's to
+  choose. A record getter, an index getter on either header container, and a
+  `toString` each answer differently, and the search string then matches
+  nothing. The URL, the referrer, the method, and the enum slots were never
+  covered at all.
+
+  CAUTION: `error.cause` holds the platform error, unmodified, and it is the
+  supported way to read what the platform reported. `toJSON()` and the inspect
+  hook withhold it. Decide what a log line may carry before you copy
+  `error.cause` into one.
+
+- `typedFetch` no longer reads the caller's `headers`. The transport is the only
+  reader of that slot, so a header getter runs exactly once, as it does under a
+  bare `fetch`. The snapshot of one-shot header containers is gone with the
+  redactor that needed it.
+
 - The release workflow now gives `id-token: write` to a minimal publish job.
   Checkout, dependency installation, build, tests, audits, and packaging run in
   a separate job without OIDC. The publish job verifies the artifact checksums
@@ -17,10 +36,25 @@
 
 ### Fixed
 
-- Request-failure classification now captures the governing signal state before
-  it resolves the request URL, inspects headers, or releases a response body.
-  Caller code in those operations can no longer turn an earlier unrelated
-  failure into an `AbortedError`.
+- **Only a rejected transport call can produce an `AbortedError` or a
+  `TimeoutError`.** `typedFetch` ran three phases under one `try`: reading the
+  caller's options, awaiting the transport, and inspecting the resolved value.
+  The classifier trusts the governing signal by design, so a `status`,
+  `headers`, `bodyUsed`, `ok`, or `type` getter that aborted the signal and then
+  threw an abort-shaped exception was answered with an `AbortedError` — for a
+  failure the abort never caused. Each phase now has its own catch.
+- **The request input is serialized once.** The transport performs a
+  `USVString` conversion on anything that is not a `Request`, and `error.url`
+  was resolved by converting the input a second time. A `toString` with state
+  sent the request to one URL and filed the error against another. `typedFetch`
+  now serializes once and hands the transport that exact string; a `Request` is
+  passed through unchanged.
+- **The release workflow publishes the staged tarball by absolute path.** npm
+  reads that argument as a package specifier, and a specifier is a file only
+  when it starts with `.`, `/`, `~/`, or a drive letter. `package/<name>.tgz`
+  was read as a GitHub shorthand, so npm ran `git ls-remote` against
+  `github.com` from a job with no checkout and no git credentials. The workflow
+  also validates the staged tarball itself, not only a dry-run manifest.
 
 ## [2.0.0] - 2026-07-30
 

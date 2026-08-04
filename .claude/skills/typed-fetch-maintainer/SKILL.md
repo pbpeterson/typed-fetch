@@ -37,23 +37,31 @@ index.ts                → re-export barrel for the ./errors subpath
 
 ## Core flow (src/index.ts)
 
-1. Inside the request `try`, read an optional own `options.fetch` override.
-   Capture the effective abort signal and request headers once. Materialize an
-   exotic header iterable without string conversion, so the failure redactor
-   can read it after the transport. Pass a prototype-preserving proxy to the
-   transport so it sees those captured values. When an override is present, the
-   proxy also hides the extension.
-2. `const res = await fetchImpl(url, init)` inside the `try`, which also covers
-   option getters and normalization. `src/request-failure.ts` then classifies
-   any failure as `AbortedError` (original rejection as `cause`), `TimeoutError`
-   (from `AbortSignal.timeout()`), or `NetworkError`. It never rethrows. The
-   abort state is captured before any failure-path caller code. The abort path
+   `typedFetch` runs in THREE phases, each with its own catch: SETUP,
+   TRANSPORT, RESPONSE. Only the transport phase can produce an `AbortedError`
+   or a `TimeoutError`. Keep it that way — a getter is caller code, and a getter
+   that aborts the signal and throws must not claim an abort.
+
+1. SETUP. Serialize the request input ONCE and hand the transport that string; a
+   `Request` passes through unchanged. Read an optional own `options.fetch`
+   override. Capture the effective abort signal once. Never read `headers` —
+   the transport is the only reader of that slot. Pass a prototype-preserving
+   proxy to the transport so it sees the captured signal. When an override is
+   present, the proxy also hides the extension. Any failure here is a
+   `NetworkError`.
+2. TRANSPORT: `const res = await fetchImpl(transportInput, init)`, which also
+   covers option getters and normalization. `src/request-failure.ts` then
+   classifies the rejection as `AbortedError` (original rejection as `cause`),
+   `TimeoutError` (from `AbortSignal.timeout()`), or `NetworkError`. It never
+   rethrows, and every message it writes is a library constant — the platform's
+   own message stays on `cause`, because a platform quotes the caller's refused
+   value back. The abort path
    is taken when `err === signal.reason` OR the governing signal
    reports `aborted` and the rejection is error-shaped and named
    `"AbortError"`/`"TimeoutError"` — an injected fetch (whatwg-fetch,
    node-fetch@3) builds its own abort error. `reason ?? err` then decides
    timeout vs abort. An aborted signal alone is never sufficient.
-3. Validate `res` as a platform `Response` or standards-compatible polyfill.
+3. RESPONSE. Validate `res` as a platform `Response` or standards-compatible polyfill.
    Any other value becomes `NetworkError`. A foreign response must expose the
    stable baseline promised by `TypedResponse`; `node-fetch`, `cross-fetch`,
    and `whatwg-fetch` do not. The `NetworkError` cause holds the validation or

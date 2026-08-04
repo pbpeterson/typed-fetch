@@ -577,9 +577,15 @@ or inspection failure.
 
 Each of these errors also has a `url` value. Use this value to identify a failed request among concurrent requests.
 
-`error.url` holds the full href. For a hierarchical URL, `error.message` and the
-`toJSON()` record hold the origin and path. They remove userinfo, query strings,
-and fragments. A log line and a log record therefore agree.
+`error.url` holds the full href. For a hierarchical URL, the `toJSON()` record
+holds the origin and path. It removes userinfo, query strings, and fragments.
+
+WARNING: `error.message` for a request failure is a library constant, such as
+`Network error`. This library does not copy the platform's message, because a
+platform reports a request it refused by quoting the caller's value back: a
+header value, the URL, the referrer, or the method. `error.cause` holds the
+platform error, unmodified. Decide what a log line may carry before you copy
+`error.cause` into one.
 
 The path is kept because it names the resource, which is what tells concurrent
 failures apart. That holds for `http:`, `https:`, `ws:`, `wss:`, `ftp:`, and
@@ -783,10 +789,13 @@ prototype chain. `typedFetch` preserves that behavior for all four members.
 `RequestInit` given to the transport. Classification and transport therefore
 use the same signal.
 
-`typedFetch` also reads `headers` once. A record, a native `Headers`, or an
-array of array pairs reaches the transport by identity. An exotic iterable is
-materialized without string conversion. This keeps one-shot outer containers
-and inner pairs available to redact a value that the platform refuses.
+`typedFetch` does not read `headers`. The transport is the only reader of that
+slot, so a header getter runs once, as it does under a bare `fetch`.
+
+`typedFetch` serializes the request input once. A `string` or a `URL` reaches
+the transport as the string this library produced, and `error.url` holds that
+same string. A `Request` reaches the transport unchanged, because it carries a
+body, a signal, and internal slots that no string can stand for.
 
 `fetch` is this library's extension. It selects the transport.
 
@@ -797,8 +806,7 @@ prototype and property descriptors. Reads delegate to the original object.
 This preserves inherited properties and WebIDL getters.
 
 When `options` has an own `fetch`, the proxy hides that property from the
-implementation. The proxy replaces `signal` and `headers` reads with their
-captured values.
+implementation. The proxy replaces a `signal` read with the captured value.
 
 `fetch` names `undefined` explicitly, so a value of type `typeof fetch | undefined` assigns to it under `exactOptionalPropertyTypes`.
 

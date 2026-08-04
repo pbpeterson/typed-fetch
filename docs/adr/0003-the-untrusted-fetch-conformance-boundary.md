@@ -91,9 +91,11 @@ scenario fails.
 | H-21 | An options object whose property read throws                                            | `NetworkError`                 |
 | H-22 | A fetch override inherited from a polluted prototype is never used                      | `NetworkError`                 |
 | H-23 | A Request-shaped input whose url is not a string                                        | `NetworkError`                 |
-| H-24 | A header value the platform refuses never reaches the message                           | `NetworkError`                 |
-| H-25 | A refused header value is redacted as the platform normalizes it, not as it was written | `NetworkError`                 |
-| H-26 | A refused header name cannot forge a log line either                                    | `NetworkError`                 |
+| H-24 | A platform rejection message is never copied into the error message                     | `NetworkError`                 |
+| H-25 | A refused method or referrer never reaches the message either                           | `NetworkError`                 |
+| H-26 | A request input read twice cannot split the request from the error                      | `NetworkError`                 |
+| H-27 | A response getter that aborts the signal and throws is not an abort                     | `NetworkError`                 |
+| H-28 | An options read that aborts the signal and throws is not an abort                       | `NetworkError`                 |
 
 Two decisions about a hostile implementation live in their own records and are
 in scope by reference, not repeated here:
@@ -153,13 +155,12 @@ cost more than the failure it prevents.
    record. A report that `error.url` contains a query token is a report about a
    documented feature.
 
-8. **A platform message that echoes a value the platform ACCEPTED.** H-24 covers
-   the values a platform must refuse, which is the only way a header value
-   reaches a rejection message on any runtime this library targets. A runtime
-   that quotes an accepted value back in some other message is not covered, and
-   neither are the enum-valued init slots (`mode`, `credentials`, `cache`,
-   `redirect`), which echo the caller's own string but can only hold a program
-   constant.
+8. **What `error.cause` carries.** H-24 keeps the platform's own message out of
+   `message` and every automatic channel. It does not remove that message: the
+   platform error is kept, unmodified, as `error.cause`, because a caller who
+   asks for it needs the real text. `toJSON()` and the inspect hook withhold it.
+   A log line that copies `error.cause` carries whatever the platform quoted,
+   and that is the caller's decision to make.
 
 ## Consequences
 
@@ -243,3 +244,45 @@ ByteString conversion, normalization, and refusal.
 The regressions live in `typed-fetch.spec.ts`. They cover one-shot outer and
 inner iterables, URL reentrancy, header conversion reentrancy, and every message
 channel affected by the refused value.
+
+## Amendment — 2026-08-04: the message is the library's, and the phases are separate
+
+This amendment rewrites H-24, H-25, and H-26, and it adds H-27 and H-28. The
+amendment of 2026-08-03 above is superseded by it: both requirements that
+amendment recorded are gone, and the two paragraphs stay as the historical
+record of what was tried.
+
+**The message.** The previous rule removed a refused header part from the
+platform's message. It could not hold. The removal needs the caller's value a
+second time, after the transport has consumed it, and the second read is the
+caller's to choose: a record getter, an index getter on either header
+container, and a `toString` each answer differently. The slots that are not
+header parts — the URL, the referrer, the method, and every enum member — were
+never covered, and the enum set grows with the Fetch Standard.
+
+So `typedFetch` does not copy a platform message at all. Every message a
+request failure carries is a library constant, and the platform error stays on
+`error.cause`. H-24 states that rule, H-25 covers the slots the old rule could
+not reach, and out-of-scope item 8 records what `error.cause` still holds.
+
+Two implementation requirements from the 2026-08-03 amendment are withdrawn by
+this one. `typedFetch` no longer materializes an exotic `headers` iterable,
+because it never reads that slot; the transport does, once. It no longer
+captures the signal state at the top of a failure path either, because the
+phase split below removes the caller code that made the capture necessary.
+
+**The phases.** H-27 and H-28 are new rows for a defect the boundary had no row
+for. `typedFetch` ran three phases under one `try`: reading the caller's
+options, awaiting the transport, and inspecting what the transport resolved. An
+exception from any of them reached the classifier, which trusts the governing
+signal by design. A getter that aborted the signal and then threw an
+abort-shaped exception was answered with an `AbortedError`, or a `TimeoutError`
+when the abort reason was a timeout, for a failure the abort never caused.
+
+Each phase now has its own catch. The awaited `fetch` call is the only phase
+that can produce an `AbortedError` or a `TimeoutError`.
+
+**One serialization.** H-26 replaces the URL-reentrancy regression the previous
+amendment described. The request input is serialized once, in the setup phase,
+and the transport receives that exact string. A `Request` is passed through
+unchanged.

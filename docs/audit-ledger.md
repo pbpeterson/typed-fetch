@@ -53,38 +53,35 @@ re-open one should read the reasoning first and say what it gets wrong.
 ### The request path
 
 - **Body custody on every refusal path.** Every throw between the `isResponse`
-  call and the success return is covered by the inner `try` in `typedFetch`, and
-  `releaseResponseBody` is total: every read is guarded, and a primitive, a
-  hostile Proxy body, and a non-object `body` all fall through. No path strands
-  a body.
+  call and the success return is covered by the response phase's catch in
+  `typedFetch`, and `releaseResponseBody` is total: every read is guarded, and a
+  primitive, a hostile Proxy body, and a non-object `body` all fall through. No
+  path strands a body. The release call has its own guard, so a value too broken
+  to release cannot replace the real cause.
 - **No leaked listener, timer, or table entry survives a rejected call.** The
   library adds no listener to a signal and sets no timer. The only keyed tables
   written on the failure path are the identity `WeakMap`s.
 - **The options snapshot's proxy invariants.** A frozen `options` carrying an own
   `fetch` does not trip a proxy `get` invariant; the `signal` slot is always
   re-declared configurable and writable, and the trap delegates with `options`
-  as the receiver. A frozen `options` carrying one-shot headers uses the
-  descriptor clone, so the replayable value never conflicts with the original
-  non-configurable descriptor.
+  as the receiver. `headers` is no longer replaced at all, so the shape that
+  used to need the descriptor clone is now an ordinary read.
 - **The init dictionary stays empty when the caller passes nothing**, so
   `typedFetch(request)` does not trip the Fetch Standard's "init is not empty"
   branch and does not detach the `Request`'s own signal.
-- **Signal, abort, and timeout interleaving.** The abort state is snapshotted
-  as the first operation in each failure catch. A network failure that merely
-  coincides with an abort stays a `NetworkError`. URL resolution, header
-  conversion, and response-body release can run caller code after that snapshot.
-  None can change the classification of the earlier failure.
-- **Header-container coverage** matches WebIDL's `HeadersInit` conversion for a
-  record, an array of pairs, a `Headers` instance, an inner pair that is any
-  iterable rather than an `Array`, and a callable carrying own enumerable
-  properties. Names and values are both collected, and each is normalized the
-  way the platform normalizes it — a value stripped of edge HTTP whitespace, a
-  name not stripped at all. Sharing one normalizer was a defect, not a
-  simplification: it erased an edge CR or LF off a NAME and filed it as
-  accepted, and only an interior newline made it to the strike list. The
-  `headers` slot is captured once. Exotic outer containers and inner pairs are
-  materialized without string conversion before the transport consumes them.
-  A one-shot iterable therefore remains available to the failure redactor.
+- **Signal, abort, and timeout interleaving.** `typedFetch` runs in three
+  phases, each with its own catch, and only the transport phase consults the
+  signal. A network failure that merely coincides with an abort stays a
+  `NetworkError`, and caller code in the setup or response phase cannot claim an
+  abort at all. Nothing runs between the transport's rejection and its
+  classification, because the request input is serialized before the request.
+- **Header-container coverage is no longer a thing this library needs.** The
+  collector matched WebIDL's `HeadersInit` conversion for a record, an array of
+  pairs, a `Headers` instance, an inner pair that is any iterable, and a
+  callable carrying own enumerable properties — and it was still defeated,
+  because every one of those shapes can answer a SECOND read differently. The
+  message is a library constant now (see the 2026-08-04 entry), so nothing reads
+  the caller's `headers` but the transport.
 - **The spec claims in `src/`.** 22 statements about the Fetch Standard, WebIDL,
   the Streams Standard, and the URL Standard were checked against the
   specification text and against an executed probe. 20 were correct, including
@@ -214,10 +211,18 @@ and network-backed responses.
   over all 40 mapped statuses after `isKnownHttpError` reaches an unreachable
   default. Types imported from `.` and from `./errors` are the same declarations.
 - **The release gates do not pass while what they guard is broken.**
-  `verify-pack` uses an allowlist plus exact file-count bounds; `validate-release`
+  `verify-pack` uses an allowlist plus exact file-count bounds, and it runs
+  twice in the release workflow: once on the dry-run manifest and once on the
+  STAGED tarball, which is the file that gets published. `validate-release`
   ties tag, version, changelog heading, footer links, and the `origin/main` tip
   together; `check-docs` fails loudly on a missing or partial `dist/`;
   `is-main-module` resolves symlinks on both sides.
+- **The publish argument is a path, and npm reads it as a spec.** The publish
+  step resolves the staged tarball with `realpath`, because npm treats a spec as
+  a file only when it starts with `.`, `/`, `~/`, or a drive letter. A relative
+  `package/<name>.tgz` was read as a GitHub shorthand and sent to `git
+ls-remote`. `scripts/release-publish.spec.mjs` drives the real npm CLI against
+  both forms with a recording `git` first on PATH.
 
 ## Adjudicated closed
 
@@ -250,9 +255,10 @@ Correct about the code. Not defects.
    and redacting it would leave nothing diagnostic. Stated in
    `src/errors/redact-url.ts`.
 
-6. **A platform message that echoes a header value the platform ACCEPTED.** Only
-   a refused value reaches a rejection message, and striking every held value
-   would replace `1` or `application/json` wherever they appeared.
+6. **What `error.cause` carries.** The platform error is kept unmodified,
+   because a caller who asks for it needs the real text. `toJSON()` and the
+   inspect hook withhold it. A log line that copies it carries whatever the
+   platform quoted.
 
 7. **The eight permanent exclusions in ADR 0003.** Read them before reporting a
    hostile-`fetch` behavior; a report that the library does not handle one of

@@ -222,6 +222,17 @@ Words this codebase already uses, some of them only implicitly until now.
   only its scheme. Every redaction names the property that holds the full
   value. Read `error.headers`, `error.url`, `error.cause`, or `error.reason` for
   deliberate access.
+- **Library-authored message** — the rule for a request failure's `message`. It
+  is a constant this library wrote, never a string a platform produced. A
+  platform reports a request it refused by quoting the caller's value back — a
+  header name or value, the URL, the referrer, the method, an enum member — and
+  striking that echo out needs the caller's value a second time, which the
+  caller controls. The platform error stays on `error.cause`.
+- **Phase** — one of the three parts of a `typedFetch` call, each with its own
+  catch: SETUP (reading the options, building the init), TRANSPORT (the awaited
+  `fetch` call), and RESPONSE (inspecting the resolved value). Only the
+  transport phase can produce an `AbortedError` or a `TimeoutError`, because it
+  is the only phase whose failure the governing signal can have caused.
 
 ## The modules
 
@@ -231,12 +242,13 @@ src/index.ts                  typedFetch + the guards; owns the envelope and
                               the transport seam. The `fetch` override is read
                               as an OWN property, never through the prototype
                               chain. `typedFetch` captures the governing signal
-                              and request headers once. It materializes exotic
-                              header iterables so the transport and redactor
-                              consume the same values. It captures the abort
-                              state before any failure-path caller code. It
-                              validates the visible Response surface before
-                              handoff, then returns the same object unmodified.
+                              once and serializes the request input once. It
+                              never reads `headers`; the transport does. It runs
+                              in THREE PHASES with a catch each — setup,
+                              transport, response — and only the transport can
+                              produce an abort or a timeout. It validates the
+                              visible Response surface before handoff, then
+                              returns the same object unmodified.
 src/request-failure.ts        classifies a rejected request attempt as an
                               abort, a timeout, or a network failure. The
                               AbortSignal is the authority, never the
