@@ -3532,3 +3532,144 @@ describe("typedFetch — reflected request data stays out of the automatic chann
     expectNoDisclosure(result.error, "ENUM_SLOT_SENTINEL");
   });
 });
+
+// ── Only a rejected transport call can be an abort or a timeout ──────────
+//
+// `typedFetch` runs three phases: it reads the caller's options, it awaits the
+// transport, and it inspects what the transport resolved. One `try` covered all
+// three, and the classifier — which trusts the governing signal by design —
+// therefore saw a phase-1 or phase-3 exception as if the transport had rejected.
+//
+// A getter is caller code. A getter that aborts the signal and then throws an
+// abort-shaped exception made `typedFetch` answer with an AbortedError for a
+// failure the abort never caused, and with a TimeoutError when the abort reason
+// was a timeout. A consumer's retry policy reads that class.
+/** A response-shaped value whose `field` getter aborts the signal and throws. */
+function abortingResponse(field: string, controller: AbortController): Response {
+  const response: Record<string, unknown> = {
+    [Symbol.toStringTag]: "Response",
+    body: null,
+    bodyUsed: false,
+    headers: new Headers({ "content-type": "application/json" }),
+    ok: true,
+    redirected: false,
+    status: 200,
+    statusText: "OK",
+    type: "basic",
+    url: "https://example.invalid/aborting-getter",
+    arrayBuffer: async () => new ArrayBuffer(0),
+    blob: async () => new Blob(),
+    clone: () => response,
+    formData: async () => new FormData(),
+    json: async () => ({}),
+    text: async () => "",
+  };
+  Object.defineProperty(response, field, {
+    configurable: true,
+    get(): never {
+      controller.abort();
+      throw new DOMException("Aborted", "AbortError");
+    },
+  });
+  return response as unknown as Response;
+}
+
+describe("typedFetch — only the transport phase can produce an abort or a timeout", () => {
+  test.each(["status", "headers", "bodyUsed", "ok", "type"])(
+    "a `%s` getter that aborts the signal and throws is a NetworkError",
+    async (field) => {
+      const controller = new AbortController();
+
+      const result = await typedFetch("https://example.invalid/aborting-getter", {
+        fetch: resolving(abortingResponse(field, controller)),
+        signal: controller.signal,
+      });
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expect(isNetworkError(result.error)).toBe(true);
+      expect(isAbortError(result.error)).toBe(false);
+      expect(controller.signal.aborted).toBe(true);
+    },
+  );
+
+  test("a response getter that aborts with a timeout reason is still a NetworkError", async () => {
+    // The timeout arm reads the signal's REASON, so a getter that aborts with a
+    // real `DOMException` named "TimeoutError" reached it directly.
+    const controller = new AbortController();
+    const response: Record<string, unknown> = {
+      [Symbol.toStringTag]: "Response",
+      body: null,
+      bodyUsed: false,
+      headers: new Headers(),
+      ok: true,
+      redirected: false,
+      statusText: "OK",
+      type: "basic",
+      url: "https://example.invalid/timeout-getter",
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone: () => response,
+      formData: async () => new FormData(),
+      json: async () => ({}),
+      text: async () => "",
+    };
+    Object.defineProperty(response, "status", {
+      configurable: true,
+      get(): never {
+        const reason = new DOMException("The operation timed out.", "TimeoutError");
+        controller.abort(reason);
+        throw reason;
+      },
+    });
+
+    const result = await typedFetch("https://example.invalid/timeout-getter", {
+      fetch: resolving(response as unknown as Response),
+      signal: controller.signal,
+    });
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isTimeoutError(result.error)).toBe(false);
+  });
+
+  test("an options read that aborts the signal and throws is a NetworkError", async () => {
+    // Phase 1. The descriptor pass runs after the signal slot has been read, so
+    // the governing signal is already known when this exception is raised.
+    const controller = new AbortController();
+    const target = {
+      fetch: resolving(new Response(null, { status: 200 })),
+      signal: controller.signal,
+    };
+    const options = new Proxy(target, {
+      ownKeys(): never {
+        controller.abort();
+        throw new DOMException("Aborted", "AbortError");
+      },
+    });
+
+    const result = await typedFetch("https://example.invalid/hostile-options", options);
+
+    expect(result.response).toBe(null);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(isAbortError(result.error)).toBe(false);
+    expect(controller.signal.aborted).toBe(true);
+  });
+
+  test("a transport rejection while the signal is aborted is still an abort", async () => {
+    // The counterpart. Phase 2 is where an abort belongs, and this pins that
+    // the phase split did not take the abort path away from it.
+    const controller = new AbortController();
+
+    const result = await typedFetch("https://example.invalid/real-abort", {
+      signal: controller.signal,
+      fetch: (async () => {
+        controller.abort();
+        throw controller.signal.reason;
+      }) as unknown as typeof fetch,
+    });
+
+    expect(result.response).toBe(null);
+    expect(isAbortError(result.error)).toBe(true);
+  });
+});

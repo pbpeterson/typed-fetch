@@ -15,7 +15,7 @@ import {
 } from "./errors/brand";
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
-import { classifyRequestFailure, snapshotAbortState } from "./request-failure";
+import { classifyRequestFailure, networkFailure, snapshotAbortState } from "./request-failure";
 import {
   hasTypedResponseIdentityScalars,
   headersOf,
@@ -586,8 +586,27 @@ export async function typedFetch<JsonReturnType>(
   url: FetchInput,
   options: TypedFetchOptions = {},
 ): Promise<TypedFetchReturnType<JsonReturnType>> {
+  // THREE PHASES, THREE CATCHES. Every one of them resolves as an error VALUE,
+  // and each one names the failures it can produce:
+  //
+  //  1. SETUP — reading the caller's options and building the init. Always a
+  //     NetworkError.
+  //  2. TRANSPORT — the awaited `fetch` call. The ONLY phase that can produce
+  //     an AbortedError or a TimeoutError, because it is the only phase whose
+  //     failure the governing signal can have caused.
+  //  3. RESPONSE — inspecting and classifying the resolved value, and releasing
+  //     its body when that fails. Always a NetworkError.
+  //
+  // One `try` around all three could not state that. A hostile getter in phase
+  // 1 or phase 3 can abort the signal and then throw an abort-shaped exception,
+  // and the classifier — which trusts the signal by design — answered with an
+  // AbortedError for a failure the abort never caused. A consumer's retry
+  // policy reads that class.
   let signal: AbortSignal | undefined;
-  let failureAbortState: ReturnType<typeof snapshotAbortState> | undefined;
+  let fetchImpl: typeof fetch;
+  let init: RequestInit;
+
+  // ── Phase 1: setup ──────────────────────────────────────────────────────
   try {
     // OWN property only. `fetch` is this library's own extension, not a WebIDL
     // dictionary member, and reading it off the prototype chain turns a single
@@ -600,7 +619,7 @@ export async function typedFetch<JsonReturnType>(
     // on the object and the platform ignores it, because WebIDL reads only the
     // members it declares.
     const hasFetchOverride = Object.hasOwn(options, "fetch");
-    const fetchImpl = (hasFetchOverride ? options.fetch : undefined) ?? fetch;
+    fetchImpl = (hasFetchOverride ? options.fetch : undefined) ?? fetch;
 
     // The AbortSignal can arrive via EITHER slot: the `options`/`init` (its
     // `.signal`), OR a `Request` passed as the first argument (`url.signal`).
@@ -631,86 +650,87 @@ export async function typedFetch<JsonReturnType>(
     // the platform's message; the message is library-authored now, so the
     // transport is the only reader of that slot and its getter runs exactly
     // once, as it does under a bare `fetch`.
-    const init = snapshotRequestInit(options, initSignal, hasFetchOverride);
+    init = snapshotRequestInit(options, initSignal, hasFetchOverride);
+  } catch (cause) {
+    // A `fetch`, `signal`, or descriptor read that throws. No request left this
+    // process, so no signal can have caused it.
+    return { response: null, error: networkFailure(cause, requestUrl(url)) };
+  }
 
-    const res = await fetchImpl(url, init);
-
-    // Inside the envelope on purpose. `fetchImpl` can be an injected
-    // implementation, so the resolved value is untrusted input. A non-Response
-    // or a hostile identity getter must surface as an error VALUE instead of
-    // rejecting or escaping through the typed success branch.
-    //
-    // The first successful `status` read is recorded per response by
-    // `statusOf`. The constructor and `UnknownHttpError` reuse that value, so
-    // the status that selects the class also reaches `error.status`,
-    // `error.message`, and `toJSON()`. A getter that throws can be retried. A
-    // successful getter cannot later select a different class.
-    //
-    // The read stays INSIDE the block below, because it can still throw — a
-    // hostile getter, or a `valueOf` that throws during the numeric conversion
-    // — and a throw here strands the body. See the catch.
-    try {
-      if (!isResponse(res)) {
-        throw new TypeError("The fetch implementation resolved a value that is not a Response.");
-      }
-      const status = statusOf(res);
-      if (status >= 400) {
-        const ErrorClass = statusCodeErrorMap.get(status);
-        return {
-          response: null,
-          error: ErrorClass ? new ErrorClass(res) : new UnknownHttpError(res),
-        };
-      }
-      if (!hasCompatibleSuccessSurface(res)) {
-        throw new TypeError(
-          "The fetch implementation resolved a Response with an incompatible public surface.",
-        );
-      }
-    } catch (cause) {
-      // Capture before body release: a hostile response can execute caller code
-      // from its body accessors, and that later code must not rewrite which
-      // failure already happened.
-      failureAbortState = snapshotAbortState(signal);
-      // The line above reads `status` (and converts it, which a hostile
-      // `valueOf` can make throw), and the error class reads `statusText`,
-      // `url`, and `headers`; any of them can throw for an injected
-      // implementation. The catch below turns that into a NetworkError, but
-      // `res` lives in the outer try block: the caller gets `response: null`
-      // and never gets a handle to the body the network already opened.
-      // Release it here, or it stays open with no owner.
-      releaseResponseBody(res);
-      throw cause;
-    }
-
-    // The success path releases nothing. `res` IS the returned response, and
-    // the caller owns its body.
-    return {
-      response: res as TypedResponse<JsonReturnType>,
-      error: null,
-    };
-  } catch (err) {
-    // FIRST on the failure path. URL resolution below can execute caller code
+  // ── Phase 2: transport ──────────────────────────────────────────────────
+  let res: Response;
+  try {
+    res = await fetchImpl(url, init);
+  } catch (cause) {
+    // FIRST on this path. URL resolution below can execute caller code
     // synchronously; it does not get to change the abort state that classifies
     // the failure which brought execution here.
-    const capturedAbortState = failureAbortState ?? snapshotAbortState(signal);
+    const capturedAbortState = snapshotAbortState(signal);
     // The requested URL, so pre-response errors (which hold no `Response`) are
     // still distinguishable in logs — the correlation `BaseHttpError.url`
     // already gives HTTP errors. `FetchInput` is `string | URL | Request`; a
     // `Request` exposes the resolved absolute URL on `.url`, and `String()`
     // stringifies both a `string` (identity) and a `URL` (its `href`).
-    const resolvedRequestUrl = requestUrl(url);
-
+    //
     // `signal` is read from the OUTER binding and never re-derived from
-    // `options` here: it was resolved before the request, and an `init.signal`
-    // getter that threw is one of the reasons this catch runs at all. Reading
-    // it again would rethrow and break the envelope's promise.
+    // `options` here: it was resolved in phase 1, and reading it again would
+    // run a getter that can throw.
     //
     // Which failure this is — timeout, abort, or network — is decided by
     // `classifyRequestFailure`. The governing signal is the authority there,
     // never the rejection's `.name`.
     return {
       response: null,
-      error: classifyRequestFailure(err, signal, resolvedRequestUrl, capturedAbortState),
+      error: classifyRequestFailure(cause, signal, requestUrl(url), capturedAbortState),
     };
   }
+
+  // ── Phase 3: response ───────────────────────────────────────────────────
+  // Inside the envelope on purpose. `fetchImpl` can be an injected
+  // implementation, so the resolved value is untrusted input. A non-Response
+  // or a hostile identity getter must surface as an error VALUE instead of
+  // rejecting or escaping through the typed success branch.
+  //
+  // The first successful `status` read is recorded per response by `statusOf`.
+  // The constructor and `UnknownHttpError` reuse that value, so the status that
+  // selects the class also reaches `error.status`, `error.message`, and
+  // `toJSON()`. A getter that throws can be retried. A successful getter cannot
+  // later select a different class.
+  try {
+    if (!isResponse(res)) {
+      throw new TypeError("The fetch implementation resolved a value that is not a Response.");
+    }
+    const status = statusOf(res);
+    if (status >= 400) {
+      const ErrorClass = statusCodeErrorMap.get(status);
+      return {
+        response: null,
+        error: ErrorClass ? new ErrorClass(res) : new UnknownHttpError(res),
+      };
+    }
+    if (!hasCompatibleSuccessSurface(res)) {
+      throw new TypeError(
+        "The fetch implementation resolved a Response with an incompatible public surface.",
+      );
+    }
+  } catch (cause) {
+    // The reads above (`status`, and `statusText`, `url`, and `headers` inside
+    // the error class) can each throw for an injected implementation. The
+    // caller gets `response: null` and never gets a handle to the body the
+    // network already opened. Release it here, or it stays open with no owner.
+    try {
+      releaseResponseBody(res);
+    } catch {
+      // A response too broken to release must not replace the real cause with
+      // the release failure.
+    }
+    return { response: null, error: networkFailure(cause, requestUrl(url)) };
+  }
+
+  // The success path releases nothing. `res` IS the returned response, and the
+  // caller owns its body.
+  return {
+    response: res as TypedResponse<JsonReturnType>,
+    error: null,
+  };
 }

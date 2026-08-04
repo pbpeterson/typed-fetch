@@ -120,6 +120,26 @@ function isError(value: unknown): value is Error {
 const NETWORK_FAILURE_MESSAGE = "Network error";
 
 /**
+ * The error value for a failure that is NOT a rejected transport call.
+ *
+ * `typedFetch` runs in three phases, and only the middle one — the awaited
+ * `fetch` call — can produce an abort or a timeout. A failure while the caller's
+ * options are read, or while the resolved `Response` is inspected, is a
+ * `NetworkError` whatever the governing signal reports.
+ *
+ * That is a rule about WHICH failure happened, not about which one is likelier.
+ * An `AbortSignal` that a hostile getter aborts while it throws would otherwise
+ * hand back an `AbortedError` for a failure the abort never caused, and a
+ * consumer's retry policy reads that class.
+ *
+ * @param cause - The exception that ended the phase. Untrusted.
+ * @param url - The requested URL, already resolved by the caller.
+ */
+export function networkFailure(cause: unknown, url: string): NetworkError {
+  return new NetworkError(NETWORK_FAILURE_MESSAGE, { cause, url });
+}
+
+/**
  * Realm-safe DOMException detection. `instanceof DOMException` is bound to the
  * current realm's constructor, so a DOMException created in another realm
  * (jsdom, node:vm, an iframe) fails it. Fall back to
@@ -277,5 +297,5 @@ export function classifyRequestFailure(
     }
     return new AbortedError("Request aborted", { cause: rejection, reason, url });
   }
-  return new NetworkError(NETWORK_FAILURE_MESSAGE, { cause: rejection, url });
+  return networkFailure(rejection, url);
 }
