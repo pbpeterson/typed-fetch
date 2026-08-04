@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, describe, expect, test } from "vitest";
 import { createScratchDir } from "./lib/scratch-dir.mjs";
-import { readPackManifest, verifyPackManifest } from "./verify-pack.mjs";
+import { readPackManifest, readTarballManifest, verifyPackManifest } from "./verify-pack.mjs";
 
 // The exact manifest a clean `pnpm build` + `npm pack` produces: package.json +
 // LICENSE + README + 8 entry points + one chunk per format + the node10
@@ -189,6 +189,41 @@ describe("readPackManifest", () => {
       expect(() => readPackManifest(parsed)).toThrow("had no file list to inspect");
     },
   );
+});
+
+describe("readTarballManifest", () => {
+  test("strips npm's package/ root", () => {
+    expect(readTarballManifest("package/LICENSE\npackage/dist/index.js\n").files).toEqual([
+      "LICENSE",
+      "dist/index.js",
+    ]);
+  });
+
+  test("drops directory entries", () => {
+    // Some tar builds list directories. They are not published files, and
+    // counting them would inflate the file count past MAX_FILE_COUNT.
+    expect(readTarballManifest("package/\npackage/dist/\npackage/LICENSE\n")).toEqual({
+      files: ["LICENSE"],
+      fileCount: 1,
+    });
+  });
+
+  test("ignores blank lines and surrounding whitespace", () => {
+    expect(readTarballManifest("\n  package/LICENSE  \n\n").files).toEqual(["LICENSE"]);
+  });
+
+  test("keeps an entry outside the package/ root, so the allow-list refuses it", () => {
+    // Nothing but `package/...` belongs in a package tarball. Rewriting such an
+    // entry would hide it; leaving it whole makes the allow-list report it.
+    expect(readTarballManifest("../escape\n").files).toEqual(["../escape"]);
+    expect(() => verifyPackManifest(readTarballManifest("../escape\n").files)).toThrow(
+      "missing required compiled file",
+    );
+  });
+
+  test("rejects a listing with no files at all", () => {
+    expect(() => readTarballManifest("\n \n")).toThrow("no files to inspect");
+  });
 });
 
 // ---------------------------------------------------------------------------

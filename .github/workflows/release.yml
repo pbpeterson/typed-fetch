@@ -74,6 +74,16 @@ jobs:
           mkdir -p release-artifact/package release-artifact/npm-cli
           npm pack --pack-destination release-artifact/package
           npm pack npm@11.18.0 --ignore-scripts --pack-destination release-artifact/npm-cli
+          # Validate the STAGED FILE, not another dry run. `pnpm verify-pack`
+          # above inspected what a pack would produce; this inspects the tarball
+          # that is about to be hashed, uploaded, and published.
+          shopt -s nullglob
+          staged=(release-artifact/package/*.tgz)
+          [ "${#staged[@]}" -eq 1 ] || {
+            echo "package: expected exactly one staged package tarball." >&2
+            exit 1
+          }
+          node scripts/verify-pack.mjs "$(realpath "${staged[0]}")"
           cd release-artifact
           find . -type f -name '*.tgz' -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -126,7 +136,17 @@ jobs:
             exit 1
           }
 
+          # ABSOLUTE PATH, resolved with realpath. npm reads this argument as a
+          # package SPEC, and a spec is only a file path when it starts with
+          # `.`, `/`, `~/`, or a drive letter. `package/<name>.tgz` starts with
+          # none of them, so npm read it as the GitHub shorthand
+          # `owner/repo` and ran `git ls-remote
+          # ssh://git@github.com/package/<name>.tgz.git`. The publish job has no
+          # checkout and no git credentials, so the release failed there —
+          # after every gate had passed.
+          package_tarball="$(realpath "${package_tarballs[0]}")"
+
           mkdir npm-cli-extracted
           tar -xzf "${npm_cli_tarballs[0]}" -C npm-cli-extracted
-          node npm-cli-extracted/package/bin/npm-cli.js publish "${package_tarballs[0]}" \
+          node npm-cli-extracted/package/bin/npm-cli.js publish "$package_tarball" \
             --ignore-scripts --provenance --access public --tag "$DIST_TAG"

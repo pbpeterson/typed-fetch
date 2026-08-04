@@ -112,6 +112,36 @@ const MAX_FILE_COUNT = 14;
 // ---------------------------------------------------------------------------
 
 /**
+ * Normalise a `tar -tzf` listing of a STAGED tarball into the two facts the
+ * policy needs.
+ *
+ * The dry-run manifest below answers "what would npm pack right now". This one
+ * answers "what is in the file that will be published", and only the second is
+ * the artifact. They came apart once already: the release workflow validated a
+ * dry run and then uploaded a tarball nothing had inspected.
+ *
+ * @param {string} listing the stdout of `tar -tzf <tarball>`
+ * @returns {{ files: string[], fileCount: number }}
+ */
+export function readTarballManifest(listing) {
+  const files = listing
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    // A tar listing can carry directory entries. They are not published files.
+    .filter((entry) => !entry.endsWith("/"))
+    // npm writes every entry under a `package/` root. Strip it, so the policy
+    // above sees the same paths `npm pack --json` reports. An entry WITHOUT the
+    // root is left alone and fails the allow-list, which is the correct answer:
+    // nothing else belongs in a package tarball.
+    .map((entry) => (entry.startsWith("package/") ? entry.slice("package/".length) : entry));
+  if (files.length === 0) {
+    throw new Error("the staged tarball contains no files to inspect.");
+  }
+  return { files, fileCount: files.length };
+}
+
+/**
  * Normalise the payload of `npm pack --dry-run --json` into the two facts the
  * policy needs. npm reports a one-element array; older shapes reported the
  * object directly.
@@ -231,7 +261,22 @@ function fail(message) {
   process.exit(1);
 }
 
-function main() {
+/** The manifest of the staged tarball at `tarballPath`. */
+function stagedManifest(tarballPath) {
+  let listing;
+  try {
+    listing = execFileSync("tar", ["-tzf", tarballPath], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+  } catch (err) {
+    fail(`\`tar -tzf ${tarballPath}\` failed to run: ${err.message}`);
+  }
+  return readTarballManifest(listing);
+}
+
+/** The manifest `npm pack` would produce from the working tree right now. */
+function dryRunManifest() {
   let raw;
   try {
     raw = execFileSync("npm", ["pack", "--dry-run", "--json"], {
@@ -249,10 +294,19 @@ function main() {
   } catch (err) {
     fail(`could not parse \`npm pack\` JSON output: ${err.message}`);
   }
+  return readPackManifest(parsed);
+}
+
+function main() {
+  // With a path, inspect THAT file. Without one, inspect what a pack would
+  // produce now. The release workflow uses both: the dry run as an early gate,
+  // and the staged file as the last word before it is uploaded.
+  const tarballPath = process.argv[2];
+  const source = tarballPath ? `staged tarball ${tarballPath}` : "dry-run manifest";
 
   let fileCount;
   try {
-    const manifest = readPackManifest(parsed);
+    const manifest = tarballPath ? stagedManifest(tarballPath) : dryRunManifest();
     ({ fileCount } = verifyPackManifest(manifest.files, manifest.fileCount));
   } catch (err) {
     // Note: a genuine bug in the decision (say a TypeError) is also reported as
@@ -264,7 +318,7 @@ function main() {
   }
 
   console.log(
-    `✔ verify-pack: manifest OK — ${fileCount} files; ` +
+    `✔ verify-pack: ${source} OK — ${fileCount} files; ` +
       `all ${REQUIRED_DIST_FILES.length} required entry points + LICENSE/README present, ` +
       "every packed path on the allow-list.",
   );
