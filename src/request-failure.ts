@@ -33,14 +33,13 @@ import { TimeoutError } from "./errors/timeout-error";
  * - `url` arrives already resolved. This module never touches the request
  *   input (`string | URL | Request`); resolving it is the caller's job,
  *   because coercing a hostile input can itself throw.
- * - `refusedHeaderValues` arrives already collected, for the same reason:
- *   reading a hostile `headers` is the caller's job. See
- *   {@link redactRefusedHeaderValues}.
+ * - Every message this module writes is a library constant. It never copies a
+ *   platform message. See {@link NETWORK_FAILURE_MESSAGE}.
  */
 
-function readStringProperty(value: object, property: "message" | "name"): string | undefined {
+function readStringProperty(value: object, property: "name"): string | undefined {
   try {
-    const result = (value as Record<"message" | "name", unknown>)[property];
+    const result = (value as Record<"name", unknown>)[property];
     return typeof result === "string" ? result : undefined;
   } catch {
     return undefined;
@@ -85,64 +84,40 @@ function isError(value: unknown): value is Error {
   }
 }
 
-/** What a refused header value is replaced with, wherever it appears. */
-const REDACTED = "<redacted>";
-
 /**
- * Remove a header value this library already holds from a platform message.
+ * The message every `NetworkError` this module builds carries.
  *
- * `message` is not ours. This module copies the platform's rejection message
- * into `NetworkError` verbatim, and undici reports a header it refused by
- * QUOTING the value back:
- * `Headers.append: "Basic AAAA\nsk_live_…" is an invalid header value.` A
- * credential in an `Authorization` or `Cookie` value then reaches `message`,
- * and from there `toJSON()`, `util.inspect`, the fatal-exception printer, and
- * `String(error)` — the whole disclosure inventory `toJSON()` exists to hold
- * shut. The raw CR or LF travels with it, so the message forges log lines too.
+ * It is a constant, and that is the whole decision. This module used to copy
+ * the platform's rejection message into `NetworkError` verbatim, and the
+ * platform reports a request it refused by QUOTING the caller's value back:
  *
- * This is the technique {@link redactUrlInMessage} already uses on the other
- * half of the problem, applied to the other value slot: replace a value we
- * ALREADY HOLD, never search free text for something secret-shaped. A deny list
- * of sensitive header names fails here for the reason it fails everywhere else
- * — the dangerous name is the one this library has never heard of.
+ * - `Headers.append: "Basic AAAA\nsk_live_…" is an invalid header value.`
+ * - `Request cannot be constructed from a URL that includes credentials: …`
+ * - `Referrer "http://alice:hunter2@ref.test/p" is not a valid URL.`
+ * - `'GET\r\nX-Injected: 1' is not a valid HTTP method.`
+ * - `Request constructor: … is not an accepted type. Expected one of …`
  *
- * ONLY refused strings are passed in — names and values both — and the
- * definition is the platform's, not a heuristic. The Fetch Standard forbids
- * NUL, CR, and LF inside a header value and NORMALIZES leading and trailing
- * HTTP whitespace away rather than refusing it.
+ * A credential then reaches `message`, and from there `toJSON()`,
+ * `util.inspect`, the fatal-exception printer, and `String(error)` — the whole
+ * disclosure inventory `toJSON()` exists to hold shut. The raw CR or LF travels
+ * with it, so the message forges log lines too.
  *
- * The collector's bound is NARROWER than "everything the platform refuses", and
- * deliberately so. WebIDL also refuses a value above Latin-1 and the Standard
- * refuses a name that is not a token, and neither is collected: the first is
- * reported by index and code point rather than by echo, and the second forges
- * nothing. What is struck is exactly what carries one of those three
- * characters, because that bound matters twice — replacing every held string
- * would strike `1` or `application/json` wherever they appeared and destroy the
- * diagnostic, and a string carrying a CR or an LF is never a substring of a
- * message by accident.
+ * Striking the echoed value back out cannot close this. It requires the caller's
+ * value a SECOND time, after the transport already consumed it, and the second
+ * read is the attacker's to choose: a record getter, an index getter on either
+ * container, and a `toString` each answer differently the second time, and the
+ * search string then matches nothing. The slots that are not header parts — the
+ * URL, the referrer, the method, and every enum member — were never covered at
+ * all, and the enum set grows with the Fetch Standard.
  *
- * RESIDUAL, stated rather than hidden: a platform that echoes an ACCEPTED
- * header value in some other rejection message is not covered, and neither are
- * the enum-valued init slots (`mode`, `credentials`, `cache`, `redirect`),
- * which echo the caller's string but can only hold a program constant.
+ * So the platform's text is not redacted, it is not carried. It stays reachable
+ * through `error.cause`, which a caller reads deliberately, and which
+ * `toJSON()` and the inspect hook already withhold.
+ *
+ * CAUTION: `error.cause` holds the platform error unmodified. Do not copy it
+ * into a log line without deciding what that line may carry.
  */
-function redactRefusedHeaderValues(message: string, values: readonly string[]): string {
-  let out = message;
-  for (const value of values) {
-    // The replacer is a FUNCTION, not a string, for the reason
-    // `redactUrlInMessage` uses one: a string replacement interprets `$&`,
-    // `$'` and friends, and a header value may legitimately contain `$`.
-    out = out.replaceAll(value, () => REDACTED);
-  }
-  return out;
-}
-
-function networkErrorMessage(value: unknown, refusedHeaderValues: readonly string[]): string {
-  if (!isError(value)) return "Network error";
-  const message =
-    readStringProperty(value, "message") || readStringProperty(value, "name") || "Network error";
-  return redactRefusedHeaderValues(message, refusedHeaderValues);
-}
+const NETWORK_FAILURE_MESSAGE = "Network error";
 
 /**
  * Realm-safe DOMException detection. `instanceof DOMException` is bound to the
@@ -233,18 +208,14 @@ export function snapshotAbortState(signal: AbortSignal | undefined): {
  *   the same reasons; it may be a polyfill or report a throwing `aborted`.
  * @param url - The requested URL, already resolved by the caller. The empty
  *   string when no URL could be resolved.
- * @param refusedHeaderValues - The request header values the platform must
- *   refuse, already collected by the caller. Empty when none were supplied or
- *   none could be read. See {@link redactRefusedHeaderValues}.
- * @param capturedAbortState - A state captured before the caller resolves the
- *   URL or inspects headers. Omit it when no caller code runs before this call.
+ * @param capturedAbortState - A state captured before the caller runs any code
+ *   of its own on the failure path. Omit it when no such code runs.
  * @returns The error value to hand back to the consumer. Never throws.
  */
 export function classifyRequestFailure(
   rejection: unknown,
   signal: AbortSignal | undefined,
   url: string,
-  refusedHeaderValues: readonly string[] = [],
   capturedAbortState: ReturnType<typeof snapshotAbortState> | undefined = undefined,
 ): NetworkError | AbortedError | TimeoutError {
   const { aborted, reason } = capturedAbortState ?? snapshotAbortState(signal);
@@ -306,8 +277,5 @@ export function classifyRequestFailure(
     }
     return new AbortedError("Request aborted", { cause: rejection, reason, url });
   }
-  return new NetworkError(networkErrorMessage(rejection, refusedHeaderValues), {
-    cause: rejection,
-    url,
-  });
+  return new NetworkError(NETWORK_FAILURE_MESSAGE, { cause: rejection, url });
 }

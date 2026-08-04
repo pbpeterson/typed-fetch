@@ -104,16 +104,16 @@ function timeoutError(): TimeoutError {
  * emits header NAMES precisely so it can never emit a value.
  *
  * Built through `classifyRequestFailure`, not by hand: it is the function that
- * copies the platform message, so this fixture crosses the real seam. That
- * `typedFetch` collects the refused values and hands them here is pinned
- * separately, in `typed-fetch.spec.ts`.
+ * decides what `message` carries, so this fixture crosses the real seam. That
+ * `typedFetch` reaches it with a real platform rejection is pinned separately,
+ * in `typed-fetch.spec.ts`.
  *
  * The planted value is `CAUSE_SECRET` because that is where it genuinely
- * survives. Redaction cleans `message`; the platform rejection is kept as
+ * survives. `message` is a library constant; the platform rejection is kept as
  * `cause`, still quoting the value it refused, and `cause` is this file's
  * documented residual on the two channels that print it. Every other channel
- * asserts the value is gone, which is what makes them the proof: without the
- * redaction the copied message carries it into all of them.
+ * asserts the value is gone, which is what makes them the proof: a copied
+ * platform message carries it into all of them.
  */
 const REFUSED_HEADER_VALUE = "Basic AAAA\nsk_live_CAUSE_SECRET";
 
@@ -122,7 +122,6 @@ function headerRefusalError(): NetworkError {
     new TypeError(`Headers.append: "${REFUSED_HEADER_VALUE}" is an invalid header value.`),
     undefined,
     FULL_URL,
-    [REFUSED_HEADER_VALUE],
   ) as NetworkError;
 }
 
@@ -235,22 +234,19 @@ describe("disclosure channels — no channel emits a secret value", () => {
   });
 });
 
-describe("disclosure channels — a refused header value", () => {
-  test("the message keeps the diagnostic and drops the value", () => {
+describe("disclosure channels — the platform message is never copied", () => {
+  test("a refused header value cannot reach the message", () => {
     const message = headerRefusalError().message;
 
+    expect(message).toBe("Network error");
     expect(message).not.toContain("CAUSE_SECRET");
-    expect(message).toContain("<redacted>");
-    // The reason the message is still worth carrying: WHICH failure this was
-    // survives the redaction. Only the value is struck out.
-    expect(message).toContain("is an invalid header value");
   });
 
   test("the message cannot forge a log line", () => {
-    // A refused value is refused because it carries NUL, CR, or LF. Copying it
-    // into `message` put a raw newline into the one string every log line
-    // carries, so the leak was also a log-injection primitive. Striking the
-    // value removes the control character with it.
+    // A refused value is refused because it carries NUL, CR, or LF. Copying the
+    // platform message put a raw newline into the one string every log line
+    // carries, so the leak was also a log-injection primitive. A library
+    // constant carries no control character at all.
     const message = headerRefusalError().message;
 
     expect(message).not.toContain("\n");
@@ -258,19 +254,17 @@ describe("disclosure channels — a refused header value", () => {
     expect(message).not.toContain("\0");
   });
 
-  test("an accepted value is left alone, so ordinary messages stay readable", () => {
-    // The redactor is handed only the values the platform must refuse. A held
-    // value the platform accepts never reaches a rejection message, and
-    // striking every held value would replace `1` or `application/json`
-    // wherever they appeared and destroy the diagnostic.
-    const error = classifyRequestFailure(
-      new TypeError("Failed to fetch"),
-      undefined,
-      "https://api.test/v1/things",
-      [],
-    );
+  test("an ordinary transport failure gets the same library message", () => {
+    // Redaction is not what closed this. The message is not the platform's
+    // under any input, so there is no search string to defeat and no value to
+    // leave behind. WHICH failure this was stays readable through
+    // `error.cause`.
+    const rejection = new TypeError("Failed to fetch");
 
-    expect(error.message).toBe("Failed to fetch");
+    const error = classifyRequestFailure(rejection, undefined, "https://api.test/v1/things");
+
+    expect(error.message).toBe("Network error");
+    expect(error.cause).toBe(rejection);
   });
 });
 

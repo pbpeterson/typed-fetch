@@ -438,25 +438,22 @@ type FetchInput = FetchParams[0];
 function snapshotRequestInit(
   options: TypedFetchOptions,
   signal: AbortSignal | null | undefined,
-  headers: unknown,
-  replaceHeaders: boolean,
   removeFetchOverride: boolean,
 ): RequestInit {
-  if (!removeFetchOverride && !replaceHeaders) {
+  if (!removeFetchOverride) {
     // No extension must be hidden, so the original object can remain the proxy
     // target. This preserves reflection and avoids inspecting every descriptor
     // on a potentially exotic RequestInit.
     return new Proxy(options, {
       get(target, property) {
         if (property === "signal") return signal;
-        if (property === "headers") return headers;
         return Reflect.get(target, property, target);
       },
     });
   }
 
   const descriptors = Object.getOwnPropertyDescriptors(options);
-  if (removeFetchOverride) delete descriptors.fetch;
+  delete descriptors.fetch;
 
   // A WebIDL dictionary is normally read by the transport. `typedFetch` also
   // needs the signal to classify a rejection, so letting the getter run once
@@ -468,88 +465,26 @@ function snapshotRequestInit(
     enumerable: descriptors.signal?.enumerable ?? true,
     configurable: true,
   };
-  if (replaceHeaders || Reflect.has(options, "headers")) {
-    descriptors.headers = {
-      value: headers as TypedFetchOptions["headers"],
-      writable: true,
-      enumerable: descriptors.headers?.enumerable ?? true,
-      configurable: true,
-    };
-  }
   const sanitizedTarget = Object.create(Object.getPrototypeOf(options), descriptors) as RequestInit;
 
   // The proxy target exposes the same descriptors/prototype for reflection but
-  // can omit the extension or replace an exotic headers iterable. Ordinary
-  // reads delegate to the original object with the original receiver: prototype
-  // getters backed by WebIDL internal slots or JavaScript private fields would
-  // reject a descriptor-only clone because that clone does not carry those
-  // slots. `signal` and `headers` are the two snapshotted exceptions.
+  // omits the extension. Ordinary reads delegate to the original object with
+  // the original receiver: prototype getters backed by WebIDL internal slots or
+  // JavaScript private fields would reject a descriptor-only clone because that
+  // clone does not carry those slots. `signal` is the one snapshotted
+  // exception, and `headers` deliberately is NOT one: the transport is the only
+  // reader of that slot, so its getter runs exactly once, as it does under a
+  // bare `fetch`.
   return new Proxy(sanitizedTarget, {
     get(_target, property) {
       if (property === "signal") return signal;
-      if (property === "headers") return headers;
-      if (property === "fetch" && removeFetchOverride) return undefined;
+      if (property === "fetch") return undefined;
       return Reflect.get(options, property, options);
     },
     has(_target, property) {
-      return property === "fetch" && removeFetchOverride ? false : Reflect.has(options, property);
+      return property === "fetch" ? false : Reflect.has(options, property);
     },
   });
-}
-
-const ARRAY_ITERATOR = Array.prototype[Symbol.iterator];
-
-/**
- * Whether a HeadersInit iterable can be read again after the transport consumes
- * it. The three ordinary public forms keep their identity: a native `Headers`,
- * a plain record (which is not iterable), and an array of array pairs using the
- * built-in iterators. Exotic iterables are snapshotted once instead.
- */
-function hasReplayableHeaderIteration(headers: object, iterator: unknown): boolean {
-  try {
-    if (
-      typeof Headers !== "undefined" &&
-      headers instanceof Headers &&
-      iterator === Headers.prototype[Symbol.iterator]
-    ) {
-      return true;
-    }
-    if (!Array.isArray(headers) || iterator !== ARRAY_ITERATOR) return false;
-    for (let index = 0; index < headers.length; index += 1) {
-      const entry = headers[index];
-      if (!Array.isArray(entry) || Reflect.get(entry, Symbol.iterator, entry) !== ARRAY_ITERATOR) {
-        return false;
-      }
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Materialize one exotic header pair without coercing either member. */
-function snapshotHeaderPair(entry: unknown): unknown {
-  if (!isObjectLike(entry)) return entry;
-  const iterator = Reflect.get(entry, Symbol.iterator, entry) as unknown;
-  if (typeof iterator !== "function") return entry;
-  if (Array.isArray(entry) && iterator === ARRAY_ITERATOR) return entry;
-  return Array.from(entry as Iterable<unknown>);
-}
-
-/**
- * Make a one-shot HeadersInit replayable for the failure-path redactor.
- *
- * This performs no ByteString conversion. The transport remains the authority
- * on header validation and normalization; the snapshot only preserves the raw
- * name/value members it will consume so the same members remain available if
- * that conversion rejects and quotes one in its message.
- */
-function snapshotRequestHeaders(headers: unknown): unknown {
-  if (!isObjectLike(headers)) return headers;
-  const iterator = Reflect.get(headers, Symbol.iterator, headers) as unknown;
-  if (typeof iterator !== "function") return headers;
-  if (hasReplayableHeaderIteration(headers, iterator)) return headers;
-  return Array.from(headers as Iterable<unknown>, snapshotHeaderPair);
 }
 
 /**
@@ -575,195 +510,6 @@ function requestUrl(input: FetchInput): string {
   } catch {
     return "";
   }
-}
-
-/**
- * The characters the Fetch Standard forbids inside a header name or a header
- * value.
- *
- * A part carrying one is REFUSED by the platform, and refusal is the only way
- * a header name or value reaches a rejection message — verified against undici,
- * which reports the refusal by quoting the part back.
- *
- * WHAT is tested differs by part, because the platform's own preprocessing
- * does. A VALUE is tested after normalization, never as the caller wrote it —
- * see {@link considerHeaderValue}, where the two differ and testing the wrong
- * one is wrong in both directions. A NAME is tested exactly as the caller wrote
- * it: nothing is stripped off a name before it is validated.
- *
- * Spelled as `includes` calls rather than a character class, because a regexp
- * literal carrying a raw NUL is unreadable in a diff and in a review.
- */
-function isRefusedHeaderValue(value: string): boolean {
-  return value.includes("\0") || value.includes("\r") || value.includes("\n");
-}
-
-/** Leading and trailing HTTP whitespace: HT, LF, CR, SP. */
-const HTTP_WHITESPACE = /^[\t\n\r ]+|[\t\n\r ]+$/g;
-
-/**
- * A header name or value as a STRING — the first of the two steps WebIDL calls
- * a `ByteString` conversion, and the only one this collector can perform.
- *
- * `ByteString` is `ToString(V)` FOLLOWED BY a range check: a code point above
- * 255 is a `TypeError`, not a conversion. `String(value)` is therefore step one
- * of two. A JavaScript caller reaches it with the `string | string[]` shape
- * Node's `req.headers` produces.
- *
- * The range check is why "a refused part is exactly a part carrying NUL, CR, or
- * LF" is a statement about THIS collector's bound, not about the platform's: a
- * non-Latin-1 part is refused too, and is classified here as accepted. That
- * costs nothing today, because the `ByteString` rejection quotes an index and a
- * code point rather than the part, so there is no echo to strike.
- *
- * Total: `String()` throws for a Symbol and for a hostile `toString`. A part
- * that cannot be read cannot be redacted, and the URL pass still runs.
- */
-function stringifyHeaderPart(value: unknown): string | null {
-  try {
-    return typeof value === "string" ? value : String(value);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The header strings the platform must refuse, collected from the caller's
- * `headers` so `classifyRequestFailure` can strike them out of the message the
- * platform hands back.
- *
- * NAMES AND VALUES BOTH. A name is refused on the same footing as a value — the
- * Fetch Standard requires a name to match the `field-name` token production —
- * and the platform quotes a refused name back exactly as it quotes a refused
- * value: `Headers.append: "X-Foo\r\nSet-Cookie: evil=1" is an invalid header
- * name.` Collecting only values left the raw CRLF in `message`, which is the
- * log-forging half of the same hazard, reached through the other member of the
- * pair. A name is not usually a credential, so this closes the injection
- * channel rather than a disclosure one — but a gateway that builds a name from
- * request data makes it both.
- *
- * NAMES AND VALUES NORMALIZE DIFFERENTLY, and each is collected the way the
- * platform reads it. A value is stripped of leading and trailing HTTP
- * whitespace before it is validated; a name is not. One shared path could only
- * be wrong for one of them, and it was: the value normalizer erased an edge CR
- * or LF off a name and filed it as accepted. See `considerHeaderName` and
- * `considerHeaderValue` below.
- *
- * The bound stays the platform's, not a heuristic: only a string carrying NUL,
- * CR, or LF is struck. A name refused merely for holding a space is echoed
- * intact, because it forges nothing and striking it would cost the diagnostic.
- *
- * Total: a hostile `headers` — a throwing getter, an exotic iterator, a Proxy —
- * cannot make the envelope reject. What cannot be read cannot be redacted, and
- * the URL pass in `NetworkError` still runs.
- *
- * BEST EFFORT, the same posture `redactUrlInMessage` states: a part whose
- * conversion throws cannot be collected. The `headers` slot itself is captured
- * once before the transport. Exotic iterables are made replayable there, so a
- * one-shot outer container or inner pair remains available on this path.
- */
-function refusedHeaderValues(headers: unknown): readonly string[] {
-  const refused: string[] = [];
-  /**
-   * A NAME is tested as the caller wrote it. Nothing is stripped off a name
-   * before the platform validates it: it must match the `field-name` token
-   * production whole, so an edge CR or LF is a refusal and is quoted back.
-   *
-   * Running a name through the VALUE normalizer erased exactly the character
-   * that made it refused — `"\nX-Foo"` normalized to `"X-Foo"`, which tests as
-   * accepted — so the name was left off the strike list and the raw newline
-   * went into `NetworkError.message`. Only an INTERIOR newline survived that
-   * normalization, which is why the interior case looked covered.
-   */
-  const considerHeaderName = (value: unknown): void => {
-    const name = stringifyHeaderPart(value);
-    if (name === null || !isRefusedHeaderValue(name)) return;
-    refused.push(name);
-  };
-  /**
-   * A VALUE is tested as the PLATFORM normalizes it. The Fetch Standard strips
-   * leading and trailing HTTP whitespace off a value and validates what is
-   * left, and undici quotes that stripped form back.
-   *
-   * Skipping the strip was wrong in both directions. A padded credential —
-   * `"Basic AAAA\nsk_live_…\n"`, the shape a key read from a file has — is
-   * refused for the interior LF but quoted back WITHOUT the trailing one, so a
-   * search for the caller's raw string found nothing and the credential reached
-   * `NetworkError.message`. And a value padded with ONLY whitespace tested as
-   * refused while the platform accepts it, which put an arbitrary string on the
-   * strike list for an unrelated message.
-   */
-  const considerHeaderValue = (value: unknown): void => {
-    const raw = stringifyHeaderPart(value);
-    if (raw === null) return;
-    const normalized = raw.replace(HTTP_WHITESPACE, "");
-    if (!isRefusedHeaderValue(normalized)) return;
-    // BOTH forms, longest first. undici quotes the normalized value; a platform
-    // that quotes the caller's string back is not ruled out, and the raw form
-    // contains the normalized one, so striking it first cannot leave a tail.
-    if (raw !== normalized) refused.push(raw);
-    refused.push(normalized);
-  };
-  try {
-    // `isObjectLike`, not `typeof === "object"`. WebIDL converts a `HeadersInit`
-    // record from ANY object, and a function is an object: a callable carrying
-    // own enumerable properties is a record to the platform, and skipping it
-    // left its values uncollected.
-    if (!isObjectLike(headers)) return refused;
-    // A `Headers` instance and an array of name/value pairs are both iterable
-    // and both yield pairs. A plain record is neither, and is read by value.
-    if (typeof (headers as Iterable<unknown>)[Symbol.iterator] === "function") {
-      for (const entry of headers as Iterable<unknown>) {
-        // ONE pass over the entry, both members out of it. Reading the name and
-        // the value with two calls would exhaust a one-shot inner iterable on
-        // the first and hand the second nothing.
-        const [name, value] = pairMembers(entry);
-        considerHeaderName(name);
-        considerHeaderValue(value);
-      }
-      return refused;
-    }
-    for (const [name, value] of Object.entries(headers as Record<string, unknown>)) {
-      considerHeaderName(name);
-      considerHeaderValue(value);
-    }
-  } catch {
-    // Unreadable headers are not a reason to break the envelope.
-  }
-  return refused;
-}
-
-/**
- * Both members of one `sequence<sequence<ByteString>>` entry — the name and the
- * value — read in a single pass.
- *
- * `Array.isArray` is not the test WebIDL applies. A `sequence` is converted
- * through the value's OWN iterator, so `[new Set([name, value])]` and
- * `[generatorOfTwoStrings()]` are both valid pair containers to the platform —
- * and reading only real arrays left their members uncollected, which put the
- * credential back in `NetworkError.message`.
- *
- * `snapshotRequestHeaders` materializes an exotic pair before the transport,
- * so a one-shot iterable reaches this function as a replayable array. The
- * ordinary array fast path stays for the three public HeadersInit forms.
- */
-function pairMembers(entry: unknown): readonly [unknown, unknown] {
-  if (Array.isArray(entry)) return [entry[0], entry[1]];
-  if (!isObjectLike(entry)) return [undefined, undefined];
-  if (typeof (entry as Iterable<unknown>)[Symbol.iterator] !== "function") {
-    return [undefined, undefined];
-  }
-
-  let name: unknown;
-  let value: unknown;
-  let index = 0;
-  for (const member of entry as Iterable<unknown>) {
-    if (index === 0) name = member;
-    else if (index === 1) value = member;
-    else break;
-    index += 1;
-  }
-  return [name, value];
 }
 
 /**
@@ -841,7 +587,6 @@ export async function typedFetch<JsonReturnType>(
   options: TypedFetchOptions = {},
 ): Promise<TypedFetchReturnType<JsonReturnType>> {
   let signal: AbortSignal | undefined;
-  let requestHeaders: unknown;
   let failureAbortState: ReturnType<typeof snapshotAbortState> | undefined;
   try {
     // OWN property only. `fetch` is this library's own extension, not a WebIDL
@@ -875,28 +620,18 @@ export async function typedFetch<JsonReturnType>(
           ? url.signal
           : undefined;
 
-    // Read the headers slot once, just as the signal slot above is read once.
-    // The transport and the failure-path redactor must see the same value: a
-    // getter that changes its answer, or an iterable that is exhausted by its
-    // first consumer, must not make a refused credential disappear before the
-    // redactor can strike it out of the platform's message.
-    const rawRequestHeaders = options.headers;
-    requestHeaders = rawRequestHeaders;
-    requestHeaders = snapshotRequestHeaders(rawRequestHeaders);
-
     // Fetch reads RequestInit as a WebIDL dictionary, so inherited properties
     // and prototype getters are part of the input. Preserve both while removing
-    // this library's `fetch` extension and materializing the signal and headers
-    // snapshots.
+    // this library's `fetch` extension and materializing the signal snapshot.
     // An object spread would silently drop inherited method, headers, body, or
     // signal values.
-    const init = snapshotRequestInit(
-      options,
-      initSignal,
-      requestHeaders,
-      requestHeaders !== rawRequestHeaders,
-      hasFetchOverride,
-    );
+    //
+    // The `headers` slot is NOT snapshotted. It was, so that the failure path
+    // could read the caller's header parts a second time and strike them out of
+    // the platform's message; the message is library-authored now, so the
+    // transport is the only reader of that slot and its getter runs exactly
+    // once, as it does under a bare `fetch`.
+    const init = snapshotRequestInit(options, initSignal, hasFetchOverride);
 
     const res = await fetchImpl(url, init);
 
@@ -954,9 +689,9 @@ export async function typedFetch<JsonReturnType>(
       error: null,
     };
   } catch (err) {
-    // FIRST on the failure path. URL resolution and header inspection below can
-    // execute caller code synchronously; neither gets to change the abort state
-    // that classifies the failure which brought execution here.
+    // FIRST on the failure path. URL resolution below can execute caller code
+    // synchronously; it does not get to change the abort state that classifies
+    // the failure which brought execution here.
     const capturedAbortState = failureAbortState ?? snapshotAbortState(signal);
     // The requested URL, so pre-response errors (which hold no `Response`) are
     // still distinguishable in logs — the correlation `BaseHttpError.url`
@@ -973,30 +708,9 @@ export async function typedFetch<JsonReturnType>(
     // Which failure this is — timeout, abort, or network — is decided by
     // `classifyRequestFailure`. The governing signal is the authority there,
     // never the rejection's `.name`.
-    // The header values the platform refused, so the message it handed back
-    // can be stripped of them. Read HERE rather than before the request: it is
-    // needed only on this path, and a `headers` getter that throws is one more
-    // thing the envelope must absorb rather than re-raise. A `Request` passed
-    // as the input needs no pass — its headers were validated when it was
-    // constructed, so none of them can be a refused value.
-    let refusedValues: readonly string[] = [];
-    try {
-      refusedValues = refusedHeaderValues(requestHeaders);
-    } catch {
-      // A captured container that still refuses inspection leaves the message
-      // unredacted rather than breaking the envelope. `NetworkError` still
-      // redacts the URL.
-    }
-
     return {
       response: null,
-      error: classifyRequestFailure(
-        err,
-        signal,
-        resolvedRequestUrl,
-        refusedValues,
-        capturedAbortState,
-      ),
+      error: classifyRequestFailure(err, signal, resolvedRequestUrl, capturedAbortState),
     };
   }
 }

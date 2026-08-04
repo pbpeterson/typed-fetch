@@ -42,7 +42,8 @@ describe("classifyRequestFailure — outcomes", () => {
     expect(error).toBeInstanceOf(NetworkError);
     expect(error.cause).toBe(rejection);
     expect(error.url).toBe(URL_UNDER_TEST);
-    expect(error.message).toBe("fetch failed");
+    // The platform's own message is NOT copied. It stays on `error.cause`.
+    expect(error.message).toBe("Network error");
   });
 
   test("the rejection IS the signal's reason → AbortedError preserving that reason", () => {
@@ -270,32 +271,34 @@ describe("classifyRequestFailure — the timeout basis", () => {
 // ── Realm-safe error detection ─────────────────────────────────────────
 //
 // Each test below pins ONE layer of `isError`, observed through the
-// `NetworkError`'s message: the message is the only place the layered
-// detection is externally visible ("Network error" when the value is not an
-// error, the value's own message when it is). Every one of these layers
-// survived mutation testing while the module was private, because reaching a
-// layer required a bespoke stub `fetch` and the surviving assertions were
-// about the error CLASS, never the message.
+// CLASSIFICATION. `isError` has a single caller — `isAbortShapedRejection` —
+// so a value the layers accept can claim an abort while the governing signal
+// is aborted, and a value they refuse cannot. That is the whole externally
+// visible effect: `message` is a library constant and reports nothing about
+// the rejection.
 describe("classifyRequestFailure — realm-safe error detection", () => {
   test("layer 2 (platform tag): a tag-only `[object Error]` is an error", () => {
     // Prototype is `Object.prototype` and there is no `stack`, so layer 3
-    // rejects it; only the platform tag identifies it. Remove the tag layer and
-    // the message falls back to "Network error".
-    const tagged = { [Symbol.toStringTag]: "Error", message: "tagged failure" };
+    // rejects it; the tag is `[object Error]`, so `isDOMException` rejects it
+    // too. Only the platform-tag layer identifies it. Remove that layer and
+    // this cancellation becomes a NetworkError.
+    const tagged = { [Symbol.toStringTag]: "Error", name: "AbortError" };
     expect(Object.prototype.toString.call(tagged)).toBe("[object Error]");
 
-    const error = classifyRequestFailure(tagged, undefined, URL_UNDER_TEST);
+    const error = classifyRequestFailure(tagged, abortedSignal(), URL_UNDER_TEST);
 
-    expect(error).toBeInstanceOf(NetworkError);
-    expect(error.message).toBe("tagged failure");
+    expect(error).toBeInstanceOf(AbortedError);
   });
 
   test("layer 2 (platform tag): a tag-only `[object DOMException]` is an error", () => {
-    const tagged = { [Symbol.toStringTag]: "DOMException", message: "foreign platform failure" };
+    // Two predicates accept this shape: `isError`'s tag layer and
+    // `isDOMException`. The assertion is on the outcome, which must not depend
+    // on which one runs first.
+    const tagged = { [Symbol.toStringTag]: "DOMException", name: "AbortError" };
 
-    const error = classifyRequestFailure(tagged, undefined, URL_UNDER_TEST);
+    const error = classifyRequestFailure(tagged, abortedSignal(), URL_UNDER_TEST);
 
-    expect(error.message).toBe("foreign platform failure");
+    expect(error).toBeInstanceOf(AbortedError);
   });
 
   test("layer 3 (structure): a foreign subclass that overrides the tag is still an error", () => {
@@ -306,15 +309,16 @@ describe("classifyRequestFailure — realm-safe error detection", () => {
       `class ImplError extends Error {
          get [Symbol.toStringTag]() { return "ImplError"; }
        }
-       new ImplError("structural failure")`,
+       const e = new ImplError("structural failure");
+       e.name = "AbortError";
+       e`,
     );
     expect(foreign instanceof Error).toBe(false);
     expect(Object.prototype.toString.call(foreign)).toBe("[object ImplError]");
 
-    const error = classifyRequestFailure(foreign, undefined, URL_UNDER_TEST);
+    const error = classifyRequestFailure(foreign, abortedSignal(), URL_UNDER_TEST);
 
-    expect(error).toBeInstanceOf(NetworkError);
-    expect(error.message).toBe("structural failure");
+    expect(error).toBeInstanceOf(AbortedError);
   });
 
   test("layer 3 (structure): an object literal with a fake `stack` is still not an error", () => {
@@ -324,7 +328,6 @@ describe("classifyRequestFailure — realm-safe error detection", () => {
     const error = classifyRequestFailure(forged, abortedSignal(), URL_UNDER_TEST);
 
     expect(error).toBeInstanceOf(NetworkError);
-    expect(error.message).toBe("Network error");
   });
 
   test("layer 3 (structure): a prototype-bearing object with NO `stack` is not an error", () => {
@@ -337,23 +340,23 @@ describe("classifyRequestFailure — realm-safe error detection", () => {
     const error = classifyRequestFailure(forged, abortedSignal(), URL_UNDER_TEST);
 
     expect(error).toBeInstanceOf(NetworkError);
-    expect(error.message).toBe("Network error");
   });
 
   test("catch arm 1: a rejection whose prototype cannot be read is not an error", () => {
     // `value instanceof Error` walks the prototype chain, so this trap throws
-    // inside layer 1. If that catch reported `true`, the proxy's message would
-    // leak into the NetworkError instead of the neutral fallback.
-    const hostile = new Proxy(new Error("leaked message"), {
+    // inside layer 1. Without the catch the classifier itself would throw, and
+    // the envelope's whole promise is that it never does.
+    const hostile = new Proxy(new DOMException("Aborted", "AbortError"), {
       getPrototypeOf() {
         throw new Error("hostile getPrototypeOf trap");
       },
     });
+    const signal = abortedSignal();
 
-    const error = classifyRequestFailure(hostile, undefined, URL_UNDER_TEST);
+    expect(() => classifyRequestFailure(hostile, signal, URL_UNDER_TEST)).not.toThrow();
+    const error = classifyRequestFailure(hostile, signal, URL_UNDER_TEST);
 
     expect(error).toBeInstanceOf(NetworkError);
-    expect(error.message).toBe("Network error");
     expect(error.cause).toBe(hostile);
   });
 
@@ -361,7 +364,7 @@ describe("classifyRequestFailure — realm-safe error detection", () => {
     // `instanceof` succeeds (no prototype trap) and the value IS an object, so
     // this reaches the second `try` — and dies on the tag read.
     const hostile = new Proxy(
-      { message: "leaked message" },
+      { name: "AbortError" },
       {
         get(target, property, receiver) {
           if (property === Symbol.toStringTag) throw new Error("hostile toStringTag");
@@ -370,20 +373,19 @@ describe("classifyRequestFailure — realm-safe error detection", () => {
       },
     );
 
-    const error = classifyRequestFailure(hostile, undefined, URL_UNDER_TEST);
+    const error = classifyRequestFailure(hostile, abortedSignal(), URL_UNDER_TEST);
 
     expect(error).toBeInstanceOf(NetworkError);
-    expect(error.message).toBe("Network error");
     expect(error.cause).toBe(hostile);
   });
 
-  test("a cross-realm error keeps its message", () => {
+  test("a cross-realm error is carried as the cause", () => {
     const foreign = crossRealm("new TypeError('foreign network failure')");
     expect(foreign instanceof Error).toBe(false);
 
     const error = classifyRequestFailure(foreign, undefined, URL_UNDER_TEST);
 
-    expect(error.message).toBe("foreign network failure");
+    expect(error).toBeInstanceOf(NetworkError);
     expect(error.cause).toBe(foreign);
   });
 
@@ -395,18 +397,18 @@ describe("classifyRequestFailure — realm-safe error detection", () => {
     expect(error).toBeInstanceOf(AbortedError);
   });
 
-  test("an empty message falls back to the name, then to 'Network error'", () => {
+  test("every rejection shape gets the same library message", () => {
+    // The message reports NOTHING about the rejection. It was the platform's
+    // own message, with the platform's `name` as a fallback, and both copied
+    // whatever the platform chose to quote back — a credential, a raw CRLF, a
+    // URL. WHICH failure this was lives in `error.cause`.
     const dnsLike = new Error("");
     dnsLike.name = "ENOTFOUND";
-    expect(classifyRequestFailure(dnsLike, undefined, "").message).toBe("ENOTFOUND");
+    expect(classifyRequestFailure(dnsLike, undefined, "").message).toBe("Network error");
 
-    const hostileName = new Error("");
-    Object.defineProperty(hostileName, "name", {
-      get() {
-        throw new Error("hostile name getter");
-      },
-    });
-    expect(classifyRequestFailure(hostileName, undefined, "").message).toBe("Network error");
+    const quoting = new TypeError('Headers.append: "Basic sk_live_X" is an invalid header value.');
+    expect(classifyRequestFailure(quoting, undefined, "").message).toBe("Network error");
+    expect(classifyRequestFailure(quoting, undefined, "").cause).toBe(quoting);
 
     expect(classifyRequestFailure("boom", undefined, "").message).toBe("Network error");
     expect(classifyRequestFailure("boom", undefined, "").cause).toBe("boom");
@@ -462,7 +464,7 @@ describe("classifyRequestFailure — the guarded signal snapshot", () => {
 
     expect(error).toBeInstanceOf(NetworkError);
     expect(error.cause).toBe(rejection);
-    expect(error.message).toBe("Aborted");
+    expect(error.message).toBe("Network error");
   });
 
   test("a signal that is not aborted is never consulted for a reason", () => {

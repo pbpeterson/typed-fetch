@@ -478,20 +478,19 @@ describe("typedFetch", () => {
     expect(result.error?.url).toBe("");
   });
 
-  // ── A refused header value never reaches the error ──────────────────────
-  // The platform reports a header it refused by quoting the value back, and
-  // that message is copied verbatim into `NetworkError.message`. These pin the
-  // COLLECTION half — that `typedFetch` reads the caller's `headers` and hands
-  // the refused values to the classifier. `disclosure-channels.spec.ts` pins
-  // what happens to them once it has.
+  // ── A refused request part never reaches the error ──────────────────────
+  // The platform reports a header it refused by quoting the part back, and
+  // that message used to be copied verbatim into `NetworkError.message`. The
+  // message is a library constant now, so the shapes below can no longer
+  // disclose anything through it. They stay because each one is a distinct
+  // `HeadersInit` form the transport reads, and because a future change that
+  // put a platform message back would reopen every one of them at once.
   test.each([
     ["a record", (v: string) => ({ authorization: v })],
     ["an array of pairs", (v: string) => [["authorization", v]] as [string, string][]],
     // The platform NORMALIZES leading and trailing HTTP whitespace away before
-    // it validates, and quotes the normalized value back. Collecting the
-    // caller's string meant `replaceAll` searched for something the message
-    // never contained, and the credential survived. A key read from a file has
-    // exactly this shape.
+    // it validates, and quotes the normalized value back. A key read from a
+    // file has exactly this shape.
     ["a record whose value is padded", (v: string) => ({ authorization: `\t${v}\n` })],
     [
       "an array of pairs whose value is padded",
@@ -501,8 +500,7 @@ describe("typedFetch", () => {
     // caller reaches this by forwarding Node's `string | string[]` headers.
     ["a record whose value is not a string", (v: string) => ({ authorization: [v] })],
     // A `sequence` is converted through the value's OWN iterator, so an inner
-    // pair need not be an `Array`. Reading only real arrays left these two
-    // uncollected, and the credential went back into the message.
+    // pair need not be an `Array`.
     ["an inner pair that is a Set", (v: string) => [new Set(["authorization", v])]],
     [
       "an inner pair that is a Map's entry iterator",
@@ -513,7 +511,7 @@ describe("typedFetch", () => {
       "a callable carrying own enumerable properties",
       (v: string) => Object.assign(function noop() {}, { authorization: v }),
     ],
-  ])("a refused header value supplied as %s stays out of the message", async (_label, make) => {
+  ])("a refused header value supplied as %s stays out of every channel", async (_label, make) => {
     // A wrapped base64 credential: the LF is what makes the platform refuse it,
     // and refusal is the only way a header value reaches a message at all.
     const secret = "Basic AAAA\nsk_live_END_TO_END_SECRET";
@@ -524,64 +522,35 @@ describe("typedFetch", () => {
 
     expect(result.response).toBe(null);
     expect(result.error).toBeInstanceOf(NetworkError);
-    expect(result.error?.message).not.toContain("sk_live_END_TO_END_SECRET");
-    expect(result.error?.message).not.toContain("\n");
-    expect(result.error?.message).toContain("<redacted>");
+    expectNoDisclosure(result.error, "sk_live_END_TO_END_SECRET");
   });
 
-  // `isRefusedHeaderValue` is three disjuncts, and only the LF one was ever
-  // exercised. Either of the other two could be deleted with the whole suite
-  // green, and a credential carrying a CR or a NUL would then travel into
-  // `message` — the leak AND the log-injection primitive, reopened.
   test.each([
     ["LF", "\n"],
     ["CR", "\r"],
     ["NUL", "\0"],
-  ])("a header value refused for an interior %s stays out of the message", async (_label, char) => {
-    const result = await typedFetch("https://example.invalid/refused-header", {
-      headers: { authorization: `Basic AAAA${char}sk_live_CONTROL_CHAR_SECRET` },
-    });
+  ])(
+    "a header value refused for an interior %s stays out of every channel",
+    async (_label, char) => {
+      const result = await typedFetch("https://example.invalid/refused-header", {
+        headers: { authorization: `Basic AAAA${char}sk_live_CONTROL_CHAR_SECRET` },
+      });
 
-    expect(result.response).toBe(null);
-    expect(result.error).toBeInstanceOf(NetworkError);
-    expect(result.error?.message).not.toContain("sk_live_CONTROL_CHAR_SECRET");
-    expect(result.error?.message).not.toContain(char);
-    expect(result.error?.message).toContain("<redacted>");
-  });
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expectNoDisclosure(result.error, "sk_live_CONTROL_CHAR_SECRET");
+    },
+  );
 
-  // A NAME is refused on the same footing as a value, and the platform quotes it
-  // back the same way. Collecting only values left the raw CRLF in `message` —
-  // the log-forging half of the hazard, through the other member of the pair.
-  test.each([
-    ["a record", (n: string) => ({ [n]: "v" })],
-    ["an array of pairs", (n: string) => [[n, "v"]]],
-    ["an inner pair that is a Set", (n: string) => [new Set([n, "v"])]],
-  ])("a refused header name supplied as %s cannot forge a log line", async (_label, make) => {
-    const name = "X-Foo\r\nSet-Cookie: session=forged";
-
-    const result = await typedFetch("https://example.invalid/refused-header", {
-      headers: make(name) as never,
-    });
-
-    expect(result.error).toBeInstanceOf(NetworkError);
-    expect(result.error?.message).not.toContain("\r");
-    expect(result.error?.message).not.toContain("\n");
-    expect(result.error?.message).not.toContain("Set-Cookie");
-    expect(result.error?.message).toContain("<redacted>");
-  });
-
-  // A NAME gets no whitespace normalization. The Fetch Standard strips leading
-  // and trailing HTTP whitespace out of a VALUE before it validates; a name
-  // must match the `field-name` token production exactly as the caller wrote
-  // it. Running a name through the VALUE's normalizer erased the very CR or LF
-  // that made it refused, so the collector filed it as accepted and the raw
-  // newline went back into `message`. The interior case above never reaches
-  // this: only an edge newline is normalized away.
-  const edgeRefusedNames = [
-    ["a leading LF", "\nX-EDGE_NAME_SECRET"],
-    ["a trailing LF", "X-EDGE_NAME_SECRET\n"],
-    ["a leading CR", "\rX-EDGE_NAME_SECRET"],
-    ["a trailing CR", "X-EDGE_NAME_SECRET\r"],
+  // A NAME is refused on the same footing as a value, and the platform quotes
+  // it back the same way. A name is not usually a credential, so this is the
+  // log-forging half of the hazard rather than the disclosure half.
+  const refusedNames = [
+    ["an interior CRLF", "X-Foo\r\nSet-Cookie: session=NAME_SECRET"],
+    ["a leading LF", "\nX-NAME_SECRET"],
+    ["a trailing LF", "X-NAME_SECRET\n"],
+    ["a leading CR", "\rX-NAME_SECRET"],
+    ["a trailing CR", "X-NAME_SECRET\r"],
   ] as const;
   const refusedNameContainers = [
     ["a record", (n: string) => ({ [n]: "v" })],
@@ -591,7 +560,7 @@ describe("typedFetch", () => {
 
   test.each(
     refusedNameContainers.flatMap(([container, make]) =>
-      edgeRefusedNames.map(([position, name]) => [position, container, name, make] as const),
+      refusedNames.map(([position, name]) => [position, container, name, make] as const),
     ),
   )(
     "a header name refused for %s, supplied as %s, cannot forge a log line",
@@ -601,28 +570,30 @@ describe("typedFetch", () => {
       });
 
       expect(result.error).toBeInstanceOf(NetworkError);
-      expect(result.error?.message).not.toContain("EDGE_NAME_SECRET");
-      expect(result.error?.message).not.toContain("\r");
-      expect(result.error?.message).not.toContain("\n");
-      expect(result.error?.message).toContain("<redacted>");
-      expect(result.error?.message).toContain("invalid header name");
+      expectNoDisclosure(result.error, "NAME_SECRET");
     },
   );
 
-  test("a name refused for something that forges nothing is left readable", async () => {
-    // The bound is the platform's, not "anything refused". A name holding a
-    // space is invalid and echoed back, but it injects nothing, and striking it
-    // would cost the diagnostic for no gain.
+  test("a name the platform refuses for something else is not echoed either", async () => {
+    // The old rule struck a part out of the platform's message and had to
+    // decide which parts were worth striking. There is no such rule now: the
+    // message is a library constant whatever the platform refused, and the
+    // diagnostic lives in `error.cause`.
     const result = await typedFetch("https://example.invalid/refused-header", {
-      headers: { "X Foo": "v" } as never,
+      headers: { "X REFUSED_NAME_SENTINEL": "v" } as never,
     });
 
     expect(result.error).toBeInstanceOf(NetworkError);
-    expect(result.error?.message).not.toContain("<redacted>");
+    expect(result.error?.message).toBe("Network error");
+    expectNoDisclosure(result.error, "REFUSED_NAME_SENTINEL");
+    expect(String(result.error?.cause)).toContain("REFUSED_NAME_SENTINEL");
   });
 
-  test("a ONE-SHOT inner pair cannot disclose a refused value", async () => {
-    const secret = "Basic AAAA\nsk_live_ONE_SHOT_RESIDUAL";
+  test("a ONE-SHOT inner pair reaches the transport intact", async () => {
+    // The library used to materialize an exotic iterable before the transport,
+    // so the failure path could read it a second time. It does not read it at
+    // all now, and the transport must still receive the pair it was given.
+    const secret = "Basic AAAA\nsk_live_ONE_SHOT_INNER";
     const pair = (function* () {
       yield "authorization";
       yield secret;
@@ -633,12 +604,15 @@ describe("typedFetch", () => {
     });
 
     expect(result.error).toBeInstanceOf(NetworkError);
-    expect(result.error?.message).not.toContain("sk_live_ONE_SHOT_RESIDUAL");
-    expect(result.error?.message).not.toContain("\n");
-    expect(result.error?.message).toContain("<redacted>");
+    expectNoDisclosure(result.error, "sk_live_ONE_SHOT_INNER");
+    expect(String(result.error?.cause)).toContain("sk_live_ONE_SHOT_INNER");
   });
 
-  test("a ONE-SHOT outer header container cannot disclose a refused value", async () => {
+  test("a ONE-SHOT outer header container on a frozen options object", async () => {
+    // A frozen options object makes the original `headers` descriptor
+    // non-configurable and non-writable, so replacing its value through a Proxy
+    // whose target is the original object violates the Proxy get invariant.
+    // Nothing replaces it now, which is why this shape is ordinary again.
     const secret = "Basic AAAA\nsk_live_ONE_SHOT_OUTER_SECRET";
     const headers = [["authorization", secret]] as [string, string][];
     const oneShotIterator = headers[Symbol.iterator]();
@@ -646,32 +620,17 @@ describe("typedFetch", () => {
       value: () => oneShotIterator,
     });
 
-    // A frozen options object makes the original `headers` descriptor
-    // non-configurable and non-writable. Replacing its value through a Proxy
-    // whose target is the original object violates the Proxy get invariant.
     const options = Object.freeze({ headers });
     const result = await typedFetch("https://example.invalid/refused-header", options);
 
     expect(result.response).toBe(null);
     expect(result.error).toBeInstanceOf(NetworkError);
-    const error = result.error as NetworkError;
-    const renderedChannels = [
-      error.message,
-      error.stack ?? "",
-      String(error),
-      JSON.stringify(error),
-      inspect(error),
-    ];
-    for (const rendered of renderedChannels) {
-      expect(rendered).not.toContain("sk_live_ONE_SHOT_OUTER_SECRET");
-    }
-    expect(error.message).not.toContain("\n");
-    expect(error.message).toContain("<redacted>");
+    expectNoDisclosure(result.error, "sk_live_ONE_SHOT_OUTER_SECRET");
   });
 
-  test("unreadable headers leave the message unredacted rather than breaking the envelope", async () => {
-    // Collection is best effort by construction. A `headers` getter that throws
-    // is one more thing the envelope absorbs; it must not become a rejection.
+  test("a headers getter that throws resolves as an error value", async () => {
+    // The transport reads the slot, and its exception is one more thing the
+    // envelope absorbs rather than re-raises.
     const options = {
       get headers(): never {
         throw new Error("hostile headers getter");
