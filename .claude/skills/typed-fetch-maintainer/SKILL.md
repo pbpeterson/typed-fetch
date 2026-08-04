@@ -37,10 +37,10 @@ index.ts                → re-export barrel for the ./errors subpath
 
 ## Core flow (src/index.ts)
 
-   `typedFetch` runs in THREE phases, each with its own catch: SETUP,
-   TRANSPORT, RESPONSE. Only the transport phase can produce an `AbortedError`
-   or a `TimeoutError`. Keep it that way — a getter is caller code, and a getter
-   that aborts the signal and throws must not claim an abort.
+`typedFetch` runs in THREE phases, each with its own catch: SETUP,
+TRANSPORT, RESPONSE. Only the transport phase can produce an `AbortedError`
+or a `TimeoutError`. Keep it that way — a getter is caller code, and a getter
+that aborts the signal and throws must not claim an abort.
 
 1. SETUP. Serialize the request input ONCE and hand the transport that string; a
    `Request` passes through unchanged. Read an optional own `options.fetch`

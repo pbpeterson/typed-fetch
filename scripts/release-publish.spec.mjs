@@ -137,6 +137,15 @@ describe.skipIf(!canRunEndToEnd)("npm publish — how it reads the tarball argum
           "http://127.0.0.1:1/",
           "--cache",
           cacheDir,
+          // A cold cache makes npm check the registry for its own latest
+          // version, and a refused port turns that background check into a
+          // retry loop that outlives the command. Both are disabled, so the
+          // run measures the argument resolution and nothing else.
+          "--no-update-notifier",
+          "--fetch-retries",
+          "0",
+          "--fetch-timeout",
+          "5000",
         ],
         {
           cwd: stagingDir,

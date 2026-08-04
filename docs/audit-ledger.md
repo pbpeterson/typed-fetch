@@ -80,8 +80,8 @@ re-open one should read the reasoning first and say what it gets wrong.
   pairs, a `Headers` instance, an inner pair that is any iterable, and a
   callable carrying own enumerable properties — and it was still defeated,
   because every one of those shapes can answer a SECOND read differently. The
-  message is a library constant now (see the 2026-08-04 entry), so nothing reads
-  the caller's `headers` but the transport.
+  message is a library constant now — see ADR 0003's second amendment of
+  2026-08-03 — so nothing reads the caller's `headers` but the transport.
 - **The spec claims in `src/`.** 22 statements about the Fetch Standard, WebIDL,
   the Streams Standard, and the URL Standard were checked against the
   specification text and against an executed probe. 20 were correct, including

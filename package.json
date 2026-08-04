@@ -1,6 +1,6 @@
 {
   "name": "@pbpeterson/typed-fetch",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "A type-safe HTTP client that returns request errors as values. Inspired by Go's error handling pattern.",
   "keywords": [
     "api",

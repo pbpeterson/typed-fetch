@@ -66,36 +66,36 @@ scenario fails.
 
 ### In scope
 
-| Row  | The implementation's behavior                                                           | What the caller gets           |
-| ---- | --------------------------------------------------------------------------------------- | ------------------------------ |
-| H-01 | The implementation resolves a value that is not an object                               | `NetworkError`                 |
-| H-02 | The implementation resolves an object that only spoofs the Response tag                 | `NetworkError`                 |
-| H-03 | The implementation resolves a Response missing a body reader                            | `NetworkError`                 |
-| H-04 | The implementation resolves a Response whose body is not a stream                       | `NetworkError`                 |
-| H-05 | The implementation resolves a Response whose bodyUsed is not a boolean                  | `NetworkError`                 |
-| H-06 | A status getter answers differently on a second read                                    | the dedicated HTTP error class |
-| H-07 | A status getter throws                                                                  | `NetworkError`                 |
-| H-08 | A status that compares below 400, including NaN, is still a success                     | the response, unchanged        |
-| H-09 | A status outside the roster becomes UnknownHttpError, not a guess                       | `UnknownHttpError`             |
-| H-10 | A fractional status is not truncated into a real one                                    | `UnknownHttpError`             |
-| H-11 | A statusText that is not a string is normalized, never coerced                          | the dedicated HTTP error class |
-| H-12 | A url that is not a string is normalized, never coerced                                 | the dedicated HTTP error class |
-| H-13 | A headers getter throws                                                                 | `NetworkError`                 |
-| H-14 | A value refused once has no identity filed against it                                   | `NetworkError`                 |
-| H-15 | The implementation rejects with a value that is not an error                            | `NetworkError`                 |
-| H-16 | The implementation throws before it returns a promise                                   | `NetworkError`                 |
-| H-17 | The governing signal is the authority on an abort, not the rejection name               | `AbortedError`                 |
-| H-18 | An unrelated failure while the signal is aborted stays a network failure                | `NetworkError`                 |
-| H-19 | A timeout is classified by the shape the platform produces                              | `TimeoutError`                 |
-| H-20 | A polyfill that rejects with its own AbortError, not the signal reason                  | `AbortedError`                 |
-| H-21 | An options object whose property read throws                                            | `NetworkError`                 |
-| H-22 | A fetch override inherited from a polluted prototype is never used                      | `NetworkError`                 |
-| H-23 | A Request-shaped input whose url is not a string                                        | `NetworkError`                 |
-| H-24 | A platform rejection message is never copied into the error message                     | `NetworkError`                 |
-| H-25 | A refused method or referrer never reaches the message either                           | `NetworkError`                 |
-| H-26 | A request input read twice cannot split the request from the error                      | `NetworkError`                 |
-| H-27 | A response getter that aborts the signal and throws is not an abort                     | `NetworkError`                 |
-| H-28 | An options read that aborts the signal and throws is not an abort                       | `NetworkError`                 |
+| Row  | The implementation's behavior                                             | What the caller gets           |
+| ---- | ------------------------------------------------------------------------- | ------------------------------ |
+| H-01 | The implementation resolves a value that is not an object                 | `NetworkError`                 |
+| H-02 | The implementation resolves an object that only spoofs the Response tag   | `NetworkError`                 |
+| H-03 | The implementation resolves a Response missing a body reader              | `NetworkError`                 |
+| H-04 | The implementation resolves a Response whose body is not a stream         | `NetworkError`                 |
+| H-05 | The implementation resolves a Response whose bodyUsed is not a boolean    | `NetworkError`                 |
+| H-06 | A status getter answers differently on a second read                      | the dedicated HTTP error class |
+| H-07 | A status getter throws                                                    | `NetworkError`                 |
+| H-08 | A status that compares below 400, including NaN, is still a success       | the response, unchanged        |
+| H-09 | A status outside the roster becomes UnknownHttpError, not a guess         | `UnknownHttpError`             |
+| H-10 | A fractional status is not truncated into a real one                      | `UnknownHttpError`             |
+| H-11 | A statusText that is not a string is normalized, never coerced            | the dedicated HTTP error class |
+| H-12 | A url that is not a string is normalized, never coerced                   | the dedicated HTTP error class |
+| H-13 | A headers getter throws                                                   | `NetworkError`                 |
+| H-14 | A value refused once has no identity filed against it                     | `NetworkError`                 |
+| H-15 | The implementation rejects with a value that is not an error              | `NetworkError`                 |
+| H-16 | The implementation throws before it returns a promise                     | `NetworkError`                 |
+| H-17 | The governing signal is the authority on an abort, not the rejection name | `AbortedError`                 |
+| H-18 | An unrelated failure while the signal is aborted stays a network failure  | `NetworkError`                 |
+| H-19 | A timeout is classified by the shape the platform produces                | `TimeoutError`                 |
+| H-20 | A polyfill that rejects with its own AbortError, not the signal reason    | `AbortedError`                 |
+| H-21 | An options object whose property read throws                              | `NetworkError`                 |
+| H-22 | A fetch override inherited from a polluted prototype is never used        | `NetworkError`                 |
+| H-23 | A Request-shaped input whose url is not a string                          | `NetworkError`                 |
+| H-24 | A platform rejection message is never copied into the error message       | `NetworkError`                 |
+| H-25 | A refused method or referrer never reaches the message either             | `NetworkError`                 |
+| H-26 | A request input read twice cannot split the request from the error        | `NetworkError`                 |
+| H-27 | A response getter that aborts the signal and throws is not an abort       | `NetworkError`                 |
+| H-28 | An options read that aborts the signal and throws is not an abort         | `NetworkError`                 |
 
 Two decisions about a hostile implementation live in their own records and are
 in scope by reference, not repeated here:
@@ -245,7 +245,7 @@ The regressions live in `typed-fetch.spec.ts`. They cover one-shot outer and
 inner iterables, URL reentrancy, header conversion reentrancy, and every message
 channel affected by the refused value.
 
-## Amendment — 2026-08-04: the message is the library's, and the phases are separate
+## Amendment — 2026-08-03 (second): the message is the library's, and the phases are separate
 
 This amendment rewrites H-24, H-25, and H-26, and it adds H-27 and H-28. The
 amendment of 2026-08-03 above is superseded by it: both requirements that
@@ -265,7 +265,7 @@ request failure carries is a library constant, and the platform error stays on
 `error.cause`. H-24 states that rule, H-25 covers the slots the old rule could
 not reach, and out-of-scope item 8 records what `error.cause` still holds.
 
-Two implementation requirements from the 2026-08-03 amendment are withdrawn by
+Two implementation requirements from the earlier amendment are withdrawn by
 this one. `typedFetch` no longer materializes an exotic `headers` iterable,
 because it never reads that slot; the transport does, once. It no longer
 captures the signal state at the top of a failure path either, because the

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-08-03
+
 ### Security
 
 - **A request failure's `message` is now a library constant, such as
@@ -1386,6 +1388,7 @@ header input from `TypedFetchOptions["headers"]` instead of importing
 
 See the [commit history](https://github.com/pbpeterson/typed-fetch/commits/main).
 
-[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.1...HEAD
+[2.0.1]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v0.8.1...v1.0.0
