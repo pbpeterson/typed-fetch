@@ -199,7 +199,7 @@ function isAbortShapedRejection(value: unknown): boolean {
  * trustworthy, and half a snapshot is worse than none — it would let an
  * abort-shaped rejection claim an abort the signal never confirmed.
  */
-export function snapshotAbortState(signal: AbortSignal | undefined): {
+function snapshotAbortState(signal: AbortSignal | undefined): {
   readonly aborted: boolean;
   readonly reason: unknown;
 } {
@@ -228,17 +228,16 @@ export function snapshotAbortState(signal: AbortSignal | undefined): {
  *   the same reasons; it may be a polyfill or report a throwing `aborted`.
  * @param url - The requested URL, already resolved by the caller. The empty
  *   string when no URL could be resolved.
- * @param capturedAbortState - A state captured before the caller runs any code
- *   of its own on the failure path. Omit it when no such code runs.
  * @returns The error value to hand back to the consumer. Never throws.
  */
 export function classifyRequestFailure(
   rejection: unknown,
   signal: AbortSignal | undefined,
   url: string,
-  capturedAbortState: ReturnType<typeof snapshotAbortState> | undefined = undefined,
 ): NetworkError | AbortedError | TimeoutError {
-  const { aborted, reason } = capturedAbortState ?? snapshotAbortState(signal);
+  // Read here, immediately. The caller resolves the URL before the request, so
+  // no code of its own runs between the transport's rejection and this call.
+  const { aborted, reason } = snapshotAbortState(signal);
   // The AbortSignal is the authority on an abort — NOT the rejected
   // error's `.name`. A caller can pass any reason to `controller.abort(reason)`
   // (a documented Web API pattern), and fetch rejects with THAT reason, whose

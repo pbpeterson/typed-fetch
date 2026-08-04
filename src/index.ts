@@ -15,7 +15,7 @@ import {
 } from "./errors/brand";
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
-import { classifyRequestFailure, networkFailure, snapshotAbortState } from "./request-failure";
+import { classifyRequestFailure, networkFailure } from "./request-failure";
 import {
   hasTypedResponseIdentityScalars,
   headersOf,
@@ -488,28 +488,48 @@ function snapshotRequestInit(
 }
 
 /**
- * The requested URL as a string, or the empty string when none can be resolved.
+ * The value handed to the transport, and the URL string that describes it.
  *
- * Total by construction, and total in BOTH directions a request input can fail.
- * `String(input)` throws for a `Symbol` and for a hostile `toString`, which the
- * `catch` covers. A `Request`'s `url` is the other half: `isRequest` accepts
- * anything tagged `[object Request]`, and a subclass can override the getter, so
- * `input.url` can answer with a number, an object, or a `Symbol` without
- * throwing at all. Normalizing it here is what keeps `NetworkError.url` — typed
- * `readonly string` — from holding a non-string that then flows into
- * `redactUrl` and into the `toJSON()` record.
+ * ONE serialization, and that is the point. `FetchInput` is
+ * `string | URL | Request`, and the transport performs a `USVString` conversion
+ * on everything that is not a `Request` — which calls the input's own
+ * `toString`. Resolving `error.url` afterwards called it a SECOND time, and the
+ * second answer is the input's to choose: a `toString` with state sent the
+ * request to one URL and filed the error against another, and the URL redactor
+ * then searched the platform's message for a string it never contained.
  *
- * The normalization is `response-identity`'s {@link textOf} rule, for the same
- * reason it exists there: `String()` cannot promise not to throw, so a value
- * that is not already a string is not coerced, it is dropped.
+ * So the string is produced here, once, and the transport receives that exact
+ * string. A `Request` is the exception and is handed over unchanged: it carries
+ * a body, a signal, and internal slots that no string can stand for. Its `url`
+ * is already the resolved absolute URL.
+ *
+ * Two failure directions, handled differently on purpose.
+ * `String(input)` throws for a `Symbol` and for a hostile `toString`, and that
+ * exception is NOT swallowed: the request cannot be made, and the setup phase
+ * turns it into a `NetworkError` with an empty `url`. A `Request`'s `url` is the
+ * other direction: `isRequest` accepts anything tagged `[object Request]`, and a
+ * subclass can override the getter, so it can answer with a number or an object
+ * without throwing at all. That value is dropped rather than coerced, which is
+ * what keeps `NetworkError.url` — typed `readonly string` — from holding a
+ * non-string that then flows into `redactUrl` and into the `toJSON()` record.
  */
-function requestUrl(input: FetchInput): string {
-  try {
-    const raw: unknown = isRequest(input) ? input.url : String(input);
-    return typeof raw === "string" ? raw : "";
-  } catch {
-    return "";
+function resolveRequestInput(input: FetchInput): {
+  readonly transportInput: FetchInput;
+  readonly url: string;
+} {
+  if (isRequest(input)) {
+    let raw: unknown;
+    try {
+      raw = input.url;
+    } catch {
+      // A hostile `url` getter is not a reason to refuse a Request the
+      // transport may still be able to send.
+      raw = undefined;
+    }
+    return { transportInput: input, url: typeof raw === "string" ? raw : "" };
   }
+  const url = String(input);
+  return { transportInput: url, url };
 }
 
 /**
@@ -605,9 +625,23 @@ export async function typedFetch<JsonReturnType>(
   let signal: AbortSignal | undefined;
   let fetchImpl: typeof fetch;
   let init: RequestInit;
+  let transportInput: FetchInput;
+  // The requested URL, so pre-response errors (which hold no `Response`) are
+  // still distinguishable in logs — the correlation `BaseHttpError.url` already
+  // gives HTTP errors. It stays the empty string when the input cannot be
+  // serialized at all, which is the only state the three catches below can find
+  // it in without a resolution having succeeded.
+  let resolvedRequestUrl = "";
 
   // ── Phase 1: setup ──────────────────────────────────────────────────────
   try {
+    // The URL first, exactly as the transport does it: a `Request` is built
+    // from the input before any `init` member is read. It is resolved ONCE, and
+    // the transport receives what this call produced.
+    const resolved = resolveRequestInput(url);
+    transportInput = resolved.transportInput;
+    resolvedRequestUrl = resolved.url;
+
     // OWN property only. `fetch` is this library's own extension, not a WebIDL
     // dictionary member, and reading it off the prototype chain turns a single
     // `Object.prototype.fetch = ...` write anywhere in the process into a
@@ -654,23 +688,17 @@ export async function typedFetch<JsonReturnType>(
   } catch (cause) {
     // A `fetch`, `signal`, or descriptor read that throws. No request left this
     // process, so no signal can have caused it.
-    return { response: null, error: networkFailure(cause, requestUrl(url)) };
+    return { response: null, error: networkFailure(cause, resolvedRequestUrl) };
   }
 
   // ── Phase 2: transport ──────────────────────────────────────────────────
   let res: Response;
   try {
-    res = await fetchImpl(url, init);
+    res = await fetchImpl(transportInput, init);
   } catch (cause) {
-    // FIRST on this path. URL resolution below can execute caller code
-    // synchronously; it does not get to change the abort state that classifies
-    // the failure which brought execution here.
-    const capturedAbortState = snapshotAbortState(signal);
-    // The requested URL, so pre-response errors (which hold no `Response`) are
-    // still distinguishable in logs — the correlation `BaseHttpError.url`
-    // already gives HTTP errors. `FetchInput` is `string | URL | Request`; a
-    // `Request` exposes the resolved absolute URL on `.url`, and `String()`
-    // stringifies both a `string` (identity) and a `URL` (its `href`).
+    // NOTHING runs between the rejection and the classification. The URL was
+    // resolved in phase 1, so no caller code can move the abort state that
+    // decides which failure this is.
     //
     // `signal` is read from the OUTER binding and never re-derived from
     // `options` here: it was resolved in phase 1, and reading it again would
@@ -681,7 +709,7 @@ export async function typedFetch<JsonReturnType>(
     // never the rejection's `.name`.
     return {
       response: null,
-      error: classifyRequestFailure(cause, signal, requestUrl(url), capturedAbortState),
+      error: classifyRequestFailure(cause, signal, resolvedRequestUrl),
     };
   }
 
@@ -724,7 +752,7 @@ export async function typedFetch<JsonReturnType>(
       // A response too broken to release must not replace the real cause with
       // the release failure.
     }
-    return { response: null, error: networkFailure(cause, requestUrl(url)) };
+    return { response: null, error: networkFailure(cause, resolvedRequestUrl) };
   }
 
   // The success path releases nothing. `res` IS the returned response, and the

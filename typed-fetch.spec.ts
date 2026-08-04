@@ -1776,57 +1776,94 @@ describe("typedFetch", () => {
     expect(isAbortError(result.error)).toBe(false);
   });
 
-  test.each([
-    [
-      "the request URL",
-      (controller: AbortController, rejection: Error) => ({
-        url: {
-          toString() {
-            controller.abort(rejection);
-            return "https://example.invalid/reentrant-url";
-          },
-        } as unknown as string,
-        headers: undefined,
-      }),
-    ],
-    [
-      "a header conversion",
-      (controller: AbortController, rejection: Error) => ({
-        url: "https://example.invalid/reentrant-headers",
-        headers: [
-          [
-            "x-reentrant",
-            {
-              toString() {
-                controller.abort(rejection);
-                return "accepted";
-              },
-            },
-          ],
-        ] as never,
-      }),
-    ],
-  ])(
-    "caller code in %s cannot reclassify an earlier transport failure as an abort",
-    async (_label, makeInput) => {
-      const controller = new AbortController();
-      const rejection = new TypeError("unrelated transport failure");
-      const input = makeInput(controller, rejection);
-      const stubFetch = vi.fn(async () => Promise.reject(rejection)) as unknown as typeof fetch;
+  test("the request URL is serialized once, before the transport", async () => {
+    // The serialization used to happen twice: once inside the transport, and
+    // once more on the failure path to fill `error.url`. Caller code therefore
+    // ran AFTER the failure, which is why the abort state had to be captured
+    // before it. There is no such code now — the input is serialized in the
+    // setup phase and the transport receives that exact string.
+    let reads = 0;
+    const target = "https://example.invalid/serialized-once";
+    const input = {
+      toString() {
+        reads += 1;
+        return target;
+      },
+    } as unknown as string;
+    const rejection = new TypeError("unrelated transport failure");
+    const seen: unknown[] = [];
+    const stubFetch = vi.fn(async (received: unknown) => {
+      seen.push(received);
+      return Promise.reject(rejection);
+    }) as unknown as typeof fetch;
 
-      const result = await typedFetch(input.url, {
-        signal: controller.signal,
-        headers: input.headers,
-        fetch: stubFetch,
-      });
+    const result = await typedFetch(input, { fetch: stubFetch });
 
-      expect(result.response).toBe(null);
-      expect(result.error).toBeInstanceOf(NetworkError);
-      expect(isNetworkError(result.error)).toBe(true);
-      expect(isAbortError(result.error)).toBe(false);
-      expect(result.error?.cause).toBe(rejection);
-    },
-  );
+    expect(reads).toBe(1);
+    expect(seen).toEqual([target]);
+    expect(result.error).toBeInstanceOf(NetworkError);
+    expect(result.error?.cause).toBe(rejection);
+    expect(result.error?.url).toBe(target);
+  });
+
+  test("a URL object is serialized once and the transport receives that string", async () => {
+    let reads = 0;
+    class CountingUrl extends URL {
+      override toString(): string {
+        reads += 1;
+        return super.toString();
+      }
+    }
+    const input = new CountingUrl("https://example.invalid/counting-url");
+    const seen: unknown[] = [];
+    const stubFetch = vi.fn(async (received: unknown) => {
+      seen.push(received);
+      return Promise.reject(new TypeError("unrelated transport failure"));
+    }) as unknown as typeof fetch;
+
+    const result = await typedFetch(input, { fetch: stubFetch });
+
+    expect(reads).toBe(1);
+    expect(seen).toEqual(["https://example.invalid/counting-url"]);
+    expect(result.error?.url).toBe("https://example.invalid/counting-url");
+  });
+
+  test("a Request input reaches the transport unchanged", async () => {
+    // A Request carries a body, a signal, and internal slots that no string can
+    // stand for, so it is the one input that is NOT serialized.
+    const request = new Request("https://example.invalid/request-passthrough");
+    const seen: unknown[] = [];
+    const stubFetch = vi.fn(async (received: unknown) => {
+      seen.push(received);
+      return Promise.reject(new TypeError("unrelated transport failure"));
+    }) as unknown as typeof fetch;
+
+    const result = await typedFetch(request, { fetch: stubFetch });
+
+    expect(seen).toEqual([request]);
+    expect(result.error?.url).toBe(request.url);
+  });
+
+  test("a signal aborted while the URL is serialized governs the request", async () => {
+    // The setup phase runs before the transport, so an abort raised there is an
+    // abort that PRECEDES the request. A bare `fetch` called with an
+    // already-aborted signal rejects with that signal's reason, and this is
+    // that same case.
+    const controller = new AbortController();
+    const reason = new Error("aborted during serialization");
+    const input = {
+      toString() {
+        controller.abort(reason);
+        return "https://example.invalid/abort-during-serialization";
+      },
+    } as unknown as string;
+    const stubFetch = vi.fn(async () => Promise.reject(reason)) as unknown as typeof fetch;
+
+    const result = await typedFetch(input, { signal: controller.signal, fetch: stubFetch });
+
+    expect(isAbortError(result.error)).toBe(true);
+    expect((result.error as AbortedError).reason).toBe(reason);
+  });
 
   // ── Fix 1c: `signal: null` detaches a url-slot Request's signal ────────
 
