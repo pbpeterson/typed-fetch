@@ -128,7 +128,7 @@ Words this codebase already uses, some of them only implicitly until now.
   entry can no longer disagree with the class it names.
 - **Gate** — a check that must pass before a PR merges (`pnpm lint`,
   `format:check`, `check-doc-style`, `typecheck`, `build`, `test`, `check-docs`,
-  `verify-pack`, `check-consumer`, `audit:prod`, `audit`). CI adds
+  `verify-pack`, `check-consumer`, `audit:prod`, `audit:ci`). CI adds
   `check-deno-consumer`, `smoke:deno`, `smoke:node-min`, and a Bun runtime
   smoke. CONTRIBUTING holds the authoritative list and run order.
 - **Frozen surface** — the public export set, snapshotted on two axes (runtime

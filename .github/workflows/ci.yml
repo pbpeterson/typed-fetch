@@ -79,7 +79,7 @@ jobs:
       # has none. High/critical advisories anywhere in the development graph
       # also block merge and release.
       - run: pnpm audit:prod
-      - run: pnpm audit
+      - run: pnpm run audit:ci
 
   bun-smoke:
     runs-on: ubuntu-latest

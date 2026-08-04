@@ -50,7 +50,7 @@ pnpm check-docs      # typecheck every fenced TS block in the docs (run AFTER bu
 pnpm verify-pack     # assert the published tarball's file manifest (run AFTER build)
 pnpm check-consumer  # pack + install the tarball, exercise it as a real consumer (run AFTER build)
 pnpm audit:prod      # fail on any known runtime-dependency vulnerability
-pnpm audit           # fail on high/critical vulnerabilities in the full toolchain
+pnpm run audit:ci    # fail on any known vulnerability in the full toolchain
 ```
 
 Run them all locally. CI runs the same checks and fails the PR otherwise.

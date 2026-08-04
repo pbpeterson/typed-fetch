@@ -49,6 +49,12 @@
   sent the request to one URL and filed the error against another. `typedFetch`
   now serializes once and hands the transport that exact string; a `Request` is
   passed through unchanged.
+- **The dependency audit gate fails on ANY known advisory, in the whole
+  toolchain.** The gate ran with `--audit-level high`, so a moderate advisory in
+  a build dependency passed it. The script is now `audit:ci`, which also removes
+  the collision between `pnpm audit` the script and `pnpm audit` the command,
+  and `postcss` is overridden to `8.5.25` to clear GHSA-fxqj-rqcc-2cmp. This
+  package still ships zero runtime dependencies.
 - **The release workflow publishes the staged tarball by absolute path.** npm
   reads that argument as a package specifier, and a specifier is a file only
   when it starts with `.`, `/`, `~/`, or a drive letter. `package/<name>.tgz`

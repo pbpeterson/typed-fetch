@@ -6,6 +6,7 @@ settings:
 
 overrides:
   esbuild@>=0.27.3 <0.28.1: 0.28.1
+  postcss@<8.5.23: 8.5.25
   vite: 7.3.6
 
 importers:
@@ -26,7 +27,7 @@ importers:
         version: 1.74.0
       tsup:
         specifier: ^8.5.1
-        version: 8.5.1(postcss@8.5.19)(tsx@4.22.4)(typescript@6.0.3)
+        version: 8.5.1(postcss@8.5.25)(tsx@4.22.4)(typescript@6.0.3)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -813,7 +814,7 @@ packages:
     engines: {node: '>= 18'}
     peerDependencies:
       jiti: '>=1.21.0'
-      postcss: '>=8.0.9'
+      postcss: 8.5.25
       tsx: ^4.8.1
       yaml: ^2.4.2
     peerDependenciesMeta:
@@ -826,8 +827,8 @@ packages:
       yaml:
         optional: true
 
-  postcss@8.5.19:
-    resolution: {integrity: sha512-Mz8SaolMd8nB+G13WkORcxQKHZ/NE4xXevtkJHVuG+guo9/wYKlIMTKAqGdEmYOXR2ijPjTYNHssizdaVSUNdQ==}
+  postcss@8.5.25:
+    resolution: {integrity: sha512-DTPx3RWSSnWyzLxQnlH0rJP+EW5ekl16ZU4/psbIhA0e53kJfdgaN5vKM+xP7yJtXVu+nfdVFmlgFDEKAe4Pyw==}
     engines: {node: ^10 || ^12 || >=14}
 
   readdirp@4.1.2:
@@ -911,7 +912,7 @@ packages:
     peerDependencies:
       '@microsoft/api-extractor': ^7.36.0
       '@swc/core': ^1
-      postcss: ^8.4.12
+      postcss: 8.5.25
       typescript: '>=4.5.0'
     peerDependenciesMeta:
       '@microsoft/api-extractor':
@@ -1548,14 +1549,14 @@ snapshots:
       mlly: 1.8.2
       pathe: 2.0.3
 
-  postcss-load-config@6.0.1(postcss@8.5.19)(tsx@4.22.4):
+  postcss-load-config@6.0.1(postcss@8.5.25)(tsx@4.22.4):
     dependencies:
       lilconfig: 3.1.3
     optionalDependencies:
-      postcss: 8.5.19
+      postcss: 8.5.25
       tsx: 4.22.4
 
-  postcss@8.5.19:
+  postcss@8.5.25:
     dependencies:
       nanoid: 3.3.16
       picocolors: 1.1.1
@@ -1645,7 +1646,7 @@ snapshots:
 
   ts-interface-checker@0.1.13: {}
 
-  tsup@8.5.1(postcss@8.5.19)(tsx@4.22.4)(typescript@6.0.3):
+  tsup@8.5.1(postcss@8.5.25)(tsx@4.22.4)(typescript@6.0.3):
     dependencies:
       bundle-require: 5.1.0(esbuild@0.28.1)
       cac: 6.7.14
@@ -1656,7 +1657,7 @@ snapshots:
       fix-dts-default-cjs-exports: 1.0.1
       joycon: 3.1.1
       picocolors: 1.1.1
-      postcss-load-config: 6.0.1(postcss@8.5.19)(tsx@4.22.4)
+      postcss-load-config: 6.0.1(postcss@8.5.25)(tsx@4.22.4)
       resolve-from: 5.0.0
       rollup: 4.62.2
       source-map: 0.7.6
@@ -1665,7 +1666,7 @@ snapshots:
       tinyglobby: 0.2.17
       tree-kill: 1.2.2
     optionalDependencies:
-      postcss: 8.5.19
+      postcss: 8.5.25
       typescript: 6.0.3
     transitivePeerDependencies:
       - jiti
@@ -1691,7 +1692,7 @@ snapshots:
       esbuild: 0.28.1
       fdir: 6.5.0(picomatch@4.0.5)
       picomatch: 4.0.5
-      postcss: 8.5.19
+      postcss: 8.5.25
       rollup: 4.62.2
       tinyglobby: 0.2.17
     optionalDependencies:

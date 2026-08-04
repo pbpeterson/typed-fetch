@@ -65,7 +65,7 @@
     "provenance": true
   },
   "scripts": {
-    "audit": "pnpm audit --audit-level high",
+    "audit:ci": "pnpm audit --audit-level low",
     "audit:prod": "pnpm audit --prod --audit-level low",
     "build": "tsup",
     "test": "vitest run",
@@ -102,6 +102,7 @@
     ],
     "overrides": {
       "esbuild@>=0.27.3 <0.28.1": "0.28.1",
+      "postcss@<8.5.23": "8.5.25",
       "vite": "7.3.6"
     }
   }

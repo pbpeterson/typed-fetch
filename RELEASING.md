@@ -56,7 +56,7 @@ attestation.
   8. `pnpm verify-pack`
   9. `pnpm check-consumer`
   10. `pnpm audit:prod`
-  11. `pnpm audit`
+  11. `pnpm run audit:ci`
 - After the gates pass, the package job creates the package tarball. It also
   downloads the pinned npm `11.18.0` CLI as a tarball. A SHA-256 manifest covers
   both files before they enter one immutable workflow artifact.
@@ -110,15 +110,14 @@ public --tag <dist-tag>`. A prerelease such as `1.1.0-rc.1` uses `next`; a
   publish job passes `--ignore-scripts`. The hook therefore protects a MANUAL
   `npm publish` from a workstation, and nothing else.
 
-  The workflow protects itself with two explicit steps instead. The `pnpm
-verify-pack` gate checks what a pack would produce, and the staging step runs
-  `node scripts/verify-pack.mjs <tarball>` on the STAGED FILE — the exact
-  tarball it then hashes, uploads, and publishes. Those two steps are the net;
-  do not treat the lifecycle hook as one.
+  The workflow protects itself with two explicit steps instead. The
+  `pnpm verify-pack` gate checks what a pack would produce, and the staging step
+  runs `node scripts/verify-pack.mjs <tarball>` on the STAGED FILE — the exact
+  tarball it then hashes, uploads, and publishes. Those two steps are the net.
+  Do not treat the lifecycle hook as one.
 
   The publish job uses `--ignore-scripts`, so it cannot execute repository
-  lifecycle code with OIDC.
-  Do not put a build back in this hook.
+  lifecycle code with OIDC. Do not put a build back in this hook.
 
 - `--provenance --access public` attaches npm provenance (a verifiable link
   from the published tarball back to this workflow run and commit) and
@@ -177,7 +176,7 @@ Run every step, in order, for every release:
    pnpm verify-pack
    pnpm check-consumer
    pnpm audit:prod
-   pnpm audit
+   pnpm run audit:ci
    ```
    `build` must precede every artifact gate because the tests, docs checker,
    tarball validator, and scratch consumer inspect `dist/`.

@@ -65,7 +65,7 @@ jobs:
       - run: pnpm verify-pack
       - run: pnpm check-consumer
       - run: pnpm audit:prod
-      - run: pnpm audit
+      - run: pnpm run audit:ci
       # Create the exact package tarball after every gate has inspected the
       # build. The publish job receives no checkout and runs no package scripts;
       # it can only upload this immutable artifact.
