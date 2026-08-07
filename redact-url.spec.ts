@@ -55,6 +55,33 @@ describe("redactUrl — structure is kept, every value slot is dropped", () => {
     expect(redactUrl("garbage?token=SECRET")).toBe("/garbage");
   });
 
+  // A malformed scheme keeps the parser from seeing an authority, so the
+  // userinfo lands inside the path the relative fallback emits. Userinfo is
+  // unconditionally a value, so it goes even when it is wearing a path.
+  test("a malformed scheme does not smuggle userinfo into the emitted path", () => {
+    expect(redactUrl("://svc:hunter2@internal.test/v1/things")).toBe("/://internal.test/v1/things");
+    expect(redactUrl("http s://svc:hunter2@internal.test/v1/things")).toBe(
+      "/http%20s://internal.test/v1/things",
+    );
+    expect(redactUrl("1http://svc:hunter2@internal.test/v1/things")).toBe(
+      "/1http://internal.test/v1/things",
+    );
+  });
+
+  // An `@` outside an authority names something. Removing it would cost the
+  // diagnostic and buy nothing: there is no credential slot there.
+  test("an ordinary `@` in a path survives — it is structure, not userinfo", () => {
+    expect(redactUrl("/@scope/pkg/-/pkg-1.0.0.tgz")).toBe("/@scope/pkg/-/pkg-1.0.0.tgz");
+    expect(redactUrl("/users/@alice/posts")).toBe("/users/@alice/posts");
+  });
+
+  // Removing the userinfo must not make an invalid URL resolvable: these are
+  // parse errors, and a parse error is the documented no-URL value.
+  test("a URL the parser refuses still collapses to the no-URL value", () => {
+    expect(redactUrl("http://alice:hunter2@/v1")).toBe("");
+    expect(redactUrl("file://alice:hunter2@host/v1")).toBe("");
+  });
+
   test("RESIDUAL: a secret in a PATH SEGMENT survives, by design", () => {
     // Dropping the path would leave `url` at the origin, which destroys the
     // only thing the field exists for: telling concurrent failures apart.
@@ -105,6 +132,15 @@ describe("redactUrlInMessage — a URL we already hold, removed from a foreign m
     const message = `connect failed: ${url.replace("api.test", "api.test:80")}`;
 
     expect(redactUrlInMessage(message, url)).not.toContain(secret);
+  });
+
+  // `userinfoOf` parses absolutely, so a malformed scheme used to hide the
+  // credential from the second pass as well as from the first.
+  test("userinfo is removed even when the scheme is too malformed to parse", () => {
+    const url = "://svc:hunter2@internal.test/v1/things";
+    const message = `connect failed: ${url.replace("internal.test", "internal.test:80")}`;
+
+    expect(redactUrlInMessage(message, url)).not.toContain("hunter2");
   });
 
   test("a message that does not mention the URL is untouched", () => {

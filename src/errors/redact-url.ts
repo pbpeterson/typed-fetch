@@ -62,7 +62,9 @@ const HIERARCHICAL_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:", "ftp:"
  * Total by construction. An empty string stays empty (the documented "no URL
  * could be resolved" value), a relative URL keeps its path, and an input that
  * parses as neither is emitted as a percent-encoded PATH — never as the raw
- * string, so a query or fragment hidden in it is still dropped.
+ * string, so a query or fragment hidden in it is still dropped. A userinfo
+ * hidden in it is dropped too: the path is kept as structure, and userinfo is
+ * unconditionally a value. See {@link malformedUserinfoSpan}.
  *
  * The redactor reduces an opaque URL to its scheme alone. See
  * {@link HIERARCHICAL_PROTOCOLS}.
@@ -77,10 +79,62 @@ export function redactUrl(url: string): string {
     // ordinary, not exceptional.
   }
   try {
-    return stripValues(new URL(url, RELATIVE_BASE)).pathname;
+    return withoutMalformedUserinfo(stripValues(new URL(url, RELATIVE_BASE)).pathname);
   } catch {
     return "";
   }
+}
+
+/**
+ * Where the userinfo sits in a string a URL parser did not treat as one, or
+ * `null`.
+ *
+ * `://svc:hunter2@internal.test/v1` parses as neither absolute nor
+ * protocol-relative, so it resolves against {@link RELATIVE_BASE} as a PATH —
+ * and a path is the one slot this module keeps, so the credential rides inside
+ * it. A template that produced an empty, spaced, or digit-led scheme is the
+ * ordinary way to get here; the shape is malformed rather than exotic.
+ *
+ * Userinfo only exists in an AUTHORITY, and an authority only follows `://`.
+ * That is what separates it from an ordinary `@` in a path (`/@scope/pkg`,
+ * `/users/@alice`), which NAMES something and has to survive for the same
+ * reason the rest of the path does.
+ *
+ * The SPAN is returned rather than the text: the same bytes can appear earlier
+ * in the string (`svc:pw@x://svc:pw@host/`), and removing the wrong copy leaves
+ * the credential exactly where it was.
+ */
+function malformedUserinfoSpan(text: string): { start: number; end: number } | null {
+  const mark = text.indexOf("://");
+  if (mark < 0) return null;
+  const start = mark + "://".length;
+  let stop = text.length;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "/" || ch === "\\" || ch === "?" || ch === "#") {
+      stop = i;
+      break;
+    }
+  }
+  const at = text.lastIndexOf("@", stop - 1);
+  return at >= start ? { start, end: at + 1 } : null;
+}
+
+/**
+ * The same string with a malformed authority's userinfo removed.
+ *
+ * Applied to the PATH the redactor is about to emit, never to the input. The
+ * input decides which URLs resolve at all — `file://alice:pw@host/v1` and
+ * `http://alice:pw@/v1` are parse errors, and they have to stay parse errors
+ * that collapse to `""` rather than become resolvable once a credential is
+ * taken out of them.
+ *
+ * Percent-encoding does not weaken the scan: it removes the whole span up to
+ * the `@`, so an encoded password (`hunter%202`) goes with it.
+ */
+function withoutMalformedUserinfo(path: string): string {
+  const span = malformedUserinfoSpan(path);
+  return span ? path.slice(0, span.start) + path.slice(span.end) : path;
 }
 
 /** `"user:password@"`, `"user@"`, or `""` when the URL carries no userinfo. */
@@ -89,7 +143,9 @@ function userinfoOf(url: string): string {
   try {
     parsed = new URL(url);
   } catch {
-    return "";
+    // A malformed scheme hides userinfo from the parser, not from a reader.
+    const span = malformedUserinfoSpan(url);
+    return span ? url.slice(span.start, span.end) : "";
   }
   const { username, password } = parsed;
   if (!username && !password) return "";
