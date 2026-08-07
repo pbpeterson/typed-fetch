@@ -37,6 +37,37 @@ function isRequest(value: unknown): value is Request {
 }
 
 /**
+ * A `Request` the AMBIENT `fetch` will take as a request rather than convert.
+ *
+ * `RequestInfo` is a WebIDL union, and the platform resolves it with its OWN
+ * brand check — realm-bound, exactly like `instanceof`. Everything the check
+ * refuses becomes a `USVString`, which calls the value's own `toString`.
+ * {@link isRequest} is deliberately wider: a tag is enough for it. The gap
+ * between the two is where {@link resolveRequestInput} used to send the request
+ * to one URL and file the error against another.
+ */
+function isPlatformRequest(value: unknown): value is Request {
+  try {
+    return typeof Request !== "undefined" && value instanceof Request;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Will the transport that is about to run take this input as a request?
+ *
+ * The ambient `fetch` answers with {@link isPlatformRequest}. A custom one
+ * writes its own rule this module cannot read, so it keeps the wider
+ * {@link isRequest} — which is also what a duplicated runtime needs, since only
+ * the caller can pair its `Request` with the copy of `fetch` that shipped with
+ * it.
+ */
+function transportTakesRequest(input: FetchInput, hasFetchOverride: boolean): input is Request {
+  return hasFetchOverride ? isRequest(input) : isPlatformRequest(input);
+}
+
+/**
  * The members a foreign `Response` must expose to be accepted.
  *
  * The success branch returns this value as {@link TypedResponse}, so validation
@@ -503,6 +534,21 @@ function snapshotRequestInit(
  * a body, a signal, and internal slots that no string can stand for. Its `url`
  * is already the resolved absolute URL.
  *
+ * WHICH values count as that exception is the transport's rule, not this
+ * module's. The ambient `fetch` resolves `RequestInfo` with its own realm-bound
+ * brand check and converts everything else to a `USVString`, so passing a
+ * merely Request-TAGGED value through did not stop it from being serialized —
+ * it only moved the serialization to a place that reports nothing back.
+ * `node-fetch@2` tags its `Request` and stringifies to `"[object Request]"`, so
+ * an ordinary consumer, with nothing hostile anywhere, got a `NetworkError`
+ * whose `url` named a server the request never reached. See
+ * {@link isPlatformRequest}.
+ *
+ * A CUSTOM transport writes its own rule and this module cannot read it, so an
+ * override keeps the wider tag check. That is also what a duplicated runtime
+ * needs: its `Request` is a real one to the copy of `fetch` that shipped with
+ * it, and only the caller can pair the two.
+ *
  * Two failure directions, handled differently on purpose.
  * `String(input)` throws for a `Symbol` and for a hostile `toString`, and that
  * exception is NOT swallowed: the request cannot be made, and the setup phase
@@ -513,11 +559,14 @@ function snapshotRequestInit(
  * what keeps `NetworkError.url` — typed `readonly string` — from holding a
  * non-string that then flows into `redactUrl` and into the `toJSON()` record.
  */
-function resolveRequestInput(input: FetchInput): {
+function resolveRequestInput(
+  input: FetchInput,
+  hasFetchOverride: boolean,
+): {
   readonly transportInput: FetchInput;
   readonly url: string;
 } {
-  if (isRequest(input)) {
+  if (transportTakesRequest(input, hasFetchOverride)) {
     let raw: unknown;
     try {
       raw = input.url;
@@ -635,13 +684,12 @@ export async function typedFetch<JsonReturnType>(
 
   // ── Phase 1: setup ──────────────────────────────────────────────────────
   try {
-    // The URL first, exactly as the transport does it: a `Request` is built
-    // from the input before any `init` member is read. It is resolved ONCE, and
-    // the transport receives what this call produced.
-    const resolved = resolveRequestInput(url);
-    transportInput = resolved.transportInput;
-    resolvedRequestUrl = resolved.url;
-
+    // WHICH transport will run has to be settled before the input is resolved:
+    // the platform takes only its own `Request` as a request and serializes
+    // everything else, and a custom one makes its own rule. This is an own-key
+    // test, not a member READ — no getter runs here, so the transport is still
+    // the first thing to read a member of `options`.
+    //
     // OWN property only. `fetch` is this library's own extension, not a WebIDL
     // dictionary member, and reading it off the prototype chain turns a single
     // `Object.prototype.fetch = ...` write anywhere in the process into a
@@ -653,6 +701,14 @@ export async function typedFetch<JsonReturnType>(
     // on the object and the platform ignores it, because WebIDL reads only the
     // members it declares.
     const hasFetchOverride = Object.hasOwn(options, "fetch");
+
+    // The URL next, exactly as the transport does it: a `Request` is built from
+    // the input before any `init` member is read. It is resolved ONCE, and the
+    // transport receives what this call produced.
+    const resolved = resolveRequestInput(url, hasFetchOverride);
+    transportInput = resolved.transportInput;
+    resolvedRequestUrl = resolved.url;
+
     fetchImpl = (hasFetchOverride ? options.fetch : undefined) ?? fetch;
 
     // The AbortSignal can arrive via EITHER slot: the `options`/`init` (its

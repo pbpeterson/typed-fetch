@@ -74,14 +74,15 @@ const respondingWith = (value: unknown) => (async () => value) as unknown as typ
 type NodeFetchResponse = Response & { readonly body: Readable };
 
 const nodeRequire = createRequire(import.meta.url);
-const NodeFetchResponse = (
-  nodeRequire("node-fetch") as {
-    Response: new (
-      body?: unknown,
-      init?: { status?: number; headers?: Record<string, string> },
-    ) => NodeFetchResponse;
-  }
-).Response;
+const nodeFetchModule = nodeRequire("node-fetch") as {
+  Response: new (
+    body?: unknown,
+    init?: { status?: number; headers?: Record<string, string> },
+  ) => NodeFetchResponse;
+  Request: new (input: string) => Request;
+};
+const NodeFetchResponse = nodeFetchModule.Response;
+const NodeFetchRequest = nodeFetchModule.Request;
 
 // ── typedFetch ───────────────────────────────────────────────────────
 
@@ -476,6 +477,73 @@ describe("typedFetch", () => {
     expect(result.response).toBe(null);
     expect(result.error).toBeInstanceOf(NetworkError);
     expect(result.error?.url).toBe("");
+  });
+
+  // ── error.url names the request the transport actually made ─────────────
+  // The input is serialized ONCE, and the transport gets what that produced.
+  // `isRequest` accepts a TAG, but the platform's `RequestInfo` union does not:
+  // it uses its own realm-bound brand check and converts everything else with
+  // `USVString`. Passing a tagged value through therefore did not prevent the
+  // serialization, it only moved it somewhere that reports nothing back.
+  describe("a Request the platform will not accept as one", () => {
+    test("node-fetch@2's Request does not make error.url name an untouched server", async () => {
+      // No hostile object anywhere: node-fetch tags its Request
+      // `[object Request]` and stringifies to `"[object Request]"`, so undici
+      // rejects with `Failed to parse URL from [object Request]` and the
+      // request never leaves the process. The live server below answers 200 and
+      // must not be named as the failure's URL.
+      const live = url({ status: 200 });
+
+      const result = await typedFetch(new NodeFetchRequest(live));
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expect(result.error?.url).not.toBe(live);
+      expect(result.error?.url).toBe("[object Request]");
+    });
+
+    test("a forged Request tag cannot split the request from the error", async () => {
+      const forged = {
+        [Symbol.toStringTag]: "Request",
+        url: "https://never-requested.invalid/forged",
+        toString: () => "https://sent-here.invalid/real",
+      } as unknown as Request;
+
+      const result = await typedFetch(forged);
+
+      expect(result.error?.url).toBe("https://sent-here.invalid/real");
+    });
+
+    test("a real same-realm Request is still handed over unchanged", async () => {
+      // The exception the serialization rule exists for: a Request carries a
+      // body, a signal, and internal slots no string can stand for.
+      const request = new Request(url({ status: 404 }));
+
+      const result = await typedFetch(request);
+
+      if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
+      expect(result.error.status).toBe(404);
+      // The Request's own resolved href, not a second serialization of it.
+      expect(result.error.url).toBe(request.url);
+      await result.error.cancel();
+    });
+
+    test("a custom transport keeps the wider tag check — it writes its own rule", async () => {
+      // Only the caller can pair a duplicated runtime's `Request` with the copy
+      // of `fetch` that shipped with it, so an override is trusted to accept
+      // what it was given.
+      let received: unknown;
+      const request = new NodeFetchRequest(url({ status: 200 }));
+
+      await typedFetch(request, {
+        fetch: (async (input: unknown) => {
+          received = input;
+          throw new Error("transport refused");
+        }) as unknown as typeof fetch,
+      });
+
+      expect(received).toBe(request);
+    });
   });
 
   // ── A refused request part never reaches the error ──────────────────────
