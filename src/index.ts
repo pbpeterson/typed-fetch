@@ -549,6 +549,17 @@ function snapshotRequestInit(
  * needs: its `Request` is a real one to the copy of `fetch` that shipped with
  * it, and only the caller can pair the two.
  *
+ * The verdict is RETURNED, not recomputed. `transportTakesRequest` reads the
+ * input's own `Symbol.toStringTag` — a caller-controlled read — and this
+ * function's answer decides what the transport receives, while the caller's
+ * second call decided which signal governs the call. Two reads, one input, and
+ * the input chooses each answer separately: a transport handed a bare URL
+ * string that no signal governs, and a classifier trusting a signal taken from
+ * an input the transport never saw. `classifyRequestFailure` then reported a
+ * network failure as an abort, and a consumer's retry policy reads that class.
+ * ADR 0003, row H-26: a request input read twice cannot split the request from
+ * the error.
+ *
  * Two failure directions, handled differently on purpose.
  * `String(input)` throws for a `Symbol` and for a hostile `toString`, and that
  * exception is NOT swallowed: the request cannot be made, and the setup phase
@@ -565,6 +576,7 @@ function resolveRequestInput(
 ): {
   readonly transportInput: FetchInput;
   readonly url: string;
+  readonly requestInput: Request | null;
 } {
   if (transportTakesRequest(input, hasFetchOverride)) {
     let raw: unknown;
@@ -575,10 +587,14 @@ function resolveRequestInput(
       // transport may still be able to send.
       raw = undefined;
     }
-    return { transportInput: input, url: typeof raw === "string" ? raw : "" };
+    return {
+      transportInput: input,
+      url: typeof raw === "string" ? raw : "",
+      requestInput: input,
+    };
   }
   const url = String(input);
-  return { transportInput: url, url };
+  return { transportInput: url, url, requestInput: null };
 }
 
 /**
@@ -721,13 +737,19 @@ export async function typedFetch<JsonReturnType>(
     // `classifyRequestFailure` consults, so a second read that answered
     // `undefined` would classify a real abort as a `NetworkError` and a timeout
     // as neither.
+    //
+    // WHICH input is a Request is the verdict phase 1 already reached, never a
+    // second `isRequest` call. The read behind it is the input's own
+    // `Symbol.toStringTag`, so a second call is a second chance for the input
+    // to answer differently — and the two answers govern different things: one
+    // picks what the transport receives, this one picks the signal
+    // `classifyRequestFailure` treats as authoritative. When they disagreed, a
+    // plain network failure was reported as an abort.
     const initSignal = options.signal;
     signal =
       initSignal !== undefined
         ? (initSignal ?? undefined)
-        : isRequest(url)
-          ? url.signal
-          : undefined;
+        : (resolved.requestInput?.signal ?? undefined);
 
     // Fetch reads RequestInit as a WebIDL dictionary, so inherited properties
     // and prototype getters are part of the input. Preserve both while removing

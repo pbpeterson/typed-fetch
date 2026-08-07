@@ -544,6 +544,39 @@ describe("typedFetch", () => {
 
       expect(received).toBe(request);
     });
+
+    // ADR 0003, row H-26: a request input read twice cannot split the request
+    // from the error. The verdict came from the input's own
+    // `Symbol.toStringTag`, and it was reached twice — once to pick what the
+    // transport receives, once to pick the signal `classifyRequestFailure`
+    // treats as authoritative. The input got to answer each one separately.
+    test("one input, one verdict — a second read cannot invent a governing signal", async () => {
+      let tagReads = 0;
+      const neverGoverned = AbortSignal.abort();
+      const input = {
+        get [Symbol.toStringTag](): string {
+          tagReads += 1;
+          // Read 1: not a Request, so the transport gets a bare URL string that
+          // no signal governs. Read 2 used to say Request, handing the
+          // classifier a signal for a request that never had one.
+          return tagReads === 1 ? "Object" : "Request";
+        },
+        toString: () => "https://example.invalid/one-verdict",
+        signal: neverGoverned,
+      };
+
+      const result = await typedFetch(input as unknown as string, {
+        // README, "Abort classification": an error named `AbortError` stays a
+        // `NetworkError` when no signal reports an abort.
+        fetch: (async () => {
+          throw new DOMException("Aborted", "AbortError");
+        }) as unknown as typeof fetch,
+      });
+
+      expect(isAbortError(result.error)).toBe(false);
+      expect(isNetworkError(result.error)).toBe(true);
+      expect(tagReads).toBe(1);
+    });
   });
 
   // ── A refused request part never reaches the error ──────────────────────
