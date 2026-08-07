@@ -1204,6 +1204,60 @@ describe("typedFetch", () => {
     if (isHttpError(result.error)) await result.error.cancel();
   });
 
+  // `TypedResponse.headers` names the ambient `Headers`, so a member the type
+  // promises must be a member the accepted value carries. `getSetCookie` is
+  // therefore validated on the SUCCESS path. It has been on
+  // `Headers.prototype` since Node 20.0.0, the package floor.
+  describe("a success value's headers must carry everything the type promises", () => {
+    function polyfillWith(headers: unknown): Response {
+      return {
+        body: null,
+        bodyUsed: false,
+        headers,
+        ok: true,
+        redirected: false,
+        status: 200,
+        statusText: "OK",
+        type: "basic",
+        url: "https://polyfill.test/ok",
+        arrayBuffer: async () => new ArrayBuffer(0),
+        blob: async () => new Blob(),
+        clone() {
+          return this;
+        },
+        formData: async () => new FormData(),
+        json: async () => ({}),
+        text: async () => "",
+        [Symbol.toStringTag]: "Response",
+      } as unknown as Response;
+    }
+
+    test("a polyfill whose headers lack getSetCookie is refused", async () => {
+      const incomplete = new Headers({ "content-type": "application/json" }) as unknown as Record<
+        string,
+        unknown
+      >;
+      const withoutGetSetCookie = Object.create(incomplete) as object;
+      Object.defineProperty(withoutGetSetCookie, "getSetCookie", { value: undefined });
+
+      const result = await typedFetch("https://example.invalid/no-get-set-cookie", {
+        fetch: respondingWith(polyfillWith(withoutGetSetCookie)),
+      });
+
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(NetworkError);
+    });
+
+    test("a complete polyfill still succeeds, and its headers keep the method", async () => {
+      const result = await typedFetch("https://example.invalid/complete-headers", {
+        fetch: respondingWith(polyfillWith(new Headers({ "set-cookie": "a=1" }))),
+      });
+
+      expect(result.error).toBe(null);
+      expect(result.response?.headers.getSetCookie()).toEqual(["a=1"]);
+    });
+  });
+
   test("a throwing foreign headers getter remains the NetworkError cause", async () => {
     const cause = new Error("headers getter exploded");
     const polyfill = {
