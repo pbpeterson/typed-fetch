@@ -68,16 +68,56 @@ export const timeoutErrorBrand: unique symbol = Symbol.for("@pbpeterson/typed-fe
  * literal `true` placed by {@link brand}. Property accesses that themselves
  * throw (Proxy `get` traps, hostile symbol-keyed getters) are caught and
  * return `false`.
+ *
+ * The read walks the prototype chain, which is what makes the brand work across
+ * package copies — and what made `Object.prototype` a place to write one. A
+ * single `Object.prototype[Symbol.for("@pbpeterson/typed-fetch.BaseHttpError")]
+ * = true` turned `isHttpError` into a constant `true` for every object in the
+ * process, so the README's own pattern — `if (isHttpError(error)) await
+ * error.cancel()` — threw a `TypeError` inside error handling.
+ *
+ * Refusing that one source costs the cross-copy mechanism nothing: no real
+ * error, from any copy, inherits its brand from `Object.prototype`. `brand`
+ * puts it on a class prototype. This is the guard the pre-response classes
+ * already apply to `cause`, `reason`, and `url`, and `typedFetch` to `fetch`.
+ *
+ * A FORGED brand on the value itself still passes, and that is deliberate — see
+ * ADR 0003, out of scope item 5. A mechanism that cannot tell a real foreign
+ * copy from a forged one is the same mechanism that accepts the real foreign
+ * copy. `Object.prototype` is not that trade: it is a source no real error uses.
  */
 export function hasBrand(value: unknown, brandSymbol: symbol): boolean {
   if (value == null || (typeof value !== "object" && typeof value !== "function")) {
     return false;
   }
   try {
+    if ((Object.prototype as Record<symbol, unknown>)[brandSymbol] === true) {
+      // Polluted. Fall back to the one question pollution cannot answer: does
+      // some prototype OTHER than `Object.prototype` own the brand?
+      return ownsBrandBelowObject(value, brandSymbol);
+    }
     return (value as Record<symbol, unknown>)[brandSymbol] === true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Does a prototype other than `Object.prototype` own this brand?
+ *
+ * Only reached when `Object.prototype` carries the brand, which never happens
+ * without pollution — so the walk costs nothing in the ordinary case.
+ */
+function ownsBrandBelowObject(value: object, brandSymbol: symbol): boolean {
+  for (
+    let link: object | null = value;
+    link !== null && link !== Object.prototype;
+    link = Object.getPrototypeOf(link) as object | null
+  ) {
+    const descriptor = Object.getOwnPropertyDescriptor(link, brandSymbol);
+    if (descriptor) return descriptor.value === true;
+  }
+  return false;
 }
 
 /**

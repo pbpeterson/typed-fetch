@@ -39,6 +39,70 @@ describe("hardened brand reads", () => {
     expect(isKnownHttpError(hostile)).toBe(false);
   });
 
+  // The brand read walks the prototype chain, which is what carries it across
+  // package copies — and what made `Object.prototype` a place to write one.
+  // One write turned every guard into a constant `true`, so the README's own
+  // pattern (`if (isHttpError(error)) await error.cancel()`) threw a TypeError
+  // inside error handling. No real error inherits its brand from
+  // `Object.prototype`, so refusing that source costs the mechanism nothing.
+  describe("a polluted Object.prototype cannot forge a brand", () => {
+    const brands = [
+      "BaseHttpError",
+      "KnownHttpError",
+      "NetworkError",
+      "AbortedError",
+      "TimeoutError",
+    ] as const;
+
+    function withPollutedPrototypes<T>(run: () => T): T {
+      const written = brands.map((name) => Symbol.for(`@pbpeterson/typed-fetch.${name}`));
+      const proto = Object.prototype as unknown as Record<symbol, unknown>;
+      for (const key of written) proto[key] = true;
+      try {
+        return run();
+      } finally {
+        for (const key of written) delete proto[key];
+      }
+    }
+
+    it("every guard still refuses a value that is not an error", () => {
+      withPollutedPrototypes(() => {
+        for (const value of [{}, { not: "an error" }, [], () => {}, new Error("plain")]) {
+          expect(isHttpError(value)).toBe(false);
+          expect(isKnownHttpError(value)).toBe(false);
+          expect(isNetworkError(value)).toBe(false);
+          expect(isAbortError(value)).toBe(false);
+          expect(isTimeoutError(value)).toBe(false);
+        }
+      });
+    });
+
+    it("a real error is still recognized while the prototype is polluted", () => {
+      const error = new NotFoundError(new Response(null, { status: 404 }));
+
+      withPollutedPrototypes(() => {
+        expect(isHttpError(error)).toBe(true);
+        expect(isKnownHttpError(error)).toBe(true);
+        expect(isNetworkError(error)).toBe(false);
+      });
+    });
+
+    it("a foreign copy's error is still recognized — the cross-copy read holds", () => {
+      // What the prototype-chain read exists for: a value branded on its OWN
+      // prototype, by a copy this one never loaded.
+      const foreignPrototype = Object.defineProperty({}, httpErrorBrand, {
+        value: true,
+        enumerable: false,
+      });
+      const foreign = Object.create(foreignPrototype) as object;
+
+      expect(isHttpError(foreign)).toBe(true);
+      withPollutedPrototypes(() => {
+        expect(isHttpError(foreign)).toBe(true);
+      });
+    });
+  });
+
   it("hasBrand returns false when a symbol-keyed getter throws", () => {
     const obj = Object.defineProperty({}, httpErrorBrand, {
       get() {
