@@ -451,15 +451,34 @@ export interface TypedResponse<JsonReturnType> {
   clone(): TypedResponse<JsonReturnType>;
 }
 
-/** The discriminated union returned by {@link typedFetch}. */
+/**
+ * The discriminated union returned by {@link typedFetch}.
+ *
+ * `readonly` on both arms, for the reason every member of
+ * {@link TypedResponse} is: the envelope carries the DISCRIMINANT, so a write
+ * falsifies the type system's own evidence. Normalizing a 404 into an empty
+ * result is a plausible thing to write, and it used to typecheck clean:
+ *
+ * ```ts no-check
+ * if (isKnownHttpError(r.error) && r.error.status === 404) {
+ *   await r.error.cancel();
+ *   r.error = null;
+ * }
+ * if (r.error) throw r.error;
+ * return r.response.json(); // `response` is still null
+ * ```
+ *
+ * The narrowing is sound only while the value is not rewritten in place. Build
+ * a new value instead.
+ */
 export type TypedFetchReturnType<JsonReturnType> =
   | {
-      response: TypedResponse<JsonReturnType>;
-      error: null;
+      readonly response: TypedResponse<JsonReturnType>;
+      readonly error: null;
     }
   | {
-      response: null;
-      error: TypedFetchError;
+      readonly response: null;
+      readonly error: TypedFetchError;
     };
 
 type FetchParams = Parameters<typeof fetch>;

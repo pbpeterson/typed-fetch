@@ -81,6 +81,21 @@ describe("type-level", () => {
     await typedFetch<{ id: number }, NotFoundError>(url());
   });
 
+  // The envelope carries the DISCRIMINANT, so a write falsifies the evidence
+  // the narrowing rests on. Normalizing a 404 into an empty result is the
+  // plausible shape of that write, and it used to typecheck clean and then
+  // throw: `r.error = null` re-opened the success branch while `r.response` was
+  // still null.
+  test("the result envelope cannot be rewritten in place", async () => {
+    const result = await typedFetch<{ id: number }>(url({ status: 404 }));
+    if (isHttpError(result.error)) await result.error.cancel();
+
+    // @ts-expect-error — TypedFetchReturnType.error is readonly.
+    result.error = null;
+    // @ts-expect-error — TypedFetchReturnType.response is readonly.
+    result.response = null;
+  });
+
   test("response.clone() keeps the typed json()", async () => {
     const result = await typedFetch<{ id: number }>(
       url({ status: 200, body: JSON.stringify({ id: 1 }) }),
