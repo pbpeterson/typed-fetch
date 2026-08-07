@@ -488,14 +488,28 @@ function snapshotRequestInit(
 
   // A WebIDL dictionary is normally read by the transport. `typedFetch` also
   // needs the signal to classify a rejection, so letting the getter run once
-  // here and again inside fetch can produce two different authorities. Shadow
-  // an own or inherited signal with the captured value on the proxy target.
-  descriptors.signal = {
-    value: signal,
-    writable: true,
-    enumerable: descriptors.signal?.enumerable ?? true,
-    configurable: true,
-  };
+  // here and again inside fetch can produce two different authorities. The
+  // `get` trap below answers every `signal` read with the captured value; this
+  // descriptor is what makes that legal, because a proxy may not report a value
+  // other than the one a non-configurable own property of its target holds.
+  //
+  // Only when the caller actually HAS the slot. Writing it unconditionally
+  // invented an own key: `Object.keys(init)` and `Reflect.ownKeys(init)` listed
+  // `signal` while `"signal" in init` — answered from the original object by
+  // the `has` trap — said `false`, and `{ ...init }` grew a `signal: undefined`
+  // member the caller never wrote. An implementation is entitled to reflect
+  // over its init, and the suite already treats that as legitimate. An
+  // INHERITED signal needs no entry either: the sanitized target keeps the
+  // original prototype, and a proxy invariant only constrains the target's own
+  // properties.
+  if (descriptors.signal) {
+    descriptors.signal = {
+      value: signal,
+      writable: true,
+      enumerable: descriptors.signal.enumerable,
+      configurable: true,
+    };
+  }
   const sanitizedTarget = Object.create(Object.getPrototypeOf(options), descriptors) as RequestInit;
 
   // The proxy target exposes the same descriptors/prototype for reflection but

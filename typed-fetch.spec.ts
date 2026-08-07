@@ -184,6 +184,46 @@ describe("typedFetch", () => {
     expect(Object.getOwnPropertyDescriptor(init as object, "fetch")).toBeUndefined();
   });
 
+  // Reflection over the init is legitimate, as the test above states, so the
+  // init must not contradict itself. The `signal` descriptor was written
+  // unconditionally: `Object.keys` and `Reflect.ownKeys` listed a slot that
+  // `"signal" in init` — answered from the original object — denied, and a
+  // spread grew a `signal: undefined` member the caller never wrote.
+  test("the sanitized init invents no signal slot the caller did not have", async () => {
+    const stubFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+
+    await typedFetch("https://example.invalid/no-signal", {
+      method: "POST",
+      body: "x",
+      fetch: stubFetch,
+    });
+
+    const [, init] = stubFetch.mock.calls[0] ?? [];
+    const seen = init as object;
+    expect(Reflect.ownKeys(seen)).toEqual(["method", "body"]);
+    expect(Object.keys(seen)).not.toContain("signal");
+    expect("signal" in seen).toBe(false);
+    expect(Object.hasOwn({ ...(seen as Record<string, unknown>) }, "signal")).toBe(false);
+  });
+
+  test("a caller's own signal slot is still shadowed with the captured value", async () => {
+    // The descriptor exists to keep the `get` trap legal when the target holds
+    // an own `signal`, so the slot the caller DID write must still be present
+    // and must still answer with the value phase 1 captured.
+    const stubFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+    const controller = new AbortController();
+
+    await typedFetch("https://example.invalid/own-signal", {
+      signal: controller.signal,
+      fetch: stubFetch,
+    });
+
+    const [, init] = stubFetch.mock.calls[0] ?? [];
+    expect(Reflect.ownKeys(init as object)).toContain("signal");
+    expect(init?.signal).toBe(controller.signal);
+    expect("signal" in (init as object)).toBe(true);
+  });
+
   test("preserves inherited RequestInit properties while stripping the fetch override", async () => {
     const stubFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
     const options = Object.assign(Object.create({ method: "POST" }) as TypedFetchOptions, {
