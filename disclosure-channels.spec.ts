@@ -457,6 +457,53 @@ describe("disclosure channels — the hook itself", () => {
     expectNoSecrets(rendered);
   });
 
+  // The two tests above are both supported paths: a `toJSON` override is
+  // documented, and a runtime is not obliged to pass the `inspect` callback.
+  // They intersected in the one function whose stated invariant is that it
+  // never throws. `recordOf` guarded the CALL; the render was unguarded, and
+  // `JSON.stringify` refuses a cycle and a BigInt.
+  describe("the hook survives a record its renderer refuses", () => {
+    const registered = Symbol.for("nodejs.util.inspect.custom");
+
+    function renderWithoutCallback(error: object): string {
+      const hook = (error as Record<symbol, unknown>)[registered] as (
+        this: unknown,
+        depth: number,
+        options: object,
+      ) => string;
+      return hook.call(error, 2, {});
+    }
+
+    test.each([
+      [
+        "a cyclic record",
+        (): unknown => {
+          const record: Record<string, unknown> = { name: "NotFoundError" };
+          record.self = record;
+          return record;
+        },
+      ],
+      ["a record holding a BigInt", (): unknown => ({ name: "NotFoundError", size: 1n })],
+    ])("%s does not take console.log down with it", (_label, makeRecord) => {
+      class UnserializableJson extends NotFoundError {
+        override toJSON(): never {
+          return makeRecord() as never;
+        }
+      }
+      const error = new UnserializableJson(new Response(null, { status: 404 }));
+
+      expect(() => renderWithoutCallback(error)).not.toThrow();
+      expect(renderWithoutCallback(error)).toContain("NotFoundError");
+      expect(renderWithoutCallback(error)).toContain("[record not renderable]");
+    });
+
+    test("a record Node can render is still rendered in full", () => {
+      // The guard replaces the render, so it must not swallow a working one.
+      expect(inspect(httpError())).toContain("NotFoundError");
+      expect(renderWithoutCallback(httpError())).toContain('"status":404');
+    });
+  });
+
   test("below the configured depth it renders a placeholder, as Node does", () => {
     const registered = Symbol.for("nodejs.util.inspect.custom");
     const error = httpError();

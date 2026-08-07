@@ -122,7 +122,20 @@ function render(
   const record = recordOf(this);
   // A runtime that calls the hook with only `(depth, options)` still gets a
   // readable record.
-  const tail = typeof inspect === "function" ? inspect(record, options) : JSON.stringify(record);
+  //
+  // The RENDER is guarded, not only the `toJSON` call above. `recordOf` keeps a
+  // throwing `toJSON` from escaping, and then handed whatever it returned to a
+  // renderer that has its own refusals: `JSON.stringify` throws on a cycle and
+  // on a `BigInt`, and the no-callback branch is a supported path — a runtime
+  // is not obliged to pass `inspect`. Two documented, supported behaviours
+  // intersected in a function whose stated invariant is that it never throws,
+  // because a throwing custom inspect takes `console.log` down with it.
+  let tail: string;
+  try {
+    tail = typeof inspect === "function" ? inspect(record, options) : JSON.stringify(record);
+  } catch {
+    tail = "[record not renderable]";
+  }
   return `${head} ${tail}`;
 }
 
