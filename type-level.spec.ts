@@ -116,26 +116,44 @@ describe("type-level", () => {
     }>();
   });
 
-  test("TypedResponse exposes the stable Fetch baseline, not newer ambient additions", () => {
+  test("TypedResponse omits what the FLOOR lacks, and nothing else", () => {
+    // `bytes()` is the one omission left, and it is a floor decision:
+    // `Response.bytes()` does not exist at Node 20.13.0, so promising it would
+    // name a method that is not there.
     type ResponseHasBytes = "bytes" extends keyof TypedResponse<unknown> ? true : false;
-    type HeadersHaveGetSetCookie = "getSetCookie" extends keyof TypedResponse<unknown>["headers"]
-      ? true
-      : false;
-    type BodyHasValues = "values" extends keyof NonNullable<TypedResponse<unknown>["body"]>
-      ? true
-      : false;
-
     expectTypeOf<ResponseHasBytes>().toEqualTypeOf<false>();
-    expectTypeOf<HeadersHaveGetSetCookie>().toEqualTypeOf<false>();
-    expectTypeOf<BodyHasValues>().toEqualTypeOf<false>();
+
+    // `body` and `headers` are the AMBIENT platform types now. The previous
+    // `Pick` bought nothing it cost — `body.tee()` is typed with the full
+    // `ReadableStream`, so it handed back the members `body` refused — while
+    // every forwarding idiom (`new Response(r.body, { headers: r.headers })`)
+    // needed a cast. Naming the ambient type defers to the consumer's own lib
+    // configuration, the same authority that types their plain `fetch` call.
+    expectTypeOf<TypedResponse<unknown>["headers"]>().toEqualTypeOf<Headers>();
+    expectTypeOf<NonNullable<TypedResponse<unknown>["body"]>>().toEqualTypeOf<
+      ReadableStream<Uint8Array>
+    >();
+
     expectTypeOf<Response>().toExtend<TypedResponse<unknown>>();
+  });
+
+  test("the success value forwards to a platform API without a cast", () => {
+    // The whole non-JSON half of using fetch: proxying a response onward,
+    // streaming its body, handing it to a helper. Compile-time only.
+    // That this function COMPILES is the assertion. It needed two casts.
+    const forward = (r: TypedResponse<unknown>): Response =>
+      new Response(r.body, { headers: r.headers });
+    expectTypeOf(forward).returns.toEqualTypeOf<Response>();
+
+    expectTypeOf<TypedResponse<unknown>["body"]>().toExtend<BodyInit | null>();
+    expectTypeOf<TypedResponse<unknown>["headers"]>().toExtend<HeadersInit>();
   });
 
   // ── every TypedResponse member, pinned ──────────────────────────────
   // The type surface IS the product here, so a member that silently widens to
   // `any` is a shipped defect, not a test gap. The assertions above pin what is
-  // ABSENT (`bytes`, `getSetCookie`, `values`) plus `json`, `status`, `body`,
-  // `headers`, and `clone`. That left ten members provable-by-nothing:
+  // ABSENT (`bytes`) plus `json`, `status`, `body`, `headers`, and `clone`.
+  // That left ten members provable-by-nothing:
   // replacing `ok`, `statusText`, `url`, and `text()` with `any` all at once
   // still compiled the whole project with zero errors.
   //

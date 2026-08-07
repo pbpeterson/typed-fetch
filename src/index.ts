@@ -106,12 +106,18 @@ const FOREIGN_RESPONSE_BODY_METHODS = [
   "pipeTo",
   "tee",
 ] as const;
+// `getSetCookie` is here because {@link TypedResponse} PROMISES it: the success
+// headers are typed as the ambient `Headers`, so a member the type names has to
+// be a member the accepted value carries. A standards-compatible polyfill
+// without it is refused on the success path. The method has been on
+// `Headers.prototype` since Node 20.0.0, the package floor.
 const FOREIGN_RESPONSE_HEADERS_METHODS = [
   "append",
   "delete",
   "entries",
   "forEach",
   "get",
+  "getSetCookie",
   "has",
   "keys",
   "set",
@@ -395,36 +401,36 @@ export function isKnownHttpError(error: unknown): error is ClientErrors | Server
   }
 }
 
-type TypedResponseHeaders = Pick<
-  Headers,
-  (typeof FOREIGN_RESPONSE_HEADERS_METHODS)[number] | typeof Symbol.iterator
->;
-
-type TypedResponseBody = Pick<
-  ReadableStream<Uint8Array>,
-  "locked" | (typeof FOREIGN_RESPONSE_BODY_METHODS)[number]
->;
-
 /**
  * The stable Fetch response baseline returned by {@link typedFetch}.
  *
- * This interface deliberately names the surface supported by every runtime at
- * the package floor, and it does not inherit additions from the TypeScript
- * version that builds the package. The two omissions have DIFFERENT reasons,
- * and one of them used to be stated wrongly:
+ * `body` and `headers` are the AMBIENT platform types, so the success value
+ * reaches a platform API without a cast: `new Response(r.body, { headers:
+ * r.headers })` is the forwarding idiom every proxy writes, and it used to need
+ * two. They were a `Pick` of the members {@link isResponse} validates, and that
+ * narrowing bought nothing it cost: `body.tee()` and `body.pipeThrough()` are
+ * typed with the full `ReadableStream`, so the exact members `body` refused to
+ * promise came straight back one call later. Naming the ambient type also
+ * defers to the CONSUMER's own lib configuration, which is the same authority
+ * that types a plain `fetch` call in their project — `for await` over a body
+ * compiles under `@types/node` and does not under `lib.dom`, which is correct
+ * in both cases.
  *
- *  - `Response.bytes()` is absent from the floor. Promising it would hand a
- *    consumer a method that does not exist there.
- *  - `Headers.getSetCookie()` IS present on the floor — undici has shipped it
- *    since 5.19, and it is on `Headers.prototype` in Node 20.0.0. It is omitted
- *    for the other reason: {@link FOREIGN_RESPONSE_HEADERS_METHODS} does not
- *    validate it, so an accepted standards-compatible polyfill need not have
- *    it, and this type is what the success branch hands back for EVERY accepted
- *    implementation, not only the platform's.
+ * This interface is still not `Response`, and that omission is load-bearing:
+ * `Response.bytes()` is absent at the package floor, Node 20.13.0, so promising
+ * it would hand a consumer a method that does not exist there. Forwarding the
+ * value itself to a `(r: Response)` slot therefore still needs a cast. Widening
+ * that far is a floor decision, not a typing one.
  *
- * `BaseHttpError.headers` is typed `Headers` rather than this type, because an
- * error's headers are constructed here rather than handed through, so
- * `error.headers.getSetCookie()` is available and documented.
+ * `Headers.getSetCookie()` is now promised and therefore now VALIDATED — see
+ * {@link FOREIGN_RESPONSE_HEADERS_METHODS}. A standards-compatible polyfill
+ * without it is refused on the success path, where before it was accepted and
+ * the type stayed quiet about the gap. The method has been on
+ * `Headers.prototype` since Node 20.0.0, and in Chrome 113, Safari 17, and
+ * Firefox 112.
+ *
+ * `BaseHttpError.headers` is typed `Headers` for a different reason: an error's
+ * headers are CONSTRUCTED here rather than handed through.
  *
  * The runtime value remains the Fetch implementation's original, unmodified
  * response and can expose newer members. {@link json} provides a compile-time
@@ -432,9 +438,9 @@ type TypedResponseBody = Pick<
  * behavior and may reject for malformed or consumed data.
  */
 export interface TypedResponse<JsonReturnType> {
-  readonly body: TypedResponseBody | null;
+  readonly body: ReadableStream<Uint8Array> | null;
   readonly bodyUsed: boolean;
-  readonly headers: TypedResponseHeaders;
+  readonly headers: Headers;
   readonly ok: boolean;
   readonly redirected: boolean;
   readonly status: number;

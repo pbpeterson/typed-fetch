@@ -843,9 +843,13 @@ Every response must report `bodyUsed` as a boolean. Before a success can escape,
 type. A mismatch resolves with `NetworkError`.
 
 Before success, the `headers` value must expose the standard iterable `Headers`
-operations. An HTTP error can instead normalize any `HeadersInit` that the
-platform's `Headers` constructor accepts. The body must be `null` or a WHATWG
-`ReadableStream` on both paths.
+operations, `getSetCookie()` among them: the success type names the ambient
+`Headers`, so a member the type promises must be a member the value carries. A
+standards-compatible polyfill without `getSetCookie` is refused on the success
+path. The method has been on `Headers.prototype` since Node 20.0.0, and in
+Chrome 113, Safari 17, and Firefox 112. An HTTP error can instead normalize any
+`HeadersInit` that the platform's `Headers` constructor accepts. The body must
+be `null` or a WHATWG `ReadableStream` on both paths.
 
 These members form the stable `TypedResponse` baseline. The runtime value may
 expose newer Fetch members, but the public type does not promise them.
@@ -944,12 +948,17 @@ async function api<T>(path: string, options?: TypedFetchOptions): Promise<TypedF
 
 - `TypedResponse` gives typed `json()` and `clone()` methods.
 - `TypedResponse` names the Fetch response baseline available at the package
-  floor, Node 20.13.0, minus the members an accepted foreign response is not
-  validated for. `Response.bytes()` is absent from the floor;
-  `Headers.getSetCookie()` exists there but is not required of a polyfill, so
-  the success type does not promise it. The runtime value remains the Fetch
-  implementation's original response and may expose newer methods.
-  `error.headers` is a real `Headers`, so `getSetCookie()` is available there.
+  floor, Node 20.13.0. `body` and `headers` are the ambient `ReadableStream` and
+  `Headers`, so the success value forwards to a platform API without a cast:
+  `new Response(r.body, { headers: r.headers })` compiles, and so does streaming
+  the body wherever your own lib configuration says that is valid. The runtime
+  value remains the Fetch implementation's original response and may expose
+  newer methods.
+- `TypedResponse` is not `Response`, and the gap is one member.
+  `Response.bytes()` does not exist at the floor, so the type does not promise
+  it. Handing the success value to a slot typed `(r: Response)` — a Workers,
+  Hono, or Next handler — therefore still needs a cast. Widening that far is a
+  floor decision, not a typing one.
 - `TypedFetchReturnType` is the result union from `typedFetch`.
 - `TypedFetchOptions` extends `RequestInit` and adds the Fetch override.
 - `HttpMethods` gives method suggestions. It omits `CONNECT` and `TRACE`, because the Fetch specification forbids them and native `fetch` throws a `TypeError` for them.
