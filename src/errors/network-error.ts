@@ -117,6 +117,16 @@ export class NetworkError extends Error {
    * request, and its own chain carries transport detail — local and remote
    * addresses and ports on undici. Log `error.cause` deliberately when you
    * want it.
+   *
+   * CREDENTIAL RESIDUAL, named rather than implied. That platform message can
+   * quote the caller's own URL back, credentials included: undici rejects one
+   * with `Request cannot be constructed from a URL that includes credentials:
+   * http://alice:hunter2@host/x`. Every channel this library controls redacts
+   * it, and the one it does not is Node's fatal-exception printer, which
+   * renders `[cause]` on a crashing error and ignores every inspect hook. So
+   * an unhandled rejection, or a `throw error`, can put a password in a crash
+   * dump. Do not let a request failure terminate the process, and do not copy
+   * `error.cause` into a log line.
    */
   toJSON(): { name: string; message: string; url: string } {
     // Origin and path, never the query. `error.url` keeps the full href.

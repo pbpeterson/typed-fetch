@@ -1161,6 +1161,8 @@ All three classes define `toJSON()`. The record is `{ name, message, url }`.
 
 `cause` and `reason` are absent from the record on purpose. The cause holds the platform error that failed the request, and its chain carries transport detail, such as local and remote addresses and ports. The reason is the value that the caller passed to `controller.abort(reason)`, and it can be any value. Read either one from the error when you want it.
 
+The cause can also carry a credential, and this is the one residual the library cannot close. A platform quotes the URL it refused back in its own message, so undici rejects a credentialed URL with `Request cannot be constructed from a URL that includes credentials: http://alice:hunter2@host/x`. Every channel this library controls redacts that value. Node's fatal-exception printer does not: it renders `[cause]` on a crashing error and ignores every inspect hook. An unhandled rejection, or a `throw error`, can therefore put a password in a crash dump. Do not let a request failure terminate the process, and do not copy `error.cause` into a log line.
+
 `cause` and `reason` are not enumerable, which matches `new Error(message, { cause })`. They do not occur in `JSON.stringify(error)`, in `{ ...error }`, or in `Object.keys(error)`. Reading `error.cause`, `error.reason`, and `"cause" in error` is unchanged, and both properties stay writable.
 
 ## Available error classes

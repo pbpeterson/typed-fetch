@@ -584,8 +584,37 @@ describe("disclosure channels — cause and reason", () => {
     // the pre-response errors exist to provide.
     const rendered = inspect(networkError(), { customInspect: false, depth: null });
     expect(rendered).toContain("CAUSE_SECRET");
-    // But the URL and the credential in it are gone even there.
+    // The library's OWN half of the render is still clean: the message it wrote
+    // and the url it holds are both redacted. Only the cause is not.
     expect(rendered).not.toContain("hunter2");
+  });
+
+  // The line above holds because THAT fixture's cause does not quote the URL.
+  // The real one does: a platform reports a refused value by quoting it back,
+  // and for a credentialed URL the refused value IS the credential. This test
+  // exists so the residual is measured with a real credential rather than with
+  // a planted sentinel that happens to sit somewhere safer.
+  test("RESIDUAL: a credential in the cause reaches the crash-dump channel", () => {
+    const url = "https://alice:hunter2@api.test/v1";
+    const error = new NetworkError("Network error", {
+      // Verbatim undici, which is where this string comes from in production.
+      cause: new TypeError(
+        `Request cannot be constructed from a URL that includes credentials: ${url}`,
+      ),
+      url,
+    });
+
+    // Every channel the library controls is clean, including the one hook the
+    // printer below ignores.
+    expect(error.message).not.toContain("hunter2");
+    expect(JSON.stringify(error)).not.toContain("hunter2");
+    expect(inspect(error, { depth: null })).not.toContain("hunter2");
+    expect(String(error)).not.toContain("hunter2");
+
+    // The printer Node uses for an unhandled rejection is not one of them. See
+    // SECURITY.md, "Known residuals": handle request failures as values.
+    const crashDump = inspect(error, { customInspect: false, showHidden: false, depth: null });
+    expect(crashDump).toContain("hunter2");
   });
 });
 
