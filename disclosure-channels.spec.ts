@@ -254,6 +254,67 @@ describe("disclosure channels — the platform message is never copied", () => {
     expect(message).not.toContain("\0");
   });
 
+  // The sibling half of the same string. `request-failure.ts` refuses the
+  // PLATFORM's message so a control character cannot ride into `message`; an
+  // HTTP error's message also carries the ORIGIN's reason phrase, and that
+  // arrived unfiltered. `new Response(null, { statusText })` refuses a control
+  // character, but the HTTP parser hands every C0 byte except CR and LF
+  // straight through, so `defineProperty` is what a real wire read looks like
+  // here — the same trick `httpError` already uses for `url`.
+  describe("the origin's reason phrase cannot rewrite a log line", () => {
+    // Written as escapes, never as literal bytes: a control character in a
+    // source file is invisible in a diff and in a review.
+    const ESC = "\u001b";
+    const NUL = "\u0000";
+    const LS = "\u2028";
+    const PS = "\u2029";
+
+    function hostileReasonPhrase(statusText: string): NotFoundError {
+      const response = new Response(null, { status: 404 });
+      Object.defineProperty(response, "statusText", { value: statusText });
+      return new NotFoundError(response);
+    }
+
+    test("no control character reaches the message", () => {
+      // `\x1b[2K\x1b[1A` erases the previous terminal line and repaints it.
+      const error = hostileReasonPhrase(`Not Found${ESC}[2K${ESC}[1A${NUL} all clear`);
+
+      expect(error.message).not.toContain(ESC);
+      expect(error.message).not.toContain(NUL);
+      expect(error.message).not.toContain("\n");
+      expect(error.message).not.toContain("\r");
+    });
+
+    test("no Unicode line terminator reaches the message", () => {
+      // U+2028 opens a new record in a JSON log, and `JSON.stringify` emits it
+      // raw rather than escaped.
+      const error = hostileReasonPhrase(`Not Found${LS}HTTP 200 OK all clear`);
+
+      expect(error.message).not.toContain(LS);
+      expect(error.message).not.toContain(PS);
+      expect(JSON.stringify(error)).not.toContain(LS);
+    });
+
+    test("the origin does not choose how long the message is", () => {
+      // Node accepts a header line of about 15 KB, so an unbounded phrase sets
+      // the length of every log line the consumer writes.
+      const error = hostileReasonPhrase("Z".repeat(15_000));
+
+      expect(error.message.length).toBeLessThan(1_000);
+    });
+
+    test("an ordinary reason phrase is still carried in full", () => {
+      // The filter removes what cannot be read, not what can.
+      expect(hostileReasonPhrase("Not Found").message).toContain("HTTP 404 Not Found");
+      expect(hostileReasonPhrase("Não Encontrado").message).toContain("HTTP 404 Não Encontrado");
+    });
+
+    test("a phrase with nothing legible left drops out of the line", () => {
+      // The empty-phrase branch already exists for an empty `statusText`.
+      expect(hostileReasonPhrase(`${NUL}${ESC}`).message).toBe(`HTTP 404`);
+    });
+  });
+
   test("an ordinary transport failure gets the same library message", () => {
     // Redaction is not what closed this. The message is not the platform's
     // under any input, so there is no search string to defeat and no value to
