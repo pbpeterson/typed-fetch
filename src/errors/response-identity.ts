@@ -235,8 +235,15 @@ function keyable(value: unknown): value is object {
  * The normalizer for `statusText` and `url`: the value when it is a string, and
  * the empty string otherwise. Total by construction — it never throws, which
  * `String()` cannot promise for a `Symbol` or a hostile `toString`.
+ *
+ * Exported because the three pre-response classes take a `url` from a CALLER
+ * rather than from a response, and TypeScript's `url?: string` is a compile-time
+ * claim. They are public API a consumer constructs directly, so the value must
+ * be normalized at runtime for the same reason this function exists here: it is
+ * what keeps a `readonly string` slot holding a string, and what keeps a
+ * non-string out of `redactUrl`.
  */
-function textOf(value: unknown): string {
+export function textOf(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 

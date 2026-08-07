@@ -228,6 +228,46 @@ describe("NetworkError / AbortedError / TimeoutError — cause & reason presence
     expect(new AbortedError("x", { url: undefined }).url).toBe("");
     expect(new TimeoutError("x", { url: undefined }).url).toBe("");
   });
+
+  // These three constructors are public API a consumer calls directly — a mock,
+  // an adapter, a re-wrap — so `url?: string` is a compile-time claim and
+  // nothing more. An unchecked value reached `hasRedactableSlot`, which calls
+  // `.includes` on it, and the CONSTRUCTOR threw: `url.includes is not a
+  // function`, in a library whose premise is that errors are values. An array
+  // has `.includes`, so it did not throw and sat in a `readonly string` slot
+  // instead, from where it flowed into `redactUrl` and the `toJSON()` record.
+  describe("a non-string url is normalized, never coerced and never thrown on", () => {
+    const notStrings: readonly [string, unknown][] = [
+      ["a number", 42],
+      ["an array", ["https://evil.test/x"]],
+      ["a plain object", { toString: () => "https://evil.test/x" }],
+      ["a symbol", Symbol("url")],
+      ["null", null],
+      ["a boolean", true],
+    ];
+
+    test.each(notStrings)("%s does not make the constructor throw", (_label, value) => {
+      for (const make of [
+        () => new NetworkError("x", { url: value as string }),
+        () => new AbortedError("x", { url: value as string }),
+        () => new TimeoutError("x", { url: value as string }),
+      ]) {
+        expect(make).not.toThrow();
+      }
+    });
+
+    test.each(notStrings)("%s leaves url a string, and the record too", (_label, value) => {
+      for (const error of [
+        new NetworkError("x", { url: value as string }),
+        new AbortedError("x", { url: value as string }),
+        new TimeoutError("x", { url: value as string }),
+      ]) {
+        expect(typeof error.url).toBe("string");
+        expect(error.url).toBe("");
+        expect(error.toJSON().url).toBe("");
+      }
+    });
+  });
 });
 
 // ── Error class invariants ───────────────────────────────────────────

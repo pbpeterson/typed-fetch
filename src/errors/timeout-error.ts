@@ -1,6 +1,7 @@
 import { brand, timeoutErrorBrand } from "./brand";
 import { installInspect } from "./inspect";
 import { redactUrl, redactUrlInMessage } from "./redact-url";
+import { textOf } from "./response-identity";
 
 /**
  * Represents a request that was aborted because it exceeded a timeout
@@ -37,7 +38,15 @@ export class TimeoutError extends Error {
     //
     // OWN properties only, on every slot read here. See `./network-error` for
     // what a polluted `Object.prototype` otherwise puts into the record.
-    const url = options && Object.hasOwn(options, "url") ? (options.url ?? "") : "";
+    //
+    // NORMALIZED, not trusted. `url?: string` is a compile-time claim, and this
+    // constructor is public API: a consumer building a mock, an adapter, or a
+    // re-wrap passes whatever it holds. An unchecked value made the constructor
+    // THROW — `hasRedactableSlot` calls `.includes` on it — in a library whose
+    // premise is that errors are values. An array has `.includes`, so it got
+    // through instead and sat in a `readonly string` slot. `typedFetch` already
+    // applies this rule to its own resolved url.
+    const url = textOf(options && Object.hasOwn(options, "url") ? options.url : "");
     super(redactUrlInMessage(message, url));
     if (options && Object.hasOwn(options, "cause")) {
       // `defineProperty`, not an assignment: `cause` must be non-enumerable,

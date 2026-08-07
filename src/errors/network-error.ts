@@ -1,6 +1,7 @@
 import { brand, networkErrorBrand } from "./brand";
 import { installInspect } from "./inspect";
 import { redactUrl, redactUrlInMessage } from "./redact-url";
+import { textOf } from "./response-identity";
 
 /**
  * Represents a request failure or an incompatible result from a custom Fetch
@@ -65,7 +66,15 @@ export class NetworkError extends Error {
     // the guard `typedFetch` already applies to its `fetch` slot, applied to
     // the slots its siblings read. `typedFetch` itself is unaffected either
     // way: it always builds an own-property literal.
-    const url = options && Object.hasOwn(options, "url") ? (options.url ?? "") : "";
+    //
+    // NORMALIZED, not trusted. `url?: string` is a compile-time claim, and this
+    // constructor is public API: a consumer building a mock, an adapter, or a
+    // re-wrap passes whatever it holds. An unchecked value made the constructor
+    // THROW — `hasRedactableSlot` calls `.includes` on it — in a library whose
+    // premise is that errors are values. An array has `.includes`, so it got
+    // through instead and sat in a `readonly string` slot. `typedFetch` already
+    // applies this rule to its own resolved url.
+    const url = textOf(options && Object.hasOwn(options, "url") ? options.url : "");
     super(redactUrlInMessage(message, url));
     if (options && Object.hasOwn(options, "cause")) {
       // `defineProperty`, not `this.cause = ...`. A plain assignment creates an
