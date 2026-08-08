@@ -617,6 +617,25 @@ describe("disclosure channels — the hook itself", () => {
       ).not.toThrow();
     });
 
+    // `Object.hasOwn` is not the inert test it looks like: it runs
+    // `[[GetOwnProperty]]`, which a Proxy answers from its
+    // `getOwnPropertyDescriptor` trap. Wrapping an error in a Proxy is the APM
+    // instrumentation pattern `base-http-error.ts` names by hand, and the two
+    // `hasOwn` calls were the last thing in this file outside a `try`.
+    test("a Proxy whose descriptor trap throws does not take console.log down", () => {
+      const error = httpError();
+      const wrapped = new Proxy(error, {
+        getOwnPropertyDescriptor() {
+          throw new Error("this trap refuses");
+        },
+      });
+
+      expect(() => inspect(wrapped)).not.toThrow();
+      expect(() => inspect(wrapped, { depth: null })).not.toThrow();
+      // The record it could still build is printed.
+      expect(inspect(wrapped)).toContain("NotFoundError");
+    });
+
     test("a record Node can render is still rendered in full", () => {
       // The guard replaces the render, so it must not swallow a working one.
       expect(inspect(httpError())).toContain("NotFoundError");

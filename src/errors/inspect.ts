@@ -91,8 +91,20 @@ function recordOf(error: Serializable): Record<string, unknown> {
   }
   // `hasOwn`, not `in`: these members exist only when a constructor actually
   // assigned them, which is the whole point of the `"cause" in options` guard.
-  if (Object.hasOwn(error, "cause")) record.cause = HIDDEN_CAUSE;
-  if (Object.hasOwn(error, "reason")) record.reason = HIDDEN_REASON;
+  //
+  // GUARDED, because `Object.hasOwn` is not the inert test it looks like: it
+  // runs `[[GetOwnProperty]]`, so a `Proxy` answers it from its
+  // `getOwnPropertyDescriptor` trap. Wrapping an error in a Proxy is the APM
+  // instrumentation pattern `./base-http-error` names by hand, and a trap that
+  // throws took `console.log` down from the one place in this file still
+  // outside a `try`.
+  try {
+    if (Object.hasOwn(error, "cause")) record.cause = HIDDEN_CAUSE;
+    if (Object.hasOwn(error, "reason")) record.reason = HIDDEN_REASON;
+  } catch {
+    // A value that will not answer which members it owns simply gets no
+    // signposts. The record it already produced is still worth printing.
+  }
   return record;
 }
 
