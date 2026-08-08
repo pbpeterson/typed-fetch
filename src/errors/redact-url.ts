@@ -64,7 +64,7 @@ const HIERARCHICAL_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:", "ftp:"
  * parses as neither is emitted as a percent-encoded PATH — never as the raw
  * string, so a query or fragment hidden in it is still dropped. A userinfo
  * hidden in it is dropped too: the path is kept as structure, and userinfo is
- * unconditionally a value. See {@link malformedUserinfoSpan}.
+ * unconditionally a value. See {@link malformedUserinfoSpans}.
  *
  * The redactor reduces an opaque URL to its scheme alone. See
  * {@link HIERARCHICAL_PROTOCOLS}.
@@ -79,15 +79,32 @@ export function redactUrl(url: string): string {
     // ordinary, not exceptional.
   }
   try {
-    return withoutMalformedUserinfo(stripValues(new URL(url, RELATIVE_BASE)).pathname);
+    // TWO resolutions, and the order is the point.
+    //
+    // The RAW input decides whether this resolves at all. That question must be
+    // answered before any userinfo is taken out, or a parse error stops being
+    // one: `file://alice:pw@host/v1` and `http://alice:pw@/v1` are invalid, and
+    // they have to keep collapsing to the documented no-URL value instead of
+    // becoming resolvable once the credential is removed.
+    const resolved = stripValues(new URL(url, RELATIVE_BASE));
+    if (malformedUserinfoSpans(url).length === 0) return resolved.pathname;
+
+    // Once it does resolve, resolve again from the userinfo-free form. Removing
+    // the spans from the EMITTED PATH instead is not enough: `stripValues`
+    // clears the query first, so `://svc:hun?ter2@host/v1` arrives as
+    // `/://svc:hun` — an authority truncated mid-credential, with no `@` left
+    // to find and the first half of the password still in it.
+    return stripValues(new URL(withoutMalformedUserinfo(url), RELATIVE_BASE)).pathname;
   } catch {
     return "";
   }
 }
 
+const AUTHORITY_MARK = "://";
+
 /**
- * Where the userinfo sits in a string a URL parser did not treat as one, or
- * `null`.
+ * Every `[start, end)` span of userinfo in a string a URL parser did not treat
+ * as one, in order.
  *
  * `://svc:hunter2@internal.test/v1` parses as neither absolute nor
  * protocol-relative, so it resolves against {@link RELATIVE_BASE} as a PATH —
@@ -100,56 +117,81 @@ export function redactUrl(url: string): string {
  * `/users/@alice`), which NAMES something and has to survive for the same
  * reason the rest of the path does.
  *
- * The SPAN is returned rather than the text: the same bytes can appear earlier
- * in the string (`svc:pw@x://svc:pw@host/`), and removing the wrong copy leaves
- * the credential exactly where it was.
+ * EVERY occurrence, not the first. Scanning one authority and giving up meant a
+ * path with an embedded URL kept its credential —
+ * `/go/http://plain.test/then/https://svc:hunter2@internal.test/v1` needs no
+ * malformed scheme at all, only a forward or callback URL, which is the shape
+ * that carries credentials in the first place.
+ *
+ * The region runs to the NEXT `://` rather than to the first `/`, `?`, or `#`.
+ * Ending it at a delimiter let the password choose where the authority stopped:
+ * a `\` in a credential is rewritten to `/` by the parser before this scan
+ * runs, and `://svc:hun\ter2@internal.test/v1` then emitted the whole password.
+ * The cost is over-redaction when a malformed URL's PATH holds an `@` after a
+ * `://` (`://host/path/@alice` keeps only `alice`), and that is the trade this
+ * module makes everywhere: userinfo is unconditionally a value, a path is
+ * structure only until the two cannot be told apart.
+ *
+ * SPANS are returned rather than text: the same bytes can appear earlier in the
+ * string (`svc:pw@x://svc:pw@host/`), and removing the wrong copy leaves the
+ * credential exactly where it was.
  */
-function malformedUserinfoSpan(text: string): { start: number; end: number } | null {
-  const mark = text.indexOf("://");
-  if (mark < 0) return null;
-  const start = mark + "://".length;
-  let stop = text.length;
-  for (let i = start; i < text.length; i += 1) {
-    const ch = text[i];
-    if (ch === "/" || ch === "\\" || ch === "?" || ch === "#") {
-      stop = i;
-      break;
-    }
+function malformedUserinfoSpans(text: string): { start: number; end: number }[] {
+  const spans: { start: number; end: number }[] = [];
+  let from = 0;
+  for (;;) {
+    const mark = text.indexOf(AUTHORITY_MARK, from);
+    if (mark < 0) break;
+    const start = mark + AUTHORITY_MARK.length;
+    const next = text.indexOf(AUTHORITY_MARK, start);
+    const stop = next < 0 ? text.length : next;
+    const at = text.lastIndexOf("@", stop - 1);
+    if (at >= start) spans.push({ start, end: at + 1 });
+    if (next < 0) break;
+    from = next;
   }
-  const at = text.lastIndexOf("@", stop - 1);
-  return at >= start ? { start, end: at + 1 } : null;
+  return spans;
 }
 
 /**
- * The same string with a malformed authority's userinfo removed.
+ * The same string with every malformed authority's userinfo removed.
  *
- * Applied to the PATH the redactor is about to emit, never to the input. The
- * input decides which URLs resolve at all — `file://alice:pw@host/v1` and
- * `http://alice:pw@/v1` are parse errors, and they have to stay parse errors
- * that collapse to `""` rather than become resolvable once a credential is
- * taken out of them.
+ * Applied to the input only AFTER the raw input has proved it resolves — see
+ * {@link redactUrl}. Which URLs resolve is the raw input's answer to give.
  *
  * Percent-encoding does not weaken the scan: it removes the whole span up to
  * the `@`, so an encoded password (`hunter%202`) goes with it.
  */
 function withoutMalformedUserinfo(path: string): string {
-  const span = malformedUserinfoSpan(path);
-  return span ? path.slice(0, span.start) + path.slice(span.end) : path;
+  const spans = malformedUserinfoSpans(path);
+  if (spans.length === 0) return path;
+
+  let out = "";
+  let cursor = 0;
+  for (const span of spans) {
+    out += path.slice(cursor, span.start);
+    cursor = span.end;
+  }
+  return out + path.slice(cursor);
 }
 
-/** `"user:password@"`, `"user@"`, or `""` when the URL carries no userinfo. */
-function userinfoOf(url: string): string {
+/**
+ * Every userinfo the URL carries: `["user:password@"]`, `["user@"]`, or `[]`.
+ *
+ * A malformed URL can carry MORE than one, which is why this answers with a
+ * list. See {@link malformedUserinfoSpans}.
+ */
+function userinfosOf(url: string): string[] {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     // A malformed scheme hides userinfo from the parser, not from a reader.
-    const span = malformedUserinfoSpan(url);
-    return span ? url.slice(span.start, span.end) : "";
+    return malformedUserinfoSpans(url).map((span) => url.slice(span.start, span.end));
   }
   const { username, password } = parsed;
-  if (!username && !password) return "";
-  return password ? `${username}:${password}@` : `${username}@`;
+  if (!username && !password) return [];
+  return [password ? `${username}:${password}@` : `${username}@`];
 }
 
 /**
@@ -212,7 +254,6 @@ export function redactUrlInMessage(message: string, url: string): string {
   // so running the replacement can only corrupt the diagnostic.
   let out =
     url === redacted || !hasRedactableSlot(url) ? message : message.replaceAll(url, () => redacted);
-  const userinfo = userinfoOf(url);
-  if (userinfo) out = out.replaceAll(userinfo, () => "");
+  for (const userinfo of userinfosOf(url)) out = out.replaceAll(userinfo, () => "");
   return out;
 }

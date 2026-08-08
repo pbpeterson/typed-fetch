@@ -75,6 +75,39 @@ describe("redactUrl — structure is kept, every value slot is dropped", () => {
     expect(redactUrl("/users/@alice/posts")).toBe("/users/@alice/posts");
   });
 
+  // Scanning one authority and giving up left a credential in the second. This
+  // needs no malformed scheme: a forward or callback URL is the ordinary shape,
+  // and it is the shape that carries credentials in the first place.
+  test("EVERY embedded authority loses its userinfo, not just the first", () => {
+    expect(redactUrl("/go/http://plain.test/then/https://svc:hunter2@internal.test/v1")).toBe(
+      "/go/http://plain.test/then/https://internal.test/v1",
+    );
+    expect(redactUrl("://host1/x://u2:hunter2@host2/v1")).toBe("/://host1/x://host2/v1");
+    expect(redactUrl("://a:pw1@h1/x://b:pw2@h2/v1")).toBe("/://h1/x://h2/v1");
+  });
+
+  // A delimiter-terminated authority let the PASSWORD choose where the
+  // authority stopped. The parser rewrites `\` to `/` before this scan runs, so
+  // the region ended inside the credential and emitted the whole thing.
+  test("a delimiter inside the credential does not end the authority early", () => {
+    for (const url of [
+      "://svc:hun\\ter2@internal.test/v1",
+      "://svc:hun/ter2@internal.test/v1",
+      "://svc:hun?ter2@internal.test/v1",
+      "://svc:hun#ter2@internal.test/v1",
+    ]) {
+      expect(redactUrl(url), url).not.toContain("hun");
+    }
+  });
+
+  // The stated cost of the wider region, so it is a known limit and not a
+  // surprise: a malformed URL whose PATH holds an `@` after a `://` loses the
+  // part before it. Userinfo is unconditionally a value; a path is structure
+  // only until the two cannot be told apart.
+  test("RESIDUAL: a path `@` after a `://` is over-redacted, by design", () => {
+    expect(redactUrl("://host/path/@alice")).toBe("/://alice");
+  });
+
   // Removing the userinfo must not make an invalid URL resolvable: these are
   // parse errors, and a parse error is the documented no-URL value.
   test("a URL the parser refuses still collapses to the no-URL value", () => {
