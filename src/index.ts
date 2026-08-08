@@ -635,10 +635,15 @@ function snapshotRequestInit(
  * turns it into a `NetworkError` with an empty `url`. A `Request`'s `url` is the
  * other direction: the tag check accepts anything tagged `[object Request]`, and
  * a subclass can override the getter, so it can answer with a number or an
- * object without throwing at all. That value is dropped rather than coerced,
- * which is what keeps `NetworkError.url` — typed `readonly string` — from
- * holding a non-string that then flows into `redactUrl` and into the `toJSON()`
- * record.
+ * object without throwing at all. That value is dropped rather than coerced, so
+ * the `string` this function promises is a string at its own call site.
+ *
+ * It is NOT what keeps a non-string out of `NetworkError.url`. The constructor
+ * normalizes every url it is handed, because it is public API a consumer calls
+ * directly, and removing the drop here changes nothing a caller can observe —
+ * measured, not argued. Two guards for one property is the right number when
+ * one of them is a public entry point; a comment that names the wrong one as
+ * the authority is how the next reader deletes the one that matters.
  *
  * Everything here reads the INPUT and nothing reads `options`, which is what
  * lets phase 1 run it first. `error.url` is the only thing that tells two
