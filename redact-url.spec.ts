@@ -113,10 +113,50 @@ describe("redactUrl — structure is kept, every value slot is dropped", () => {
     expect(redactUrl("://token@internal.test/v1")).toBe("/://internal.test/v1");
   });
 
-  // The ambiguity that cannot be resolved once a malformed scheme has taken
-  // away where the authority ends: a PORT reads like a credential.
-  test("RESIDUAL: an authority with a port plus a path `@` is over-redacted", () => {
-    expect(redactUrl("://a:1234/x/@bob")).toBe("/://bob");
+  // A path spells an `@` at the HEAD of a segment; a credential runs right up
+  // to it. That is what separates a standard-base64 token — whose alphabet
+  // includes `/`, so the slash-and-colon rules alone read it as a path — from
+  // an authority with a port followed by a path `@`.
+  test("a base64 credential containing a slash is still removed", () => {
+    expect(redactUrl("://YWxpY2U/cGFzc3dvcmQ@internal.test/v1")).toBe("/://internal.test/v1");
+  });
+
+  // Both remaining residuals are over-redaction — the safe direction. Neither
+  // can be resolved once a malformed scheme has taken away where the authority
+  // ends: `a:1234` is indistinguishable from `user:password`, and an
+  // e-mail-shaped path segment is indistinguishable from a credential.
+  test.each([
+    ["an authority with a port plus a path `@`", "://a:1234/x/@bob", "/://bob"],
+    ["an `@` inside a path segment", "://host/a/b@c/d", "/://c/d"],
+  ])("RESIDUAL: %s is over-redacted", (_label, url, expected) => {
+    expect(redactUrl(url)).toBe(expected);
+  });
+
+  // The path of a WELL-FORMED url can embed another url, credential and all.
+  // `stripValues` clears only this url's own value slots, so the absolute
+  // branch returned the href and never looked — the relative branch had been
+  // scanning for exactly this shape since the embedded-credential fix.
+  test("an absolute URL whose path embeds a credentialed URL is redacted too", () => {
+    expect(redactUrl("https://api.test/go/https://svc:hunter2@internal.test/v1")).toBe(
+      "https://api.test/go/https://internal.test/v1",
+    );
+    // The port of the real authority is not read as userinfo: the scan runs
+    // over the pathname, never the href.
+    expect(redactUrl("https://api.test:8443/go/https://svc:pw@internal.test/v1")).toBe(
+      "https://api.test:8443/go/https://internal.test/v1",
+    );
+  });
+
+  // The scan runs once per call over each region, and `redactUrl` runs it
+  // twice. Walking back from the end of every region made it quadratic in the
+  // number of marks: 96 KB took 855 ms.
+  test("the scan stays linear on an input of repeated `://` marks", () => {
+    const hostile = "://".repeat(32_000);
+    const started = performance.now();
+
+    redactUrl(hostile);
+
+    expect(performance.now() - started).toBeLessThan(100);
   });
 
   // Removing the userinfo must not make an invalid URL resolvable: these are

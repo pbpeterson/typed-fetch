@@ -73,7 +73,18 @@ export function redactUrl(url: string): string {
   if (!url) return "";
   try {
     const parsed = new URL(url);
-    return HIERARCHICAL_PROTOCOLS.has(parsed.protocol) ? stripValues(parsed).href : parsed.protocol;
+    if (!HIERARCHICAL_PROTOCOLS.has(parsed.protocol)) return parsed.protocol;
+    stripValues(parsed);
+    // The PATH of a well-formed URL can embed another URL, credential and all —
+    // `https://api.test/go/https://svc:pw@internal.test/v1` is an ordinary
+    // forward, and `stripValues` only clears this URL's own value slots. The
+    // relative branch below has scanned for that since the embedded-credential
+    // fix; the absolute branch returned the href and never looked.
+    //
+    // The PATHNAME, never the href: the authority this URL really has is
+    // `host:8443`, and a scan over the href would read that port as userinfo.
+    parsed.pathname = withoutMalformedUserinfo(parsed.pathname);
+    return parsed.href;
   } catch {
     // Not absolute. Fall through rather than nest: the relative case is
     // ordinary, not exceptional.
@@ -144,7 +155,17 @@ function malformedUserinfoSpans(text: string): { start: number; end: number }[] 
     const start = mark + AUTHORITY_MARK.length;
     const next = text.indexOf(AUTHORITY_MARK, start);
     const stop = next < 0 ? text.length : next;
-    const at = text.lastIndexOf("@", stop - 1);
+
+    // FORWARD over the region, not `lastIndexOf` backward from its end. The
+    // regions partition the string, so a forward scan totals one pass over the
+    // input. `lastIndexOf("@", stop - 1)` walks back to index 0 whenever the
+    // region holds no `@`, which made the whole scan quadratic in the number of
+    // `://` marks: 96 KB of repeated marks took 855 ms, against 0.23 ms for the
+    // single-region scan this replaced. `redactUrl` runs it twice per call.
+    let at = -1;
+    for (let i = start; i < stop; i += 1) {
+      if (text[i] === "@") at = i;
+    }
     if (at >= start && looksLikeUserinfo(text.slice(start, at))) {
       spans.push({ start, end: at + 1 });
     }
@@ -157,29 +178,40 @@ function malformedUserinfoSpans(text: string): { start: number; end: number }[] 
 /**
  * Is the text between `://` and an `@` a credential, or a path?
  *
- * Two shapes are userinfo, and everything else is a path this module keeps:
+ * Three shapes are userinfo, and everything else is a path this module keeps:
  *
  *  - NO `/` at all. `://token@host/x` is the username-only credential a bearer
  *    URL carries, and there is nothing else it could be.
  *  - A `:` BEFORE the first `/`. A credential is `user:password`, and the
  *    password is the part that can contain the delimiter that used to end the
  *    scan early — `svc:hun\ter2`, `svc:hun?ter2`.
+ *  - The `@` does NOT follow a `/`. A path spells an `@` at the head of a
+ *    segment — `/users/@alice`, `/@scope/pkg` — while a credential runs right
+ *    up to it. This is what catches a standard-base64 token, whose alphabet
+ *    includes `/`: `YWxpY2U/cGFzc3dvcmQ@host` has a slash and no colon, so the
+ *    first two rules read it as a path and the whole credential survived.
  *
- * So `api.test/users/` is a path — a `/` first and no `:` before it — and
- * `://api.test/users/@alice` keeps every segment it names. That case is
- * ordinary; a credential is not usually spelled with a slash before the colon.
+ * So `://api.test/users/@alice` keeps every segment it names.
  *
- * RESIDUAL, stated because the ambiguity is real and unresolvable here: an
- * authority with a PORT, followed by a path holding an `@`
- * (`://a:1234/x/@bob`), reads as userinfo by this rule and is over-redacted.
- * Telling a port from a credential needs to know where the authority ends,
- * which is the very thing a malformed scheme took away.
+ * TWO RESIDUALS, both over-redaction, both stated because the ambiguity is real
+ * and unresolvable once a malformed scheme has taken away where the authority
+ * ends:
+ *
+ *  - An authority with a PORT, followed by a path `@` (`://a:1234/x/@bob`).
+ *    The colon rule cannot tell `a:1234` from `user:password`.
+ *  - An `@` INSIDE a path segment rather than at its head (`://host/a/b@c/d`,
+ *    an e-mail-shaped path).
+ *
+ * Both are the safe direction. Over-redaction costs a diagnostic on a URL that
+ * was already malformed; the other direction costs a password.
  */
 function looksLikeUserinfo(candidate: string): boolean {
+  if (candidate === "") return true;
   const slash = candidate.indexOf("/");
   if (slash < 0) return true;
   const colon = candidate.indexOf(":");
-  return colon >= 0 && colon < slash;
+  if (colon >= 0 && colon < slash) return true;
+  return !candidate.endsWith("/");
 }
 
 /**
