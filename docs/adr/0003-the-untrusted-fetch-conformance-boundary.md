@@ -286,3 +286,47 @@ that can produce an `AbortedError` or a `TimeoutError`.
 amendment described. The request input is serialized once, in the setup phase,
 and the transport receives that exact string. A `Request` is passed through
 unchanged.
+
+## Amendment — 2026-08-08: where H-28 stops, and the window that gets it there
+
+This amendment changes no row. It records that H-28's guarantee reached only
+half the reads the row describes, and it states the scope of the repair.
+
+**The half that was open.** The phase split drew the transport phase at the
+CALL to `fetch`. The caller's options object is read INSIDE that call: a
+transport normalizes its init in the synchronous prologue, before any I/O,
+which runs every getter on `method`, `body`, `integrity`, `redirect`, and the
+rest, and every read inside a `headers` container or a body value. A getter
+that aborted the signal and then threw was therefore answered with an
+`AbortedError` — the outcome H-28 forbids, reached by a path the row's scenario
+does not describe. `fixtures/hostile-fetch.ts` drives H-28 through an `ownKeys`
+trap, which is a read `typedFetch` performs itself, so the corpus stayed green.
+
+**The window.** `typedFetch` now snapshots the governing signal's state on
+either side of the transport's synchronous prologue. A signal that turns
+aborted while the transport is READING the init cannot have aborted a request
+that was never sent, so the failure is a `NetworkError`. A legitimate abort —
+raised before the call, or after the request is in flight — does not flip
+between those two reads. Reading the signal twice is not reading a caller value
+twice: the snapshot is guarded and total, and a signal that lies can only push
+the verdict toward `NetworkError`.
+
+**Where it stops, stated rather than implied.**
+
+- **The ambient transport only.** An injected `fetch` runs the caller's own code
+  AS the transport, and a transport that aborts and rejects IS the request being
+  cancelled. That stays an `AbortedError`. A transport that reads its init after
+  an `await` escapes the window in any case, which is the same boundary.
+- **The rejection value cannot narrow it further.** A getter is free to abort
+  with the very exception it then throws, so the rejection is identical to the
+  signal's reason in both the hostile shape and the ordinary one.
+- **A getter that aborts the signal WITHOUT throwing now reports a
+  `NetworkError` too**, where it used to report an abort. Both shapes are the
+  caller aborting its own request from inside a getter, no request left the
+  process in either, and H-28 is the row that decides the class.
+
+The corpus cannot drive this half, because every scenario there injects a
+`fetch`. The regressions live in `typed-fetch.spec.ts`, against the real
+server, and they cover the thirteen dictionary slots the transport reads, a
+read inside a header container, both legitimate abort timings, and the injected
+transport that keeps its abort.

@@ -198,8 +198,12 @@ function isAbortShapedRejection(value: unknown): boolean {
  * reports `aborted` but throws while its `reason` is read has told us nothing
  * trustworthy, and half a snapshot is worse than none — it would let an
  * abort-shaped rejection claim an abort the signal never confirmed.
+ *
+ * Exported for the ONE caller outside this module: `typedFetch` reads it on
+ * either side of the transport's synchronous prologue, because the caller's own
+ * init getters run in there. See the transport phase in `./index`.
  */
-function snapshotAbortState(signal: AbortSignal | undefined): {
+export function snapshotAbortState(signal: AbortSignal | undefined): {
   readonly aborted: boolean;
   readonly reason: unknown;
 } {

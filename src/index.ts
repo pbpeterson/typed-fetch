@@ -15,7 +15,7 @@ import {
 } from "./errors/brand";
 import { TypedHeaders } from "./headers";
 import { HttpMethods } from "./methods";
-import { classifyRequestFailure, networkFailure } from "./request-failure";
+import { classifyRequestFailure, networkFailure, snapshotAbortState } from "./request-failure";
 import {
   hasTypedResponseIdentityScalars,
   headersOf,
@@ -791,6 +791,10 @@ export async function typedFetch<JsonReturnType>(
   // serialized at all, which is the only state the three catches below can find
   // it in without a resolution having succeeded.
   let resolvedRequestUrl = "";
+  // Whether the AMBIENT transport is the one that will run. The transport phase
+  // reads it: an injected transport's synchronous body is the caller's own
+  // code, so the abort window below does not apply to it.
+  let ambientTransport = true;
 
   // ── Phase 1: setup ──────────────────────────────────────────────────────
   try {
@@ -824,6 +828,7 @@ export async function typedFetch<JsonReturnType>(
     const hasFetchOverride = Object.hasOwn(options, "fetch");
     const overrideFetch = hasFetchOverride ? options.fetch : undefined;
     fetchImpl = overrideFetch ?? fetch;
+    ambientTransport = !hasFetchOverride;
 
     // TWO different questions, and collapsing them reopened ADR 0003 row H-26.
     // `hasFetchOverride` answers "must the init hide this library's extension?"
@@ -891,10 +896,54 @@ export async function typedFetch<JsonReturnType>(
   }
 
   // ── Phase 2: transport ──────────────────────────────────────────────────
+  //
+  // The phase split gave each phase its own catch so that only the transport
+  // can answer with an abort. It drew the line at the CALL, and the caller's
+  // own object graph is read INSIDE it: `fetch` normalizes its init in the
+  // synchronous prologue before any I/O, which runs every getter on `method`,
+  // `body`, `integrity`, and the rest, plus every read inside a `headers`
+  // container. A getter that aborted the signal and then threw was therefore
+  // answered with an `AbortedError` — the exact outcome ADR 0003 row H-28
+  // forbids, reached by a path the row's scenario did not describe.
+  //
+  // So the state is snapshotted on either side of that prologue. A signal that
+  // turns aborted while the transport is READING the init cannot have caused
+  // the failure, because no request had been sent yet. A legitimate abort —
+  // one raised after the request is in flight, or already raised before the
+  // call — does not flip between these two reads.
+  //
+  // Reading the SIGNAL twice is not reading a caller VALUE twice: the snapshot
+  // is guarded and total, and a signal that lies can only push the verdict
+  // toward `NetworkError`, which is the safe direction.
+  //
+  // ONE condition narrows it, and it keeps a real abort real: the window is for
+  // the AMBIENT transport only. An injected `fetch` runs the caller's own code
+  // AS the transport, and a transport that aborts and rejects IS the request
+  // being aborted. ADR 0003 already scopes that as the caller's code, and a
+  // transport that reads its init after an `await` escapes the window anyway.
+  //
+  // The rejection VALUE cannot narrow it further, and that was tried: a getter
+  // is free to abort with the very exception it then throws, so the rejection
+  // is identical to the signal's reason in both the hostile shape and the
+  // ordinary one. The consequence is stated rather than hidden — a getter that
+  // aborts the signal WITHOUT throwing now reports `NetworkError` too, where it
+  // used to report an abort. Both are the caller aborting its own request
+  // from inside a getter, no request left the process in either, and H-28 is
+  // the row that decides which class that is.
   let res: Response;
+  const abortedBeforeTransport = snapshotAbortState(signal).aborted;
+  let abortedWhileReadingInit = false;
   try {
-    res = await fetchImpl(transportInput, init);
+    const pending = fetchImpl(transportInput, init);
+    abortedWhileReadingInit =
+      ambientTransport && !abortedBeforeTransport && snapshotAbortState(signal).aborted;
+    res = await pending;
   } catch (cause) {
+    if (abortedWhileReadingInit) {
+      // The signal moved while the ambient transport was reading the caller's
+      // init. No request had been sent, so the abort cannot have stopped one.
+      return { response: null, error: networkFailure(cause, resolvedRequestUrl) };
+    }
     // NOTHING runs between the rejection and the classification. The URL was
     // resolved in phase 1, so no caller code can move the abort state that
     // decides which failure this is.

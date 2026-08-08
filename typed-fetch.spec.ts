@@ -4508,3 +4508,122 @@ describe("D3 — README still names the forwarding idiom the JSDoc stopped namin
     });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 6 — the half of ADR 0003 row H-28 the corpus cannot drive.
+//
+// The row says an options read that aborts the signal and throws is not an
+// abort. The phase split closed that for the reads `typedFetch` performs
+// itself, and the corpus scenario drives exactly those, through an `ownKeys`
+// trap. Every OTHER member of the dictionary is read by the TRANSPORT, inside
+// the one phase allowed to answer with an abort — so a getter on `method`,
+// `headers`, or `body` was answered with `AbortedError`, or `TimeoutError`
+// when the abort reason was a timeout.
+//
+// The corpus cannot reach this half: it injects a `fetch`, and an injected
+// transport's own body is the caller's code, which is where the row stops. So
+// the ambient transport drives it here, against the real server.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("an options read the transport performs cannot claim an abort", () => {
+  /** Options whose `slot` getter aborts the governing signal and then throws. */
+  function abortingSlot(slot: string, controller: AbortController, thrown: unknown) {
+    const options: Record<string, unknown> = { signal: controller.signal };
+    Object.defineProperty(options, slot, {
+      enumerable: true,
+      configurable: true,
+      get(): never {
+        // Aborting WITH the thrown value is the hard shape: the rejection is
+        // then identical to the signal's reason, so the value cannot tell the
+        // two apart and only the phase window can.
+        controller.abort(thrown);
+        throw thrown;
+      },
+    });
+    return options;
+  }
+
+  test.each(["method", "headers", "body", "integrity", "redirect", "referrer"])(
+    "a throwing getter on options.%s is a network failure",
+    async (slot) => {
+      const controller = new AbortController();
+      const options = abortingSlot(slot, controller, new DOMException("Aborted", "AbortError"));
+
+      const { response, error } = await typedFetch(url(), options as never);
+
+      expect(response).toBe(null);
+      expect(isAbortError(error)).toBe(false);
+      expect(isNetworkError(error)).toBe(true);
+    },
+  );
+
+  test("and it cannot claim a timeout either", async () => {
+    const controller = new AbortController();
+    const options = abortingSlot(
+      "method",
+      controller,
+      new DOMException("The operation timed out", "TimeoutError"),
+    );
+
+    const { error } = await typedFetch(url(), options as never);
+
+    expect(isTimeoutError(error)).toBe(false);
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  test("a read INSIDE a header container is covered too", async () => {
+    const controller = new AbortController();
+    const thrown = new DOMException("Aborted", "AbortError");
+    const headers = {
+      get "x-round6"(): string {
+        controller.abort(thrown);
+        throw thrown;
+      },
+    };
+
+    const { error } = await typedFetch(url(), {
+      signal: controller.signal,
+      headers: headers as never,
+    });
+
+    expect(isAbortError(error)).toBe(false);
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  test("an abort raised BEFORE the call is still an abort", async () => {
+    // The window only reports a signal that MOVES while the transport reads the
+    // init. A caller who aborted first gets the class they asked for.
+    const controller = new AbortController();
+    controller.abort();
+
+    const { error } = await typedFetch(url(), { signal: controller.signal });
+
+    expect(isAbortError(error)).toBe(true);
+  });
+
+  test("an abort raised while the request is in flight is still an abort", async () => {
+    const controller = new AbortController();
+    const pending = typedFetch(url({ delay: 200 }), { signal: controller.signal });
+    setTimeout(() => controller.abort(), 20);
+
+    const { error } = await pending;
+
+    expect(isAbortError(error)).toBe(true);
+  });
+
+  test("an injected transport that aborts and rejects is still an abort", async () => {
+    // The transport IS the request when the caller supplies one, so the window
+    // does not apply to it. This is the boundary of the fix, stated as a test.
+    const controller = new AbortController();
+
+    const { error } = await typedFetch(url(), {
+      signal: controller.signal,
+      fetch: (async () => {
+        controller.abort();
+        throw new DOMException("Aborted", "AbortError");
+      }) as unknown as typeof fetch,
+    });
+
+    expect(isAbortError(error)).toBe(true);
+  });
+});
