@@ -5481,3 +5481,141 @@ describe("H-28 — an options read that aborts the signal and throws", () => {
     expect(isNetworkError(error)).toBe(true);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 7 — the abort window's scope test asked whether a KEY was present.
+//
+// Which transport RUNS is a different fact, and this file already draws that
+// distinction for the init: `fetch: undefined` carries the key and leaves the
+// platform's transport in place, while a replaced `globalThis.fetch` carries
+// no key and IS caller code. The first reopened ADR 0003 row H-28; the second
+// took an abort away from a transport that genuinely raised one.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ───────────────────────────────────────────────────────────────────────────
+/** Options whose `slot` getter aborts the signal and throws, plus extra keys. */
+function round7AbortingSlot(
+  slot: string,
+  controller: AbortController,
+  thrown: unknown,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const options: Record<string, unknown> = { signal: controller.signal, ...extra };
+  Object.defineProperty(options, slot, {
+    enumerable: true,
+    configurable: true,
+    get(): never {
+      controller.abort(thrown);
+      throw thrown;
+    },
+  });
+  return options;
+}
+
+// DEFECT 1 — the abort window's scope test asks the wrong question, half one:
+// `{ fetch: undefined }` runs the AMBIENT transport with the window switched
+// OFF, so ADR 0003 row H-28 reopens for every init slot the transport reads.
+//
+// `ambientTransport = !hasFetchOverride` asks whether options carries an OWN
+// `fetch` KEY. Which transport RUNS is a different fact — `src/index.ts` says
+// so itself, four lines above: "`fetch: undefined` … leaves the AMBIENT
+// transport in place", and `TypedFetchOptions` declares `fetch?: typeof fetch |
+// undefined` for exactly that shape (`{ ...defaults, fetch: maybeOverride }`).
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("DEFECT 1 — an own `fetch: undefined` reopens ADR 0003 row H-28", () => {
+  test.each(["method", "headers", "body", "integrity", "redirect", "referrer"])(
+    "a throwing getter on options.%s must stay a network failure",
+    async (slot) => {
+      const controller = new AbortController();
+      const options = round7AbortingSlot(
+        slot,
+        controller,
+        new DOMException("Aborted", "AbortError"),
+        {
+          fetch: undefined,
+        },
+      );
+
+      const { response, error } = await typedFetch(url(), options as never);
+
+      expect(response).toBe(null);
+      expect({ abort: isAbortError(error), network: isNetworkError(error) }).toEqual({
+        abort: false,
+        network: true,
+      });
+    },
+  );
+
+  test("and it must not claim a timeout either", async () => {
+    const controller = new AbortController();
+    const options = round7AbortingSlot(
+      "method",
+      controller,
+      new DOMException("The operation timed out", "TimeoutError"),
+      { fetch: undefined },
+    );
+
+    const { error } = await typedFetch(url(), options as never);
+
+    expect({ timeout: isTimeoutError(error), network: isNetworkError(error) }).toEqual({
+      timeout: false,
+      network: true,
+    });
+  });
+
+  test("a read INSIDE a header container is reopened too", async () => {
+    const controller = new AbortController();
+    const thrown = new DOMException("Aborted", "AbortError");
+    const headers = {
+      get "x-round7"(): string {
+        controller.abort(thrown);
+        throw thrown;
+      },
+    };
+
+    const { error } = await typedFetch(url(), {
+      signal: controller.signal,
+      fetch: undefined,
+      headers: headers as never,
+    });
+
+    expect({ abort: isAbortError(error), network: isNetworkError(error) }).toEqual({
+      abort: false,
+      network: true,
+    });
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// DEFECT 2 — the same wrong question, other half: a caller-patched
+// `globalThis.fetch` is caller code running AS the transport, and the window
+// treats it as ambient. The ADR's amendment of 2026-08-08 says a transport
+// that aborts and rejects "stays an `AbortedError`"; this one no longer does.
+//
+// This one is a genuine REGRESSION: it is an `AbortedError` at 8054567 and a
+// `NetworkError` at 44356e9. `vi.stubGlobal("fetch", …)` and every
+// fetch-interceptor library reach this shape.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("DEFECT 2 — a patched global transport that aborts and rejects", () => {
+  test("stays an abort, the way an injected transport does", async () => {
+    const real = globalThis.fetch;
+    const controller = new AbortController();
+    try {
+      globalThis.fetch = (async () => {
+        controller.abort();
+        throw new DOMException("Aborted", "AbortError");
+      }) as unknown as typeof fetch;
+
+      const { error } = await typedFetch(url(), { signal: controller.signal });
+
+      expect({ abort: isAbortError(error), network: isNetworkError(error) }).toEqual({
+        abort: true,
+        network: false,
+      });
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+});

@@ -136,6 +136,22 @@ const FOREIGN_RESPONSE_TYPES = new Set([
   "opaqueredirect",
 ]);
 
+/**
+ * The platform's own `fetch`, captured before a caller can replace it.
+ *
+ * The transport phase's abort window applies only when the transport that runs
+ * is the PLATFORM's. Two things look like "no override" and are not: an own
+ * `fetch: undefined` leaves the ambient transport in place while carrying the
+ * key, and a replaced `globalThis.fetch` carries no key while being caller
+ * code. Comparing the transport that will actually run against this binding
+ * answers the question both of those get wrong.
+ *
+ * A caller who replaces the global BEFORE this module loads is captured here
+ * instead, and gets the ambient treatment. That is the same trade every
+ * captured intrinsic in this package makes.
+ */
+const nativeFetch: typeof fetch | undefined = typeof fetch === "function" ? fetch : undefined;
+
 /** Values whose full operational baseline `isResponse` already checked. */
 const validatedResponseStructures = new WeakSet<object>();
 
@@ -796,9 +812,10 @@ export async function typedFetch<JsonReturnType>(
   // serialized at all, which is the only state the three catches below can find
   // it in without a resolution having succeeded.
   let resolvedRequestUrl = "";
-  // Whether the AMBIENT transport is the one that will run. The transport phase
-  // reads it: an injected transport's synchronous body is the caller's own
-  // code, so the abort window below does not apply to it.
+  // Whether the PLATFORM's own transport is the one that will run. The
+  // transport phase reads it: caller code running as the transport — an
+  // injected `fetch`, or a replaced global — is the request, so the abort
+  // window below does not apply to it.
   let ambientTransport = true;
 
   // ── Phase 1: setup ──────────────────────────────────────────────────────
@@ -833,7 +850,11 @@ export async function typedFetch<JsonReturnType>(
     const hasFetchOverride = Object.hasOwn(options, "fetch");
     const overrideFetch = hasFetchOverride ? options.fetch : undefined;
     fetchImpl = overrideFetch ?? fetch;
-    ambientTransport = !hasFetchOverride;
+    // Which transport RUNS, never whether a KEY is present — the distinction
+    // this file already draws for the init below, and for the same reason.
+    // `fetch: undefined` carries the key and leaves the platform's transport in
+    // place; a replaced `globalThis.fetch` carries no key and is caller code.
+    ambientTransport = nativeFetch !== undefined && fetchImpl === nativeFetch;
 
     // TWO different questions, and collapsing them reopened ADR 0003 row H-26.
     // `hasFetchOverride` answers "must the init hide this library's extension?"
