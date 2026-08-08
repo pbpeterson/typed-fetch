@@ -6,7 +6,14 @@ import {
   isTimeoutError,
   isKnownHttpError,
 } from "./src/index";
-import { BaseHttpError, NotFoundError } from "./src/errors";
+import {
+  AbortedError,
+  BaseHttpError,
+  NetworkError,
+  NotFoundError,
+  TimeoutError,
+} from "./src/errors";
+import { inspectCustom } from "./src/errors/inspect";
 import {
   abortedErrorBrand,
   asksOwnsResponse,
@@ -546,5 +553,95 @@ describe("round 7 lane 2 — a polluting ACCESSOR walks past the Object.prototyp
     seen.cleanNotDetected = !polluted(httpErrorBrand);
 
     expect(seen).toEqual({ accessorDetected: true, dataDetected: true, cleanNotDetected: true });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 7 — the stamp map, as an executable statement.
+//
+// Every symbol-keyed member this library stamps, with its descriptor flags.
+// The asymmetry is a design decision recorded in CONTEXT.md's third channel
+// corollary: the brands and the ownership query are frozen, because a replaced
+// answer to "do you own this branch?" strands a stream only that method can
+// vouch for; the inspect hook stays replaceable, because a consumer may
+// legitimately install their own. A descriptor that drifts is a red test.
+//
+// "Frozen" is not "unshadowable", and the last case says so: the flags lock the
+// property on THAT object, and a subclass prototype may still own its own. That
+// is the "believed, not proved" residual restated for the query.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("the stamp map", () => {
+  const FROZEN = [
+    ["BaseHttpError brand", BaseHttpError.prototype, httpErrorBrand],
+    ["NetworkError brand", NetworkError.prototype, networkErrorBrand],
+    ["AbortedError brand", AbortedError.prototype, abortedErrorBrand],
+    ["TimeoutError brand", TimeoutError.prototype, timeoutErrorBrand],
+    ["the ownership query", BaseHttpError.prototype, ownsResponseSymbol],
+  ] as const;
+
+  it.each(FROZEN)("%s is non-enumerable, non-writable, non-configurable", (_name, target, key) => {
+    const descriptor = Object.getOwnPropertyDescriptor(target, key);
+
+    expect(descriptor).toBeDefined();
+    expect(descriptor?.enumerable).toBe(false);
+    expect(descriptor?.writable).toBe(false);
+    expect(descriptor?.configurable).toBe(false);
+  });
+
+  it.each(FROZEN)("%s refuses both a redefine and an assignment", (_name, target, key) => {
+    const before = (target as unknown as Record<symbol, unknown>)[key];
+
+    expect(() => Object.defineProperty(target, key, { value: "forged" })).toThrow(TypeError);
+    // Non-strict assignment is silent; the value is what matters.
+    expect(() => {
+      (target as unknown as Record<symbol, unknown>)[key] = "forged";
+    }).toThrow(TypeError);
+    expect((target as unknown as Record<symbol, unknown>)[key]).toBe(before);
+  });
+
+  it("the inspect hook is replaceable, deliberately", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(BaseHttpError.prototype, inspectCustom);
+
+    expect(descriptor).toBeDefined();
+    expect(descriptor?.enumerable).toBe(false);
+    expect(descriptor?.writable).toBe(true);
+    expect(descriptor?.configurable).toBe(true);
+  });
+
+  it("a dedicated class owns no symbol of its own — every stamp is inherited", () => {
+    // A computed class member keyed by a `Symbol.for` const would emit a
+    // `unique symbol` into both declaration files and make the two copies of
+    // every class mutually unassignable. Nothing is stamped per class.
+    expect(Object.getOwnPropertySymbols(NotFoundError.prototype)).toEqual([]);
+  });
+
+  it("no stamped member is enumerable, so none reaches the crash dump", () => {
+    for (const target of [
+      BaseHttpError.prototype,
+      NetworkError.prototype,
+      AbortedError.prototype,
+      TimeoutError.prototype,
+    ]) {
+      for (const key of Object.getOwnPropertySymbols(target)) {
+        expect(Object.getOwnPropertyDescriptor(target, key)?.enumerable, String(key)).toBe(false);
+      }
+    }
+  });
+
+  it("frozen locks the property on that object, not on the chain", () => {
+    // Stated rather than defended: a subclass prototype can own its own answer,
+    // and the walk finds the nearest one first. That is the seam the ownership
+    // query crosses — a protocol, not a proof.
+    class Shadowing extends NotFoundError {}
+    Object.defineProperty(Shadowing.prototype, ownsResponseSymbol, {
+      value: () => true,
+      configurable: true,
+    });
+
+    expect(Object.getOwnPropertyDescriptor(Shadowing.prototype, ownsResponseSymbol)).toBeDefined();
+    expect(
+      Object.getOwnPropertyDescriptor(BaseHttpError.prototype, ownsResponseSymbol)?.writable,
+    ).toBe(false);
   });
 });

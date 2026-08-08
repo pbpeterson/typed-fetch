@@ -180,7 +180,10 @@ and network-backed responses.
   and the brands, the inspect hook, and the ownership query all live on
   prototypes, non-enumerable.
 - **`console.dir` and inspect with `customInspect: false`.** Own enumerable
-  properties only, so `url`, `headers`, `cause`, and `reason` stay out.
+  properties only, so `url`, `headers`, and `reason` stay out. `cause` does
+  NOT: Node's error formatter prints it whatever its enumerability, which is
+  why `disclosure-channels.spec.ts` asserts the sentinel IS present for that
+  call. That is residual 1 showing through, not a clean channel.
   `showHidden: true` does print them — that is a developer explicitly asking for
   hidden properties, and `url` and `headers` are documented escape hatches.
 - **`structuredClone`** carries `name`, `message`, `stack`, and `cause` only. The
@@ -373,6 +376,65 @@ second sources of truth, and the surface a consumer reaches.
   response. The refusal matrix is now a table in `base-http-error.spec.ts`, and
   the only two rows where a branch is not released are the two documented
   residuals.
+
+### What round 7 settled, and the one thing it left open
+
+Four lanes: the round-6 fixes, the brand and the inspect hook, the gates' own
+specs, and the published artifact.
+
+- **A pollution guard asked for a VALUE, and a value read has a receiver.** An
+  accessor on `Object.prototype` answers `undefined` for
+  `this === Object.prototype` and the payload for every other receiver, so both
+  `hasBrand` and `asksOwnsResponse` saw a clean prototype while the next line
+  resolved the polluted member through the chain. Every brand guard became a
+  constant `true`, and the ownership query accepted a value that owns nothing —
+  which orphans a teed branch and leaves `cancel()` pending forever. Round 3
+  closed the data-property shape and left the accessor shape open. Both guards
+  now ask for PRESENCE, which takes no receiver. The finding does not touch ADR
+  0003's out-of-scope item 5: a brand forged on the VALUE is still accepted, by
+  design.
+- **A scope test asked whether a KEY was present.** `ambientTransport` was
+  `!hasFetchOverride`, and this file already draws that distinction eleven lines
+  further down, for the init, because collapsing it once reopened row H-26.
+  `fetch: undefined` carries the key and leaves the platform's transport in
+  place, which reopened H-28; a replaced `globalThis.fetch` carries no key and
+  IS caller code, which took a real abort away. The comparison is against the
+  `fetch` captured at module load now.
+- **The gates are real, and two of their CLAIMS were not.** Fifty mutations
+  against the gates' pure decisions killed forty-nine. What failed was prose:
+  the `nodenext` pass said it did `attw`'s job and stopped doing it under
+  TypeScript 6, which follows Node 22's `require(esm)` — so both directions of a
+  mis-wired `types` condition passed silently, and `attw` runs nowhere in CI. A
+  `node16` pass restores it. The other was a documented limit with no test.
+- **A single pass cannot dominate a chained one, and a previous comment said it
+  could.** Chained `replaceAll` re-scans after each removal and so matches text
+  the removal creates. Round 6 deleted that stated residual and wrote the
+  opposite over it. The residual is back, in a module whose whole discipline is
+  stating them.
+
+**OPEN, and a maintainer's decision rather than a defect to fix quietly.**
+`tsup.config.ts` sets `splitting: true`, which is what buys cross-entry
+`instanceof` inside one format. On the CJS side tsup takes a path that converts
+the graph with Sucrase, which downlevels class fields unconditionally. Two
+consequences reach a consumer who uses `require()`:
+
+- **44 of the 45 exported classes lose their own `Class.name`** —
+  `NotFoundError.name === "_class9"`, and `error.constructor.name` with it. The
+  instance `error.name` is correct in both formats, so the semver contract on
+  `error.name` holds; `Class.name` is not covered by it either way.
+- **A consumer subclass with an accessor on `name`, `status`, or `statusText`
+  throws under `require()` and works under `import`**, because the fields
+  become `[[Set]]` rather than `[[Define]]`. That is the documented extension
+  point.
+
+Both are ESM-clean and reproduce against the installed tarball. No gate saw them
+because every root spec imports `src/`, the surface snapshot compares export
+NAMES rather than what they are bound to, and `check-consumer` reads the
+instance `error.name` only. The options all cost something published — keep
+`splitting` and document the two, or drop it and lose cross-entry `instanceof`
+in CJS (the guards are brand-keyed and unaffected, which is what the library
+already tells consumers to prefer). It is a compatibility trade on a published
+package, so it is recorded here rather than decided.
 
 ## Adjudicated closed
 
