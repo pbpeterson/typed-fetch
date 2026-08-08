@@ -248,6 +248,12 @@ the rule, not intuition.
    `"Not Extended"` without the registry's `(OBSOLETED)` lifecycle annotation.
    The server's actual wire reason phrase, when present, is folded into
    `error.message` instead.
+
+   **`UnknownHttpError` is the one exception, and it is not a promise this
+   package can make.** A status with no dedicated class has no canonical label,
+   so that class reports the reason phrase the origin sent, filtered and
+   bounded. The origin chooses the value, so no release can guarantee it.
+
 4. **Removing or renaming a named export, or changing a class's `status` or
    `statusText` literal, is a `major`.**
 5. **Every publish gets a `v<version>` git tag**, and the tag push is what

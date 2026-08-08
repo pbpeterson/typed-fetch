@@ -154,6 +154,11 @@ export abstract class BaseHttpError extends Error {
    * current IANA phrase; literal-typed, e.g. `"Not Found"`) - not the server's
    * wire value. The status text received from the server, when present, is in
    * {@link Error.message | message}.
+   *
+   * `UnknownHttpError` overrides this with the response's reason phrase,
+   * because a status with no dedicated class has no canonical label to give.
+   * That value is the origin's, filtered and bounded, and it carries no semver
+   * promise - see `RELEASING.md`.
    */
   public abstract readonly statusText: string;
 

@@ -1002,6 +1002,8 @@ Instance properties:
 
 `statusText` does not copy the reason phrase from the server. The reason phrase, when the server sends one, occurs in `error.message`.
 
+This holds for the 40 dedicated classes. `UnknownHttpError` has no canonical label to give, so its `statusText` is the reason phrase the server sent, filtered and bounded. See [Handle an unknown status](#handle-an-unknown-status).
+
 `headers` is a copy, not the `Headers` object of the response. A write through `error.headers` never reaches the response. The copy keeps every header, including a repeated `set-cookie`.
 
 Instance methods:
@@ -1273,14 +1275,14 @@ This library does not include these features:
 - Request-body serialization. Give `body` and `headers` as native Fetch inputs.
 - Response caching. Use a cache layer.
 - Required runtime validation. The package can add an optional Standard Schema hook in a later release.
-- A `rawStatusText` field. Read the reason phrase from `error.message`.
+- A `rawStatusText` field on a dedicated class. Read the reason phrase from `error.message`. `UnknownHttpError.statusText` already carries it.
 - Eager body buffering. Body readers keep the native streaming behavior.
 
 ## Semantic version contract
 
 1. A new dedicated class in `ClientErrors` or `ServerErrors` requires a major release. It replaces `UnknownHttpError` for that status and widens the error union.
 2. The human-readable `error.message` text is diagnostic. It can change in any release.
-3. The canonical `statusText` value is public API. A change to it requires a major release.
+3. The canonical `statusText` value of a dedicated class is public API. A change to it requires a major release. `UnknownHttpError.statusText` is the server's value and carries no such promise.
 4. Status 418 keeps `"I'm a teapot"`. Status 510 keeps `"Not Extended"`.
 5. A removed or renamed export requires a major release.
 6. A change to a `status` literal requires a major release.
