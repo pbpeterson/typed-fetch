@@ -642,13 +642,32 @@ function classifyRequestInput(input: FetchInput): RequestInputFacts {
 
   let raw: unknown;
   try {
-    raw = (input as Request).url;
+    // Through the NATIVE getter for a platform `Request`, the way `isResponse`
+    // reads `status`. `Request.prototype.url` is a read-only accessor, so
+    // `Object.defineProperty(request, "url", { value })` is the known way to
+    // rewrite a URL in a Node adapter — and a plain property read lets that own
+    // property shadow the getter. The transport does not consult it: it sends
+    // the request to the real URL and the error named the shadow, which is
+    // chosen by whoever hands the `Request` over, often middleware rather than
+    // the call site.
+    raw = platformRequest ? nativeRequestUrl(input as Request) : (input as unknown as Request).url;
   } catch {
     // A hostile `url` getter is not a reason to refuse a Request the transport
     // may still be able to send.
     raw = undefined;
   }
   return { platformRequest, taggedRequest, requestUrl: textOf(raw) };
+}
+
+/**
+ * `Request.prototype`'s own `url` getter, applied to a platform `Request`.
+ *
+ * Falls back to a plain read when the accessor cannot be found — a runtime
+ * where `url` is a data property still answers correctly.
+ */
+function nativeRequestUrl(request: Request): unknown {
+  const getter = Object.getOwnPropertyDescriptor(Request.prototype, "url")?.get;
+  return typeof getter === "function" ? Reflect.apply(getter, request, []) : request.url;
 }
 
 /**

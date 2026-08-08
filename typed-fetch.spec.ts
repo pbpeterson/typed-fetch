@@ -477,11 +477,19 @@ describe("typedFetch", () => {
   });
 
   // `requestUrl` is total in BOTH directions a request input can fail. The test
-  // above covers the throwing one. These cover the quiet one: `isRequest`
+  // above covers the throwing one. These cover the quiet one: the tag check
   // accepts anything tagged `[object Request]`, and a genuine subclass can
   // override the getter, so `url` can answer with a value that is not a string
   // without throwing at all. That value used to reach `NetworkError.url` —
   // declared `readonly string` — and flow on into `redactUrl` and `toJSON()`.
+  //
+  // The two answers differ, and the difference is the point. A platform
+  // `Request` is read through `Request.prototype`'s own getter, because that is
+  // the value the TRANSPORT uses: undici reads the internal slot and ignores
+  // any override or shadowing own property. So a subclass that lies about `url`
+  // gets the real one filed against it, and the error names the server the
+  // request reached. A merely tagged object is not a platform `Request` at all,
+  // so there is no native slot to read and the non-string is dropped.
   test.each([
     [
       "a Request-tagged object",
@@ -492,6 +500,7 @@ describe("typedFetch", () => {
             return 42;
           },
         }) as unknown as Request,
+      "",
     ],
     [
       "a genuine Request subclass",
@@ -503,22 +512,37 @@ describe("typedFetch", () => {
         }
         return new ForeignRequest("https://example.invalid/subclass");
       },
+      "https://example.invalid/subclass",
     ],
-  ])("%s whose url is not a string yields a string url, never a rejection", async (_l, make) => {
-    const cause = new Error("transport refused");
+    [
+      "a Request with a shadowed url own property",
+      (): Request => {
+        // The known URL-rewrite workaround in Node adapters, because
+        // `Request.prototype.url` is a read-only accessor.
+        const request = new Request("https://example.invalid/real-target");
+        Object.defineProperty(request, "url", { value: "https://audit-safe.test/harmless" });
+        return request;
+      },
+      "https://example.invalid/real-target",
+    ],
+  ])(
+    "%s yields a string url naming the request the transport made",
+    async (_l, make, expectedUrl) => {
+      const cause = new Error("transport refused");
 
-    const result = await typedFetch(make(), {
-      fetch: (async () => {
-        throw cause;
-      }) as unknown as typeof fetch,
-    });
+      const result = await typedFetch(make(), {
+        fetch: (async () => {
+          throw cause;
+        }) as unknown as typeof fetch,
+      });
 
-    expect(result.response).toBe(null);
-    expect(result.error).toBeInstanceOf(NetworkError);
-    expect(result.error?.cause).toBe(cause);
-    expect(typeof result.error?.url).toBe("string");
-    expect(result.error?.url).toBe("");
-  });
+      expect(result.response).toBe(null);
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expect(result.error?.cause).toBe(cause);
+      expect(typeof result.error?.url).toBe("string");
+      expect(result.error?.url).toBe(expectedUrl);
+    },
+  );
 
   test("a Request-shaped input whose url coerces by throwing does not reject", async () => {
     // The quiet failure's sharp edge: `redactUrlInMessage` calls `replaceAll`
