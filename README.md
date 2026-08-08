@@ -949,11 +949,17 @@ async function api<T>(path: string, options?: TypedFetchOptions): Promise<TypedF
 - `TypedResponse` gives typed `json()` and `clone()` methods.
 - `TypedResponse` names the Fetch response baseline available at the package
   floor, Node 20.13.0. `body` and `headers` are the ambient `ReadableStream` and
-  `Headers`, so the success value forwards to a platform API without a cast:
-  `new Response(r.body, { headers: r.headers })` compiles, and so does streaming
-  the body wherever your own lib configuration says that is valid. The runtime
-  value remains the Fetch implementation's original response and may expose
-  newer methods.
+  `Headers`, so the success value forwards to a platform API without a cast, and
+  so does streaming the body wherever your own lib configuration says that is
+  valid. The runtime value remains the Fetch implementation's original response
+  and may expose newer methods.
+
+  WARNING: `new Response(r.body, { headers: r.headers })` is the line a proxy
+  reaches for, and it emits a response that contradicts itself. The platform
+  hands back a decoded body, while `content-encoding`, the wire
+  `content-length`, and the hop-by-hop names stay on `headers`. Delete those
+  names from a copy of the headers before you forward the body.
+
 - `TypedResponse` is not `Response`, and the gap is one member.
   `Response.bytes()` does not exist at the floor, so the type does not promise
   it. Handing the success value to a slot typed `(r: Response)` — a Workers,
