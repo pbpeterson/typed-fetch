@@ -74,17 +74,40 @@ export function redactUrl(url: string): string {
   try {
     const parsed = new URL(url);
     if (!HIERARCHICAL_PROTOCOLS.has(parsed.protocol)) return parsed.protocol;
-    stripValues(parsed);
+    // BOTH forms, and the RAW one first, for the reason the relative branch
+    // below states: the parser CUTS the path where a credential can continue.
+    // The URL path state hands everything after the first `?` or `#` to the
+    // query state or the fragment state, so
+    // `https://api.test/go/https://svc:hun?ter2@internal.test/v1` emits the
+    // pathname `/go/https://svc:hun` — an authority truncated mid-credential,
+    // with no `@` left for the scan below to find and half the password still
+    // in it. `stripValues` then drops the query that carried the rest. No scan
+    // of the emitted path recovers what the parser already took away, so the
+    // raw text has to be read before it is taken.
+    //
+    // AFTER this url's own authority, never from the start: the authority this
+    // url really has is `host:8443`, and a raw scan from index 0 reads that
+    // port as userinfo. `rawAfterAuthority` makes the same cut for
+    // {@link userinfosOf}, and it buys the same guarantee the pathname scan
+    // below buys by reading the PATHNAME rather than the href.
+    const tail = rawAfterAuthority(url);
+    const cleanTail = withoutMalformedUserinfo(tail);
+    // RE-PARSED, not patched: a removed span can cross the `?` or `#` that
+    // ended `pathname`, so there is no single slot on `parsed` to write it
+    // back to. The authority is untouched, so what parsed once parses again.
+    const source =
+      cleanTail === tail ? parsed : new URL(url.slice(0, url.length - tail.length) + cleanTail);
+    stripValues(source);
     // The PATH of a well-formed URL can embed another URL, credential and all —
     // `https://api.test/go/https://svc:pw@internal.test/v1` is an ordinary
     // forward, and `stripValues` only clears this URL's own value slots. The
-    // relative branch below has scanned for that since the embedded-credential
-    // fix; the absolute branch returned the href and never looked.
+    // raw pass above cannot replace this one: the parser CREATES the `://` this
+    // scan looks for when it rewrites a backslash pair or removes an ASCII tab,
+    // CR, or LF, so a mark the raw text never spelled appears only here.
     //
-    // The PATHNAME, never the href: the authority this URL really has is
-    // `host:8443`, and a scan over the href would read that port as userinfo.
-    parsed.pathname = withoutMalformedUserinfo(parsed.pathname);
-    return parsed.href;
+    // The PATHNAME, never the href, for the reason the raw cut above gives.
+    source.pathname = withoutMalformedUserinfo(source.pathname);
+    return source.href;
   } catch {
     // Not absolute. Fall through rather than nest: the relative case is
     // ordinary, not exceptional.

@@ -861,3 +861,77 @@ describe("the residual any single pass has", () => {
     );
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// ROUND 8 — the absolute branch never read the raw input.
+//
+// The relative branch reads the RAW string first, and its comment states why:
+// `stripValues` clears the query and the fragment, and the parser has already
+// cut `pathname` at the `?` or `#` that started them. The absolute branch
+// scanned the emitted `pathname` and nothing else, so the same shape inside a
+// well-formed url emitted an authority truncated mid-credential —
+// `https://api.test/go/https://svc:hunter2` — with half the password in it.
+//
+// The ledger recorded this closed in round 5 ("Both branches now read both
+// forms"). That sentence was true of the relative branch alone.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("R8 — a terminator inside a credential the PATH embeds", () => {
+  test.each([
+    [
+      "a `?` ends the pathname mid-credential",
+      "https://api.test/go/https://svc:hunter2?tail@internal.test/v1",
+      "https://api.test/go/https://internal.test/v1",
+    ],
+    [
+      "a `#` ends it the same way",
+      "https://api.test/go/https://svc:hunter2#tail@internal.test/v1",
+      "https://api.test/go/https://internal.test/v1",
+    ],
+    [
+      "a username-only bearer token is cut too",
+      "https://api.test/callback/https://tok_hunter2?x@internal.test/v1",
+      "https://api.test/callback/https://internal.test/v1",
+    ],
+    [
+      "this url's OWN userinfo still goes with it",
+      "https://alice:pw@api.test/go/https://svc:hunter2?t@internal.test/v1",
+      "https://api.test/go/https://internal.test/v1",
+    ],
+    [
+      "the port of THIS url is still not read as userinfo",
+      "https://api.test:8443/go/https://svc:hunter2?t@internal.test/v1",
+      "https://api.test:8443/go/https://internal.test/v1",
+    ],
+  ])("%s", (_label, url, expected) => {
+    expect(redactUrl(url)).toBe(expected);
+  });
+
+  // The twins the parser does NOT cut, pinned beside the ones it does, so a
+  // future narrowing of the raw pass has to state which of the two it changes.
+  test.each([
+    [
+      "a percent-encoded terminator never leaves the pathname",
+      "https://api.test/go/https://svc:hunter2%3Ftail@internal.test/v1",
+      "https://api.test/go/https://internal.test/v1",
+    ],
+    [
+      "an empty userinfo keeps the host it precedes",
+      "https://api.test/go/https://@internal.test/v1",
+      "https://api.test/go/https://internal.test/v1",
+    ],
+  ])("%s", (_label, url, expected) => {
+    expect(redactUrl(url)).toBe(expected);
+  });
+
+  // The raw pass reads the text AFTER this url's own authority, so an ordinary
+  // path keeps every segment it names even when a query carries an `@`.
+  test("an @-headed segment survives a query that also holds an `@`", () => {
+    expect(redactUrl("https://api.test/users/@alice?invite=bob@example.com")).toBe(
+      "https://api.test/users/@alice",
+    );
+    expect(redactUrl("https://api.test/go/https://cdn.test/users/@alice?x=1")).toBe(
+      "https://api.test/go/https://cdn.test/users/@alice",
+    );
+  });
+});
