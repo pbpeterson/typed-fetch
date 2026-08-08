@@ -914,9 +914,10 @@ export async function typedFetch<JsonReturnType>(
   // was then answered with the FILED status: `{ response, error: null }` for a
   // failed request, which is the one outcome this union exists to prevent.
   //
-  // Only the two STRUCTURAL refusals roll back. The HTTP-error path deliberately
-  // does not: a throwing getter inside an error constructor keeps the fields
-  // that were read successfully, which `typed-fetch.spec.ts` pins.
+  // Every refusal rolls back, including the one inside the error constructor.
+  // What does NOT roll back is a construction that SUCCEEDS: those records are
+  // the accepted response's identity, and `typed-fetch.spec.ts` pins that a
+  // later read cannot change them.
   const rollbackRefusal = stageIdentity(res as Response);
   let refusedTheValue = false;
   try {
@@ -927,10 +928,17 @@ export async function typedFetch<JsonReturnType>(
     const status = statusOf(res);
     if (status >= 400) {
       const ErrorClass = statusCodeErrorMap.get(status);
-      return {
-        response: null,
-        error: ErrorClass ? new ErrorClass(res) : new UnknownHttpError(res),
-      };
+      // The CONSTRUCTION is a refusal point too. `new Headers(identity.headers)`
+      // refuses a recorded value that was readable but is not a valid
+      // `HeadersInit` — `[["a"]]` reads fine and throws there — and the caller
+      // gets a `NetworkError`. Without the rollback the bad `headers` and the
+      // `status` beside it stayed filed, so the same object presented later as
+      // a healthy 200 with real `Headers` was answered with that same
+      // `NetworkError` for as long as it lived.
+      refusedTheValue = true;
+      const error = ErrorClass ? new ErrorClass(res) : new UnknownHttpError(res);
+      refusedTheValue = false;
+      return { response: null, error };
     }
     if (!hasCompatibleSuccessSurface(res)) {
       refusedTheValue = true;

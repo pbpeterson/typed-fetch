@@ -3776,6 +3776,45 @@ describe("typedFetch — the first successful identity reads are recorded", () =
       expect(second.error).toBeInstanceOf(NetworkError);
     });
 
+    // The construction is a refusal point too. `new Headers(identity.headers)`
+    // refuses a value that READ fine — `[["a"]]` is a legal read and an illegal
+    // `HeadersInit` — and the caller gets a NetworkError. The bad `headers` and
+    // the `status` beside it used to stay filed, so the same object presented
+    // later as a healthy 200 was answered with that NetworkError forever.
+    test("a throwing error CONSTRUCTOR files nothing either", async () => {
+      const shapeshifter: Record<string, unknown> = {
+        [Symbol.toStringTag]: "Response",
+        body: null,
+        bodyUsed: false,
+        headers: [["a"]],
+        ok: false,
+        redirected: false,
+        status: 404,
+        statusText: "Not Found",
+        type: "basic",
+        url: "https://example.invalid/bad-headers",
+        arrayBuffer: async () => new ArrayBuffer(0),
+        blob: async () => new Blob(),
+        clone: () => shapeshifter,
+        formData: async () => new FormData(),
+        json: async () => ({}),
+        text: async () => "",
+      };
+      const fetch = resolving(shapeshifter as unknown as Response);
+
+      const refused = await typedFetch("https://example.invalid/bad-headers", { fetch });
+      expect(refused.error).toBeInstanceOf(NetworkError);
+
+      // The same object, now healthy.
+      shapeshifter.headers = new Headers({ "content-type": "application/json" });
+      shapeshifter.status = 200;
+      shapeshifter.ok = true;
+
+      const second = await typedFetch("https://example.invalid/bad-headers", { fetch });
+      expect(second.error).toBe(null);
+      expect(second.response?.status).toBe(200);
+    });
+
     test("an ACCEPTED call still fixes the identity it read", async () => {
       // The rollback drops only what the refused call recorded. A field fixed
       // by an earlier accepted call is that response's identity and stays.
