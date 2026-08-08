@@ -337,7 +337,7 @@ second sources of truth, and the surface a consumer reaches.
   `replaceAll` had no such hole because it resolved overlaps by needle ORDER.
   The pass now merges overlapping matches. The lesson worth carrying: the fuzz
   that cleared the rewrite drew from an alphabet that could not GENERATE the
-  shape, so it proved nothing about it. A differential fuzz has to be built from
+  shape, so it proved nothing about it. A differential fuzz must be built from
   the shapes the code distinguishes, not from random noise.
 - **ADR 0003 row H-28 reached only half the reads it describes.** The phase
   split drew the transport phase at the CALL, and a transport reads the caller's
