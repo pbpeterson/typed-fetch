@@ -159,12 +159,16 @@ Words this codebase already uses, some of them only implicitly until now.
   - Symbol-keyed behavior is stamped onto the prototype with `defineProperty`,
     never declared as a computed class member. A computed member emits a
     `unique symbol` into both declaration files and reintroduces the `#private`
-    cross-format assignability hazard (`TS2741`). Three members are stamped this
-    way: the brands, the inspect hook, and the ownership query. The brands and
-    the query are stamped `writable: false, configurable: false`, because a
-    replaced answer to "do you own this branch?" strands a stream that only that
-    method can vouch for. The inspect hook stays replaceable, because a consumer
-    may legitimately install their own.
+    cross-format assignability hazard (`TS2741`). Four members are stamped this
+    way: the brands, the inspect hook, the ownership query, and the
+    string-conversion hook. The brands and the query are stamped
+    `writable: false, configurable: false`, because a replaced answer to "do
+    you own this branch?" strands a stream that only that method can vouch
+    for. The inspect hook stays replaceable, because a consumer may
+    legitimately install their own. The string-conversion hook stays
+    replaceable, for the reason the inspect hook stays replaceable. It
+    delegates to `toString`, so a subclass override still decides the
+    channel.
 
 - **Residual** — something the library cannot close, stated rather than left
   undiscovered. Five exist, and the first three are disclosures a **channel**

@@ -278,7 +278,8 @@ and retention, and the disclosure channels re-run as a set.
   branch read the RAW string while emitting the normalized path. The WHATWG
   parser CREATES the `://` the scan looks for — it rewrites a backslash pair and
   removes an ASCII tab, CR, or LF — so `/go/https:\\svc:pw@host/v1` emitted the
-  password. Both branches now read both forms. The query and the fragment are
+  password. The relative branch reads both forms. The absolute branch read only
+  the normalized `pathname` until round 8. The query and the fragment are
   scanned too: the "pathname, never href" argument is about this url's own
   authority, which cannot appear in either.
 - **Reading the path for a hidden authority costs a diagnostic.** A needle from
@@ -435,6 +436,58 @@ instance `error.name` only. The options all cost something published — keep
 in CJS (the guards are brand-keyed and unaffected, which is what the library
 already tells consumers to prefer). It is a compatibility trade on a published
 package, so it is recorded here rather than decided.
+
+### What round 8 settled
+
+Four lanes: request setup and classification, response and error
+construction, disclosure, and the public surface.
+
+- **A custom transport's own tagged `Request` was misfiled as the ambient
+  one's URL.** `transportTakesRequest` asked whether a `fetch` option was
+  passed, not which transport runs the request. So
+  `typedFetch(taggedInput, { fetch: globalThis.fetch })` filed `error.url` as
+  the input's own `url` — a server the request never reached — and an
+  implementation installed on `globalThis.fetch` received a serialized URL
+  string instead of the caller's own tagged `Request`. The parameter is now
+  `callerTransport`, computed from the already-known `ambientTransport`. A
+  non-callable `fetch` option stays on the platform's rule. (R8-H1-01,
+  R8-H1-02)
+- **The absolute branch never read the raw input.** The URL path state ends
+  `pathname` at the first `?` or `#`, so an embedded credential arrived
+  truncated and `stripValues` dropped the half that carried the `@`. The
+  branch now removes raw userinfo spans after this url's own authority, then
+  re-parses. (R8-H3-01)
+- **Channel 3 resolved no member this library owns.** `Symbol.toPrimitive` is
+  the first step of `ToPrimitive`, so one write to `Object.prototype`
+  rendered the error itself and put the full href in every log line. The four
+  root prototypes now own that key. This finding was adjudicated twice: a
+  read-only adjudicator called realm-level pollution out of scope, and the
+  orchestrator overruled it, because the stamp needs no non-configurable
+  descriptor — a subclass `toString` still decides the channel — and because
+  the polluting write never reached `toJSON` or the inspect key, which is why
+  the other eleven renders stayed clean. (R8-H3-02)
+- **The lint gate was red before round 8 changed anything.** Two dead symbols
+  and three rules firing on the round-6 refusal-matrix subclasses.
+  `ownsResponseSymbol` in `error-classes.spec.ts` was genuinely dead: its
+  round-6 content had already moved to `base-http-error.spec.ts`, which owns
+  the `BaseHttpError`/`clone()` contract. `scenarioOf` in `conformance.spec.ts`
+  was not dead but unwired: three isolated-defense tests hand-duplicated a
+  `HOSTILE_SCENARIOS` entry in prose instead of deriving from it, and the
+  fixture had already drifted from the prose. `constructor-super` and
+  `no-this-alias` fired on a deliberately hostile subclass in the refusal
+  matrix and are now silenced at the narrowest scope with a written reason.
+  (R8-H4-01)
+- **Coverage reached 100/100/100/100 for every file under `src/`**, and
+  `vitest.config.ts` now says so on all four axes. Real hostile-input tests
+  drive the four defensive `catch` arms in `src/index.ts` (lines 40, 58, 426,
+  699): a revoked Proxy, a live Proxy whose `getPrototypeOf` trap throws, a
+  forged brand pair with a throwing `status` getter, and a tagged
+  non-platform request with a throwing `url` getter. No `v8 ignore` range was
+  added.
+- **H2 and H4 returned clean.** H2 swept all 512 three-op sequences over
+  `errorBodyOf` and left zero stranded sources. H4 pinned the `./errors` ⊂ `.`
+  type-surface containment and the README's 40-row class table against the
+  built package.
 
 ## Adjudicated closed
 
