@@ -272,9 +272,15 @@ This gate (zero deps, plain Node, runs **after `pnpm build`**):
 3. Exercises the **installed** package: ESM `import`, CJS `require`, the
    `./errors` subpath, cross-entry and cross-format `instanceof`/`isHttpError`,
    plus abort/timeout/injected-`fetch`/`Request`-first-arg behavior.
-4. Typechecks a consumer `.ts` against the install under **both**
-   `moduleResolution: "bundler"` and `"nodenext"` (the nodenext pass doubles as
-   an `attw`-style types-wiring check), using the repo's own `tsc`.
+4. Typechecks a consumer `.ts` against the install under eight passes, using
+   the repo's own `tsc`. The **`node16`** pass is the `attw`-style types-wiring
+   check: it reports a `require` condition whose `types` name an ESM
+   declaration, which is what `attw` flags as FalseCJS/FalseESM. `nodenext` used
+   to do that job and no longer can — TypeScript 6 follows Node 22's
+   `require(esm)`, so the masquerade stopped being a diagnostic there and both
+   directions passed silently. `@arethetypeswrong/cli` is not a dependency and
+   does not run in CI, so the `node16` pass is the only thing in this repository
+   that sees a mis-wired `types` condition.
 
 It cleans up all temp dirs and exits non-zero with a per-assertion report.
 

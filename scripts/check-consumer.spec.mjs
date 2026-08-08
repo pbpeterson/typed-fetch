@@ -514,7 +514,7 @@ describe("consumerTsconfig", () => {
 // ---------------------------------------------------------------------------
 
 describe("TYPECHECK_PASSES", () => {
-  test("covers the seven consumer configurations", () => {
+  test("covers the eight consumer configurations", () => {
     expect(TYPECHECK_PASSES.map((p) => p.id)).toEqual([
       "bundler",
       "nodenext",
@@ -522,8 +522,22 @@ describe("TYPECHECK_PASSES", () => {
       "node-with-dom",
       "node-eopt",
       "cross-format-cjs-esm",
+      "node16",
       "node10",
     ]);
+  });
+
+  test("the node16 pass is the types-wiring check, and compiles both formats", () => {
+    // `nodenext` carried this job until TypeScript 6 followed Node 22's
+    // `require(esm)`. Only a pass that resolves PER CONDITION reports a
+    // `require` entry whose `types` name an ESM declaration.
+    const pass = TYPECHECK_PASSES.find((p) => p.id === "node16");
+    expect(pass).toBeDefined();
+    expect(pass.files).toEqual(["cross-format.mts", "cross-format.cts"]);
+    const cfg = consumerTsconfig(pass, TYPE_ROOTS);
+    expect(cfg.compilerOptions.moduleResolution).toBe("node16");
+    expect(cfg.compilerOptions.module).toBe("node16");
+    expect(cfg.compilerOptions.skipLibCheck).toBe(false);
   });
 
   test("the node10 pass resolves the way a node10 consumer does", () => {

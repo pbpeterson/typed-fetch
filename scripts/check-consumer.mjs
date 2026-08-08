@@ -69,10 +69,9 @@ const KNOWN_FAILING = new Set([
   //   empty options `typedFetch` inspected. Fixed: `typedFetch` now falls back
   //   to `url.signal` when `init.signal` is absent.
   //
-  //   attw-style types wiring — probed via `typecheck:nodenext` below
-  //   (moduleResolution:nodenext, skipLibCheck:false forces per-condition ESM
-  //   resolution and would surface a single-`types`/`.d.mts` masquerade).
-  //   Passes against the current build.
+  //   attw-style types wiring — probed via `typecheck:node16` below.
+  //   `nodenext` used to do it and no longer can: TypeScript 6 follows Node
+  //   22’s `require(esm)`, so the masquerade stopped being a diagnostic there.
   //
   // If a future change reintroduces any of these, the matching assertion fails
   // loudly. Do NOT add ids here to paper over a real regression.
@@ -509,9 +508,15 @@ const REPO_TYPE_ROOTS = [join(REPO_ROOT, "node_modules", "@types")];
 //    moduleResolution: "bundler" and "nodenext". Uses the repo's own tsc, not
 //    npx (no network, deterministic version).
 //
-//    The nodenext pass doubles as an attw-style types-wiring check: it forces
-//    per-condition ESM resolution, which surfaces the single-`types`/`.d.mts`
-//    masquerade that `attw` would flag as FalseCJS/FalseESM.
+//    The `node16` pass is the attw-style types-wiring check. `nodenext` USED to
+//    be: it forced per-condition resolution and surfaced the
+//    single-`types`/`.d.mts` masquerade `attw` flags as FalseCJS/FalseESM. Under
+//    TypeScript 6 it follows Node 22's `require(esm)`, so a CJS-importing-ESM
+//    declaration is no longer a diagnostic there and both masquerades passed
+//    silently. `node16` still reports TS1479 for them. Do not delete that pass
+//    without replacing what it proves: `@arethetypeswrong/cli` is not a
+//    dependency here and does not run in CI, so it is the only thing in this
+//    repository that sees a mis-wired `types` condition.
 // ---------------------------------------------------------------------------
 export const TYPECHECK_PASSES = [
   // The two original resolution modes.
@@ -558,6 +563,16 @@ export const TYPECHECK_PASSES = [
   {
     id: "cross-format-cjs-esm",
     moduleResolution: "nodenext",
+    lib: ["ES2022", "DOM"],
+    types: [],
+    files: ["cross-format.mts", "cross-format.cts"],
+  },
+  // The types-wiring check. `node16` resolves per condition and still reports
+  // a CJS entry whose `types` name an ESM declaration, which is exactly the
+  // FalseCJS/FalseESM pair `attw` reports.
+  {
+    id: "node16",
+    moduleResolution: "node16",
     lib: ["ES2022", "DOM"],
     types: [],
     files: ["cross-format.mts", "cross-format.cts"],
@@ -850,7 +865,8 @@ export function consumerTsconfig(
   { moduleResolution, lib, types, files, exactOptionalPropertyTypes, ignoreDeprecations },
   typeRoots,
 ) {
-  const moduleKind = moduleResolution === "nodenext" ? "nodenext" : "esnext";
+  const moduleKind =
+    moduleResolution === "nodenext" || moduleResolution === "node16" ? moduleResolution : "esnext";
   return {
     compilerOptions: {
       target: "es2022",
