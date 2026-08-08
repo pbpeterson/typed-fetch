@@ -56,6 +56,36 @@
 /** `util.inspect.custom`, obtained without importing `node:util`. */
 export const inspectCustom: unique symbol = Symbol.for("nodejs.util.inspect.custom");
 
+/**
+ * Deno's inspect hook key.
+ *
+ * ## Why a SECOND key, and why it is not optional
+ *
+ * The rule this module keeps is that every runtime which RENDERS an error
+ * resolves a member this library owns. That is one key per runtime, not one
+ * key: a runtime whose key nobody stamps reads the first answer on the
+ * prototype chain, and `Object.prototype` is on that chain.
+ *
+ * Three runtimes are gated — CONTEXT.md's `gate` entry names `smoke:node-min`,
+ * a Bun runtime smoke, `smoke:deno`, and `check-deno-consumer` — and they
+ * resolve two keys between them. Bun's `Bun.inspect.custom` IS
+ * `Symbol.for("nodejs.util.inspect.custom")`, measured on Bun 1.3.13, so the
+ * Node stamp already covers it. Deno resolves `Symbol.for("Deno.customInspect")`
+ * FIRST: an object owning both keys renders through Deno's, measured on Deno
+ * 2.9.5.
+ *
+ * So until this key was stamped, `console.log(error)` and `Deno.inspect(error)`
+ * found nothing between the instance and `Object.prototype`, and one polluting
+ * write there rendered the error's OWN properties — which is where the
+ * non-enumerable `url` lives: the full href, userinfo password and query token
+ * included, in the channel a developer reads most.
+ *
+ * No key is invented for a runtime this package does not gate. The browser and
+ * workerd expose no per-object inspect hook to stamp; a devtools formatter is a
+ * global array, not a member on the value.
+ */
+export const denoCustomInspect: unique symbol = Symbol.for("Deno.customInspect");
+
 /** The subset of Node's inspect options this hook touches. */
 interface InspectOptions {
   readonly stylize?: (text: string, style: string) => string;
@@ -195,6 +225,31 @@ function render(
 }
 
 /**
+ * The same hook, under Deno's calling convention.
+ *
+ * Deno calls `error[denoCustomInspect](inspect, options)`: the `inspect`
+ * reference FIRST, and no depth. It needs none — measured on Deno 2.9.5, Deno
+ * applies its own depth limit BEFORE the hook, printing `[Object]` without
+ * calling in, so the depth passed here is the one that means "not below the
+ * limit" and `render`'s placeholder branch stays the business of the runtime
+ * that does hand a depth over.
+ *
+ * It DELEGATES rather than rendering, for the reason this module already gives
+ * for reading the record from `toJSON()`: two renderings of one error are two
+ * things to keep in step, and the one that drifts is the one no Node developer
+ * ever sees.
+ *
+ * Called with neither argument it still answers. At this depth `render` reads
+ * `options` only through the renderer, and it type-tests the renderer first, so
+ * the invariant that this file never throws does not rest on a runtime's
+ * argument list. It cannot: Deno propagates a throwing hook straight out of
+ * `Deno.inspect`, exactly as Node does.
+ */
+function renderForDeno(this: Serializable, inspect: Inspect, options: InspectOptions): string {
+  return render.call(this, 0, options, inspect);
+}
+
+/**
  * The string-conversion channel: `String(error)`, `` `${error}` ``, and
  * `"log line: " + error`.
  *
@@ -202,8 +257,8 @@ function render(
  *
  * Every other channel resolves a member THIS library owns, so a write to
  * `Object.prototype` never reaches it. `toJSON` is a method on each root error
- * prototype. The hook above is stamped under the platform's inspect key. Even
- * `toString` is shielded, by `Error.prototype.toString`.
+ * prototype. The hook above is stamped under the inspect key of every gated
+ * platform. Even `toString` is shielded, by `Error.prototype.toString`.
  *
  * `Symbol.toPrimitive` was the one lookup with nothing between the instance and
  * `Object.prototype`, and it is the FIRST step of `ToPrimitive` — before
@@ -243,25 +298,34 @@ function toPrimitive(this: Serializable): string {
 }
 
 /**
- * Stamp this module's two hooks onto a ROOT error prototype, so all 40+ status
+ * Stamp this module's hooks onto a ROOT error prototype, so all 40+ status
  * subclasses inherit them from `BaseHttpError.prototype` at no per-instance
  * cost.
  *
- * BOTH hooks, from one call, because they answer one question: which member
- * does a channel resolve when it renders this error? The four call sites are
- * exactly the four root prototypes this library owns — `BaseHttpError`,
- * `NetworkError`, `AbortedError`, and `TimeoutError` — so a channel the library
- * means to own is owned on all of them or on none. Splitting the stamp into two
- * exported functions is one forgotten call away from the asymmetry the header
- * of this file describes.
+ * EVERY hook, from one call, because they answer one question: which member
+ * does a channel resolve when it renders this error? Three members answer it
+ * for two channels — the inspect hook under Node's key and again under Deno's,
+ * and the string-conversion hook — and the four call sites are exactly the four
+ * root prototypes this library owns: `BaseHttpError`, `NetworkError`,
+ * `AbortedError`, and `TimeoutError`. So a channel the library means to own is
+ * owned on all four, on every gated runtime, or on none. Splitting the stamp
+ * into an exported function per hook is one forgotten call away from the
+ * asymmetry the header of this file describes — and a stamp added per key
+ * rather than per call site is one forgotten runtime away from it.
  *
- * Non-enumerable (neither may reach `Object.keys`, a spread, or `for...in`),
- * but writable and configurable — the descriptor an ordinary class method gets,
- * so a consumer can still replace either one.
+ * Non-enumerable (none may reach `Object.keys`, a spread, or `for...in`), but
+ * writable and configurable — the descriptor an ordinary class method gets, so
+ * a consumer can still replace any of them.
  */
 export function installInspect(prototype: object): void {
   Object.defineProperty(prototype, inspectCustom, {
     value: render,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperty(prototype, denoCustomInspect, {
+    value: renderForDeno,
     enumerable: false,
     writable: true,
     configurable: true,
