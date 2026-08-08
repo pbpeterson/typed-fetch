@@ -263,7 +263,7 @@ export function jsdocToMarkdown(source) {
  * @param {string} code
  * @param {string} distDir absolute path to dist/
  */
-export function rewriteImports(code, distDir) {
+export function rewriteImports(code, distDir, entry = "index.js") {
   // Point at the IMPLEMENTATION files (.js), not the .d.ts. With
   // `moduleResolution: bundler`, tsc resolves types from the sibling
   // `index.d.ts` automatically, while value imports (`typedFetch`,
@@ -271,8 +271,11 @@ export function rewriteImports(code, distDir) {
   // directly trips TS2846 ("a declaration file cannot be imported without
   // import type") and would force us to weaken every value import to a type
   // import — which would stop catching real value-import bugs.
-  const rootSpec = JSON.stringify(join(distDir, "index.js").replace(/\\/g, "/"));
-  const errorsSpec = JSON.stringify(join(distDir, "errors", "index.js").replace(/\\/g, "/"));
+  // The ENTRY decides which declaration file tsc loads beside it: `index.js`
+  // resolves `index.d.ts`, and `index.mjs` resolves `index.d.mts`. Those are
+  // two published files, and only one of them was ever compiled here.
+  const rootSpec = JSON.stringify(join(distDir, entry).replace(/\\/g, "/"));
+  const errorsSpec = JSON.stringify(join(distDir, "errors", entry).replace(/\\/g, "/"));
   // Order matters: rewrite the more-specific /errors subpath first.
   return code
     .replaceAll(`"${PKG_ERRORS}"`, errorsSpec)
@@ -306,9 +309,10 @@ export function rewriteImports(code, distDir) {
 /**
  * @param {DocSource[]} docs
  * @param {string} distDir absolute path to dist/, for the import rewrite
+ * @param {string} [entry] the dist entry a block imports, per typecheck pass
  * @returns {DocPlan}
  */
-export function planDocBlocks(docs, distDir) {
+export function planDocBlocks(docs, distDir, entry = "index.js") {
   /** @type {PlannedBlock[]} */
   const blocks = [];
   /** @type {BlockRef[]} */
@@ -356,7 +360,7 @@ export function planDocBlocks(docs, distDir) {
         name: `${file.replace(/[^a-zA-Z0-9]/g, "_")}__L${block.line}__b${blocks.length}`,
         file,
         line: block.line,
-        content: wrapBlock(rewriteImports(block.code, distDir)),
+        content: wrapBlock(rewriteImports(block.code, distDir, entry)),
       });
     }
   }
@@ -462,6 +466,31 @@ export function judgeDocs({ plan, tscOutput }) {
   return { kind: "ok" };
 }
 
+/** @typedef {{ id: string, entry: string, lib: string[], types: string[] }} DocTypecheckPass */
+
+/**
+ * The compiler profiles every doc block is compiled under.
+ *
+ * ONE profile proves less than it looks. The gate used to compile every block
+ * against `dist/index.js` with `lib.dom` always present, which left two
+ * published surfaces unchecked:
+ *
+ *  - `dist/*.d.mts`, the declaration an `import`-condition consumer reads. The
+ *    `.js` entry resolves the sibling `.d.ts` instead, so the other half of the
+ *    dual-package build was never compiled here at all.
+ *  - A consumer with no DOM lib. `src/headers.ts` REFUSES to name `HeadersInit`
+ *    precisely because that name lives only in `lib.dom.d.ts`, and an example
+ *    that compiles only because DOM is present would look green forever.
+ *
+ * A pass is a value rather than a constant so the roster stays above the seam:
+ * `check-consumer.mjs` states its `TYPECHECK_PASSES` the same way.
+ */
+export const DOC_TYPECHECK_PASSES = [
+  { id: "baseline", entry: "index.js", lib: ["ES2022", "DOM", "DOM.Iterable"], types: [] },
+  { id: "dmts", entry: "index.mjs", lib: ["ES2022", "DOM", "DOM.Iterable"], types: [] },
+  { id: "no-dom", entry: "index.js", lib: ["ES2023"], types: ["node"] },
+];
+
 // The entry points a usable dist/ must contain, relative to dist/. Both the
 // implementation (.js) and the types (.d.ts) for both entry points: value
 // imports resolve against the former, type info against the latter. A
@@ -544,52 +573,78 @@ function main() {
   // masking real errors. We DON'T pass files on the command line: we write a
   // dedicated tsconfig here (its own `include`) and invoke `tsc -p`, which is
   // the config path — no root tsconfig.json is consulted, no TS5112.
-  const tsconfig = {
-    compilerOptions: {
-      // Match the library's public build so blocks see the same lib/types the
-      // package ships against.
-      target: "ES2022",
-      lib: ["ES2022", "DOM", "DOM.Iterable"],
-      module: "ESNext",
-      moduleResolution: "bundler",
-      strict: true,
-      noEmit: true,
-      skipLibCheck: true,
-      types: [],
-      // Doc snippets aren't full programs: top-level `await`, unused locals,
-      // stray expression statements are all fine and idiomatic in examples.
-      // We are checking TYPE CORRECTNESS of the public API usage, not lint.
-      noUnusedLocals: false,
-      noUnusedParameters: false,
-      allowUnreachableCode: true,
-    },
-    include: ["blocks/**/*.ts"],
-  };
-  writeFileSync(join(workDir, "tsconfig.json"), JSON.stringify(tsconfig, null, 2));
-
-  const blocksDir = join(workDir, "blocks");
-  mkdirSync(blocksDir, { recursive: true });
-
   const docs = gatherDocSources();
-  const plan = planDocBlocks(docs, distDir);
-  for (const block of plan.blocks) {
-    writeFileSync(join(blocksDir, `${block.name}.ts`), block.content);
+
+  // One compilation per pass. The block ROSTER is the same every time — only
+  // the entry a block imports and the compiler profile change — so the plan of
+  // the first pass is the one every roster-shaped verdict reads.
+  /** @type {{ pass: DocTypecheckPass, plan: DocPlan, tscOutput: string | null }[]} */
+  const runs = [];
+  for (const pass of DOC_TYPECHECK_PASSES) {
+    const passDir = join(workDir, pass.id);
+    const blocksDir = join(passDir, "blocks");
+    mkdirSync(blocksDir, { recursive: true });
+
+    const tsconfig = {
+      compilerOptions: {
+        // Match the library's public build so blocks see the same lib/types the
+        // package ships against.
+        target: "ES2022",
+        lib: pass.lib,
+        module: "ESNext",
+        moduleResolution: "bundler",
+        strict: true,
+        noEmit: true,
+        skipLibCheck: true,
+        types: pass.types,
+        // A scratch directory has no `node_modules`, so a pass that asks for a
+        // type package must be told where the repository keeps them.
+        ...(pass.types.length > 0 ? { typeRoots: [join(repoRoot, "node_modules", "@types")] } : {}),
+        // Doc snippets aren't full programs: top-level `await`, unused locals,
+        // stray expression statements are all fine and idiomatic in examples.
+        // We are checking TYPE CORRECTNESS of the public API usage, not lint.
+        noUnusedLocals: false,
+        noUnusedParameters: false,
+        allowUnreachableCode: true,
+      },
+      include: ["blocks/**/*.ts"],
+    };
+    writeFileSync(join(passDir, "tsconfig.json"), JSON.stringify(tsconfig, null, 2));
+
+    const plan = planDocBlocks(docs, distDir, pass.entry);
+    for (const block of plan.blocks) {
+      writeFileSync(join(blocksDir, `${block.name}.ts`), block.content);
+    }
+
+    // Run tsc ONCE over all block files via this pass's scratch tsconfig.
+    /** @type {string | null} */
+    let tscOutput = null;
+    try {
+      execFileSync(tscBin, ["--noEmit", "-p", join(passDir, "tsconfig.json")], {
+        cwd: passDir,
+        stdio: "pipe",
+        encoding: "utf8",
+      });
+    } catch (err) {
+      tscOutput = `${err.stdout ?? ""}${err.stderr ?? ""}`;
+    }
+    runs.push({ pass, plan, tscOutput });
   }
 
-  // Run tsc ONCE over all block files via the scratch tsconfig.
-  /** @type {string | null} */
-  let tscOutput = null;
-  try {
-    execFileSync(tscBin, ["--noEmit", "-p", join(workDir, "tsconfig.json")], {
-      cwd: workDir,
-      stdio: "pipe",
-      encoding: "utf8",
-    });
-  } catch (err) {
-    tscOutput = `${err.stdout ?? ""}${err.stderr ?? ""}`;
-  }
-
-  const verdict = judgeDocs({ plan, tscOutput });
+  const baseline = runs[0];
+  const plan = baseline.plan;
+  // The first failing pass decides the exit, and every failing pass is printed
+  // below, because this is an accumulating gate.
+  const verdicts = runs.map((run) => ({
+    pass: run.pass,
+    tscOutput: run.tscOutput,
+    verdict: judgeDocs({ plan: run.plan, tscOutput: run.tscOutput }),
+  }));
+  const failing = verdicts.find((v) => v.verdict.kind !== "ok");
+  /** @type {ReturnType<typeof judgeDocs>} */
+  const verdict = failing ? failing.verdict : { kind: "ok" };
+  const tscOutput = failing ? failing.tscOutput : null;
+  const failingPass = failing ? failing.pass.id : "";
 
   if (verdict.kind === "unterminated-fence") {
     console.error("check-docs: a fenced block is never closed, so the rest of that document was");
@@ -655,7 +710,8 @@ function main() {
 
   if (verdict.kind === "block-failures") {
     console.error(
-      `\ncheck-docs: ${verdict.failures.length} documentation block(s) FAILED to typecheck:\n`,
+      `\ncheck-docs: ${verdict.failures.length} documentation block(s) FAILED to typecheck ` +
+        `under the \`${failingPass}\` pass:\n`,
     );
     for (const f of verdict.failures) {
       console.error(`  ${f.file} (fence at line ${f.line}): ${f.msg}`);

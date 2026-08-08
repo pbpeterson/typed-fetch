@@ -8,6 +8,7 @@ import { STYLE_MARKDOWN_SOURCES } from "./check-doc-style.mjs";
 import {
   attributeDiagnostics,
   DOC_MARKDOWN_SOURCES,
+  DOC_TYPECHECK_PASSES,
   extractBlocks,
   findRelativeExampleUrls,
   HISTORICAL_MARKER,
@@ -237,6 +238,13 @@ describe("rewriteImports", () => {
     expect(out).toContain(`"/repo/dist/errors/index.js"`);
     expect(out).not.toContain("index.js/errors");
     expect(out).not.toContain("@pbpeterson/typed-fetch");
+  });
+
+  test("points a pass at the entry that pass names", () => {
+    // The entry decides which declaration file tsc loads beside it, so this is
+    // what makes the `dmts` pass compile the other half of the dual build.
+    const code = md(`import { typedFetch } from "@pbpeterson/typed-fetch";`);
+    expect(rewriteImports(code, DIST, "index.mjs")).toContain(`"/repo/dist/index.mjs"`);
   });
 
   test("handles single-quoted specifiers", () => {
@@ -855,5 +863,29 @@ describe("DOC_MARKDOWN_SOURCES", () => {
     // that widening the scope is a reviewed diff rather than a side effect.
     expect(DOC_MARKDOWN_SOURCES).not.toContain("PLAN.md");
     expect(DOC_MARKDOWN_SOURCES).not.toContain("SECURITY.md");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DOC_TYPECHECK_PASSES — the profile roster.
+// ---------------------------------------------------------------------------
+
+describe("DOC_TYPECHECK_PASSES", () => {
+  test("covers the baseline, the .d.mts declarations, and a no-DOM consumer", () => {
+    expect(DOC_TYPECHECK_PASSES.map((p) => p.id)).toEqual(["baseline", "dmts", "no-dom"]);
+  });
+
+  test("one pass resolves the .d.mts declarations", () => {
+    // `index.js` resolves the sibling `index.d.ts`; only an `.mjs` entry
+    // reaches the declaration an import-condition consumer reads.
+    expect(DOC_TYPECHECK_PASSES.some((p) => p.entry.endsWith(".mjs"))).toBe(true);
+  });
+
+  test("one pass compiles without the DOM lib", () => {
+    // `src/headers.ts` refuses to name `HeadersInit` because that name lives
+    // only in lib.dom. An example that needs DOM must fail somewhere.
+    const noDom = DOC_TYPECHECK_PASSES.find((p) => !p.lib.some((l) => l.startsWith("DOM")));
+    expect(noDom).toBeDefined();
+    expect(noDom.types).toContain("node");
   });
 });
