@@ -568,6 +568,38 @@ describe("typedFetch", () => {
       await result.error.cancel();
     });
 
+    // The own key and the running transport are two different questions.
+    // `fetch: undefined` is allowed by the public type and is what
+    // `{ fetch: maybeOverride }` or a spread of defaults produces. It leaves
+    // the AMBIENT transport in place, so the wide tag check must not be used.
+    test.each([
+      ["an explicit undefined", { fetch: undefined }],
+      ["a null override", { fetch: null as unknown as undefined }],
+      ["a non-callable override", { fetch: 42 as unknown as undefined }],
+    ])("%s leaves the platform's own rule in force", async (_label, options) => {
+      const live = url({ status: 200 });
+
+      const result = await typedFetch(new NodeFetchRequest(live), options);
+
+      expect(result.error).toBeInstanceOf(NetworkError);
+      expect(result.error?.url).not.toBe(live);
+      expect(result.error?.url).toBe("[object Request]");
+    });
+
+    test("an own `fetch` key is still stripped from the init when its value is undefined", async () => {
+      // The other half of the split: the key is this library's extension and
+      // must not reach the transport, whatever it holds.
+      const stub = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+      const options = { fetch: undefined, method: "POST" as const };
+      Object.defineProperty(options, "fetch", { value: stub, enumerable: true });
+
+      await typedFetch("https://example.invalid/own-key", options);
+
+      const [, init] = stub.mock.calls[0] ?? [];
+      expect(init && "fetch" in init).toBe(false);
+      expect(Reflect.ownKeys(init as object)).not.toContain("fetch");
+    });
+
     test("a custom transport keeps the wider tag check — it writes its own rule", async () => {
       // Only the caller can pair a duplicated runtime's `Request` with the copy
       // of `fetch` that shipped with it, so an override is trusted to accept

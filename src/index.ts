@@ -47,9 +47,9 @@ function hasRequestTag(value: unknown): boolean {
  * `RequestInfo` is a WebIDL union, and the platform resolves it with its OWN
  * brand check — realm-bound, exactly like `instanceof`. Everything the check
  * refuses becomes a `USVString`, which calls the value's own `toString`.
- * {@link isRequest} is deliberately wider: a tag is enough for it. The gap
- * between the two is where {@link resolveRequestInput} used to send the request
- * to one URL and file the error against another.
+ * {@link hasRequestTag} is deliberately wider: a tag is enough for it. The gap
+ * between the two is where the setup phase used to send the request to one URL
+ * and file the error against another.
  */
 function isPlatformRequest(value: unknown): value is Request {
   try {
@@ -67,8 +67,8 @@ function isPlatformRequest(value: unknown): value is Request {
  * — which is also what a duplicated runtime needs, since only the caller can
  * pair its `Request` with the copy of `fetch` that shipped with it.
  */
-function transportTakesRequest(input: RequestInputFacts, hasFetchOverride: boolean): boolean {
-  return hasFetchOverride ? input.taggedRequest : input.platformRequest;
+function transportTakesRequest(input: RequestInputFacts, customTransport: boolean): boolean {
+  return customTransport ? input.taggedRequest : input.platformRequest;
 }
 
 /**
@@ -777,14 +777,26 @@ export async function typedFetch<JsonReturnType>(
     // on the object and the platform ignores it, because WebIDL reads only the
     // members it declares.
     const hasFetchOverride = Object.hasOwn(options, "fetch");
-    fetchImpl = (hasFetchOverride ? options.fetch : undefined) ?? fetch;
+    const overrideFetch = hasFetchOverride ? options.fetch : undefined;
+    fetchImpl = overrideFetch ?? fetch;
+
+    // TWO different questions, and collapsing them reopened ADR 0003 row H-26.
+    // `hasFetchOverride` answers "must the init hide this library's extension?"
+    // — an own key is there to be stripped whatever its value. Which transport
+    // RUNS is a separate fact: `fetch: undefined` is allowed by the public type
+    // and is the natural output of `{ fetch: maybeOverride }` or of a spread of
+    // defaults, and it leaves the AMBIENT transport in place. Asking the own
+    // key meant using the wide tag check against the one transport that takes
+    // only its own brand, so the request went to `String(input)` while the
+    // error named `input.url` — a server nothing touched.
+    const customTransport = typeof overrideFetch === "function";
 
     // Only a tagged input is still undecided: whether the transport takes it as
     // a request, or serializes it the way the platform serializes everything it
     // does not recognize. `??=` is what keeps the serialization at ONE call,
     // which is the whole reason this module resolves the input itself.
     let requestInput: Request | null = null;
-    if (input.taggedRequest && transportTakesRequest(input, hasFetchOverride)) {
+    if (input.taggedRequest && transportTakesRequest(input, customTransport)) {
       transportInput = url;
       requestInput = url as Request;
     } else {
