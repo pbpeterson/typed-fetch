@@ -585,6 +585,61 @@ describe("typedFetch", () => {
       expect(received).toBe(request);
     });
 
+    // `error.url` is the only thing that tells two concurrent failures apart,
+    // so it must survive a setup that fails while reading `options`. Nothing in
+    // the input classification reads `options`, which is what lets it run
+    // first.
+    describe("a failing options read does not cost error.url", () => {
+      test("`options: null` still names the request", async () => {
+        // An ordinary consumer slip in plain JS. `Object.hasOwn(null, "fetch")`
+        // throws, and the correlation used to go with it.
+        const result = await typedFetch("https://example.invalid/null-options", {
+          ...(null as unknown as object),
+        } as never);
+        expect(result.error).toBeInstanceOf(NetworkError);
+
+        const withNull = await typedFetch(
+          "https://example.invalid/null-options",
+          null as unknown as undefined,
+        );
+        expect(withNull.error).toBeInstanceOf(NetworkError);
+        expect(withNull.error?.url).toBe("https://example.invalid/null-options");
+      });
+
+      test("an options object whose own-key test throws still names the request", async () => {
+        const hostile = new Proxy(
+          {},
+          {
+            getOwnPropertyDescriptor() {
+              throw new Error("descriptor refused");
+            },
+          },
+        );
+
+        const result = await typedFetch("https://example.invalid/hostile-options", hostile);
+
+        expect(result.error).toBeInstanceOf(NetworkError);
+        expect(result.error?.url).toBe("https://example.invalid/hostile-options");
+      });
+
+      test("a Request input keeps its own url when the options read throws", async () => {
+        const hostile = new Proxy(
+          {},
+          {
+            getOwnPropertyDescriptor() {
+              throw new Error("descriptor refused");
+            },
+          },
+        );
+        const request = new Request("https://example.invalid/request-options");
+
+        const result = await typedFetch(request, hostile);
+
+        expect(result.error).toBeInstanceOf(NetworkError);
+        expect(result.error?.url).toBe(request.url);
+      });
+    });
+
     // ADR 0003, row H-26: a request input read twice cannot split the request
     // from the error. The verdict came from the input's own
     // `Symbol.toStringTag`, and it was reached twice — once to pick what the

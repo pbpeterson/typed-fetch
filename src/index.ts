@@ -21,16 +21,21 @@ import {
   headersOf,
   stageIdentity,
   statusOf,
+  textOf,
 } from "./errors/response-identity";
 import { releaseResponseBody } from "./errors/error-body";
 
-/** Realm-safe Request detection for iframe, node:vm, and duplicated-runtime inputs. */
-function isRequest(value: unknown): value is Request {
+/**
+ * The `[object Request]` tag, for iframe, node:vm, and duplicated-runtime
+ * inputs that no realm-bound check can recognize.
+ *
+ * Read exactly ONCE per call, by {@link classifyRequestInput}. It is the
+ * input's own `Symbol.toStringTag`, so every extra read is another chance for
+ * the input to answer differently — ADR 0003 row H-26.
+ */
+function hasRequestTag(value: unknown): boolean {
   try {
-    return (
-      (typeof Request !== "undefined" && value instanceof Request) ||
-      Object.prototype.toString.call(value) === "[object Request]"
-    );
+    return Object.prototype.toString.call(value) === "[object Request]";
   } catch {
     return false;
   }
@@ -58,13 +63,12 @@ function isPlatformRequest(value: unknown): value is Request {
  * Will the transport that is about to run take this input as a request?
  *
  * The ambient `fetch` answers with {@link isPlatformRequest}. A custom one
- * writes its own rule this module cannot read, so it keeps the wider
- * {@link isRequest} — which is also what a duplicated runtime needs, since only
- * the caller can pair its `Request` with the copy of `fetch` that shipped with
- * it.
+ * writes its own rule this module cannot read, so it keeps the wider tag check
+ * — which is also what a duplicated runtime needs, since only the caller can
+ * pair its `Request` with the copy of `fetch` that shipped with it.
  */
-function transportTakesRequest(input: FetchInput, hasFetchOverride: boolean): input is Request {
-  return hasFetchOverride ? isRequest(input) : isPlatformRequest(input);
+function transportTakesRequest(input: RequestInputFacts, hasFetchOverride: boolean): boolean {
+  return hasFetchOverride ? input.taggedRequest : input.platformRequest;
 }
 
 /**
@@ -603,37 +607,43 @@ function snapshotRequestInit(
  * `String(input)` throws for a `Symbol` and for a hostile `toString`, and that
  * exception is NOT swallowed: the request cannot be made, and the setup phase
  * turns it into a `NetworkError` with an empty `url`. A `Request`'s `url` is the
- * other direction: `isRequest` accepts anything tagged `[object Request]`, and a
- * subclass can override the getter, so it can answer with a number or an object
- * without throwing at all. That value is dropped rather than coerced, which is
- * what keeps `NetworkError.url` — typed `readonly string` — from holding a
- * non-string that then flows into `redactUrl` and into the `toJSON()` record.
+ * other direction: the tag check accepts anything tagged `[object Request]`, and
+ * a subclass can override the getter, so it can answer with a number or an
+ * object without throwing at all. That value is dropped rather than coerced,
+ * which is what keeps `NetworkError.url` — typed `readonly string` — from
+ * holding a non-string that then flows into `redactUrl` and into the `toJSON()`
+ * record.
+ *
+ * Everything here reads the INPUT and nothing reads `options`, which is what
+ * lets phase 1 run it first. `error.url` is the only thing that tells two
+ * concurrent failures apart, and it used to be lost whenever a read of
+ * `options` threw before the input had been resolved — including for
+ * `typedFetch(url, null)`, an ordinary consumer slip that reaches
+ * `Object.hasOwn(null, …)`.
  */
-function resolveRequestInput(
-  input: FetchInput,
-  hasFetchOverride: boolean,
-): {
-  readonly transportInput: FetchInput;
-  readonly url: string;
-  readonly requestInput: Request | null;
-} {
-  if (transportTakesRequest(input, hasFetchOverride)) {
-    let raw: unknown;
-    try {
-      raw = input.url;
-    } catch {
-      // A hostile `url` getter is not a reason to refuse a Request the
-      // transport may still be able to send.
-      raw = undefined;
-    }
-    return {
-      transportInput: input,
-      url: typeof raw === "string" ? raw : "",
-      requestInput: input,
-    };
+interface RequestInputFacts {
+  /** The ambient `fetch` will take this as a request, not convert it. */
+  readonly platformRequest: boolean;
+  /** Some transport might: it is a platform `Request` or carries the tag. */
+  readonly taggedRequest: boolean;
+  /** A tagged input's own `url`, already absolute. `""` for everything else. */
+  readonly requestUrl: string;
+}
+
+function classifyRequestInput(input: FetchInput): RequestInputFacts {
+  const platformRequest = isPlatformRequest(input);
+  const taggedRequest = platformRequest || hasRequestTag(input);
+  if (!taggedRequest) return { platformRequest, taggedRequest, requestUrl: "" };
+
+  let raw: unknown;
+  try {
+    raw = (input as Request).url;
+  } catch {
+    // A hostile `url` getter is not a reason to refuse a Request the transport
+    // may still be able to send.
+    raw = undefined;
   }
-  const url = String(input);
-  return { transportInput: url, url, requestInput: null };
+  return { platformRequest, taggedRequest, requestUrl: textOf(raw) };
 }
 
 /**
@@ -739,12 +749,23 @@ export async function typedFetch<JsonReturnType>(
 
   // ── Phase 1: setup ──────────────────────────────────────────────────────
   try {
-    // WHICH transport will run has to be settled before the input is resolved:
-    // the platform takes only its own `Request` as a request and serializes
-    // everything else, and a custom one makes its own rule. This is an own-key
-    // test, not a member READ — no getter runs here, so the transport is still
-    // the first thing to read a member of `options`.
-    //
+    // The INPUT first, and from the input alone. Nothing here reads `options`,
+    // so `error.url` is already filed when the reads below run — and one of
+    // them can throw before the request is ever described. `typedFetch(url,
+    // null)` is the ordinary case: `Object.hasOwn(null, …)` throws, and the
+    // correlation between a log line and a request went with it.
+    const input = classifyRequestInput(url);
+    // No transport takes an untagged input as a request, so the verdict below
+    // cannot change it and it can be serialized now, before anything reads
+    // `options`. A tagged one files its own `url` for the same reason.
+    let serialized: string | null = null;
+    if (input.taggedRequest) {
+      resolvedRequestUrl = input.requestUrl;
+    } else {
+      serialized = String(url);
+      resolvedRequestUrl = serialized;
+    }
+
     // OWN property only. `fetch` is this library's own extension, not a WebIDL
     // dictionary member, and reading it off the prototype chain turns a single
     // `Object.prototype.fetch = ...` write anywhere in the process into a
@@ -756,15 +777,21 @@ export async function typedFetch<JsonReturnType>(
     // on the object and the platform ignores it, because WebIDL reads only the
     // members it declares.
     const hasFetchOverride = Object.hasOwn(options, "fetch");
-
-    // The URL next, exactly as the transport does it: a `Request` is built from
-    // the input before any `init` member is read. It is resolved ONCE, and the
-    // transport receives what this call produced.
-    const resolved = resolveRequestInput(url, hasFetchOverride);
-    transportInput = resolved.transportInput;
-    resolvedRequestUrl = resolved.url;
-
     fetchImpl = (hasFetchOverride ? options.fetch : undefined) ?? fetch;
+
+    // Only a tagged input is still undecided: whether the transport takes it as
+    // a request, or serializes it the way the platform serializes everything it
+    // does not recognize. `??=` is what keeps the serialization at ONE call,
+    // which is the whole reason this module resolves the input itself.
+    let requestInput: Request | null = null;
+    if (input.taggedRequest && transportTakesRequest(input, hasFetchOverride)) {
+      transportInput = url;
+      requestInput = url as Request;
+    } else {
+      serialized ??= String(url);
+      transportInput = serialized;
+      resolvedRequestUrl = serialized;
+    }
 
     // The AbortSignal can arrive via EITHER slot: the `options`/`init` (its
     // `.signal`), OR a `Request` passed as the first argument (`url.signal`).
@@ -786,9 +813,7 @@ export async function typedFetch<JsonReturnType>(
     // plain network failure was reported as an abort.
     const initSignal = options.signal;
     signal =
-      initSignal !== undefined
-        ? (initSignal ?? undefined)
-        : (resolved.requestInput?.signal ?? undefined);
+      initSignal !== undefined ? (initSignal ?? undefined) : (requestInput?.signal ?? undefined);
 
     // Fetch reads RequestInit as a WebIDL dictionary, so inherited properties
     // and prototype getters are part of the input. Preserve both while removing
