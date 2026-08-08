@@ -100,12 +100,23 @@ describe("redactUrl — structure is kept, every value slot is dropped", () => {
     }
   });
 
-  // The stated cost of the wider region, so it is a known limit and not a
-  // surprise: a malformed URL whose PATH holds an `@` after a `://` loses the
-  // part before it. Userinfo is unconditionally a value; a path is structure
-  // only until the two cannot be told apart.
-  test("RESIDUAL: a path `@` after a `://` is over-redacted, by design", () => {
-    expect(redactUrl("://host/path/@alice")).toBe("/://alice");
+  // The region is wide, so each `@` is asked whether what precedes it is a
+  // credential or a path. No `/` at all is the username-only form a bearer URL
+  // carries; a `:` before the first `/` is `user:password`, the shape whose
+  // password can hold the delimiter that used to end the scan early.
+  test("a path with an `@` after a `://` keeps every segment it names", () => {
+    expect(redactUrl("://api.test/users/@alice")).toBe("/://api.test/users/@alice");
+    expect(redactUrl("://host/path/@alice")).toBe("/://host/path/@alice");
+  });
+
+  test("a username-only credential is still removed", () => {
+    expect(redactUrl("://token@internal.test/v1")).toBe("/://internal.test/v1");
+  });
+
+  // The ambiguity that cannot be resolved once a malformed scheme has taken
+  // away where the authority ends: a PORT reads like a credential.
+  test("RESIDUAL: an authority with a port plus a path `@` is over-redacted", () => {
+    expect(redactUrl("://a:1234/x/@bob")).toBe("/://bob");
   });
 
   // Removing the userinfo must not make an invalid URL resolvable: these are

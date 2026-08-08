@@ -127,10 +127,9 @@ const AUTHORITY_MARK = "://";
  * Ending it at a delimiter let the password choose where the authority stopped:
  * a `\` in a credential is rewritten to `/` by the parser before this scan
  * runs, and `://svc:hun\ter2@internal.test/v1` then emitted the whole password.
- * The cost is over-redaction when a malformed URL's PATH holds an `@` after a
- * `://` (`://host/path/@alice` keeps only `alice`), and that is the trade this
- * module makes everywhere: userinfo is unconditionally a value, a path is
- * structure only until the two cannot be told apart.
+ *
+ * Which leaves ONE question per `@`: is the text before it an authority, or a
+ * path that happens to contain an `@`? {@link looksLikeUserinfo} answers it.
  *
  * SPANS are returned rather than text: the same bytes can appear earlier in the
  * string (`svc:pw@x://svc:pw@host/`), and removing the wrong copy leaves the
@@ -146,11 +145,41 @@ function malformedUserinfoSpans(text: string): { start: number; end: number }[] 
     const next = text.indexOf(AUTHORITY_MARK, start);
     const stop = next < 0 ? text.length : next;
     const at = text.lastIndexOf("@", stop - 1);
-    if (at >= start) spans.push({ start, end: at + 1 });
+    if (at >= start && looksLikeUserinfo(text.slice(start, at))) {
+      spans.push({ start, end: at + 1 });
+    }
     if (next < 0) break;
     from = next;
   }
   return spans;
+}
+
+/**
+ * Is the text between `://` and an `@` a credential, or a path?
+ *
+ * Two shapes are userinfo, and everything else is a path this module keeps:
+ *
+ *  - NO `/` at all. `://token@host/x` is the username-only credential a bearer
+ *    URL carries, and there is nothing else it could be.
+ *  - A `:` BEFORE the first `/`. A credential is `user:password`, and the
+ *    password is the part that can contain the delimiter that used to end the
+ *    scan early — `svc:hun\ter2`, `svc:hun?ter2`.
+ *
+ * So `api.test/users/` is a path — a `/` first and no `:` before it — and
+ * `://api.test/users/@alice` keeps every segment it names. That case is
+ * ordinary; a credential is not usually spelled with a slash before the colon.
+ *
+ * RESIDUAL, stated because the ambiguity is real and unresolvable here: an
+ * authority with a PORT, followed by a path holding an `@`
+ * (`://a:1234/x/@bob`), reads as userinfo by this rule and is over-redacted.
+ * Telling a port from a credential needs to know where the authority ends,
+ * which is the very thing a malformed scheme took away.
+ */
+function looksLikeUserinfo(candidate: string): boolean {
+  const slash = candidate.indexOf("/");
+  if (slash < 0) return true;
+  const colon = candidate.indexOf(":");
+  return colon >= 0 && colon < slash;
 }
 
 /**
