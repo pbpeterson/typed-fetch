@@ -561,3 +561,63 @@ describe("a credential the url hides in its query or its fragment", () => {
     expect(redactUrlInMessage(message, url)).not.toContain("hunter2");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 3. `redact-url` — the three round-4 rules nothing pinned.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("redact-url — the round-4 rules the suite left undefended", () => {
+  // `malformedUserinfoSpans` walks its region forward and keeps the LAST `@`
+  // it sees. Taking the FIRST one instead survived the whole suite, and it
+  // leaks: the authority ends mid-password and the tail of the credential
+  // rides out inside the emitted path. This is the same class of case the
+  // module already pins for `\` and `?` inside a credential — an `@` inside
+  // one had no test.
+  test("an `@` inside the credential does not end the authority early", () => {
+    const url = "://svc:hun@ter2@internal.test/v1";
+
+    expect(redactUrl(url)).toBe("/://internal.test/v1");
+    expect(redactUrl(url)).not.toContain("hun");
+    expect(redactUrl(url)).not.toContain("ter2");
+    expect(redactUrlInMessage(`cannot fetch ${url}`, url)).toBe(
+      "cannot fetch /://internal.test/v1",
+    );
+  });
+
+  // `userinfosOf` reads `parsed.pathname`, never `parsed.href`, and states why:
+  // "the authority this URL really has is `host:8443`, and a scan over the href
+  // would read that port as userinfo". `redactUrl`'s copy of that claim has a
+  // test ("the port of THIS url is never read as userinfo"); `userinfosOf`'s
+  // did not, and scanning the href there survived the suite — it deletes the
+  // host and the whole path prefix from the diagnostic.
+  test("the userinfo pass reads the pathname, so this url's port is not userinfo", () => {
+    const url = "https://host:8443/users/@alice";
+
+    // Nothing to redact: no userinfo, no query, no fragment. The message must
+    // come back byte-identical.
+    expect(redactUrlInMessage(`refused ${url}`, url)).toBe(`refused ${url}`);
+    expect(redactUrlInMessage(`refused ${url}`, url)).toContain("host:8443");
+  });
+
+  // `hiddenUserinfos` filters `userinfo.length > 1`, and the bound is exact:
+  // length 1 is the bare `@` that must never reach `replaceAll`, and length 2
+  // is a one-character credential that must. Only the lower side had a test, so
+  // tightening the filter to `> 2` survived.
+  test("a one-character credential is still removed from a re-serialized message", () => {
+    // The platform quoted the authority without the scheme marks, so the
+    // whole-url replacement misses and only the userinfo pass can reach it.
+    expect(redactUrlInMessage("cannot fetch a@host/x", "://a@host/x")).toBe("cannot fetch host/x");
+    // CONTROL, the side that was already pinned: a bare `@` is not a needle.
+    expect(redactUrlInMessage("mail alice@example.test", "://@host/x")).toBe(
+      "mail alice@example.test",
+    );
+  });
+
+  // `hasRedactableSlot`'s fallback names three slots a relative url can spell.
+  // `?` and `#` each have a test; `@` did not, and dropping it survived.
+  test("a relative url whose only redactable slot is an `@` is still rewritten", () => {
+    const url = "://svc:hunter2@internal.test/v1";
+
+    expect(redactUrlInMessage(`refused ${url}`, url)).toBe("refused /://internal.test/v1");
+  });
+});

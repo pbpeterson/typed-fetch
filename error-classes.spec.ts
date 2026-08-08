@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { inspect } from "node:util";
 import { describe, test, expect, expectTypeOf } from "vitest";
 import {
   AbortedError,
@@ -10,6 +11,7 @@ import {
   UnknownHttpError,
 } from "./src/errors";
 import { inspectCustom } from "./src/errors/inspect";
+import { ownSlot } from "./src/errors/response-identity";
 import {
   isAbortError,
   isHttpError,
@@ -612,5 +614,150 @@ describe("control — a non-string url on the three pre-response classes", () =>
       expect(error.url).toBe("");
       expect(error.message).toBe("m");
     }
+  });
+});
+
+/**
+ * ROUND 5, LANE 2 — the mutations the round-4 suite did not kill.
+ *
+ * Each block below was written against a SURVIVOR: a one-line change to `src/`
+ * that the whole official suite stayed green for. Every test here was verified
+ * to fail against the mutation it names and to pass against the real source.
+ *
+ * Nothing here re-asserts a behaviour another spec already pins. Where an
+ * existing test covers one instance of a rule, the block covers the instances
+ * it left out, and says which mutation reached each one.
+ */
+// ═══════════════════════════════════════════════════════════════════════════
+// 1. `ownSlot` at every call site, not only one.
+//
+// Commit 4169207 ("keep a refusing options slot from making a constructor
+// throw") routed SEVEN caller-supplied slots through `ownSlot`: `cause` and
+// `url` on NetworkError and TimeoutError, and `cause`, `reason`, and `url` on
+// AbortedError. `error-classes.spec.ts`'s D4 block asserts exactly ONE of them
+// — NetworkError's `url` — so reverting any of the other six to the
+// pre-round-4 `options && Object.hasOwn(options, k) ? options[k] : …` idiom
+// leaves the suite green while the constructor throws again.
+//
+// Both halves of the read are covered, because both can run consumer code and
+// `ownSlot`'s own JSDoc says so: `Object.hasOwn` runs `[[GetOwnProperty]]`,
+// which a `Proxy` answers from a trap, and the read after it runs an ordinary
+// getter. Moving `Object.hasOwn` back out of the `try` — the half NO existing
+// test reaches for ANY of the seven slots — also survives the suite.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** The public pre-response classes, and the caller-supplied slots each reads. */
+const PRE_RESPONSE_SLOTS = [
+  ["NetworkError.cause", NetworkError, "cause"],
+  ["NetworkError.url", NetworkError, "url"],
+  ["AbortedError.cause", AbortedError, "cause"],
+  ["AbortedError.reason", AbortedError, "reason"],
+  ["AbortedError.url", AbortedError, "url"],
+  ["TimeoutError.cause", TimeoutError, "cause"],
+  ["TimeoutError.url", TimeoutError, "url"],
+] as const satisfies readonly (readonly [
+  string,
+  new (message?: string, options?: never) => Error,
+  string,
+])[];
+
+describe("a refusing options slot never makes a public constructor throw", () => {
+  test.each(PRE_RESPONSE_SLOTS)("%s — the getter throws", (_pair, ErrorClass, slot) => {
+    const options = {
+      get [slot](): unknown {
+        throw new TypeError("this slot refuses to answer");
+      },
+    };
+
+    let built: Error | undefined;
+    expect(() => {
+      built = new ErrorClass("boom", options as never);
+    }).not.toThrow();
+    // Still a usable error value, which is the whole reason the throw matters.
+    expect(built).toBeInstanceOf(Error);
+    expect(typeof built?.message).toBe("string");
+  });
+
+  test.each(PRE_RESPONSE_SLOTS)(
+    "%s — an options `Proxy` whose [[GetOwnProperty]] trap throws",
+    (_pair, ErrorClass, slot) => {
+      // Wrapping an options bag in a Proxy is the instrumentation pattern the
+      // library already names by hand. `Object.hasOwn` is NOT inert against it.
+      const options = new Proxy(
+        { [slot]: "a value the trap will never let anyone see" },
+        {
+          getOwnPropertyDescriptor() {
+            throw new TypeError("this object will not say what it owns");
+          },
+        },
+      );
+
+      let built: Error | undefined;
+      expect(() => {
+        built = new ErrorClass("boom", options as never);
+      }).not.toThrow();
+      expect(built).toBeInstanceOf(Error);
+    },
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 2. A refusing slot is ABSENT, not present-with-`undefined`.
+//
+// `ownSlot`'s JSDoc states the verdict in full: "A slot that refuses to answer
+// is ABSENT. That is the honest report: the constructors define an own `cause`
+// or `reason` only for a value they hold, so a refusal keeps `"cause" in error`
+// false rather than filing `undefined`."
+//
+// Nothing asserted it. Changing the `catch` to `return { present: true, value:
+// undefined }` kept all 1640 tests green, and that mutation is observable: the
+// constructor then defines an own `cause` holding `undefined`, and the inspect
+// hook prints a signpost telling a reader to go read a cause that is not there.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("a slot that refuses to answer is absent, not present-with-undefined", () => {
+  test("`ownSlot` reports a throwing getter as absent", () => {
+    const source = {
+      get secret(): unknown {
+        throw new TypeError("no");
+      },
+    };
+    expect(ownSlot(source, "secret")).toEqual({ present: false, value: undefined });
+  });
+
+  test("`ownSlot` reports a refusing [[GetOwnProperty]] trap as absent", () => {
+    const source = new Proxy(
+      { secret: "held" },
+      {
+        getOwnPropertyDescriptor() {
+          throw new TypeError("no");
+        },
+      },
+    );
+    expect(ownSlot(source, "secret")).toEqual({ present: false, value: undefined });
+  });
+
+  test("a refusing `cause` leaves no own cause and no inspect signpost", () => {
+    const error = new NetworkError("boom", {
+      get cause(): unknown {
+        throw new TypeError("no");
+      },
+    });
+
+    expect(Object.hasOwn(error, "cause")).toBe(false);
+    expect("cause" in error).toBe(false);
+    expect(inspect(error)).not.toContain("[not shown - read error.cause]");
+  });
+
+  test("a refusing `reason` leaves no own reason and no inspect signpost", () => {
+    const error = new AbortedError("boom", {
+      get reason(): unknown {
+        throw new TypeError("no");
+      },
+    });
+
+    expect(Object.hasOwn(error, "reason")).toBe(false);
+    expect("reason" in error).toBe(false);
+    expect(inspect(error)).not.toContain("[not shown - read error.reason]");
   });
 });

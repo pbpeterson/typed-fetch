@@ -739,3 +739,50 @@ describe("CONTROLS — abort, timeout and the transport seam", () => {
     );
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4. `docs-claims.spec.ts` pins the class NAME, not the claim.
+//
+// The new spec's header says every case matches on content rather than on a
+// line number, and that is true — moving the anchor sentence turns the
+// assertion red, so it fails closed. What it does not do is read the sentence
+// it found: "both documents name that exception where they state the rule"
+// asserts only that the string `UnknownHttpError` occurs somewhere in the 600
+// (README) or 700 (JSDoc) characters after the rule. Replacing the exception
+// with its exact negation — "This holds for all 41 classes, `UnknownHttpError`
+// included: none of them ever reports the reason phrase the server sent" —
+// keeps the name in the window and keeps the suite green, in both documents.
+//
+// This block pins the AFFIRMATIVE half of the claim instead: the phrase that
+// only the correct statement can carry.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** The window a claim must live in, with the anchor's absence made explicit. */
+function windowAfter(source: string, anchor: string, length: number): string {
+  const at = source.indexOf(anchor);
+  // `slice(-1)` is a last character, not an empty string, so the assertions
+  // below would fail anyway — but they would fail for the wrong reason, and a
+  // reader would look for a deleted claim instead of a moved anchor.
+  expect(at, `the anchor ${JSON.stringify(anchor)} is gone`).toBeGreaterThan(-1);
+  return source.slice(at, at + length);
+}
+
+describe("the statusText exception is stated, not merely named", () => {
+  test("the README says UnknownHttpError REPORTS the server's phrase", () => {
+    const stated = windowAfter(README, "`statusText` does not copy", 600);
+
+    expect(stated).toContain("UnknownHttpError");
+    expect(stated).toContain("its `statusText` is the reason phrase");
+  });
+
+  test("the JSDoc says UnknownHttpError OVERRIDES the canonical label", () => {
+    const stated = windowAfter(
+      BASE_HTTP_ERROR_SOURCE,
+      "The library's canonical protocol label",
+      700,
+    );
+
+    expect(stated).toContain("UnknownHttpError");
+    expect(stated).toContain("overrides this with the response's reason phrase");
+  });
+});
