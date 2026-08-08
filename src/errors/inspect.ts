@@ -97,6 +97,22 @@ function recordOf(error: Serializable): Record<string, unknown> {
 }
 
 /**
+ * Apply the caller's colouring, and survive it refusing.
+ *
+ * `options.stylize` is supplied by whoever called `inspect`, and a throwing one
+ * breaks Node's own rendering of `42`, `"s"`, and `{}` just as thoroughly — so
+ * this guard restores nothing for the CONSUMER. It keeps THIS function's
+ * promise, which is the one thing it can keep.
+ */
+function stylize(label: string, options: InspectOptions): string {
+  try {
+    return typeof options?.stylize === "function" ? options.stylize(label, "special") : label;
+  } catch {
+    return label;
+  }
+}
+
+/**
  * The hook itself. Node calls it as `error[util.inspect.custom](depth, options,
  * inspect)`; `this` is the error.
  */
@@ -106,19 +122,37 @@ function render(
   options: InspectOptions,
   inspect?: Inspect,
 ): string {
-  const name = typeof this.name === "string" ? this.name : "Error";
+  // EVERY read below can run consumer code. `name`, `stack`, and `message` are
+  // plain properties on an `Error`, but `BaseHttpError` is documented as a class
+  // to subclass, and a subclass can define any of them as a throwing getter.
+  // The invariant this function states — it never throws, because a throwing
+  // custom inspect takes `console.log` down with it — has to hold for the head
+  // as well as for the record. Guarding only the record left the half that runs
+  // first unprotected.
+  let name = "Error";
+  try {
+    if (typeof this.name === "string") name = this.name;
+  } catch {
+    // A throwing `name` getter is not a reason to lose the whole line.
+  }
+
   // Below the configured depth, Node renders a placeholder rather than the
   // value. Match it, or a deeply nested error would print in full where a
   // plain object would not.
   if (typeof depth === "number" && depth < 0) {
     const label = `[${name}]`;
-    return typeof options?.stylize === "function" ? options.stylize(label, "special") : label;
+    return stylize(label, options);
   }
   // The stack already begins with `Name: message`, which is why the record's
   // own `name`/`message` are not stripped out: seeing the exact record next to
   // the stack is how a developer knows what their logger will keep.
-  const head =
-    typeof this.stack === "string" && this.stack !== "" ? this.stack : `${name}: ${this.message}`;
+  let head: string;
+  try {
+    head =
+      typeof this.stack === "string" && this.stack !== "" ? this.stack : `${name}: ${this.message}`;
+  } catch {
+    head = name;
+  }
   const record = recordOf(this);
   // A runtime that calls the hook with only `(depth, options)` still gets a
   // readable record.

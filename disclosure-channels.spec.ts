@@ -565,6 +565,44 @@ describe("disclosure channels — the hook itself", () => {
       expect(renderWithoutCallback(error)).toContain("[record not renderable]");
     });
 
+    // The record was guarded and the HEAD was not, though the head runs first.
+    // `BaseHttpError` is documented as a class to subclass, so `name`, `stack`,
+    // and `message` are all consumer-definable getters.
+    test.each(["name", "stack", "message"] as const)(
+      "a throwing `%s` getter does not take console.log down",
+      (member) => {
+        class Throwing extends NotFoundError {}
+        const error = new Throwing(new Response(null, { status: 404 }));
+        Object.defineProperty(error, member, {
+          get() {
+            throw new Error(`${member} refused`);
+          },
+        });
+
+        expect(() => inspect(error)).not.toThrow();
+        expect(() => renderWithoutCallback(error)).not.toThrow();
+      },
+    );
+
+    test("a throwing stylize below the depth limit does not escape", () => {
+      // Only this function's promise is kept: a throwing `stylize` breaks
+      // Node's rendering of `42` and `{}` just as thoroughly.
+      const error = httpError();
+      const hook = (error as unknown as Record<symbol, unknown>)[registered] as (
+        this: unknown,
+        depth: number,
+        options: object,
+      ) => string;
+
+      expect(() =>
+        hook.call(error, -1, {
+          stylize() {
+            throw new Error("stylize refused");
+          },
+        }),
+      ).not.toThrow();
+    });
+
     test("a record Node can render is still rendered in full", () => {
       // The guard replaces the render, so it must not swallow a working one.
       expect(inspect(httpError())).toContain("NotFoundError");
