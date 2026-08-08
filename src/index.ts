@@ -62,13 +62,19 @@ function isPlatformRequest(value: unknown): value is Request {
 /**
  * Will the transport that is about to run take this input as a request?
  *
- * The ambient `fetch` answers with {@link isPlatformRequest}. A custom one
- * writes its own rule this module cannot read, so it keeps the wider tag check
- * — which is also what a duplicated runtime needs, since only the caller can
- * pair its `Request` with the copy of `fetch` that shipped with it.
+ * The ambient `fetch` answers with {@link isPlatformRequest}. Caller code
+ * running AS the transport writes its own rule this module cannot read, so it
+ * keeps the wider tag check — which is also what a duplicated runtime needs,
+ * since only the caller can pair its `Request` with the copy of `fetch` that
+ * shipped with it.
+ *
+ * The question is which transport RUNS, never whether an option was passed.
+ * `{ fetch: globalThis.fetch }` carries the option and still runs the
+ * platform's transport; a `globalThis.fetch` replaced by a polyfill carries no
+ * option and is caller code.
  */
-function transportTakesRequest(input: RequestInputFacts, customTransport: boolean): boolean {
-  return customTransport ? input.taggedRequest : input.platformRequest;
+function transportTakesRequest(input: RequestInputFacts, callerTransport: boolean): boolean {
+  return callerTransport ? input.taggedRequest : input.platformRequest;
 }
 
 /**
@@ -629,10 +635,11 @@ function snapshotRequestInit(
  * whose `url` named a server the request never reached. See
  * {@link isPlatformRequest}.
  *
- * A CUSTOM transport writes its own rule and this module cannot read it, so an
- * override keeps the wider tag check. That is also what a duplicated runtime
- * needs: its `Request` is a real one to the copy of `fetch` that shipped with
- * it, and only the caller can pair the two.
+ * CALLER CODE running as the transport — an injected `fetch`, or a replaced
+ * global — writes its own rule and this module cannot read it, so it keeps the
+ * wider tag check. That is also what a duplicated runtime needs: its `Request`
+ * is a real one to the copy of `fetch` that shipped with it, and only the
+ * caller can pair the two.
  *
  * The verdict is RETURNED, not recomputed. `transportTakesRequest` reads the
  * input's own `Symbol.toStringTag` — a caller-controlled read — and this
@@ -856,23 +863,28 @@ export async function typedFetch<JsonReturnType>(
     // place; a replaced `globalThis.fetch` carries no key and is caller code.
     ambientTransport = nativeFetch !== undefined && fetchImpl === nativeFetch;
 
-    // TWO different questions, and collapsing them reopened ADR 0003 row H-26.
-    // `hasFetchOverride` answers "must the init hide this library's extension?"
-    // — an own key is there to be stripped whatever its value. Which transport
-    // RUNS is a separate fact: `fetch: undefined` is allowed by the public type
-    // and is the natural output of `{ fetch: maybeOverride }` or of a spread of
-    // defaults, and it leaves the AMBIENT transport in place. Asking the own
-    // key meant using the wide tag check against the one transport that takes
-    // only its own brand, so the request went to `String(input)` while the
-    // error named `input.url` — a server nothing touched.
-    const customTransport = typeof overrideFetch === "function";
+    // Will CALLER CODE run as the transport? `ambientTransport` above already
+    // decides which transport runs, and only a callable one runs at all: a
+    // `fetch` option that is not callable fails the transport phase before any
+    // rule about requests applies, so the platform's rule stays in force.
+    //
+    // Asking the own KEY instead — "did the caller pass a `fetch` option?" —
+    // answered both directions wrong, and both are the collapse ADR 0003 row
+    // H-26 forbids. `{ fetch: globalThis.fetch }`, which is what dependency
+    // injection writes, took the wide tag check against the one transport that
+    // takes only its own brand: the request went to `String(input)` while the
+    // error named `input.url`, a server nothing touched. A `globalThis.fetch`
+    // replaced by a polyfill carries no key at all, so caller code that writes
+    // its own rule about requests was handed the serialized string instead of
+    // the caller's own `Request`.
+    const callerTransport = !ambientTransport && typeof fetchImpl === "function";
 
     // Only a tagged input is still undecided: whether the transport takes it as
     // a request, or serializes it the way the platform serializes everything it
     // does not recognize. `??=` is what keeps the serialization at ONE call,
     // which is the whole reason this module resolves the input itself.
     let requestInput: Request | null = null;
-    if (input.taggedRequest && transportTakesRequest(input, customTransport)) {
+    if (input.taggedRequest && transportTakesRequest(input, callerTransport)) {
       transportInput = url;
       requestInput = url as Request;
     } else {
