@@ -3815,6 +3815,65 @@ describe("typedFetch — the first successful identity reads are recorded", () =
       expect(second.response?.status).toBe(200);
     });
 
+    // The surface check refuses in TWO ways, and only one of them was covered.
+    // Every read inside it can THROW instead of reporting a bad value, and that
+    // path skipped the rollback. The flag now starts true and only an
+    // acceptance clears it, so a refusal added later is covered by omission.
+    test.each(["type", "statusText", "url", "ok", "redirected"] as const)(
+      "a THROWING `%s` getter files nothing either",
+      async (member) => {
+        let throws = true;
+        const shapeshifter: Record<string, unknown> = {
+          [Symbol.toStringTag]: "Response",
+          body: null,
+          bodyUsed: false,
+          headers: new Headers({ "content-type": "application/json" }),
+          ok: true,
+          redirected: false,
+          status: 200,
+          statusText: "OK",
+          type: "basic",
+          url: "https://example.invalid/throwing-surface",
+          arrayBuffer: async () => new ArrayBuffer(0),
+          blob: async () => new Blob(),
+          clone: () => shapeshifter,
+          formData: async () => new FormData(),
+          json: async () => ({}),
+          text: async () => "",
+        };
+        const honest = shapeshifter[member];
+        Object.defineProperty(shapeshifter, member, {
+          configurable: true,
+          get() {
+            if (throws) throw new Error(`${member} getter exploded`);
+            return honest;
+          },
+        });
+        const fetch = resolving(shapeshifter as unknown as Response);
+
+        const refused = await typedFetch("https://example.invalid/throwing-surface", { fetch });
+        expect(refused.response).toBe(null);
+        expect(refused.error).toBeInstanceOf(NetworkError);
+
+        // Now honest, and reporting a FAILED request. `defineProperty` for
+        // every slot: the getter above replaced one of them, and a plain
+        // assignment to a non-writable data property throws.
+        throws = false;
+        for (const [key, value] of [
+          [member, honest],
+          ["status", 404],
+          ["ok", false],
+        ] as const) {
+          Object.defineProperty(shapeshifter, key, { configurable: true, writable: true, value });
+        }
+
+        const second = await typedFetch("https://example.invalid/throwing-surface", { fetch });
+        expect(second.response).toBe(null);
+        expect(second.error).toBeInstanceOf(NotFoundError);
+        if (isHttpError(second.error)) await second.error.cancel();
+      },
+    );
+
     test("an ACCEPTED call still fixes the identity it read", async () => {
       // The rollback drops only what the refused call recorded. A field fixed
       // by an earlier accepted call is that response's identity and stays.

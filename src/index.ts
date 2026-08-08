@@ -915,14 +915,21 @@ export async function typedFetch<JsonReturnType>(
   // failed request, which is the one outcome this union exists to prevent.
   //
   // Every refusal rolls back, including the one inside the error constructor.
-  // What does NOT roll back is a construction that SUCCEEDS: those records are
-  // the accepted response's identity, and `typed-fetch.spec.ts` pins that a
-  // later read cannot change them.
+  // What does NOT roll back is an ACCEPTANCE: those records are the accepted
+  // response's identity, and `typed-fetch.spec.ts` pins that a later read
+  // cannot change them.
+  //
+  // The flag starts TRUE, and only the two acceptances clear it. Marking each
+  // refusal instead was the same class of defect one layer down: a refusal
+  // point that RETURNS `false` was marked, and a read inside
+  // `hasCompatibleSuccessSurface` that THROWS was not, so it kept its records
+  // and a 404 came back as `{ response, error: null }`. Written this way, a
+  // refusal added later is covered by omission and only an acceptance has to be
+  // remembered.
   const rollbackRefusal = stageIdentity(res as Response);
-  let refusedTheValue = false;
+  let refusedTheValue = true;
   try {
     if (!isResponse(res)) {
-      refusedTheValue = true;
       throw new TypeError("The fetch implementation resolved a value that is not a Response.");
     }
     const status = statusOf(res);
@@ -935,17 +942,16 @@ export async function typedFetch<JsonReturnType>(
       // `status` beside it stayed filed, so the same object presented later as
       // a healthy 200 with real `Headers` was answered with that same
       // `NetworkError` for as long as it lived.
-      refusedTheValue = true;
       const error = ErrorClass ? new ErrorClass(res) : new UnknownHttpError(res);
       refusedTheValue = false;
       return { response: null, error };
     }
     if (!hasCompatibleSuccessSurface(res)) {
-      refusedTheValue = true;
       throw new TypeError(
         "The fetch implementation resolved a Response with an incompatible public surface.",
       );
     }
+    refusedTheValue = false;
   } catch (cause) {
     if (refusedTheValue) rollbackRefusal();
     // The reads above (`status`, and `statusText`, `url`, and `headers` inside
