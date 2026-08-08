@@ -534,3 +534,263 @@ describe.skipIf(!distExists)("guards work across module copies (dist)", () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 6 — two genuine package copies in one process.
+//
+// Raw `instanceof` does not cross the seam and the brand guards do; a
+// `clone(recreate)` accepted across it is teed for real; a copy that cannot
+// confirm the branch is refused with the branch released.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const copies6_distExists = existsSync(new URL("./dist/index.mjs", import.meta.url));
+
+if (!copies6_distExists) {
+  // eslint-disable-next-line no-console
+  console.warn("\n[lane4] dist/ not found — run `pnpm build` to exercise the two-copy suite.\n");
+}
+
+const copies6_importDist = (path: string): Promise<Record<string, unknown>> =>
+  import(/* @vite-ignore */ new URL(path, import.meta.url).href);
+const copies6_requireDist = createRequire(import.meta.url);
+
+interface Copy {
+  BaseHttpError: new (response: Response) => BaseHttpError;
+  NotFoundError: new (response: Response) => BaseHttpError;
+  UnknownHttpError: new (response: Response) => BaseHttpError;
+  isHttpError: (value: unknown) => boolean;
+  isKnownHttpError: (value: unknown) => boolean;
+}
+
+const esmCopy = (): Promise<Copy> =>
+  copies6_importDist("./dist/index.mjs") as unknown as Promise<Copy>;
+const cjsCopy = (): Copy => copies6_requireDist("./dist/index.js") as unknown as Copy;
+
+async function copies6_settlesWithin(promise: Promise<unknown>, ms = 500): Promise<string> {
+  return Promise.race([
+    promise.then(
+      () => "settled",
+      () => "rejected",
+    ),
+    new Promise<string>((resolve) => setTimeout(() => resolve("pending"), ms)),
+  ]);
+}
+
+const payload = (status = 404): Response => new Response("payload", { status });
+
+describe.skipIf(!copies6_distExists)("L4-C — two genuine package copies", () => {
+  test("L4-C1: the copies are distinct, and only the brand-keyed guards cross the seam", async () => {
+    const esm = await esmCopy();
+    const cjs = cjsCopy();
+
+    expect(esm.NotFoundError).not.toBe(cjs.NotFoundError);
+    expect(esm.NotFoundError as unknown).not.toBe(NotFoundError as unknown);
+
+    const error = new esm.NotFoundError(payload());
+    // Raw `instanceof` does NOT cross — the documented reason the guards exist.
+    expect(error instanceof (cjs.NotFoundError as never)).toBe(false);
+    expect(error instanceof NotFoundError).toBe(false);
+    // The guards do.
+    expect(cjs.isHttpError(error)).toBe(true);
+    expect(cjs.isKnownHttpError(error)).toBe(true);
+    expect(isHttpError(error)).toBe(true);
+    expect(isKnownHttpError(error)).toBe(true);
+    expect(await copies6_settlesWithin(error.cancel())).toBe("settled");
+  });
+
+  test("L4-C2: ESM clones, CJS supplies the copy — accepted, teed for real, both released", async () => {
+    const esm = await esmCopy();
+    const cjs = cjsCopy();
+
+    const error = new esm.NotFoundError(payload());
+    const copy = error.clone((branch) => new cjs.NotFoundError(branch) as never);
+
+    expect(copy instanceof (cjs.NotFoundError as never)).toBe(true);
+    // Acceptance alone proves nothing about the stream: read BOTH sides.
+    expect([await error.text(), await copy.text()]).toEqual(["payload", "payload"]);
+  });
+
+  test("L4-C3: the same pairing, released rather than read", async () => {
+    const esm = await esmCopy();
+    const cjs = cjsCopy();
+
+    const error = new esm.NotFoundError(payload());
+    const copy = error.clone((branch) => new cjs.NotFoundError(branch) as never);
+
+    expect(await copies6_settlesWithin(Promise.all([error.cancel(), copy.cancel()]))).toBe(
+      "settled",
+    );
+  });
+
+  test("L4-C4: the reverse direction — CJS clones, ESM supplies the copy", async () => {
+    const esm = await esmCopy();
+    const cjs = cjsCopy();
+
+    const error = new cjs.NotFoundError(payload());
+    const copy = error.clone((branch) => new esm.NotFoundError(branch) as never);
+
+    expect(copy).toBeDefined();
+    expect(await copies6_settlesWithin(Promise.all([error.cancel(), copy.cancel()]))).toBe(
+      "settled",
+    );
+  });
+
+  test("L4-C5: a cross-copy instance built from a DIFFERENT response is refused, and the branch released", async () => {
+    const esm = await esmCopy();
+    const cjs = cjsCopy();
+
+    const error = new esm.NotFoundError(payload());
+    const elsewhere = new Response("elsewhere", { status: 404 });
+    let branch: Response | undefined;
+    let thrown: unknown;
+    try {
+      error.clone((response) => {
+        branch = response;
+        return new cjs.NotFoundError(elsewhere) as never;
+      });
+    } catch (caught) {
+      thrown = caught;
+    }
+
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/built from a different response/);
+    expect(branch?.bodyUsed).toBe(true);
+    expect(await copies6_settlesWithin(error.cancel())).toBe("settled");
+    void elsewhere.body?.cancel().catch(() => {});
+  });
+
+  test("L4-C6: a SUBCLASS of the other copy's BaseHttpError is accepted and narrows correctly", async () => {
+    const esm = await esmCopy();
+    const cjs = cjsCopy();
+
+    class Foreign extends cjs.BaseHttpError {
+      override readonly name = "Foreign";
+      readonly status = 499;
+      readonly statusText = "Foreign";
+    }
+
+    const error = new esm.NotFoundError(payload());
+    const copy = error.clone((branch) => new Foreign(branch) as never);
+
+    expect(copy).toBeInstanceOf(Foreign);
+    // A consumer subclass passes `isHttpError` and must NOT pass
+    // `isKnownHttpError` — across copies too.
+    expect(isHttpError(copy)).toBe(true);
+    expect(isKnownHttpError(copy)).toBe(false);
+    expect(esm.isKnownHttpError(copy)).toBe(false);
+    expect(await copies6_settlesWithin(Promise.all([error.cancel(), copy.cancel()]))).toBe(
+      "settled",
+    );
+  });
+
+  test("L4-C7: a cross-copy clone CHAIN — clone the foreign copy again, back across the seam", async () => {
+    const esm = await esmCopy();
+    const cjs = cjsCopy();
+
+    const error = new esm.NotFoundError(payload());
+    const copy = error.clone((branch) => new cjs.NotFoundError(branch) as never);
+    const copy2 = copy.clone((branch) => new esm.NotFoundError(branch) as never);
+
+    expect(copy2).toBeDefined();
+    expect(
+      await copies6_settlesWithin(Promise.all([error.cancel(), copy.cancel(), copy2.cancel()])),
+    ).toBe("settled");
+  });
+
+  test("L4-C8: UnknownHttpError is excluded by isKnownHttpError from the other copy", async () => {
+    const esm = await esmCopy();
+    const cjs = cjsCopy();
+
+    const error = new esm.UnknownHttpError(payload(599));
+    expect(cjs.isHttpError(error)).toBe(true);
+    expect(cjs.isKnownHttpError(error)).toBe(false);
+    expect(await copies6_settlesWithin(error.cancel())).toBe("settled");
+  });
+
+  test("L4-C9: THE RESIDUAL, re-verified — a cross-copy copy INHERITS nothing and reads the branch", async () => {
+    // ADR 0002, amendment of 2026-07-26. The identity tables are per package
+    // copy, so a `recreate` callback returning an instance from a DIFFERENT
+    // copy runs that copy's constructor against tables that never saw the loan.
+    // This asserts the divergence is confined to IDENTITY: nothing is stranded,
+    // and the same-copy clone still inherits.
+    const esm = await esmCopy();
+    const cjs = cjsCopy();
+
+    const shifting = (): Response => {
+      let reads = 0;
+      const response = new Response("payload", { status: 404 });
+      Object.defineProperty(response, "statusText", {
+        get() {
+          reads += 1;
+          return reads === 1 ? "FIRST" : "LATER";
+        },
+        configurable: true,
+      });
+      return response;
+    };
+
+    const sameCopyOriginal = new esm.UnknownHttpError(shifting());
+    const sameCopyClone = sameCopyOriginal.clone();
+    expect((sameCopyOriginal as unknown as { statusText: string }).statusText).toBe("FIRST");
+    expect((sameCopyClone as unknown as { statusText: string }).statusText).toBe("FIRST");
+
+    const crossCopyOriginal = new esm.UnknownHttpError(shifting());
+    const crossCopyClone = crossCopyOriginal.clone(
+      (branch) => new cjs.UnknownHttpError(branch) as never,
+    );
+    expect((crossCopyOriginal as unknown as { statusText: string }).statusText).toBe("FIRST");
+    // The branch is a real `Response.clone()`, so the other copy reads the
+    // platform's internal slot — the empty reason phrase — not "LATER" and not
+    // "FIRST". The two errors disagree, which is the stated residual.
+    expect((crossCopyClone as unknown as { statusText: string }).statusText).toBe("");
+    // Nothing is stranded, which is the half that matters here.
+    expect(
+      await copies6_settlesWithin(
+        Promise.all([
+          sameCopyOriginal.cancel(),
+          sameCopyClone.cancel(),
+          crossCopyOriginal.cancel(),
+          crossCopyClone.cancel(),
+        ]),
+      ),
+    ).toBe("settled");
+  });
+
+  test("L4-C10: a structuredClone-rebuilt error is not believed by EITHER copy", async () => {
+    const esm = await esmCopy();
+    const cjs = cjsCopy();
+
+    const error = new esm.NotFoundError(payload());
+    const rebuilt = structuredClone(error) as unknown;
+
+    expect(esm.isHttpError(rebuilt)).toBe(false);
+    expect(cjs.isHttpError(rebuilt)).toBe(false);
+    expect(isHttpError(rebuilt)).toBe(false);
+    expect(await copies6_settlesWithin(error.cancel())).toBe("settled");
+  });
+
+  test("L4-C11: a rebuilt plain Error returned from a recreate callback is refused, and releases", async () => {
+    const esm = await esmCopy();
+
+    const error = new esm.NotFoundError(payload());
+    const donor = new esm.NotFoundError(payload());
+    const rebuilt = structuredClone(donor) as unknown;
+    await donor.cancel();
+
+    let branch: Response | undefined;
+    let thrown: unknown;
+    try {
+      error.clone((response) => {
+        branch = response;
+        return rebuilt as never;
+      });
+    } catch (caught) {
+      thrown = caught;
+    }
+
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/cannot confirm that it took the cloned body branch/);
+    expect(branch?.bodyUsed).toBe(true);
+    expect(await copies6_settlesWithin(error.cancel())).toBe("settled");
+  });
+});

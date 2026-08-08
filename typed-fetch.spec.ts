@@ -4665,3 +4665,819 @@ describe("the test server sets the header value it was given", () => {
     await response?.body?.cancel();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 6 — the setup phase and the transport seam.
+//
+// The options facade, the captured signal, the single serialization, the init
+// dictionary, and the phase boundaries. The H-28 block is the half of that row
+// the conformance corpus cannot drive, because every scenario there injects a
+// transport.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const server = useTestServer();
+
+/** Capture what the transport is handed, then answer with a real response. */
+function recordingTransport(): {
+  readonly calls: { input: unknown; init: RequestInit | undefined }[];
+  readonly fetch: typeof fetch;
+} {
+  const calls: { input: unknown; init: RequestInit | undefined }[] = [];
+  const impl = async (input: unknown, init?: RequestInit): Promise<Response> => {
+    calls.push({ input, init });
+    return new Response(null, { status: 200 });
+  };
+  return { calls, fetch: impl as unknown as typeof fetch };
+}
+
+// ── The options facade ────────────────────────────────────────────────────
+
+describe("the options facade", () => {
+  test("hides the fetch extension from every reflection channel", async () => {
+    const transport = recordingTransport();
+    const options = { method: "POST", fetch: transport.fetch } as TypedFetchOptions;
+
+    await typedFetch(server.url(), options);
+    const init = transport.calls[0]?.init as RequestInit;
+
+    expect("fetch" in init).toBe(false);
+    expect((init as Record<string, unknown>).fetch).toBeUndefined();
+    expect(Object.getOwnPropertyDescriptor(init, "fetch")).toBeUndefined();
+    expect(Reflect.ownKeys(init)).not.toContain("fetch");
+    expect(Object.keys({ ...init })).not.toContain("fetch");
+    expect(JSON.parse(JSON.stringify(init))).toEqual({ method: "POST" });
+  });
+
+  test("a frozen options object with an own fetch does not trip a get invariant", async () => {
+    const transport = recordingTransport();
+    const options = { method: "POST", fetch: transport.fetch } as Record<string, unknown>;
+    Object.defineProperty(options, "readOnly", {
+      value: "RO",
+      writable: false,
+      enumerable: true,
+      configurable: false,
+    });
+    Object.freeze(options);
+
+    const { error } = await typedFetch(server.url(), options as TypedFetchOptions);
+    const init = transport.calls[0]?.init as Record<string, unknown>;
+
+    expect(error).toBeNull();
+    // The proxy must report the non-configurable, non-writable own value
+    // unchanged, or the `get` trap throws a TypeError of its own.
+    expect(init.readOnly).toBe("RO");
+    expect(Object.getOwnPropertyDescriptor(init, "readOnly")).toEqual({
+      value: "RO",
+      writable: false,
+      enumerable: true,
+      configurable: false,
+    });
+  });
+
+  test("a sealed options object with an own fetch behaves the same", async () => {
+    const transport = recordingTransport();
+    const options = Object.seal({ method: "PUT", fetch: transport.fetch }) as TypedFetchOptions;
+
+    const { error } = await typedFetch(server.url(), options);
+    const init = transport.calls[0]?.init as Record<string, unknown>;
+
+    expect(error).toBeNull();
+    expect(init.method).toBe("PUT");
+    expect("fetch" in (init as object)).toBe(false);
+  });
+
+  test("symbol keys and the prototype survive the facade", async () => {
+    const transport = recordingTransport();
+    const marker = Symbol("marker");
+    const prototype = { inheritedMethod: "PATCH" };
+    const options = Object.create(prototype) as Record<PropertyKey, unknown>;
+    options.fetch = transport.fetch;
+    options[marker] = "kept";
+
+    await typedFetch(server.url(), options as TypedFetchOptions);
+    const init = transport.calls[0]?.init as Record<PropertyKey, unknown>;
+
+    expect(Reflect.ownKeys(init)).toContain(marker);
+    expect(init[marker]).toBe("kept");
+    expect(Object.getPrototypeOf(init)).toBe(prototype);
+    expect(init.inheritedMethod).toBe("PATCH");
+  });
+
+  test("an inherited WebIDL member reaches the transport", async () => {
+    const options = Object.create({ method: "REPORT" }) as TypedFetchOptions;
+
+    const { response, error } = await typedFetch(server.url(), options);
+
+    expect(error).toBeNull();
+    expect(response?.headers.get("X-Echo-Method")).toBe("REPORT");
+  });
+
+  test("an options Proxy reporting keys it does not have does not break the facade", async () => {
+    const transport = recordingTransport();
+    const target = { fetch: transport.fetch };
+    const options = new Proxy(target, {
+      ownKeys(inner) {
+        return [...Reflect.ownKeys(inner), "ghost", "signal"];
+      },
+      getOwnPropertyDescriptor(inner, property) {
+        if (property === "ghost") {
+          return { value: "G", enumerable: true, configurable: true, writable: true };
+        }
+        return Reflect.getOwnPropertyDescriptor(inner, property);
+      },
+      get(inner, property) {
+        return property === "ghost" ? "G" : Reflect.get(inner, property);
+      },
+      has(inner, property) {
+        return property === "ghost" || Reflect.has(inner, property);
+      },
+    }) as TypedFetchOptions;
+
+    const { error } = await typedFetch(server.url(), options);
+    const init = transport.calls[0]?.init as Record<string, unknown>;
+
+    expect(error).toBeNull();
+    expect(Reflect.ownKeys(init)).toEqual(["ghost"]);
+    expect(init.ghost).toBe("G");
+    // `signal` was reported by `ownKeys` but has no descriptor, so it is not
+    // invented as an own key of the init.
+    expect(Reflect.ownKeys(init)).not.toContain("signal");
+  });
+
+  test("every options getter runs exactly once, including signal", async () => {
+    const reads: Record<string, number> = {};
+    const controller = new AbortController();
+    const options: Record<string, unknown> = {};
+    const slot = (name: string, value: unknown): void => {
+      Object.defineProperty(options, name, {
+        enumerable: true,
+        configurable: true,
+        get() {
+          reads[name] = (reads[name] ?? 0) + 1;
+          return value;
+        },
+      });
+    };
+    slot("method", "POST");
+    slot("headers", { "x-probe": "kept" });
+    slot("signal", controller.signal);
+
+    const { response, error } = await typedFetch(
+      server.url({ echoHeader: "x-probe" }),
+      options as TypedFetchOptions,
+    );
+
+    expect(error).toBeNull();
+    expect(response?.headers.get("X-Echo-Header")).toBe("kept");
+    expect(reads).toEqual({ method: 1, headers: 1, signal: 1 });
+  });
+
+  test("a header the caller set reaches the wire through a frozen options object", async () => {
+    const options = Object.freeze({
+      headers: Object.freeze({ "x-probe": "on-the-wire" }),
+    }) as TypedFetchOptions;
+
+    const { response, error } = await typedFetch(server.url({ echoHeader: "x-probe" }), options);
+
+    expect(error).toBeNull();
+    expect(response?.headers.get("X-Echo-Header")).toBe("on-the-wire");
+  });
+
+  test("an inherited fetch override is never used and never stripped", async () => {
+    const neverCalled = recordingTransport();
+    const options = Object.create({ fetch: neverCalled.fetch }) as TypedFetchOptions;
+
+    const { response, error } = await typedFetch(server.url({ status: 200 }), options);
+
+    expect(error).toBeNull();
+    expect(neverCalled.calls).toHaveLength(0);
+    // The real transport answered, so the ambient implementation ran.
+    expect(response?.status).toBe(200);
+  });
+
+  test("an own fetch that is undefined strips the key and keeps the ambient transport", async () => {
+    const transport = recordingTransport();
+    const outer = async (input: unknown, init?: RequestInit): Promise<Response> => {
+      transport.calls.push({ input, init });
+      return globalThis.fetch(input as string, init);
+    };
+    const withOverride = await typedFetch(server.url(), {
+      fetch: outer as unknown as typeof fetch,
+    });
+    const withUndefined = await typedFetch(server.url(), { fetch: undefined });
+
+    expect(withOverride.error).toBeNull();
+    expect(withUndefined.error).toBeNull();
+    expect(transport.calls).toHaveLength(1);
+  });
+
+  test("the override branch still puts the caller's method and headers on the wire", async () => {
+    const forwarding = ((input: RequestInfo, init?: RequestInit) =>
+      globalThis.fetch(input as string, init)) as typeof fetch;
+    const options = Object.freeze({
+      method: "REPORT",
+      headers: Object.freeze({ "x-probe": "through-the-override" }),
+      fetch: forwarding,
+    }) as TypedFetchOptions;
+
+    const { response, error } = await typedFetch(server.url({ echoHeader: "x-probe" }), options);
+
+    expect(error).toBeNull();
+    expect(response?.headers.get("X-Echo-Method")).toBe("REPORT");
+    expect(response?.headers.get("X-Echo-Header")).toBe("through-the-override");
+  });
+
+  test("a Headers instance keeps its identity across the facade", async () => {
+    const transport = recordingTransport();
+    const headers = new Headers({ "x-probe": "same-object" });
+
+    await typedFetch(server.url(), {
+      headers: headers as never,
+      fetch: transport.fetch,
+    });
+    const init = transport.calls[0]?.init as RequestInit;
+
+    expect(init.headers).toBe(headers);
+  });
+});
+
+// ── The captured signal ───────────────────────────────────────────────────
+
+describe("the captured signal", () => {
+  test("a signal getter answering differently on a second read cannot split the authority", async () => {
+    const governing = new AbortController();
+    const decoy = new AbortController();
+    let reads = 0;
+    const options = {
+      get signal(): AbortSignal {
+        reads += 1;
+        return reads === 1 ? governing.signal : decoy.signal;
+      },
+    } as TypedFetchOptions;
+
+    const pending = typedFetch(server.url({ delay: 300 }), options);
+    setTimeout(() => governing.abort(), 30);
+    const { error } = await pending;
+
+    expect(reads).toBe(1);
+    expect(isAbortError(error)).toBe(true);
+  });
+
+  test("an options signal replaces a Request's own signal", async () => {
+    const fromInit = new AbortController();
+    const fromRequest = new AbortController();
+    const request = new Request(server.url({ delay: 250 }), { signal: fromRequest.signal });
+
+    const pending = typedFetch(request, { signal: fromInit.signal });
+    setTimeout(() => fromRequest.abort(), 20);
+    const { error, response } = await pending;
+
+    // The Request's own signal was detached by the init slot, so aborting it
+    // cancelled nothing.
+    expect(error).toBeNull();
+    expect(response?.status).toBe(200);
+    expect(fromInit.signal.aborted).toBe(false);
+  });
+
+  test("signal: null detaches a Request's own signal", async () => {
+    const controller = new AbortController();
+    const request = new Request(server.url({ delay: 200 }), { signal: controller.signal });
+
+    const pending = typedFetch(request, { signal: null });
+    setTimeout(() => controller.abort(), 20);
+    const { error, response } = await pending;
+
+    expect(error).toBeNull();
+    expect(response?.status).toBe(200);
+  });
+
+  test("AbortSignal.any composed before the call still governs it", async () => {
+    const first = new AbortController();
+    const second = new AbortController();
+    const composed = AbortSignal.any([first.signal, second.signal]);
+
+    const pending = typedFetch(server.url({ delay: 300 }), { signal: composed });
+    setTimeout(() => second.abort(), 30);
+    const { error } = await pending;
+
+    expect(isAbortError(error)).toBe(true);
+  });
+
+  test("a signal that is not an AbortSignal is a network failure, never an abort", async () => {
+    const fake = { aborted: true, reason: new DOMException("Aborted", "AbortError") };
+
+    const { error } = await typedFetch(server.url(), {
+      signal: fake as unknown as AbortSignal,
+    });
+
+    expect(isAbortError(error)).toBe(false);
+    expect(isTimeoutError(error)).toBe(false);
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  test("a signal whose aborted getter throws is a network failure", async () => {
+    const signal = Object.create(AbortSignal.prototype) as AbortSignal;
+    Object.defineProperty(signal, "aborted", {
+      configurable: true,
+      get(): never {
+        throw new Error("hostile aborted getter");
+      },
+    });
+    const transport = (async (): Promise<Response> => {
+      throw new DOMException("Aborted", "AbortError");
+    }) as unknown as typeof fetch;
+
+    const { error } = await typedFetch(server.url(), { signal, fetch: transport });
+
+    expect(isAbortError(error)).toBe(false);
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  test("an abort reason that is itself an AbortSignal does not break the envelope", async () => {
+    const controller = new AbortController();
+    const reason = new AbortController().signal;
+
+    const pending = typedFetch(server.url({ delay: 250 }), { signal: controller.signal });
+    setTimeout(() => controller.abort(reason), 20);
+    const { error } = await pending;
+
+    expect(isAbortError(error)).toBe(true);
+    expect((error as unknown as { reason: unknown }).reason).toBe(reason);
+  });
+
+  test("an options getter that aborts WITHOUT throwing is a network failure too", async () => {
+    const controller = new AbortController();
+    const options: Record<string, unknown> = { signal: controller.signal };
+    Object.defineProperty(options, "method", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        controller.abort();
+        return "GET";
+      },
+    });
+
+    const { error } = await typedFetch(server.url({ delay: 200 }), options as TypedFetchOptions);
+
+    // DECIDED, and recorded in ADR 0003's amendment of 2026-08-08. A getter
+    // that aborts is indistinguishable from one that aborts AND throws: a
+    // getter is free to abort with the very exception it then throws, so the
+    // rejection is identical to the signal's reason in both shapes. Both are
+    // the caller aborting its own request from inside a getter, and no request
+    // left the process in either, so H-28 decides the class for both.
+    expect(isAbortError(error)).toBe(false);
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  test("an abort after the response phase returned changes nothing", async () => {
+    const controller = new AbortController();
+
+    const { response, error } = await typedFetch(server.url(), { signal: controller.signal });
+    // The body belongs to the caller now; read it before the abort, because the
+    // platform ties an unread body stream to the signal.
+    const body = await response?.text();
+    controller.abort();
+
+    expect(error).toBeNull();
+    expect(response?.status).toBe(200);
+    expect(body).toBe("");
+  });
+
+  test("an unrelated failure while the signal is already aborted stays a network failure", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const { error } = await typedFetch(server.url(), {
+      method: "GET\r\nX-Injected: 1",
+      signal: controller.signal,
+    });
+
+    expect(isAbortError(error)).toBe(false);
+    expect(isNetworkError(error)).toBe(true);
+  });
+});
+
+// ── The phase boundaries ──────────────────────────────────────────────────
+
+describe("the phase boundaries", () => {
+  // The reads `typedFetch` performs ITSELF are the setup phase, and they hold:
+  // caller code that runs there cannot claim an abort. The transport's own
+  // reads of the same object do not — see `setup-seam-defects.spec.ts`.
+  const setupReadSlots: string[] = ["signal", "fetch"];
+
+  test.each(setupReadSlots)(
+    "a setup-phase read of options.%s that aborts and throws is a network failure",
+    async (slot) => {
+      const controller = new AbortController();
+      const options: Record<string, unknown> = {};
+      if (slot !== "signal") {
+        Object.defineProperty(options, "signal", {
+          enumerable: true,
+          value: controller.signal,
+        });
+      }
+      Object.defineProperty(options, slot, {
+        enumerable: true,
+        configurable: true,
+        get(): never {
+          controller.abort();
+          throw new DOMException("Aborted", "AbortError");
+        },
+      });
+
+      const { error } = await typedFetch(server.url(), options as TypedFetchOptions);
+
+      expect(isAbortError(error)).toBe(false);
+      expect(isNetworkError(error)).toBe(true);
+    },
+  );
+
+  test("a response-phase getter that aborts and throws is a network failure", async () => {
+    const controller = new AbortController();
+    const resolved: Record<string, unknown> = {
+      [Symbol.toStringTag]: "Response",
+      body: null,
+      bodyUsed: false,
+      headers: new Headers(),
+      ok: true,
+      redirected: false,
+      statusText: "OK",
+      type: "basic",
+      url: server.url(),
+      arrayBuffer: async () => new ArrayBuffer(0),
+      blob: async () => new Blob(),
+      clone: () => resolved,
+      formData: async () => new FormData(),
+      json: async () => ({}),
+      text: async () => "",
+    };
+    Object.defineProperty(resolved, "status", {
+      configurable: true,
+      get(): never {
+        controller.abort();
+        throw new DOMException("Aborted", "AbortError");
+      },
+    });
+    const transport = (async () => resolved) as unknown as typeof fetch;
+
+    const { error } = await typedFetch(server.url(), {
+      fetch: transport,
+      signal: controller.signal,
+    });
+
+    expect(isAbortError(error)).toBe(false);
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  test("a transport that aborts the signal and rejects IS an abort", async () => {
+    const controller = new AbortController();
+    const transport = (async (): Promise<Response> => {
+      controller.abort();
+      throw new DOMException("Aborted", "AbortError");
+    }) as unknown as typeof fetch;
+
+    const { error } = await typedFetch(server.url(), {
+      fetch: transport,
+      signal: controller.signal,
+    });
+
+    // The transport IS the phase, so this classification is the intended one.
+    expect(isAbortError(error)).toBe(true);
+  });
+
+  test("a lying has trap on the options object cannot make the envelope reject", async () => {
+    const transport = recordingTransport();
+    const target: Record<string, unknown> = { fetch: transport.fetch };
+    Object.defineProperty(target, "locked", {
+      value: "L",
+      writable: false,
+      enumerable: true,
+      configurable: false,
+    });
+    const options = new Proxy(target, {
+      has(inner, property) {
+        return property === "locked" ? false : Reflect.has(inner, property);
+      },
+    }) as TypedFetchOptions;
+
+    const { error } = await typedFetch(server.url(), options);
+
+    expect(error).toBeNull();
+  });
+});
+
+// ── The single serialization ──────────────────────────────────────────────
+
+describe("the single serialization", () => {
+  test("a counting toString is called exactly once", async () => {
+    let reads = 0;
+    const target = server.url();
+    const input = {
+      toString() {
+        reads += 1;
+        return target;
+      },
+    } as unknown as string;
+
+    const { error } = await typedFetch(input);
+
+    expect(error).toBeNull();
+    expect(reads).toBe(1);
+  });
+
+  test("a URL subclass is serialized once, through its own toString", async () => {
+    let reads = 0;
+    const target = server.url();
+    class CountingUrl extends URL {
+      override toString(): string {
+        reads += 1;
+        return super.toString();
+      }
+    }
+
+    const { error } = await typedFetch(new CountingUrl(target));
+
+    expect(error).toBeNull();
+    expect(reads).toBe(1);
+  });
+
+  test("a platform Request is never serialized", async () => {
+    const request = new Request(server.url());
+    let reads = 0;
+    Object.defineProperty(request, "toString", {
+      configurable: true,
+      value() {
+        reads += 1;
+        return "SERIALIZED";
+      },
+    });
+
+    const { error } = await typedFetch(request);
+
+    expect(error).toBeNull();
+    expect(reads).toBe(0);
+  });
+
+  test("an own url property cannot shadow the native Request accessor", async () => {
+    const real = new URL(server.url()).href;
+    const request = new Request(real);
+    Object.defineProperty(request, "url", {
+      configurable: true,
+      value: "https://shadow.invalid/decoy",
+    });
+    const rejecting = (async (): Promise<Response> => {
+      throw new Error("transport refused");
+    }) as unknown as typeof fetch;
+
+    // A pre-response failure, so `error.url` is the URL the setup phase
+    // resolved rather than one read back off a Response.
+    const { error } = await typedFetch(request, { fetch: rejecting });
+
+    expect(request.url).toBe("https://shadow.invalid/decoy");
+    expect(isNetworkError(error)).toBe(true);
+    expect((error as unknown as { url: string }).url).toBe(real);
+  });
+
+  test("a Request-shaped foreign input under the ambient transport files its serialization", async () => {
+    const foreign = {
+      [Symbol.toStringTag]: "Request",
+      url: "https://foreign.invalid/real",
+      toString() {
+        return "https://foreign.invalid/serialized";
+      },
+    } as unknown as Request;
+
+    const { error } = await typedFetch(foreign);
+
+    expect(isNetworkError(error)).toBe(true);
+    // The ambient transport converts anything it does not brand-check, so the
+    // error must name the string the transport received.
+    expect((error as unknown as { url: string }).url).toBe("https://foreign.invalid/serialized");
+  });
+
+  test("a tagged input handed to a custom transport files its first url read", async () => {
+    const transport = recordingTransport();
+    let reads = 0;
+    const foreign = {
+      [Symbol.toStringTag]: "Request",
+      get url(): string {
+        reads += 1;
+        return reads === 1 ? "https://foreign.invalid/first" : "https://foreign.invalid/second";
+      },
+    } as unknown as Request;
+
+    const { error } = await typedFetch(foreign, { fetch: transport.fetch });
+
+    expect(error).toBeNull();
+    expect(reads).toBe(1);
+    // The transport received the object itself, not a string.
+    expect(transport.calls[0]?.input).toBe(foreign);
+  });
+
+  test("an input whose toString throws is a network failure with an empty url", async () => {
+    const input = {
+      toString(): never {
+        throw new Error("hostile toString");
+      },
+    } as unknown as string;
+
+    const { error } = await typedFetch(input);
+
+    expect(isNetworkError(error)).toBe(true);
+    expect((error as unknown as { url: string }).url).toBe("");
+  });
+});
+
+// ── The init dictionary ───────────────────────────────────────────────────
+
+describe("the init dictionary", () => {
+  const emptyInitCases: [string, TypedFetchOptions | undefined][] = [
+    ["no options at all", undefined],
+    ["an empty object", {}],
+    ["signal: undefined", { signal: undefined }],
+  ];
+
+  test.each(emptyInitCases)("a Request's own signal survives %s", async (_label, options) => {
+    const controller = new AbortController();
+    const request = new Request(server.url({ delay: 300 }), { signal: controller.signal });
+
+    const pending = options === undefined ? typedFetch(request) : typedFetch(request, options);
+    setTimeout(() => controller.abort(), 30);
+    const { error } = await pending;
+
+    expect(isAbortError(error)).toBe(true);
+  });
+
+  test("a Request's own signal survives a fetch override", async () => {
+    const controller = new AbortController();
+    const request = new Request(server.url({ delay: 300 }), { signal: controller.signal });
+    const forwarding = ((input: RequestInfo, init?: RequestInit) =>
+      globalThis.fetch(input as Request, init)) as typeof fetch;
+
+    const pending = typedFetch(request, { fetch: forwarding });
+    setTimeout(() => controller.abort(), 30);
+    const { error } = await pending;
+
+    expect(isAbortError(error)).toBe(true);
+  });
+
+  test("the init handed over for typedFetch(request) has no own keys", async () => {
+    const transport = recordingTransport();
+    const request = new Request(server.url());
+
+    await typedFetch(request, { fetch: transport.fetch });
+    const init = transport.calls[0]?.init as RequestInit;
+
+    expect(Reflect.ownKeys(init)).toEqual([]);
+    expect("signal" in init).toBe(false);
+    expect(init.signal).toBeUndefined();
+    expect(transport.calls[0]?.input).toBe(request);
+  });
+
+  test("an inherited signal is materialized as an own key for a forwarding transport", async () => {
+    const transport = recordingTransport();
+    const controller = new AbortController();
+    const options = Object.create({ signal: controller.signal }) as Record<string, unknown>;
+    options.fetch = transport.fetch;
+
+    await typedFetch(server.url(), options as TypedFetchOptions);
+    const init = transport.calls[0]?.init as RequestInit;
+
+    // `{ ...init }` is what a forwarding transport writes, and a spread drops
+    // an inherited member.
+    expect({ ...init }.signal).toBe(controller.signal);
+    expect(init.signal).toBe(controller.signal);
+  });
+
+  test("signal: null reaches a custom transport as null, not as undefined", async () => {
+    const transport = recordingTransport();
+
+    await typedFetch(server.url(), { signal: null, fetch: transport.fetch });
+    const init = transport.calls[0]?.init as RequestInit;
+
+    expect(init.signal).toBeNull();
+    expect(Reflect.ownKeys(init)).toEqual(["signal"]);
+  });
+});
+
+const seamd6_server = useTestServer();
+
+/** An options getter that aborts the governing signal and then throws. */
+function abortingSlot(
+  slot: string,
+  controller: AbortController,
+  thrown: unknown,
+): Record<string, unknown> {
+  const options: Record<string, unknown> = { signal: controller.signal };
+  Object.defineProperty(options, slot, {
+    enumerable: true,
+    configurable: true,
+    get(): never {
+      controller.abort(thrown);
+      throw thrown;
+    },
+  });
+  return options;
+}
+
+describe("H-28 — an options read that aborts the signal and throws", () => {
+  // The 13 WebIDL slots the transport reads. Every one of them is caller code
+  // that runs after `typedFetch` has already handed the init over.
+  const TRANSPORT_READ_SLOTS = [
+    "method",
+    "headers",
+    "body",
+    "cache",
+    "credentials",
+    "redirect",
+    "referrer",
+    "referrerPolicy",
+    "integrity",
+    "keepalive",
+    "mode",
+    "duplex",
+    "priority",
+  ];
+
+  test.each(TRANSPORT_READ_SLOTS)("options.%s must not claim an abort", async (slot) => {
+    const controller = new AbortController();
+    const options = abortingSlot(slot, controller, new DOMException("Aborted", "AbortError"));
+
+    const { error } = await typedFetch(seamd6_server.url(), options as never);
+
+    expect(isAbortError(error)).toBe(false);
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  test("an aborting options read whose reason is a timeout must not claim a timeout", async () => {
+    const controller = new AbortController();
+    const reason = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+    const options = abortingSlot("method", controller, reason);
+
+    const { error } = await typedFetch(seamd6_server.url(), options as never);
+
+    expect(isTimeoutError(error)).toBe(false);
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  test("a header record getter that aborts and throws must not claim an abort", async () => {
+    const controller = new AbortController();
+    const thrown = new DOMException("Aborted", "AbortError");
+    const headers: Record<string, unknown> = {};
+    Object.defineProperty(headers, "authorization", {
+      enumerable: true,
+      configurable: true,
+      get(): never {
+        controller.abort(thrown);
+        throw thrown;
+      },
+    });
+
+    const { error } = await typedFetch(seamd6_server.url(), {
+      headers: headers as never,
+      signal: controller.signal,
+    });
+
+    expect(isAbortError(error)).toBe(false);
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  test("a header value toString that aborts and throws must not claim an abort", async () => {
+    const controller = new AbortController();
+    const thrown = new DOMException("Aborted", "AbortError");
+    const value = {
+      toString(): never {
+        controller.abort(thrown);
+        throw thrown;
+      },
+    };
+
+    const { error } = await typedFetch(seamd6_server.url(), {
+      headers: { "x-probe": value } as never,
+      signal: controller.signal,
+    });
+
+    expect(isAbortError(error)).toBe(false);
+    expect(isNetworkError(error)).toBe(true);
+  });
+
+  test("a body toString that aborts and throws must not claim an abort", async () => {
+    const controller = new AbortController();
+    const thrown = new DOMException("Aborted", "AbortError");
+    const body = {
+      toString(): never {
+        controller.abort(thrown);
+        throw thrown;
+      },
+    };
+
+    const { error } = await typedFetch(seamd6_server.url(), {
+      method: "POST",
+      body: body as never,
+      signal: controller.signal,
+    });
+
+    expect(isAbortError(error)).toBe(false);
+    expect(isNetworkError(error)).toBe(true);
+  });
+});

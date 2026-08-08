@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, test, expect, expectTypeOf } from "vitest";
 import { statusCodeErrorMap } from "./src/http-status-codes";
 import { httpErrors } from "./src/errors/helpers";
@@ -278,4 +279,196 @@ describe("every class carries the reason phrase the roster table states", () => 
       expect(instance.statusText).toBe(statusText);
     },
   );
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 6 — the roster against the registry, as a THIRD independent table.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const IANA_4XX_5XX: readonly (readonly [number, string])[] = [
+  [400, "Bad Request"],
+  [401, "Unauthorized"],
+  [402, "Payment Required"],
+  [403, "Forbidden"],
+  [404, "Not Found"],
+  [405, "Method Not Allowed"],
+  [406, "Not Acceptable"],
+  [407, "Proxy Authentication Required"],
+  [408, "Request Timeout"],
+  [409, "Conflict"],
+  [410, "Gone"],
+  [411, "Length Required"],
+  [412, "Precondition Failed"],
+  [413, "Content Too Large"],
+  [414, "URI Too Long"],
+  [415, "Unsupported Media Type"],
+  [416, "Range Not Satisfiable"],
+  [417, "Expectation Failed"],
+  [418, "I'm a teapot"],
+  [421, "Misdirected Request"],
+  [422, "Unprocessable Content"],
+  [423, "Locked"],
+  [424, "Failed Dependency"],
+  [425, "Too Early"],
+  [426, "Upgrade Required"],
+  [428, "Precondition Required"],
+  [429, "Too Many Requests"],
+  [431, "Request Header Fields Too Large"],
+  [451, "Unavailable For Legal Reasons"],
+  [500, "Internal Server Error"],
+  [501, "Not Implemented"],
+  [502, "Bad Gateway"],
+  [503, "Service Unavailable"],
+  [504, "Gateway Timeout"],
+  [505, "HTTP Version Not Supported"],
+  [506, "Variant Also Negotiates"],
+  [507, "Insufficient Storage"],
+  [508, "Loop Detected"],
+  [510, "Not Extended"],
+  [511, "Network Authentication Required"],
+];
+
+/** The class name this package gives each code, written from `src/errors/index.ts`'s barrel names. */
+const EXPECTED_CLASS_NAME: Readonly<Record<number, string>> = {
+  400: "BadRequestError",
+  401: "UnauthorizedError",
+  402: "PaymentRequiredError",
+  403: "ForbiddenError",
+  404: "NotFoundError",
+  405: "MethodNotAllowedError",
+  406: "NotAcceptableError",
+  407: "ProxyAuthenticationRequiredError",
+  408: "RequestTimeoutError",
+  409: "ConflictError",
+  410: "GoneError",
+  411: "LengthRequiredError",
+  412: "PreconditionFailedError",
+  413: "RequestTooLongError",
+  414: "RequestUriTooLongError",
+  415: "UnsupportedMediaTypeError",
+  416: "RequestedRangeNotSatisfiableError",
+  417: "ExpectationFailedError",
+  418: "ImATeapotError",
+  421: "MisdirectedRequestError",
+  422: "UnprocessableEntityError",
+  423: "LockedError",
+  424: "FailedDependencyError",
+  425: "TooEarlyError",
+  426: "UpgradeRequiredError",
+  428: "PreconditionRequiredError",
+  429: "TooManyRequestsError",
+  431: "RequestHeaderFieldsTooLargeError",
+  451: "UnavailableForLegalReasonsError",
+  500: "InternalServerError",
+  501: "NotImplementedError",
+  502: "BadGatewayError",
+  503: "ServiceUnavailableError",
+  504: "GatewayTimeoutError",
+  505: "HttpVersionNotSupportedError",
+  506: "VariantAlsoNegotiatesError",
+  507: "InsufficientStorageError",
+  508: "LoopDetectedError",
+  510: "NotExtendedError",
+  511: "NetworkAuthenticationRequiredError",
+};
+
+describe("round 6 lane 3 — the roster table against the registry", () => {
+  test("the table holds exactly the IANA-registered 4xx and 5xx codes", () => {
+    expect(allErrors.map((row) => row.status)).toEqual(IANA_4XX_5XX.map(([status]) => status));
+  });
+
+  test("the table is in ascending status order, with no duplicate", () => {
+    const statuses = allErrors.map((row) => row.status);
+    expect([...statuses].sort((a, b) => a - b)).toEqual(statuses);
+    expect(new Set(statuses).size).toBe(statuses.length);
+  });
+
+  test("every row names the class this package documents for that code", () => {
+    expect(Object.fromEntries(allErrors.map((row) => [row.status, row.Class.name]))).toEqual(
+      Object.fromEntries(
+        Object.entries(EXPECTED_CLASS_NAME).map(([status, name]) => [Number(status), name]),
+      ),
+    );
+  });
+
+  /**
+   * THE CHECK `fixtures/error-roster.ts` CANNOT MAKE.
+   *
+   * Its rows carry `{ Class, status }` and no reason phrase, so a wrong
+   * `statusText` never reaches a runtime comparison against a hand-written
+   * table. Verified: changing `VariantAlsoNegotiatesError`'s phrase to
+   * "Variant Also Negotiate" leaves `vitest run` at 1756/1756 passing, and only
+   * `tsc` objects, at roster-sync.spec.ts:244.
+   *
+   * This is that comparison, at runtime, for all 40.
+   */
+  test("every class's static AND instance reason phrase is the registered one", () => {
+    const registry = new Map(IANA_4XX_5XX);
+
+    const fromStatic = allErrors.map((row) => [row.status, row.Class.statusText] as const);
+    const fromInstance = allErrors.map(
+      (row) =>
+        [row.status, new row.Class(new Response(null, { status: row.status })).statusText] as const,
+    );
+    const expected = allErrors.map((row) => [row.status, registry.get(row.status)] as const);
+
+    expect(fromStatic).toEqual(expected);
+    expect(fromInstance).toEqual(expected);
+  });
+
+  test("every class's static AND instance status is the row's status", () => {
+    for (const { Class, status } of allErrors) {
+      expect(Class.status).toBe(status);
+      expect(new Class(new Response(null, { status })).status).toBe(status);
+    }
+  });
+});
+
+describe("round 6 lane 3 — the roster table is still independent of src/", () => {
+  const source = readFileSync(new URL("./fixtures/error-roster.ts", import.meta.url), "utf8");
+  // The file's own header comment NAMES the registries it forbids, so the scan
+  // must read code and not prose.
+  const code = source
+    .split("\n")
+    .filter((line: string) => !line.trimStart().startsWith("//"))
+    .join("\n");
+  const body = source.slice(source.indexOf("export const allErrors"));
+
+  test("the table imports classes only, and derives no value from src/", () => {
+    // A rewrite as a projection over the roster is the one edit that silently
+    // destroys every test that leans on this table. These are the names such a
+    // rewrite would have to use.
+    for (const forbidden of [
+      "httpErrors",
+      "statusCodeErrorMap",
+      "helpers",
+      "http-status-codes",
+      ".status",
+      ".map(",
+      ".filter(",
+      "Object.entries",
+      "Object.values",
+    ]) {
+      expect(code.includes(forbidden), `error-roster.ts references ${forbidden}`).toBe(false);
+    }
+    expect(body).not.toContain("=>");
+    // The one import it may have is the class barrel.
+    expect(code.slice(0, code.indexOf("export const"))).toContain('from "../src/errors";');
+  });
+
+  test("every status in the table is written as a numeric literal", () => {
+    const literals = [...body.matchAll(/status: (\d+)[,}]/g)].map((match) => Number(match[1]));
+    expect(literals).toEqual(allErrors.map((row) => row.status));
+  });
+});
+
+describe("round 6 lane 3 — the registries agree with the table", () => {
+  test("httpErrors and statusCodeErrorMap both hold exactly the table's 40", () => {
+    expect([...httpErrors].map((Class) => Class.name).sort()).toEqual(
+      allErrors.map((row) => row.Class.name).sort(),
+    );
+    expect([...statusCodeErrorMap.keys()].sort((a, b) => a - b)).toEqual(
+      allErrors.map((row) => row.status),
+    );
+  });
 });

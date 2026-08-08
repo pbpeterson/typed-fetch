@@ -12,6 +12,7 @@ import {
 } from "./src/errors";
 import { inspectCustom } from "./src/errors/inspect";
 import { ownSlot } from "./src/errors/response-identity";
+import { ownsResponseSymbol } from "./src/errors/brand";
 import {
   isAbortError,
   isHttpError,
@@ -761,3 +762,7 @@ describe("a slot that refuses to answer is absent, not present-with-undefined", 
     expect(inspect(error)).not.toContain("[not shown - read error.reason]");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 6 — a consumer subclass cannot break the library's invariants.
+// ═══════════════════════════════════════════════════════════════════════════

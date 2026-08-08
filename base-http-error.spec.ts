@@ -2,6 +2,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { describe, test, expect, vi } from "vitest";
 import { BaseHttpError, NotFoundError, UnknownHttpError } from "./src/errors";
 import { ownsResponseSymbol } from "./src/errors/brand";
+import { inspect } from "node:util";
+import { isHttpError, isKnownHttpError } from "./src/index";
 import { typedFetch } from "./src/index";
 import { redactUrl } from "./src/errors/redact-url";
 
@@ -1567,5 +1569,917 @@ describe("control — the message layout escapes its own delimiters", () => {
     expect(error.message).toBe('HTTP 404 "Not Found" (https://api.test/x%29%20FORGED%20%28y)');
     expect(error.url).toBe("https://api.test/x)%20FORGED%20(y");
     await error.cancel();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 6 — the ownership query's boundaries, and the refusal matrix.
+//
+// Every way a `recreate` callback or a consumer subclass can misbehave, with
+// four columns asserted per row: what the library does, whether the branch is
+// released, whether the original stays usable, and whether `cancel()` settles.
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function clone6_settlesWithin(promise: Promise<unknown>, ms = 500): Promise<string> {
+  return Promise.race([
+    promise.then(
+      () => "settled",
+      () => "rejected",
+    ),
+    new Promise<string>((resolve) => setTimeout(() => resolve("pending"), ms)),
+  ]);
+}
+
+/** Run a `clone()` that must fail, capturing the branch the callback was handed. */
+function clone6_failingClone(
+  error: NotFoundError,
+  recreate: (response: Response) => unknown,
+): { thrown: unknown; branch: Response | undefined } {
+  let branch: Response | undefined;
+  let thrown: unknown;
+  try {
+    error.clone((response) => {
+      branch = response;
+      return recreate(response) as NotFoundError;
+    });
+  } catch (caught) {
+    thrown = caught;
+  }
+  return { thrown, branch };
+}
+
+async function clone6_expectBranchReleased(
+  error: NotFoundError,
+  branch: Response | undefined,
+): Promise<void> {
+  expect(branch?.bodyUsed).toBe(true);
+  expect(await clone6_settlesWithin(error.cancel())).toBe("settled");
+}
+
+const payload = (): Response => new Response("payload", { status: 404 });
+
+describe("L4-B — the ownership query's boundaries", () => {
+  test("L4-B1: an ASYNCHRONOUS answer is not the literal `true`, so the clone is refused", async () => {
+    // `asksOwnsResponse` requires the literal `true`. A promise is truthy and is
+    // not an answer this library asked for, so the copy is treated as one built
+    // from a different response — and the branch is released.
+    const error = new NotFoundError(payload());
+    const { thrown, branch } = clone6_failingClone(error, () => ({
+      [ownsResponseSymbol]: async () => true,
+    }));
+
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/built from a different response/);
+    await clone6_expectBranchReleased(error, branch);
+  });
+
+  test("L4-B2: an answer computed by RE-ENTERING clone(), then refusing, strands nothing", async () => {
+    const error = new NotFoundError(payload());
+    let nested: NotFoundError | undefined;
+
+    const { thrown, branch } = clone6_failingClone(error, () => ({
+      [ownsResponseSymbol]() {
+        // The outer branch is already teed at this point. Teeing again from
+        // inside the query is the reentrancy the ledger records as clean.
+        nested = error.clone();
+        return false;
+      },
+    }));
+
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect(nested).toBeInstanceOf(NotFoundError);
+    // The OUTER branch was released by the refusal.
+    expect(branch?.bodyUsed).toBe(true);
+    // The nested clone's branch has its own owner, so releasing both settles.
+    expect(await clone6_settlesWithin(Promise.all([error.cancel(), nested!.cancel()]))).toBe(
+      "settled",
+    );
+  });
+
+  test("L4-B3: an answer computed by re-entering clone(), then ACCEPTING, still lets every branch go", async () => {
+    const error = new NotFoundError(payload());
+    let nested: NotFoundError | undefined;
+    let outerBranch: Response | undefined;
+
+    const copy = error.clone((response) => {
+      outerBranch = response;
+      return {
+        [ownsResponseSymbol]() {
+          nested = error.clone();
+          return true;
+        },
+      } as unknown as NotFoundError;
+    });
+
+    expect(copy).toBeDefined();
+    expect(nested).toBeInstanceOf(NotFoundError);
+    // The accepted foreign "copy" holds nothing, so the outer branch is the
+    // documented residual's orphan: release it by hand, exactly as B10 does.
+    void outerBranch?.body?.cancel().catch(() => {});
+    expect(await clone6_settlesWithin(Promise.all([error.cancel(), nested!.cancel()]))).toBe(
+      "settled",
+    );
+  });
+
+  test("L4-B4: a symbol and a bigint result are refused by type, and release the branch", async () => {
+    for (const value of [Symbol("s"), 10n] as unknown[]) {
+      const error = new NotFoundError(payload());
+      const { thrown, branch } = clone6_failingClone(error, () => value);
+
+      expect(thrown).toBeInstanceOf(TypeError);
+      expect((thrown as Error).message).toMatch(/instead of an error/);
+      await clone6_expectBranchReleased(error, branch);
+    }
+  });
+
+  test("L4-B5: a REVOKED Proxy answers nothing, and is refused as a delegate", async () => {
+    // Every operation on a revoked proxy throws, including the `getPrototypeOf`
+    // behind `instanceof`. `claimsThisCopy` fails UP — a value that cannot
+    // answer is treated as claiming this copy — and this copy's table cannot
+    // key it, so it takes the Proxy/delegate refusal.
+    const error = new NotFoundError(payload());
+    const { thrown, branch } = clone6_failingClone(error, () => {
+      const { proxy, revoke } = Proxy.revocable(function fake() {}, {});
+      revoke();
+      return proxy;
+    });
+
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(
+      /claims this copy of the library but carries no body/,
+    );
+    await clone6_expectBranchReleased(error, branch);
+  });
+
+  test("L4-B6: with Object.prototype polluted, a non-owner is still refused", async () => {
+    // The pollution guard in `asksOwnsResponse`: one polluting write of this
+    // symbol would otherwise answer for EVERY value, and the answer releases
+    // custody of a teed branch.
+    const polluted = Object.prototype as unknown as Record<symbol, unknown>;
+    polluted[ownsResponseSymbol] = () => true;
+    try {
+      const error = new NotFoundError(payload());
+      const { thrown, branch } = clone6_failingClone(error, () => ({}));
+
+      expect(thrown).toBeInstanceOf(TypeError);
+      expect((thrown as Error).message).toMatch(
+        /cannot confirm that it took the cloned body branch/,
+      );
+      await clone6_expectBranchReleased(error, branch);
+    } finally {
+      delete polluted[ownsResponseSymbol];
+    }
+  });
+
+  test("L4-B7: with Object.prototype polluted, a genuine cross-copy answer is still accepted", async () => {
+    const polluted = Object.prototype as unknown as Record<symbol, unknown>;
+    polluted[ownsResponseSymbol] = () => true;
+    try {
+      const error = new NotFoundError(payload());
+      let branch: Response | undefined;
+
+      const copy = error.clone((response) => {
+        branch = response;
+        return {
+          [ownsResponseSymbol]: (candidate: Response) => candidate === response,
+        } as unknown as NotFoundError;
+      });
+
+      expect(copy).toBeDefined();
+      void branch?.body?.cancel().catch(() => {});
+      expect(await clone6_settlesWithin(error.cancel())).toBe("settled");
+    } finally {
+      delete polluted[ownsResponseSymbol];
+    }
+  });
+
+  test("L4-B8: RECORDED LIMIT — pollution plus a 100-link chain refuses a real answer, and releases", async () => {
+    // `ownsMemberBelowObject` walks at most 32 links, because the chain belongs
+    // to the caller and a Proxy can answer `getPrototypeOf` with itself forever.
+    // The walk runs ONLY while `Object.prototype` carries the key, so this needs
+    // pollution AND a hierarchy four times deeper than anything real. It fails
+    // toward REFUSING the clone, which releases the branch — the safe direction
+    // ADR 0002 chose.
+    const polluted = Object.prototype as unknown as Record<symbol, unknown>;
+    polluted[ownsResponseSymbol] = () => true;
+    try {
+      const error = new NotFoundError(payload());
+      const { thrown, branch } = clone6_failingClone(error, (response) => {
+        let proto = Object.create(null) as object;
+        Object.defineProperty(proto, ownsResponseSymbol, {
+          value: (candidate: Response) => candidate === response,
+        });
+        for (let step = 0; step < 100; step += 1) proto = Object.create(proto) as object;
+        return Object.create(proto) as object;
+      });
+
+      expect(thrown).toBeInstanceOf(TypeError);
+      expect((thrown as Error).message).toMatch(
+        /cannot confirm that it took the cloned body branch/,
+      );
+      await clone6_expectBranchReleased(error, branch);
+    } finally {
+      delete polluted[ownsResponseSymbol];
+    }
+  });
+
+  test("L4-B9: a callback that builds TWO errors from the branch leaves both able to release", async () => {
+    const error = new NotFoundError(payload());
+    let decoy: NotFoundError | undefined;
+
+    const copy = error.clone((branch) => {
+      decoy = new NotFoundError(branch);
+      return new NotFoundError(branch);
+    });
+
+    expect(copy).toBeInstanceOf(NotFoundError);
+    // The copy alone stays pending — native tee semantics, kept deliberately.
+    expect(await clone6_settlesWithin(copy.cancel(), 150)).toBe("pending");
+    expect(await clone6_settlesWithin(error.cancel())).toBe("settled");
+    expect(await clone6_settlesWithin(decoy!.cancel())).toBe("settled");
+  });
+
+  test("L4-B10: a callback that CANCELS the original mid-clone still returns a usable copy", async () => {
+    const error = new NotFoundError(payload());
+    let pending: Promise<void> | undefined;
+
+    const copy = error.clone((branch) => {
+      pending = error.cancel();
+      return new NotFoundError(branch);
+    });
+
+    expect(copy).toBeInstanceOf(NotFoundError);
+    // The in-flight cancel waits for the sibling, which is the documented tee
+    // contract rather than a strand.
+    expect(await clone6_settlesWithin(pending!, 150)).toBe("pending");
+    expect(await clone6_settlesWithin(copy.cancel())).toBe("settled");
+    expect(await clone6_settlesWithin(pending!)).toBe("settled");
+  });
+
+  test("L4-B11: a callback returning a NESTED clone of the original is refused on the wrong branch", async () => {
+    const error = new NotFoundError(payload());
+    let nested: NotFoundError | undefined;
+
+    const { thrown, branch } = clone6_failingClone(error, () => {
+      nested = error.clone();
+      return nested;
+    });
+
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/built from a different response/);
+    // The branch THIS call teed is released.
+    expect(branch?.bodyUsed).toBe(true);
+    // The nested clone the callback made is a second live branch the CONSUMER
+    // created and dropped, so the original stays pending until it is released.
+    // That is the ordinary "release every branch" contract, not a strand the
+    // refusal caused.
+    expect(await clone6_settlesWithin(error.cancel(), 150)).toBe("pending");
+    expect(await clone6_settlesWithin(Promise.all([error.cancel(), nested!.cancel()]))).toBe(
+      "settled",
+    );
+  });
+
+  test("L4-B12: a callback that DRAINS the branch and then fails does not strand it", async () => {
+    // The documented residual is a callback that takes a READER. Draining with
+    // `text()` is the neighbouring case, and it behaves differently: the read
+    // completes on its own, so the teed source is freed and the original's
+    // `cancel()` settles.
+    const error = new NotFoundError(payload());
+    let reading: Promise<string> | undefined;
+
+    const { thrown, branch } = clone6_failingClone(error, (response) => {
+      reading = response.text();
+      return null;
+    });
+
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect(await reading).toBe("payload");
+    expect(branch?.bodyUsed).toBe(true);
+    expect(await clone6_settlesWithin(error.cancel())).toBe("settled");
+  });
+
+  test("L4-B13: a callback that takes a reader and returns a VALID copy fails LOUDLY, not silently", async () => {
+    // The residual's neighbour on the accepted side. The copy really owns the
+    // branch, so `clone()` accepts — and the copy's own `cancel()` then REJECTS
+    // with the library's locked-stream message rather than hanging. Only the
+    // original waits, and only until the reader is released.
+    const error = new NotFoundError(payload());
+    const copy = error.clone((branch) => {
+      branch.body?.getReader();
+      return new NotFoundError(branch);
+    });
+
+    await expect(copy.cancel()).rejects.toThrowError(/its stream is locked by a reader/);
+    expect(await clone6_settlesWithin(error.cancel(), 150)).toBe("pending");
+  });
+
+  test("L4-B14: THE RESIDUAL, re-verified — a lying copy costs exactly one orphaned branch", async () => {
+    // ADR 0002, "Two limits, deliberate and permanent": a copy that answers
+    // `true` while holding a different response is believed. This asserts the
+    // consequence is ONLY that — an orphaned branch — and not a wrong identity,
+    // a wrong guard answer, or a body the original can no longer read.
+    const error = new NotFoundError(payload());
+    const elsewhere = new Response("elsewhere", { status: 404 });
+    let branch: Response | undefined;
+
+    const copy = error.clone((response) => {
+      branch = response;
+      return {
+        url: elsewhere.url,
+        [ownsResponseSymbol]: () => true,
+      } as unknown as NotFoundError;
+    });
+
+    expect(copy).toBeDefined();
+    // Identity is untouched: the original still reports its own.
+    expect(error.status).toBe(404);
+    expect(error.toJSON().status).toBe(404);
+    // The branch is an orphan: `bodyUsed === false` is its mechanical signature.
+    expect(branch?.bodyUsed).toBe(false);
+    // ...and the ONLY cost is that the original's release waits for it.
+    expect(await clone6_settlesWithin(error.cancel(), 150)).toBe("pending");
+    void branch?.body?.cancel().catch(() => {});
+    expect(await clone6_settlesWithin(error.cancel())).toBe("settled");
+    void elsewhere.body?.cancel().catch(() => {});
+  });
+
+  test("L4-B15: a non-callable `recreate` is refused as a failed callback, and releases", async () => {
+    const error = new NotFoundError(payload());
+    let thrown: unknown;
+    try {
+      (error.clone as (r: unknown) => unknown)({});
+    } catch (caught) {
+      thrown = caught;
+    }
+
+    expect(thrown).toBeInstanceOf(TypeError);
+    expect((thrown as Error).message).toMatch(/the recreate callback failed/);
+    expect(await clone6_settlesWithin(error.cancel())).toBe("settled");
+  });
+
+  test("L4-B16: after every refusal above, the original can still READ its payload", async () => {
+    // "The original stays usable" is two claims, and B17 asserts only the
+    // release half. This asserts the other: the payload is still there.
+    const shapes: Array<(response: Response) => unknown> = [
+      () => null,
+      () => undefined,
+      () => "x",
+      () => 42,
+      () => Symbol("s"),
+      () => 10n,
+      () => ({}),
+      () => ({ [ownsResponseSymbol]: async () => true }),
+      () => ({
+        [ownsResponseSymbol]() {
+          throw new Error("member exploded");
+        },
+      }),
+      (response) => new Proxy(new NotFoundError(response), {}),
+      () => new NotFoundError(new Response("elsewhere", { status: 404 })),
+    ];
+
+    for (const make of shapes) {
+      const error = new NotFoundError(payload());
+      const { thrown } = clone6_failingClone(error, make);
+      expect(thrown).toBeInstanceOf(TypeError);
+      expect(await error.text()).toBe("payload");
+    }
+  });
+});
+
+async function matrix6_settlesWithin(promise: Promise<unknown>, ms = 500): Promise<string> {
+  return Promise.race([
+    promise.then(
+      () => "settled",
+      () => "rejected",
+    ),
+    new Promise<string>((resolve) => setTimeout(() => resolve("pending"), ms)),
+  ]);
+}
+
+const matrix6_payload = (): Response => new Response("matrix6_payload", { status: 404 });
+
+/** A copy from another package copy AT THIS VERSION: it answers honestly. */
+const matrix6_newCopyError = (response: Response): unknown => ({
+  name: "NotFoundError",
+  [ownsResponseSymbol](candidate: Response) {
+    return candidate === response;
+  },
+  async cancel() {
+    await response.body?.cancel();
+  },
+});
+
+/** A copy from a package copy OLDER than this one: no member under the key. */
+const matrix6_oldCopyError = (response: Response): unknown => ({
+  name: "NotFoundError",
+  async cancel() {
+    await response.body?.cancel();
+  },
+});
+
+type Verdict =
+  | { kind: "library-refusal"; message: RegExp }
+  | { kind: "consumer-exception"; message: RegExp }
+  | { kind: "accepted" };
+
+interface Row {
+  /** What the callback does wrong. */
+  label: string;
+  /** The callback's body. `error` is the original, so a row can return `this`. */
+  make: (branch: Response, error: NotFoundError) => unknown;
+  verdict: Verdict;
+  branchReleased: boolean;
+  cancelSettles: "settled" | "pending";
+  /** Release whatever the row deliberately left behind. */
+  cleanup?: (branch: Response | undefined) => Promise<void> | void;
+}
+
+const rows: Row[] = [
+  {
+    label: "returns null",
+    make: () => null,
+    verdict: { kind: "library-refusal", message: /returned null instead of an error/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns undefined",
+    make: () => undefined,
+    verdict: { kind: "library-refusal", message: /returned undefined instead of an error/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns a string",
+    make: () => "x",
+    verdict: { kind: "library-refusal", message: /returned string instead of an error/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns a number",
+    make: () => 42,
+    verdict: { kind: "library-refusal", message: /returned number instead of an error/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns a boolean",
+    make: () => true,
+    verdict: { kind: "library-refusal", message: /returned boolean instead of an error/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns a symbol",
+    make: () => Symbol("s"),
+    verdict: { kind: "library-refusal", message: /returned symbol instead of an error/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns a bigint",
+    make: () => 10n,
+    verdict: { kind: "library-refusal", message: /returned bigint instead of an error/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns the SAME error",
+    make: (_branch, error) => error,
+    verdict: { kind: "library-refusal", message: /returned the same error instead of a new one/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns a Proxy wrapped around a real copy",
+    make: (branch) => new Proxy(new NotFoundError(branch), {}),
+    verdict: {
+      kind: "library-refusal",
+      message: /claims this copy of the library but carries no body/,
+    },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns an Object.create delegate",
+    make: (branch) => Object.create(new NotFoundError(branch)) as object,
+    verdict: {
+      kind: "library-refusal",
+      message: /claims this copy of the library but carries no body/,
+    },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns a REVOKED Proxy",
+    make: () => {
+      const { proxy, revoke } = Proxy.revocable(function fake() {}, {});
+      revoke();
+      return proxy;
+    },
+    verdict: {
+      kind: "library-refusal",
+      message: /claims this copy of the library but carries no body/,
+    },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns a THIS-copy error built from a different response",
+    make: () => new NotFoundError(new Response("elsewhere", { status: 404 })),
+    verdict: { kind: "library-refusal", message: /built from a different response/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns a bare object",
+    make: () => ({}),
+    verdict: {
+      kind: "library-refusal",
+      message: /cannot confirm that it took the cloned body branch/,
+    },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns a bare function",
+    make: () => () => {},
+    verdict: {
+      kind: "library-refusal",
+      message: /cannot confirm that it took the cloned body branch/,
+    },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns an OLDER package copy's instance (no member under the key)",
+    make: () => matrix6_oldCopyError(new Response("elsewhere", { status: 404 })),
+    verdict: { kind: "library-refusal", message: /older than this one cannot answer/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "the ownership member is not callable",
+    make: () => ({ [ownsResponseSymbol]: 1 }),
+    verdict: {
+      kind: "library-refusal",
+      message: /cannot confirm that it took the cloned body branch/,
+    },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "the ownership member THROWS",
+    make: () => ({
+      [ownsResponseSymbol]() {
+        throw new Error("member exploded");
+      },
+    }),
+    verdict: { kind: "library-refusal", message: /built from a different response/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "the symbol-keyed GETTER throws",
+    make: () =>
+      Object.defineProperty({}, ownsResponseSymbol, {
+        get() {
+          throw new Error("symbol read exploded");
+        },
+      }),
+    verdict: { kind: "library-refusal", message: /built from a different response/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "the ownership member answers a truthy NON-boolean",
+    make: () => ({ [ownsResponseSymbol]: () => 1 }),
+    verdict: { kind: "library-refusal", message: /built from a different response/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "the ownership member answers ASYNCHRONOUSLY",
+    make: () => ({ [ownsResponseSymbol]: async () => true }),
+    verdict: { kind: "library-refusal", message: /built from a different response/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "returns a CURRENT-version foreign copy holding another response",
+    make: () => matrix6_newCopyError(new Response("elsewhere", { status: 404 })),
+    verdict: { kind: "library-refusal", message: /built from a different response/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "the callback THROWS",
+    make: () => {
+      throw new Error("callback exploded");
+    },
+    verdict: { kind: "library-refusal", message: /the recreate callback failed/ },
+    branchReleased: true,
+    cancelSettles: "settled",
+  },
+  {
+    label: "ACCEPTED — a genuine same-copy copy built from the branch",
+    make: (branch) => new NotFoundError(branch),
+    verdict: { kind: "accepted" },
+    branchReleased: false,
+    cancelSettles: "pending",
+    async cleanup(branch) {
+      await branch?.body?.cancel().catch(() => {});
+    },
+  },
+  {
+    label: "ACCEPTED — a CURRENT-version foreign copy that confirms the branch",
+    make: (branch) => matrix6_newCopyError(branch),
+    verdict: { kind: "accepted" },
+    branchReleased: false,
+    cancelSettles: "pending",
+    async cleanup(branch) {
+      await branch?.body?.cancel().catch(() => {});
+    },
+  },
+  {
+    label: "RESIDUAL — a foreign copy that LIES, answering true while holding another response",
+    make: () => ({ [ownsResponseSymbol]: () => true }),
+    verdict: { kind: "accepted" },
+    branchReleased: false,
+    cancelSettles: "pending",
+    async cleanup(branch) {
+      await branch?.body?.cancel().catch(() => {});
+    },
+  },
+];
+
+describe("L4-M — the refusal matrix for a recreate callback", () => {
+  test.each(rows)(
+    "$label",
+    async ({ label, make, verdict, branchReleased, cancelSettles, cleanup }) => {
+      // ── Columns 1 and 2, plus column 4 ────────────────────────────────────
+      const error = new NotFoundError(matrix6_payload());
+      let branch: Response | undefined;
+      let thrown: unknown;
+      let accepted: unknown;
+      try {
+        accepted = error.clone((response) => {
+          branch = response;
+          return make(response, error) as NotFoundError;
+        });
+      } catch (caught) {
+        thrown = caught;
+      }
+
+      if (verdict.kind === "accepted") {
+        expect(thrown, `${label}: expected acceptance`).toBeUndefined();
+        expect(accepted).toBeDefined();
+      } else {
+        expect(thrown, `${label}: expected a throw`).toBeInstanceOf(Error);
+        expect((thrown as Error).message).toMatch(verdict.message);
+        if (verdict.kind === "library-refusal") expect(thrown).toBeInstanceOf(TypeError);
+      }
+
+      expect(branch?.bodyUsed, `${label}: branch release column`).toBe(branchReleased);
+      expect(await matrix6_settlesWithin(error.cancel(), 150), `${label}: cancel column`).toBe(
+        cancelSettles,
+      );
+      await cleanup?.(branch);
+      // Whatever the row left behind, the original settles once it is released.
+      expect(await matrix6_settlesWithin(error.cancel()), `${label}: cancel after cleanup`).toBe(
+        "settled",
+      );
+
+      // ── Column 3, on a FRESH original, because column 4 consumed the last one ──
+      const readable = new NotFoundError(matrix6_payload());
+      let readableBranch: Response | undefined;
+      try {
+        readableBranch = undefined;
+        readable.clone((response) => {
+          readableBranch = response;
+          return make(response, readable) as NotFoundError;
+        });
+      } catch {
+        // The refusal is column 1's business; this half only asks whether the
+        // original can still be read afterwards.
+      }
+      expect(await readable.text(), `${label}: original still readable`).toBe("matrix6_payload");
+      await cleanup?.(readableBranch);
+    },
+  );
+
+  test("L4-M-extra: the CLONE itself is refused when response.clone() answers with a primitive", async () => {
+    // The sixth condition — it refuses the clone rather than the callback's
+    // result, and it runs BEFORE anything is built from the branch.
+    for (const [value, pattern] of [
+      [42, /clone\(\) returned number instead of a Response/],
+      ["x", /clone\(\) returned string instead of a Response/],
+      [null, /clone\(\) returned null instead of a Response/],
+      [undefined, /clone\(\) returned undefined instead of a Response/],
+    ] as Array<[unknown, RegExp]>) {
+      const response = matrix6_payload();
+      Object.defineProperty(response, "clone", { value: () => value });
+      const error = new NotFoundError(response);
+
+      expect(() => error.clone()).toThrowError(pattern);
+      expect(await matrix6_settlesWithin(error.cancel())).toBe("settled");
+    }
+  });
+
+  test("L4-M-residual: a callback that LOCKS the branch defeats the release (adjudicated closed)", async () => {
+    // `docs/audit-ledger.md`, "Adjudicated closed" #8. Only the holder of a
+    // reader can cancel a locked stream, so the release cannot free the branch
+    // and `cancel()` on the original never settles. Nothing in this library can
+    // recover it. This is the ONE row where "the original stays usable" does
+    // not hold for `cancel()` — the matrix6_payload is still readable.
+    const error = new NotFoundError(matrix6_payload());
+    let held: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let branch: Response | undefined;
+
+    expect(() =>
+      error.clone((response) => {
+        branch = response;
+        held = response.body?.getReader();
+        return null as unknown as NotFoundError;
+      }),
+    ).toThrowError(TypeError);
+
+    expect(branch?.bodyUsed).toBe(false);
+    expect(await matrix6_settlesWithin(error.cancel(), 150)).toBe("pending");
+
+    await held?.cancel().catch(() => {});
+    held?.releaseLock();
+  });
+});
+
+// ── The subclass half of the matrix ─────────────────────────────────────────
+
+describe("L4-M — the refusal matrix for a consumer subclass", () => {
+  test("S1: skips super(response) — no owner is filed, and every body method refuses by name", async () => {
+    class Escapee extends BaseHttpError {
+      override readonly name = "Escapee" as const;
+      readonly status = 499 as const;
+      readonly statusText = "Escapee" as const;
+      constructor(_response: Response) {
+        // eslint-disable-next-line no-constructor-return
+        return Object.create(Escapee.prototype) as Escapee;
+        // eslint-disable-next-line no-unreachable
+        super(_response);
+      }
+    }
+
+    const response = matrix6_payload();
+    const error = new Escapee(response);
+
+    expect(isHttpError(error)).toBe(true);
+    await expect(error.cancel()).rejects.toThrowError(/must call super\(response\)/);
+    expect(() => error.clone()).toThrowError(/must call super\(response\)/);
+    expect(response.bodyUsed).toBe(false);
+    await response.body?.cancel();
+  });
+
+  test("S2: calls super() twice — one owner, and it can release", async () => {
+    const response = matrix6_payload();
+    let initialized: BaseHttpError | undefined;
+
+    class Twice extends BaseHttpError {
+      override readonly name = "Twice" as const;
+      readonly status = 404 as const;
+      readonly statusText = "Twice" as const;
+      constructor(r: Response) {
+        super(r);
+        initialized = this;
+        super(r);
+      }
+    }
+
+    expect(() => new Twice(response)).toThrowError(ReferenceError);
+    expect(await matrix6_settlesWithin(initialized!.cancel())).toBe("settled");
+  });
+
+  test("S3: throws AFTER super() — the consumer's exception reaches the caller verbatim, branch released", async () => {
+    class Fussy extends BaseHttpError {
+      override readonly name = "Fussy" as const;
+      readonly status = 404 as const;
+      readonly statusText = "Fussy" as const;
+      constructor(
+        r: Response,
+        readonly tag?: string,
+      ) {
+        super(r);
+        if (!tag) throw new TypeError("tag is required");
+      }
+    }
+
+    const error = new Fussy(matrix6_payload(), "t");
+    // "Deliberately NOT wrapped: a consumer subclass constructor's own error
+    // must reach the caller verbatim."
+    expect(() => error.clone()).toThrowError(/tag is required/);
+    expect(await matrix6_settlesWithin(error.cancel())).toBe("settled");
+  });
+
+  test("S4: a throwing `name` getter replaces the thrown VALUE, never the release ORDER", async () => {
+    class Loud extends BaseHttpError {
+      readonly status = 404 as const;
+      readonly statusText = "Loud" as const;
+      override get name(): string {
+        throw new Error("name getter exploded");
+      }
+    }
+
+    const error = new Loud(matrix6_payload());
+    let branch: Response | undefined;
+
+    expect(() =>
+      error.clone((response) => {
+        branch = response;
+        return null as unknown as Loud;
+      }),
+    ).toThrowError(/name getter exploded/);
+
+    expect(branch?.bodyUsed).toBe(true);
+    expect(await matrix6_settlesWithin(error.cancel())).toBe("settled");
+  });
+
+  test("S5: overrides toJSON to throw — the inspect hook survives, the body is untouched", async () => {
+    class Bad extends BaseHttpError {
+      override readonly name = "Bad" as const;
+      readonly status = 404 as const;
+      readonly statusText = "Bad" as const;
+      override toJSON(): never {
+        throw new Error("toJSON");
+      }
+    }
+
+    const error = new Bad(matrix6_payload());
+    expect(inspect(error)).toContain("[threw]");
+    expect(await matrix6_settlesWithin(error.cancel())).toBe("settled");
+  });
+
+  test("S6: builds a SECOND error from the same Response — one identity, two owners", async () => {
+    const response = matrix6_payload();
+    let decoy: NotFoundError | undefined;
+
+    class Doubler extends BaseHttpError {
+      override readonly name = "Doubler" as const;
+      readonly status = 404 as const;
+      readonly statusText = "Not Found" as const;
+      constructor(r: Response) {
+        super(r);
+        decoy = new NotFoundError(r);
+      }
+    }
+
+    const error = new Doubler(response);
+    expect(error.message).toBe(decoy!.message);
+    expect(error.url).toBe(decoy!.url);
+    expect(await matrix6_settlesWithin(error.cancel())).toBe("settled");
+    expect(await matrix6_settlesWithin(decoy!.cancel())).toBe("settled");
+  });
+
+  test("S7: is constructed INSIDE another error's recreate callback", async () => {
+    class Tagged extends BaseHttpError {
+      override readonly name = "Tagged" as const;
+      readonly status = 404 as const;
+      readonly statusText = "Tagged" as const;
+      constructor(
+        r: Response,
+        readonly tag: string,
+      ) {
+        super(r);
+      }
+    }
+
+    const error = new NotFoundError(matrix6_payload());
+    const copy = error.clone((branch) => new Tagged(branch, "acme") as unknown as NotFoundError);
+
+    expect((copy as unknown as Tagged).tag).toBe("acme");
+    expect(await matrix6_settlesWithin(Promise.all([error.cancel(), copy.cancel()]))).toBe(
+      "settled",
+    );
+  });
+
+  test("S8: overrides `status` off the map — isKnownHttpError follows the RECEIVING copy's map", async () => {
+    class Odd extends NotFoundError {
+      override readonly status = 999 as unknown as 404;
+    }
+    const odd = new Odd(matrix6_payload());
+    expect(isHttpError(odd)).toBe(true);
+    expect(isKnownHttpError(odd)).toBe(false);
+    expect(await matrix6_settlesWithin(odd.cancel())).toBe("settled");
+  });
+
+  test("S9: a plain BaseHttpError subclass passes isHttpError and NOT isKnownHttpError", async () => {
+    class Custom extends BaseHttpError {
+      override readonly name = "Custom" as const;
+      readonly status = 404 as const;
+      readonly statusText = "Custom" as const;
+    }
+    const custom = new Custom(matrix6_payload());
+    expect(isHttpError(custom)).toBe(true);
+    expect(isKnownHttpError(custom)).toBe(false);
+    expect(await matrix6_settlesWithin(custom.cancel())).toBe("settled");
   });
 });

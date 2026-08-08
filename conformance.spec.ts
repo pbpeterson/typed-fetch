@@ -180,3 +180,119 @@ describe("the prose row count", () => {
     }).toEqual({ CONTRIBUTING: rows, maintainerSkill: rows });
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 6 — each row's own defence, isolated from the gate that answered for it.
+//
+// H-14's case is gone from here because the SCENARIO drives it now: the row
+// presents the refused value a second time through its own `after` hook.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** A response-shaped foreign object that passes every structural check. */
+function foreignResponse(overrides: Record<string, unknown> = {}): Response {
+  const base: Record<string, unknown> = {
+    [Symbol.toStringTag]: "Response",
+    body: null,
+    bodyUsed: false,
+    headers: new Headers(),
+    ok: true,
+    redirected: false,
+    status: 200,
+    statusText: "OK",
+    type: "basic",
+    url: URL_UNDER_TEST,
+    arrayBuffer: async () => new ArrayBuffer(0),
+    blob: async () => new Blob(),
+    clone: () => foreignResponse(overrides),
+    formData: async () => new FormData(),
+    json: async () => ({}),
+    text: async () => "",
+  };
+  return Object.assign(base, overrides) as unknown as Response;
+}
+
+function scenarioOf(id: string) {
+  const scenario = HOSTILE_SCENARIOS.find((candidate) => candidate.id === id);
+  if (!scenario) throw new Error(`${id} is no longer a scenario`);
+  return scenario;
+}
+
+describe("H-11 — a statusText that is not a string is normalized, never coerced", () => {
+  /**
+   * The published scenario uses status 404, and a dedicated class's
+   * `statusText` is its own class field, initialized AFTER `super()`. It can
+   * never carry a wire value, whatever the normalizer does, so the scenario's
+   * `verify` cannot fail. Verified: coercing the recorded phrase with
+   * `String(raw)` leaves conformance at 31/31 green.
+   *
+   * The value only becomes observable on a status with no dedicated class,
+   * where `UnknownHttpError` publishes it.
+   */
+  test("an unmapped status publishes the empty string, not a coerced Symbol", async () => {
+    const response = new Response(null, { status: 599 });
+    Object.defineProperty(response, "statusText", {
+      configurable: true,
+      get() {
+        return Symbol("hostile phrase");
+      },
+    });
+
+    const { error } = await typedFetch(URL_UNDER_TEST, {
+      fetch: (async () => response) as unknown as typeof fetch,
+    });
+
+    expect(error).toBeInstanceOf(UnknownHttpError);
+    const unknown = error as UnknownHttpError;
+    expect(unknown.statusText).toBe("");
+    expect(unknown.toJSON().statusText).toBe("");
+    await unknown.cancel();
+  });
+});
+
+describe("H-04 — a Response whose body is not a stream", () => {
+  /**
+   * The published scenario's body is `{ locked: "no" }`, which carries none of
+   * the five stream methods either — so it is the method gate that refuses it.
+   * Verified: deleting the `typeof locked === "boolean"` conjunct leaves
+   * conformance at 31/31 green.
+   */
+  test("a body carrying every stream method but a non-boolean `locked` is refused", async () => {
+    const body = {
+      locked: "no",
+      cancel: async () => undefined,
+      getReader: () => ({}),
+      pipeThrough: () => undefined,
+      pipeTo: async () => undefined,
+      tee: () => [],
+    };
+
+    const { response, error } = await typedFetch(URL_UNDER_TEST, {
+      fetch: (async () => foreignResponse({ body, status: 404 })) as unknown as typeof fetch,
+    });
+
+    expect(response).toBe(null);
+    expect(error).toBeInstanceOf(NetworkError);
+  });
+});
+
+describe("H-02 — an object that only spoofs the Response tag", () => {
+  /**
+   * The published scenario is `{ [Symbol.toStringTag]: "Response", status: 200 }`,
+   * which carries no body reader either — so the method gate refuses it.
+   * Verified: deleting the field-presence gate leaves conformance at 31/31
+   * green.
+   */
+  test("a value missing one declared field is refused before class selection", async () => {
+    const partial = foreignResponse({ status: 404 }) as unknown as Record<string, unknown>;
+    delete partial.redirected;
+
+    const { response, error } = await typedFetch(URL_UNDER_TEST, {
+      fetch: (async () => partial) as unknown as typeof fetch,
+    });
+
+    expect(response).toBe(null);
+    expect(error, "the field gate no longer refuses before class selection").toBeInstanceOf(
+      NetworkError,
+    );
+  });
+});

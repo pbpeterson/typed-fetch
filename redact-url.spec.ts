@@ -751,3 +751,7 @@ describe("a malformed url whose query hides a parser-created authority", () => {
     expect(redactUrl(url)).not.toContain("hunter2");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 6 — the states the one pass added, and the shapes both branches read.
+// ═══════════════════════════════════════════════════════════════════════════
