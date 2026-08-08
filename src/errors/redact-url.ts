@@ -304,8 +304,14 @@ function userinfosOf(url: string): string[] {
     // a message quotes; the resolved path carries the mark that finds it.
     const needles = hiddenUserinfos(url);
     try {
-      for (const needle of hiddenUserinfos(new URL(url, RELATIVE_BASE).pathname)) {
-        if (!needles.includes(needle)) needles.push(needle);
+      // The SAME three slots the parseable branch reads. Reading only the path
+      // here left a credential that the parser normalized into a QUERY — the
+      // two halves of this pass were fixed one round apart and never composed.
+      const resolved = new URL(url, RELATIVE_BASE);
+      for (const slot of [resolved.pathname, resolved.search, resolved.hash]) {
+        for (const needle of hiddenUserinfos(slot)) {
+          if (!needles.includes(needle)) needles.push(needle);
+        }
       }
     } catch {
       // Unresolvable even against the base. The raw needles are all there are.

@@ -729,3 +729,25 @@ describe("a url that embeds thousands of credentials", () => {
     expect(redactUrl(url).startsWith("https://api.test/")).toBe(true);
   });
 });
+
+describe("a malformed url whose query hides a parser-created authority", () => {
+  // The two halves of the userinfo pass were fixed one round apart: the
+  // malformed branch learned to read the RESOLVED form, and the parseable
+  // branch learned to read the query and the fragment. Neither covered a
+  // malformed url whose QUERY holds the mark the parser creates.
+  const url = "://api.test/x?next=https:\t//svc:hunter2@evil.test";
+  const normalizedInner = "https://svc:hunter2@evil.test";
+
+  test("the parser really does create the authority mark inside the query", () => {
+    expect(new URL(url, "http://url.invalid").search).toContain("://svc:hunter2@");
+    expect(url.includes("://svc")).toBe(false);
+  });
+
+  test("the credential is removed from a message that quotes the normalized form", () => {
+    expect(redactUrlInMessage(`refused ${normalizedInner}`, url)).not.toContain("hunter2");
+  });
+
+  test("and the redacted url never carried it in the first place", () => {
+    expect(redactUrl(url)).not.toContain("hunter2");
+  });
+});
