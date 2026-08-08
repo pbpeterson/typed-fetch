@@ -522,20 +522,25 @@ function snapshotRequestInit(
   // descriptor is what makes that legal, because a proxy may not report a value
   // other than the one a non-configurable own property of its target holds.
   //
-  // Only when the caller actually HAS the slot. Writing it unconditionally
-  // invented an own key: `Object.keys(init)` and `Reflect.ownKeys(init)` listed
-  // `signal` while `"signal" in init` — answered from the original object by
-  // the `has` trap — said `false`, and `{ ...init }` grew a `signal: undefined`
-  // member the caller never wrote. An implementation is entitled to reflect
-  // over its init, and the suite already treats that as legitimate. An
-  // INHERITED signal needs no entry either: the sanitized target keeps the
-  // original prototype, and a proxy invariant only constrains the target's own
-  // properties.
-  if (descriptors.signal) {
+  // Only when there is a signal to carry. Writing it unconditionally invented
+  // an own key: `Object.keys(init)` and `Reflect.ownKeys(init)` listed `signal`
+  // while `"signal" in init` — answered from the original object by the `has`
+  // trap — said `false`, and `{ ...init }` grew a `signal: undefined` member
+  // the caller never wrote. An implementation is entitled to reflect over its
+  // init, and the suite already treats that as legitimate.
+  //
+  // An INHERITED signal still needs the entry, and testing only for an own
+  // descriptor dropped it. A proxy invariant does not require it — the
+  // sanitized target keeps the original prototype — but `{ ...init }` does, and
+  // that spread is what a forwarding transport writes. Without it the request
+  // ran UNGOVERNED while `classifyRequestFailure` went on treating that signal
+  // as the authority: `controller.abort()` cancelled nothing, and a later
+  // network failure was reported as an `AbortedError`.
+  if (descriptors.signal || signal !== undefined) {
     descriptors.signal = {
       value: signal,
       writable: true,
-      enumerable: descriptors.signal.enumerable,
+      enumerable: descriptors.signal?.enumerable ?? true,
       configurable: true,
     };
   }

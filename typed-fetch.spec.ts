@@ -206,6 +206,34 @@ describe("typedFetch", () => {
     expect(Object.hasOwn({ ...(seen as Record<string, unknown>) }, "signal")).toBe(false);
   });
 
+  // An inherited signal has no own descriptor to copy, so testing for one
+  // dropped it from the sanitized target — and `{ ...init }` is exactly what a
+  // forwarding transport writes. The `get` trap still answered with the signal,
+  // so the request ran UNGOVERNED while `classifyRequestFailure` went on
+  // treating that signal as the authority.
+  test("an inherited signal survives a transport that spreads its init", async () => {
+    const controller = new AbortController();
+    let spread: RequestInit | undefined;
+    const stubFetch = vi.fn<typeof fetch>(async (_input, init) => {
+      spread = { ...(init as RequestInit) };
+      return new Response(null, { status: 200 });
+    });
+    const options = Object.assign(
+      Object.create({ signal: controller.signal }) as TypedFetchOptions,
+      { fetch: stubFetch, method: "POST" as const },
+    );
+
+    await typedFetch("https://example.invalid/inherited-signal", options);
+
+    expect(spread?.signal).toBe(controller.signal);
+    // And the slot the caller never had is still not invented.
+    const bare = await typedFetch("https://example.invalid/no-signal-inherited", {
+      method: "POST",
+      fetch: stubFetch,
+    });
+    expect(bare.error).toBe(null);
+  });
+
   test("a caller's own signal slot is still shadowed with the captured value", async () => {
     // The descriptor exists to keep the `get` trap legal when the target holds
     // an own `signal`, so the slot the caller DID write must still be present
