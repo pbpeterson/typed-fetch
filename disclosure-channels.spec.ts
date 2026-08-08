@@ -1,7 +1,13 @@
 import { readFileSync } from "node:fs";
 import { inspect } from "node:util";
 import { describe, test, expect } from "vitest";
-import { AbortedError, NetworkError, NotFoundError, TimeoutError } from "./src/errors";
+import {
+  AbortedError,
+  NetworkError,
+  NotFoundError,
+  TimeoutError,
+  UnknownHttpError,
+} from "./src/errors";
 import { classifyRequestFailure } from "./src/request-failure";
 
 /**
@@ -312,6 +318,42 @@ describe("disclosure channels — the platform message is never copied", () => {
     test("a phrase with nothing legible left drops out of the line", () => {
       // The empty-phrase branch already exists for an empty `statusText`.
       expect(hostileReasonPhrase(`${NUL}${ESC}`).message).toBe(`HTTP 404`);
+    });
+
+    // `UnknownHttpError` is the one class whose `statusText` is the WIRE value
+    // rather than the library's canonical label, and it publishes it as a
+    // public field the inherited `toJSON()` emits. Filtering only where the
+    // message is composed left that half raw, so the bound was bypassed and a
+    // consumer interpolating `error.statusText` still got ESC and NUL. The
+    // filter belongs at the recording seam, where there is one reader to miss.
+    describe("an unmapped status carries the same filtered phrase", () => {
+      function unmapped(statusText: string): UnknownHttpError {
+        // 499 has no dedicated class, so this is the catch-all path.
+        const response = new Response(null, { status: 499 });
+        Object.defineProperty(response, "statusText", { value: statusText });
+        return new UnknownHttpError(response);
+      }
+
+      test("the public statusText field is filtered and bounded", () => {
+        const error = unmapped(`Boom${ESC}[2K${NUL}${LS}${"Z".repeat(9_000)}`);
+
+        expect(error.statusText).not.toContain(ESC);
+        expect(error.statusText).not.toContain(NUL);
+        expect(error.statusText).not.toContain(LS);
+        expect(error.statusText.length).toBeLessThan(200);
+      });
+
+      test("the toJSON record carries the filtered value, not the wire one", () => {
+        const record = JSON.stringify(unmapped(`Boom${ESC}[2K${NUL}tail`));
+
+        expect(record).not.toContain("\\u001b");
+        expect(record).not.toContain("\\u0000");
+        expect(record).toContain("Boom");
+      });
+
+      test("an ordinary vendor phrase is still carried in full", () => {
+        expect(unmapped("Client Closed Request").statusText).toBe("Client Closed Request");
+      });
     });
   });
 

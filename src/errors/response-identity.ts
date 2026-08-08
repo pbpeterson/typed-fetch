@@ -285,13 +285,61 @@ export function statusOf(response: Response): number {
   return status;
 }
 
+/**
+ * The longest wire reason phrase {@link safeReasonPhrase} will carry.
+ *
+ * The registered phrases are short — `"Internal Server Error"` is 21 characters
+ * — and Node accepts a header line of about 15 KB, so without a bound the
+ * server chooses the length of the one string every log line carries.
+ */
+const REASON_PHRASE_LIMIT = 128;
+
+/**
+ * The server's reason phrase, with the characters that rewrite a log line
+ * removed and the length bounded.
+ *
+ * `request-failure.ts` already refuses to copy the PLATFORM's message for this
+ * reason: "The raw CR or LF travels with it, so the message forges log lines
+ * too." The other half of an HTTP error's message comes from a party the
+ * consumer controls even less — the origin — and it arrived unfiltered.
+ * `new Response(null, { statusText })` refuses a control character, but the
+ * HTTP parser does not: every C0 byte except CR and LF travels from the wire
+ * into `response.statusText`.
+ *
+ * What that buys an origin: `\x1b[2K\x1b[1A` erases the previous line in a
+ * terminal and repaints it, U+2028 opens a new record in a JSON log, and NUL
+ * truncates a C string. None of it is legible text, so removing it costs the
+ * diagnostic nothing.
+ *
+ * A CHARACTER SCAN rather than a regular expression, deliberately: `src/` holds
+ * no regular expressions at all, which makes "this library has no catastrophic
+ * backtracking" a property a reader can check by looking rather than by
+ * reasoning. Keep it that way.
+ */
+function safeReasonPhrase(phrase: string): string {
+  let out = "";
+  for (const character of phrase) {
+    const code = character.codePointAt(0) ?? 0;
+    const rewritesALine =
+      code <= 0x1f || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029;
+    if (rewritesALine) continue;
+    out += character;
+    if (out.length >= REASON_PHRASE_LIMIT) break;
+  }
+  return out;
+}
+
 /** Read and record `statusText`, including its original scalar type. */
 function statusTextOf(response: Response, key: object | undefined): string {
-  if (key === undefined) return textOf(response.statusText);
+  if (key === undefined) return safeReasonPhrase(textOf(response.statusText));
   return recordedField(statusTextByResponse, key, () => {
     const rawStatusText = response.statusText as unknown;
     stringStatusTextByResponse.set(key, typeof rawStatusText === "string");
-    return textOf(rawStatusText);
+    // FILTERED here, at the one place the value is recorded, so every reader
+    // gets the safe form. `UnknownHttpError` publishes this as a public field
+    // and the inherited `toJSON()` emits it, so a filter applied only where
+    // the message is composed left the other half of the same value raw.
+    return safeReasonPhrase(textOf(rawStatusText));
   });
 }
 
