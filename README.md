@@ -960,11 +960,14 @@ async function api<T>(path: string, options?: TypedFetchOptions): Promise<TypedF
   `content-length`, and the hop-by-hop names stay on `headers`. Delete those
   names from a copy of the headers before you forward the body.
 
-- `TypedResponse` is not `Response`, and the gap is one member.
-  `Response.bytes()` does not exist at the floor, so the type does not promise
-  it. Handing the success value to a slot typed `(r: Response)` — a Workers,
-  Hono, or Next handler — therefore still needs a cast. Widening that far is a
-  floor decision, not a typing one.
+- `TypedResponse` is not `Response`. It does not promise `Response.bytes()`,
+  which does not exist at the floor. Under `lib.dom` there is a second
+  difference: `TypedResponse["body"]` is the ambient
+  `ReadableStream<Uint8Array>`, where `Response["body"]` is
+  `ReadableStream<Uint8Array<ArrayBuffer>>`. Handing the success value to a slot
+  typed `(r: Response)` — a Workers, Hono, or Next handler — therefore still
+  needs a cast, and adding `bytes()` alone does not remove it. Widening that far
+  is a floor decision, not a typing one.
 - `TypedFetchReturnType` is the result union from `typedFetch`.
 - `TypedFetchOptions` extends `RequestInit` and adds the Fetch override.
 - `HttpMethods` gives method suggestions. It omits `CONNECT` and `TRACE`, because the Fetch specification forbids them and native `fetch` throws a `TypeError` for them.
