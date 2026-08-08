@@ -6,13 +6,15 @@ export default defineConfig({
       provider: "v8",
       include: ["src/**"],
       reporter: ["text"],
-      // The thresholds are the measured baseline. Raise `branches` to 100 in
-      // the same commit that closes the last uncovered branch.
+      // Every branch is either taken by a test or carries a written
+      // justification in a `v8 ignore` range. A change that uncovers one breaks
+      // this gate, which is the point: the branches nobody exercised are where
+      // round 4 went looking.
       thresholds: {
-        branches: 94,
+        branches: 100,
         functions: 100,
         lines: 99,
-        statements: 98,
+        statements: 99,
       },
     },
   },

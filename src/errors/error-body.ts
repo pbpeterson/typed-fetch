@@ -150,6 +150,12 @@ function bodyForRelease(response: Response): ReleasableBody | null | undefined {
       // Node's WebIDL brand check also requires Response.prototype in the
       // chain. A native object can keep its slots after that chain is replaced,
       // so make one scoped attempt with the captured prototype and restore it.
+      //
+      // UNREACHABLE else: `nativeResponseBodyGetter` is a function only when
+      // `Response` was defined at module load, and that same condition is what
+      // fills `nativeResponsePrototype`. A captured getter implies a captured
+      // prototype, so the guard below cannot fail behind the one above.
+      /* v8 ignore start */
       if (nativeResponsePrototype !== undefined) {
         try {
           const originalPrototype = Object.getPrototypeOf(response) as object | null;
@@ -163,6 +169,7 @@ function bodyForRelease(response: Response): ReleasableBody | null | undefined {
           // Not a repairable native Response. Inspect its own chain.
         }
       }
+      /* v8 ignore stop */
     }
   }
 

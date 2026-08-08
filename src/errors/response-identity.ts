@@ -360,7 +360,13 @@ const REASON_PHRASE_LIMIT = 128;
 function safeReasonPhrase(phrase: string): string {
   let out = "";
   for (const character of phrase) {
+    // UNREACHABLE `?? 0`: `for...of` over a string yields one code point at a
+    // time and never the empty string, so `codePointAt(0)` always answers with
+    // a number. The fallback stays as the total-function guarantee this scan
+    // needs — every branch below compares a number.
+    /* v8 ignore start */
     const code = character.codePointAt(0) ?? 0;
+    /* v8 ignore stop */
     const rewritesALine =
       // C0, DEL, and C1.
       code <= 0x1f ||

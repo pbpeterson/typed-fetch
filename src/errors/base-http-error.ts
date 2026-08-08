@@ -528,7 +528,14 @@ export abstract class BaseHttpError extends Error {
     }
 
     const identity = identities.get(this);
+    // UNREACHABLE no-identity arm: `bodies.set` and `identities.set` are
+    // consecutive statements at the end of the constructor with nothing between
+    // them that can throw, and `bodyOf(this)` above already refused an instance
+    // missing its body entry. One table cannot hold this error while the other
+    // does not.
+    /* v8 ignore start */
     const revokeLoan = identity ? lendIdentity(teed.branch, identity) : undefined;
+    /* v8 ignore stop */
 
     let copy: this;
     // The `finally` is the guard, not the happy path. Every way out of the block

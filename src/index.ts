@@ -177,7 +177,13 @@ function hasCompatibleForeignHeaders(headers: unknown): boolean {
  * surface compatible afterwards.
  */
 function hasCompatibleSuccessSurface(response: Response): boolean {
+  // UNREACHABLE, kept as this function's statement of its own precondition:
+  // `isResponse` adds every value it accepts to `validatedResponseStructures`
+  // before it answers true, and the only caller runs behind that acceptance
+  // with the same object.
+  /* v8 ignore start */
   if (!validatedResponseStructures.has(response)) return false;
+  /* v8 ignore stop */
   if (!hasCompatibleForeignHeaders(headersOf(response))) return false;
   if (!hasTypedResponseIdentityScalars(response)) return false;
 
@@ -968,7 +974,14 @@ export async function typedFetch<JsonReturnType>(
     }
     refusedTheValue = false;
   } catch (cause) {
+    // UNREACHABLE else: `refusedTheValue` starts true and is cleared on the two
+    // lines that immediately precede an exit from the `try`, with nothing
+    // between the clear and the exit that can throw. This catch is only ever
+    // entered while the flag is still true. The `if` stays because the flag's
+    // whole design is that a refusal path added LATER is covered by omission.
+    /* v8 ignore start */
     if (refusedTheValue) rollbackRefusal();
+    /* v8 ignore stop */
     // The reads above (`status`, and `statusText`, `url`, and `headers` inside
     // the error class) can each throw for an injected implementation. The
     // caller gets `response: null` and never gets a handle to the body the
