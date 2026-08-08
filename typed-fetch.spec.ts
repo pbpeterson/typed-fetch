@@ -5619,3 +5619,37 @@ describe("DEFECT 2 — a patched global transport that aborts and rejects", () =
     }
   });
 });
+
+describe("a runtime with no fetch global at module load", () => {
+  test("the abort window treats every transport as the caller's", async () => {
+    // `nativeFetch` is captured at module load, so a runtime that ships no
+    // `fetch` leaves it undefined. The window then never applies, which is the
+    // safe direction: an abort raised by caller code keeps its class, and no
+    // request can be made without a transport anyway.
+    const saved = globalThis.fetch;
+    // @ts-expect-error - an exotic runtime that ships no fetch
+    delete globalThis.fetch;
+
+    let reloaded: typeof import("./src/index");
+    try {
+      vi.resetModules();
+      reloaded = await import("./src/index");
+    } finally {
+      globalThis.fetch = saved;
+    }
+
+    const controller = new AbortController();
+    const { response, error } = await reloaded.typedFetch("https://example.invalid/x", {
+      signal: controller.signal,
+      fetch: (async () => {
+        controller.abort();
+        throw new DOMException("Aborted", "AbortError");
+      }) as unknown as typeof fetch,
+    });
+
+    expect(response).toBe(null);
+    expect(reloaded.isAbortError(error)).toBe(true);
+
+    vi.resetModules();
+  });
+});
