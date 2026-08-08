@@ -5,7 +5,9 @@ import { afterAll, beforeAll } from "vitest";
 // Spins up a real server on a random port. Query params control the response:
 //   ?status=404          → respond with that status code
 //   ?body={"err":"..."}  → respond with that body (sets Content-Type: application/json)
-//   ?header=Key:Value    → set a response header (repeatable)
+//   ?header=Key:Value    → set a response header. The value keeps every colon
+//                          after the first. Repeatable across DIFFERENT names;
+//                          repeating one name keeps the last value.
 // The server also always echoes the received request method back via an
 // X-Echo-Method response header, so tests can assert an arbitrary method
 // (e.g. "REPORT") actually reached the server unchanged.
@@ -37,8 +39,14 @@ export function useTestServer(): {
       const echoHeader = requestUrl.searchParams.get("echoHeader");
 
       for (const entry of headerEntries) {
-        const [key = "", value = ""] = entry.split(":");
-        res.setHeader(key.trim(), value.trim());
+        // The FIRST colon only. `split(":")[1]` truncated every value that
+        // carries one — `Location:https://host/x` set `Location: https` — and
+        // those are the ordinary values: an absolute `Location`, an HTTP-date
+        // `Retry-After`, a `Link`, a `Content-Range`. No test passed such a
+        // value yet, so nothing was lying; the next one would have been.
+        const separator = entry.indexOf(":");
+        if (separator < 0) continue;
+        res.setHeader(entry.slice(0, separator).trim(), entry.slice(separator + 1).trim());
       }
 
       res.setHeader("X-Echo-Method", req.method ?? "");
