@@ -393,6 +393,18 @@ export abstract class BaseHttpError extends Error {
    *    cannot confirm it. Upgrade that copy, or build the new error with the
    *    copy that is cloning.
    *
+   * A sixth condition refuses the CLONE rather than the callback's result: the
+   * response's own `clone()` answered with something that is not a `Response`.
+   *
+   * RESIDUAL, and the one case where "the original error stays usable" does not
+   * hold: a callback that takes a reader on the branch (`branch.body.getReader()`)
+   * and then returns a refused value. A locked stream cannot be cancelled by
+   * anyone except the holder of the reader, so the release cannot free it and
+   * `cancel()` on the original never settles. Nothing in this library can
+   * recover it — {@link cancel} refuses loudly for the same state on this
+   * error's own stream, and the sibling branch has no such voice. Do not take a
+   * reader inside a `recreate` callback.
+   *
    * @example
    * ```ts
    * import { BaseHttpError } from "@pbpeterson/typed-fetch";

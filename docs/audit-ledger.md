@@ -264,6 +264,17 @@ Correct about the code. Not defects.
    hostile-`fetch` behavior; a report that the library does not handle one of
    them is not a defect.
 
+8. **A `recreate` callback that locks the branch and then fails.** `clone()`
+   promises that a refused result leaves the original usable, and every refusal
+   releases the branch to keep that promise. A callback that takes
+   `branch.body.getReader()` and then returns a refused value defeats the
+   release: only the holder of a reader can cancel a locked stream, so the
+   branch is never freed and `cancel()` on the original never settles. No code
+   in this library can recover it — `cancel()` refuses loudly for the same state
+   on the error's own stream, and a sibling branch has no such voice. Stated on
+   `clone()` as a residual, with the rule it implies: do not take a reader inside
+   a `recreate` callback.
+
 ## What this file is not
 
 It is not a promise that nothing is left. It is a record of what was examined

@@ -875,6 +875,31 @@ describe("BaseHttpError.clone() — an owner this copy cannot see", () => {
     expect(await settlesWithin(error.cancel())).toBe("settled");
   });
 
+  // The stated limit of "each condition releases the orphaned branch, so the
+  // original error stays usable". Only the holder of a reader can cancel a
+  // locked stream, so a callback that takes one and then fails defeats every
+  // release path: the intrinsic `cancel`, the visible `cancel`, and `destroy`.
+  // `cancel()` refuses loudly for the same state on this error's own stream;
+  // the sibling branch has no such voice, so it hangs instead. Recorded in
+  // `docs/audit-ledger.md`, "Adjudicated closed".
+  test("B10b: RESIDUAL — a callback that locks the branch leaves cancel() pending", async () => {
+    const error = new NotFoundError(new Response("payload", { status: 404 }));
+    let held: ReadableStreamDefaultReader<Uint8Array> | undefined;
+
+    expect(() =>
+      error.clone((branch) => {
+        held = branch.body?.getReader();
+        return null as unknown as NotFoundError;
+      }),
+    ).toThrow(TypeError);
+
+    expect(await settlesWithin(error.cancel())).toBe("pending");
+
+    // Release it by hand, so the residual cannot outlive the test.
+    await held?.cancel().catch(() => {});
+    held?.releaseLock();
+  });
+
   test("B17: EVERY refused shape releases the branch and leaves cancel() able to settle", async () => {
     // The invariant, asserted in one place over the whole decision table. A new
     // guard added without a release would pass its own case and fail here.
