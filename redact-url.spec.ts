@@ -513,3 +513,36 @@ describe("a credential the parser normalizes into the path", () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 5 — one pass over the message, not one pass per needle.
+//
+// The needle list grows with the credentials the caller's url embeds, and a
+// `replaceAll` per needle read the whole message once for each of them. The
+// single pass below has two states a chained `replaceAll` never had — two
+// needles of the same length, and an `@` whose candidate reaches back into a
+// span this pass already removed — so both are pinned here against the
+// behaviour the chained version produced for the same input.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("removing every userinfo in one pass", () => {
+  test("two credentials of the same length are both removed", () => {
+    expect(redactUrlInMessage("refused aa:bb@x and cc:dd@y", "://aa:bb@x/://cc:dd@y/")).toBe(
+      "refused x and y",
+    );
+  });
+
+  test("a candidate that reaches back into a removed span is skipped, not applied", () => {
+    // The needles are `q@` and `@w@`. At the second `@`, the three-character
+    // candidate starts inside the span the first removal already took, so the
+    // pass declines it — which is what the chained version did by having
+    // nothing left to match.
+    expect(redactUrlInMessage("X q@w@ Y", "://q@x/://@w@host/")).toBe("X w@ Y");
+  });
+
+  test("a message with no userinfo needle is returned unchanged", () => {
+    expect(redactUrlInMessage("plain diagnostic with an @ in it", "https://api.test/x")).toBe(
+      "plain diagnostic with an @ in it",
+    );
+  });
+});
