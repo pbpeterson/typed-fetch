@@ -8,10 +8,13 @@ import {
 } from "./src/index";
 import { BaseHttpError, NotFoundError } from "./src/errors";
 import {
+  abortedErrorBrand,
   asksOwnsResponse,
   hasBrand,
   httpErrorBrand,
+  networkErrorBrand,
   ownsResponseSymbol,
+  timeoutErrorBrand,
   type OwnsResponse,
 } from "./src/errors/brand";
 
@@ -398,5 +401,150 @@ describe("the stamped ownership query", () => {
     expect(() => owns.call(42, response)).not.toThrow();
 
     await error.cancel();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 7 — the pollution guard asked for a VALUE, and a value read has a
+// receiver.
+//
+// An accessor on `Object.prototype` answers `undefined` when `this` is
+// `Object.prototype` and the payload for every other receiver, so the guard saw
+// a clean prototype and the next line resolved the polluted member through the
+// chain. Every brand guard became a constant `true`, and `asksOwnsResponse`
+// answered "yes" for a value that owns nothing — which orphans a teed branch
+// and leaves `cancel()` pending forever. The blocks the previous round wrote
+// cover only the data-property shape.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function polluteWithAccessor(key: symbol, payload: () => unknown): () => void {
+  Object.defineProperty(Object.prototype, key, {
+    get(this: unknown) {
+      if (this === Object.prototype) return undefined;
+      return payload();
+    },
+    configurable: true,
+  });
+  return () => {
+    delete (Object.prototype as Record<symbol, unknown>)[key];
+  };
+}
+
+describe("round 7 lane 2 — a polluting ACCESSOR walks past the Object.prototype guard", () => {
+  it("D1: hasBrand answers true for a plain object", () => {
+    const restore = polluteWithAccessor(httpErrorBrand, () => true);
+    let probeRead: unknown;
+    let answer: boolean;
+    try {
+      probeRead = (Object.prototype as Record<symbol, unknown>)[httpErrorBrand];
+      answer = hasBrand({}, httpErrorBrand);
+    } finally {
+      restore();
+    }
+
+    // What the guard itself sees: nothing.
+    expect(probeRead).toBeUndefined();
+    // What every other receiver sees: the forged brand. `hasBrand` must still
+    // refuse it — `Object.prototype` is a source no real error uses.
+    expect(answer).toBe(false);
+  });
+
+  it("D2: every brand-keyed guard turns into a constant true", () => {
+    const answers: Record<string, boolean> = {};
+    const restores = [
+      polluteWithAccessor(httpErrorBrand, () => true),
+      polluteWithAccessor(networkErrorBrand, () => true),
+      polluteWithAccessor(abortedErrorBrand, () => true),
+      polluteWithAccessor(timeoutErrorBrand, () => true),
+    ];
+    try {
+      answers.isHttpError = isHttpError({});
+      answers.isNetworkError = isNetworkError({});
+      answers.isAbortError = isAbortError({});
+      answers.isTimeoutError = isTimeoutError({});
+    } finally {
+      for (const restore of restores) restore();
+    }
+
+    // The README's own pattern is `if (isHttpError(error)) await error.cancel()`.
+    // A constant `true` makes that line throw a TypeError inside a catch block,
+    // which is the exact harm the round-3 guard was added to prevent.
+    expect(answers).toEqual({
+      isHttpError: false,
+      isNetworkError: false,
+      isAbortError: false,
+      isTimeoutError: false,
+    });
+  });
+
+  it("D3: asksOwnsResponse answers 'yes' for a value that owns nothing", () => {
+    const candidate = new Response("x", { status: 404 });
+    const restore = polluteWithAccessor(ownsResponseSymbol, () => () => true);
+    let probeRead: unknown;
+    let answer: boolean | undefined;
+    try {
+      probeRead = (Object.prototype as Record<symbol, unknown>)[ownsResponseSymbol];
+      answer = asksOwnsResponse({}, candidate);
+    } finally {
+      restore();
+    }
+
+    expect(typeof probeRead).toBe("undefined");
+    // A plain object carries no member under the key, so the only honest answer
+    // is "it cannot answer".
+    expect(answer).toBeUndefined();
+  });
+
+  it("D4: clone() accepts a non-owner, and the original's cancel() never settles", async () => {
+    const error = new NotFoundError(new Response("body", { status: 404 }));
+    const restore = polluteWithAccessor(ownsResponseSymbol, () => () => true);
+    let outcome: string;
+    try {
+      await error.clone(() => ({ notAnError: true }) as never);
+      outcome = "clone RESOLVED with the non-owner";
+    } catch {
+      outcome = "clone REFUSED";
+    } finally {
+      restore();
+    }
+
+    // The cost of accepting it: the teed source is never freed, so the original
+    // error's own `cancel()` stays pending forever.
+    const settled = await Promise.race([
+      error.cancel().then(
+        () => "cancel settled",
+        () => "cancel settled",
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve("cancel PENDING FOREVER"), 250)),
+    ]);
+
+    // The branch has no owner, so `clone()` must refuse it and release the
+    // branch — ADR 0002.
+    expect([outcome, settled]).toEqual(["clone REFUSED", "cancel settled"]);
+  });
+
+  it("D5: the proposed fix — a PRESENCE check — refuses both shapes", () => {
+    // `Object.getOwnPropertyDescriptor` takes no receiver, so an accessor
+    // cannot answer it selectively. This is the one-line replacement for both
+    // guard reads in `src/errors/brand.ts`.
+    const polluted = (key: symbol): boolean =>
+      Object.getOwnPropertyDescriptor(Object.prototype, key) !== undefined;
+
+    const seen: Record<string, boolean> = {};
+    let restore = polluteWithAccessor(httpErrorBrand, () => true);
+    try {
+      seen.accessorDetected = polluted(httpErrorBrand);
+    } finally {
+      restore();
+    }
+    Object.defineProperty(Object.prototype, httpErrorBrand, { value: true, configurable: true });
+    try {
+      seen.dataDetected = polluted(httpErrorBrand);
+    } finally {
+      delete (Object.prototype as Record<symbol, unknown>)[httpErrorBrand];
+    }
+    seen.cleanNotDetected = !polluted(httpErrorBrand);
+
+    expect(seen).toEqual({ accessorDetected: true, dataDetected: true, cleanNotDetected: true });
   });
 });

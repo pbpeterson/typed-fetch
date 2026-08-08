@@ -91,7 +91,13 @@ export function hasBrand(value: unknown, brandSymbol: symbol): boolean {
     return false;
   }
   try {
-    if ((Object.prototype as Record<symbol, unknown>)[brandSymbol] === true) {
+    // PRESENCE, not value. A read has a RECEIVER, and an accessor installed on
+    // `Object.prototype` can answer `undefined` for `this === Object.prototype`
+    // and the payload for every other receiver — so a value question walked
+    // straight past this guard while the very next line resolved the polluted
+    // member through the chain, and every brand guard became a constant `true`.
+    // A descriptor lookup takes no receiver and cannot be answered selectively.
+    if (Object.getOwnPropertyDescriptor(Object.prototype, brandSymbol) !== undefined) {
       // Polluted. Fall back to the one question pollution cannot answer: does
       // some prototype OTHER than `Object.prototype` own the brand?
       return ownsBrandBelowObject(value, brandSymbol);
@@ -278,8 +284,11 @@ export function asksOwnsResponse(value: unknown, candidate: Response): boolean |
     // `stampOwnsResponse` puts the member on `BaseHttpError.prototype`, so no
     // real error inherits it from `Object.prototype` and refusing that one
     // source costs the cross-copy question nothing.
+    // PRESENCE, not value, for the reason {@link hasBrand} states: an accessor
+    // on `Object.prototype` answers selectively by receiver, and a non-owner
+    // accepted here orphans a teed branch.
     if (
-      typeof (Object.prototype as Record<symbol, unknown>)[ownsResponseSymbol] === "function" &&
+      Object.getOwnPropertyDescriptor(Object.prototype, ownsResponseSymbol) !== undefined &&
       !ownsMemberBelowObject(value)
     ) {
       return undefined;
