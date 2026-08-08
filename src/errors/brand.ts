@@ -103,19 +103,36 @@ export function hasBrand(value: unknown, brandSymbol: symbol): boolean {
 }
 
 /**
+ * The longest prototype chain {@link ownsBrandBelowObject} will walk.
+ *
+ * The longest chain this library builds is eight links — instance,
+ * `NotFoundError`, `KnownHttpError`, `BaseHttpError`, `Error`,
+ * `Object.prototype` — and a consumer subclass adds one each. Thirty-two leaves
+ * room for any real hierarchy and stops a fabricated one immediately.
+ */
+const PROTOTYPE_WALK_LIMIT = 32;
+
+/**
  * Does a prototype other than `Object.prototype` own this brand?
  *
  * Only reached when `Object.prototype` carries the brand, which never happens
  * without pollution — so the walk costs nothing in the ordinary case.
+ *
+ * BOUNDED, because the walk is over a chain the caller supplies. The engine
+ * refuses a cyclic prototype chain on ordinary objects, but `[[GetPrototypeOf]]`
+ * on a `Proxy` over an extensible target is checked against no invariant at
+ * all: the trap can answer with the proxy itself forever. Nothing throws, so no
+ * `try` catches it, and `isHttpError` — the function the README puts in every
+ * catch block — never returns. Trading a wrong answer for a stalled process is
+ * not a fix.
  */
 function ownsBrandBelowObject(value: object, brandSymbol: symbol): boolean {
-  for (
-    let link: object | null = value;
-    link !== null && link !== Object.prototype;
-    link = Object.getPrototypeOf(link) as object | null
-  ) {
+  let link: object | null = value;
+  for (let steps = 0; steps < PROTOTYPE_WALK_LIMIT; steps += 1) {
+    if (link === null || link === Object.prototype) return false;
     const descriptor = Object.getOwnPropertyDescriptor(link, brandSymbol);
     if (descriptor) return descriptor.value === true;
+    link = Object.getPrototypeOf(link) as object | null;
   }
   return false;
 }

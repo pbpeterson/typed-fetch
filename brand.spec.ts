@@ -87,6 +87,48 @@ describe("hardened brand reads", () => {
       });
     });
 
+    // The fallback walks a chain the CALLER supplies. The engine refuses a
+    // cyclic prototype chain on ordinary objects, but `[[GetPrototypeOf]]` on a
+    // Proxy over an extensible target is checked against no invariant: the trap
+    // can answer with the proxy itself forever. Nothing throws, so no `try`
+    // catches it, and `isHttpError` never returns. Trading a wrong answer for a
+    // stalled process is not a fix.
+    it("a cyclic prototype chain is bounded, not walked forever", () => {
+      let steps = 0;
+      const cyclic: object = new Proxy(
+        {},
+        {
+          getPrototypeOf(target) {
+            steps += 1;
+            if (steps > 5_000) return Object.getPrototypeOf(target) as object;
+            return cyclic;
+          },
+        },
+      );
+
+      withPollutedPrototypes(() => {
+        expect(isHttpError(cyclic)).toBe(false);
+      });
+
+      expect(steps).toBeLessThan(100);
+    });
+
+    it("a throwing getPrototypeOf trap answers false and never propagates", () => {
+      const hostile = new Proxy(
+        {},
+        {
+          getPrototypeOf() {
+            throw new Error("prototype refused");
+          },
+        },
+      );
+
+      withPollutedPrototypes(() => {
+        expect(() => isHttpError(hostile)).not.toThrow();
+        expect(isHttpError(hostile)).toBe(false);
+      });
+    });
+
     it("a foreign copy's error is still recognized — the cross-copy read holds", () => {
       // What the prototype-chain read exists for: a value branded on its OWN
       // prototype, by a copy this one never loaded.
