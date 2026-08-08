@@ -284,6 +284,27 @@ function hiddenUserinfos(text: string): string[] {
 }
 
 /**
+ * The raw text after this URL's OWN authority.
+ *
+ * An embedded url can only hide past the outer authority, and the outer
+ * authority is the one thing a raw scan must not read — `host:8443` is a port,
+ * not a credential. Cutting at the first delimiter the URL grammar allows
+ * gives the scan the region where an embedded credential lives, in the
+ * spelling a message actually quotes.
+ */
+function rawAfterAuthority(url: string): string {
+  const mark = url.indexOf(AUTHORITY_MARK);
+  if (mark < 0) return url;
+  for (let i = mark + AUTHORITY_MARK.length; i < url.length; i += 1) {
+    const character = url[i];
+    if (character === "/" || character === "\\" || character === "?" || character === "#") {
+      return url.slice(i);
+    }
+  }
+  return "";
+}
+
+/**
  * Every userinfo the URL carries: `["user:password@"]`, `["user@"]`, or `[]`.
  *
  * A URL can carry MORE than one, which is why this answers with a list. A
@@ -308,6 +329,17 @@ function userinfosOf(url: string): string[] {
       // here left a credential that the parser normalized into a QUERY — the
       // two halves of this pass were fixed one round apart and never composed.
       const resolved = new URL(url, RELATIVE_BASE);
+      // FOUR slots, not three. The parseable branch reads `username`/`password`
+      // FIRST, and the comment that said "the SAME three slots" left that one
+      // out: a protocol-relative form — `\\alice:pw@host/v1` and every
+      // tab/CR/LF variant the parser strips — hides a credential the parser
+      // recovers into the authority rather than into a path.
+      const resolvedOwn = resolved.password
+        ? `${resolved.username}:${resolved.password}@`
+        : `${resolved.username}@`;
+      if ((resolved.username || resolved.password) && !needles.includes(resolvedOwn)) {
+        needles.push(resolvedOwn);
+      }
       for (const slot of [resolved.pathname, resolved.search, resolved.hash]) {
         for (const needle of hiddenUserinfos(slot)) {
           if (!needles.includes(needle)) needles.push(needle);
@@ -336,12 +368,20 @@ function userinfosOf(url: string): string[] {
   // exactly what this pass exists to clean. A callback url carries its
   // redirect target in `?next=`, credential and all, more often than in a path
   // segment.
+  //
+  // And the RAW text too, for the mirror of the reason the relative branch
+  // reads both forms: the parser REWRITES what it reads. A password holding a
+  // backslash, a tab, a CR, or an LF becomes a needle that no longer matches
+  // the text a platform quoted. The raw scan starts AFTER this url's own
+  // authority, which is what keeps `host:8443` from being read as a
+  // credential — the same guarantee "pathname, never href" buys.
   const embedded = [
     ...hiddenUserinfos(parsed.pathname),
     ...hiddenUserinfos(parsed.search),
     ...hiddenUserinfos(parsed.hash),
+    ...hiddenUserinfos(rawAfterAuthority(url)),
   ];
-  return [...own, ...embedded];
+  return [...own, ...embedded.filter((needle, at) => embedded.indexOf(needle) === at)];
 }
 
 /**
@@ -447,9 +487,19 @@ export function redactUrlInMessage(message: string, url: string): string {
  * the longer needle's tail — the password — in the message. Chained
  * `replaceAll` did not have that hole, because it resolved overlaps by NEEDLE
  * order rather than by position. So every match is collected and the
- * overlapping ones are merged: the union removes at least what the chained form
- * removed, and where the two differ it removes more, which is the safe
- * direction this module already takes everywhere else.
+ * overlapping ones are merged.
+ *
+ * TWO RESIDUALS, both stated because a previous version of this comment claimed
+ * the union dominates the chained form, and it does not:
+ *
+ *  - The union is a union of the matches present in the ORIGINAL string.
+ *    Chained `replaceAll` also matches text that only became adjacent when an
+ *    earlier needle was removed. With the needles `tok@` and `svc:hunter2@`,
+ *    the message `svc:huntok@ter2@host` loses both halves to the chained form
+ *    and keeps `svc:hunter2@` here. Any single pass has this shape.
+ *  - Where the two differ on OVERLAP, the union removes more, which is the safe
+ *    direction this module takes everywhere else — and it costs the diagnostic
+ *    the residual on {@link redactUrlInMessage} already names.
  */
 function withoutUserinfos(message: string, userinfos: string[]): string {
   if (userinfos.length === 0) return message;

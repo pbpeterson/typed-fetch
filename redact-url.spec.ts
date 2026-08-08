@@ -755,3 +755,109 @@ describe("a malformed url whose query hides a parser-created authority", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 6 — the states the one pass added, and the shapes both branches read.
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 7 — the fourth slot, the raw-text mirror, and the residual a previous
+// comment denied.
+//
+// `userinfosOf`'s parseable branch reads FOUR things and its malformed branch
+// read three; the missing one is the resolved url's own `username`/`password`,
+// which is where a protocol-relative form hides a credential. The mirror is
+// that the parseable branch never read the RAW text, so a password holding a
+// backslash or a tab became a needle that no longer matched what a platform
+// quoted.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ───────────────────────────────────────────────────────────────────────────
+// DEFECT 3a — the FOURTH slot. Round 6 made the unparseable branch of
+// `userinfosOf` read "the SAME three slots the parseable branch reads". The
+// parseable branch reads FOUR things: `username`/`password` FIRST, then
+// `pathname`, `search`, `hash`. The unparseable branch still never reads the
+// resolved url's own userinfo, so a protocol-relative input whose credential
+// the base resolution recovers yields NO needle at all.
+// ───────────────────────────────────────────────────────────────────────────
+
+// The message a platform writes after IT resolved the input against its own
+// document base — the base `redactUrl` never sees.
+const RESOLVED_MESSAGE =
+  "Request cannot be constructed from a URL that includes credentials: https://alice:hunter2@sso.test/v1";
+
+describe("DEFECT 3a — the resolved url's own userinfo is never a needle", () => {
+  test.each([
+    ["a backslash pair", "\\\\alice:hunter2@sso.test/v1"],
+    ["slash then backslash", "/\\alice:hunter2@sso.test/v1"],
+    ["backslash then slash", "\\/alice:hunter2@sso.test/v1"],
+    ["an embedded tab", "/\t/alice:hunter2@sso.test/v1"],
+    ["an embedded CR", "/\r/alice:hunter2@sso.test/v1"],
+    ["an embedded LF", "/\n/alice:hunter2@sso.test/v1"],
+  ])("%s", (_name, raw) => {
+    const resolved = new URL(raw, "http://url.invalid");
+    // The parser recovers the credential; the needle scan never asks it for one.
+    expect({ user: resolved.username, password: resolved.password }).toEqual({
+      user: "alice",
+      password: "hunter2",
+    });
+    expect(redactUrl(raw)).toBe("/v1");
+
+    const error = new NetworkError(RESOLVED_MESSAGE, { url: raw });
+
+    expect(error.message).not.toContain("hunter2");
+    expect(error.toJSON().message).not.toContain("hunter2");
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// DEFECT 3b — the mirror asymmetry round 6 left. The relative branch of
+// `redactUrl` reads BOTH the raw string and the normalized path, because "the
+// parser CREATES the mark this scan looks for". `userinfosOf`'s PARSEABLE
+// branch reads only the normalized `pathname`/`search`/`hash` and never the
+// raw url — so the needle it produces is text the message never contained.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("DEFECT 3b — a needle normalized away from the text a message carries", () => {
+  test.each([
+    ["a backslash in the password", "https://svc:hun\\ter2@internal.test/v1"],
+    ["a tab in the password", "https://svc:hun\tter2@internal.test/v1"],
+    ["a CR in the password", "https://svc:hun\rter2@internal.test/v1"],
+    ["an LF in the password", "https://svc:hun\nter2@internal.test/v1"],
+  ])("%s", (_name, embedded) => {
+    // A forwarding url. This request's own authority is `api.test`; the target
+    // it forwards to rides in the PATH, credential and all. The platform names
+    // the target it could not reach.
+    const forwarding = `https://api.test/go/${embedded}`;
+    const message = `connect ECONNREFUSED while contacting ${embedded}`;
+
+    const error = new NetworkError(message, { url: forwarding });
+
+    expect(error.message).not.toContain("ter2");
+    expect(error.toJSON().message).not.toContain("ter2");
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// DEFECT 4 — the claim round 6 wrote over the residual round 5 had stated.
+//
+// Round 5: "chained `replaceAll` can match text that only became adjacent when
+// an earlier needle was removed, and a single pass cannot."
+// Round 6 deleted that and wrote: "the union removes AT LEAST what the chained
+// form removed, and where the two differ it removes MORE."
+//
+// The union is a correct union of the spans that exist in the ORIGINAL string.
+// It is not an upper bound on the chained form, which sees strings the first
+// removal creates. The password below is what the chained form removed and the
+// merged single pass keeps.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("the residual any single pass has", () => {
+  test("a needle whose removal would create the next one is not matched", () => {
+    // STATED on `withoutUserinfos`. Chained `replaceAll` re-scanned the string
+    // after each removal and so matched text that only became adjacent then;
+    // one pass reads the original. The shape is contrived, and the residual is
+    // written down rather than denied — a previous version of that comment
+    // claimed the union dominates the chained form, which is false.
+    const url = "://tok@a/://svc:hunter2@b/";
+    expect(redactUrlInMessage("connecting to svc:huntok@ter2@internal.test failed", url)).toBe(
+      "connecting to svc:hunter2@internal.test failed",
+    );
+  });
+});
