@@ -224,6 +224,47 @@ and network-backed responses.
 ls-remote`. `scripts/release-publish.spec.mjs` drives the real npm CLI against
   both forms with a recording `git` first on PATH.
 
+### What round 4 settled
+
+Four lanes ran in parallel: the uncovered branches, the round-3 commits, the
+runtimes and the gate scripts, and the documents against the behavior.
+
+- **Every branch in `src/` is now taken by a test or carries a written reason.**
+  Writing those tests was the hunt — a branch nobody exercises is where a wrong
+  guard hides — and it found none. Five branches cannot be reached at all, each
+  with its argument beside a `v8 ignore` range: the success-surface
+  precondition, the rollback flag's `if` inside its own catch, the no-identity
+  arm of `clone()`, the captured-prototype guard behind the captured getter, and
+  the `?? 0` on a `for...of` code point. The threshold is 100 percent branches,
+  so uncovering one fails the gate.
+- **The non-keyable identity path is not reachable through the seams.**
+  `keyable()` is false only for `null`, `undefined`, and the primitives.
+  `isResponse` refuses a primitive resolved value before any identity read, and
+  `clone()` refuses a primitive branch before it builds anything. What remains
+  is a JavaScript caller handing a non-`Response` to a public constructor, which
+  is a violation of the declared parameter type. On that path nothing is
+  recorded, so two reads can diverge — visible only through `message` and a
+  `status` on a value that is not a response, neither of which is a stated
+  contract. Recorded rather than closed.
+- **A polyfilled `globalThis.Request` paired with the ambient `fetch` does not
+  split the request from the error.** Both directions were measured against the
+  live server: a polyfill with a `toString` reaches the URL the error names, and
+  one without fails loudly with the requested URL on `url`.
+- **Deno discards the origin's reason phrase** and substitutes the canonical one
+  for the status code, so `safeReasonPhrase` has nothing to filter there. Bun
+  exercises it fully and answers exactly as Node does, except that Bun's client
+  refuses a C0 character in the status line outright. Measured on Deno 2.9.5 and
+  Bun 1.3.13, which is newer than the measurement above.
+- **The four gate gaps round 1 recorded were all real and all latent.** The
+  missing check was run for each one, and the artifact passed every one: CJS and
+  ESM export the same 51 and 45 names, the two declaration files declare the
+  same exports, the `./errors` subpath resolves under Deno, and the node10
+  redirect resolves under `tsc`. Each gap is now closed by a check that was
+  proved to fail when the thing it guards is broken.
+- **Bun has no consumer gate**, and its resolution of the exports map, the
+  subpath, and the `require` condition matched Node exactly when driven by hand.
+  Closing that is a CI change and is still open.
+
 ## Adjudicated closed
 
 Correct about the code. Not defects.
