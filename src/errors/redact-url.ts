@@ -322,7 +322,20 @@ function userinfosOf(url: string): string[] {
   //
   // The PATHNAME, never the href: the authority this URL really has is
   // `host:8443`, and a scan over the href would read that port as userinfo.
-  return [...own, ...hiddenUserinfos(parsed.pathname)];
+  //
+  // The QUERY and the FRAGMENT are scanned for the same reason and carry none
+  // of that risk. That argument is about THIS url's authority, which cannot
+  // appear in either slot, and `redactUrl` drops both outright — so the only
+  // place a credential hidden there can still surface is a message, which is
+  // exactly what this pass exists to clean. A callback url carries its
+  // redirect target in `?next=`, credential and all, more often than in a path
+  // segment.
+  const embedded = [
+    ...hiddenUserinfos(parsed.pathname),
+    ...hiddenUserinfos(parsed.search),
+    ...hiddenUserinfos(parsed.hash),
+  ];
+  return [...own, ...embedded];
 }
 
 /**

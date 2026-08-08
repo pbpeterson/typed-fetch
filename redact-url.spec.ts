@@ -546,3 +546,18 @@ describe("removing every userinfo in one pass", () => {
     );
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// DEFECT 3 (RESIDUAL, LOW) — the round-4 pathname scan has a sibling slot it
+// still does not read. `redactUrl` drops the query and the fragment, so
+// scanning them costs nothing and cannot misread a port as userinfo — the one
+// reason the comment gives for reading `pathname` instead of `href`.
+// ───────────────────────────────────────────────────────────────────────────
+describe("a credential the url hides in its query or its fragment", () => {
+  test("a credential in the query survives in a message that quotes it", () => {
+    const url = "https://api.test/cb?next=https://svc:hunter2@internal.test/v1";
+    const message =
+      "Failed to fetch https://api.test/cb (next=https://svc:hunter2@internal.test/v1)";
+    expect(redactUrlInMessage(message, url)).not.toContain("hunter2");
+  });
+});
