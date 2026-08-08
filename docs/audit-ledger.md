@@ -326,6 +326,54 @@ and retention, and the disclosure channels re-run as a set.
   released, and 200 requests on one aborted signal are all collectable, while
   ten deliberately-held errors are reported as retained.
 
+### What round 6 settled
+
+Four lanes: the round-5 fixes, the setup phase and the transport seam, the
+second sources of truth, and the surface a consumer reaches.
+
+- **A one-pass removal cannot resolve overlapping needles by position.** Round
+  5's rewrite kept the first match and skipped anything reaching back into it,
+  which left the longer needle's tail — a password — in the message. Chained
+  `replaceAll` had no such hole because it resolved overlaps by needle ORDER.
+  The pass now merges overlapping matches. The lesson worth carrying: the fuzz
+  that cleared the rewrite drew from an alphabet that could not GENERATE the
+  shape, so it proved nothing about it. A differential fuzz has to be built from
+  the shapes the code distinguishes, not from random noise.
+- **ADR 0003 row H-28 reached only half the reads it describes.** The phase
+  split drew the transport phase at the CALL, and a transport reads the caller's
+  init inside it — every getter on `method`, `body`, `integrity`, and every read
+  inside a header container. The corpus scenario throws from an `ownKeys` trap,
+  which is a read `typedFetch` performs itself, so the row stayed green while
+  the other half was open. See the amendment of 2026-08-08 for the window that
+  closes it and exactly where it stops.
+- **Four conformance rows did not drive their own claim.** H-04's body carried
+  no stream method, so an earlier gate refused it and the `locked` typecheck
+  decided nothing anywhere in the suite. H-11 asserted a class field that never
+  holds the wire value. H-14 never presented the refused value a second time,
+  which is the whole row. H-02 is satisfied by the method gate and defended
+  elsewhere. Each of the first three now fails when its own defence is removed.
+  **The method that found them is the one to reuse: remove the defence a row
+  names and see whether the suite notices.**
+- **The roster table had no column for the reason phrase**, while the
+  contributing guide told a contributor to write the row "from the RFC". A
+  wrong-but-plausible phrase on a class no document names left `vitest run`
+  green and failed only under `tsc`. The table carries the phrase now, compared
+  at runtime. All 40 rows were checked against the RFC and the IANA registry:
+  status, class name, and phrase agree, including the two documented exceptions
+  (418, 510) and the three legacy class names whose phrases are current (413,
+  416, 422).
+- **The test server truncated any header value carrying a colon**, which is
+  every `Location`, `Retry-After`, `Link`, and `Content-Range`. No test passed
+  one, so nothing was lying — the next test would have read `https` and blamed
+  the library.
+- **The consumer-reachable surface holds.** Seventy-eight cases across
+  subclassing, `clone(recreate)`, and two genuine copies in one process found
+  no defect: no stranded stream, no `cancel()` that never settles, no error
+  without a body owner, no identity that disagrees between two errors from one
+  response. The refusal matrix is now a table in `base-http-error.spec.ts`, and
+  the only two rows where a branch is not released are the two documented
+  residuals.
+
 ## Adjudicated closed
 
 Correct about the code. Not defects.
