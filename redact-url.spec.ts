@@ -848,6 +848,186 @@ describe("DEFECT 3b — a needle normalized away from the text a message carries
 // merged single pass keeps.
 // ───────────────────────────────────────────────────────────────────────────
 
+// ───────────────────────────────────────────────────────────────────────────
+// ROUND 9 — the raw scan is gone, and with it the whole class.
+//
+// Round 8 taught the absolute branch to read the RAW input, because the parser
+// cuts `pathname` at the first `?` or `#`. Round 9 broke that raw scan twice,
+// from both sides at once:
+//
+//   R9-H3-01 — `rawAfterAuthority` took the first `://` to be THIS url's own
+//   authority. The URL Standard reaches the authority state from `https:/host`,
+//   `https:host`, and `https:\\host` as well, so in those spellings the first
+//   `://` is the EMBEDDED url's and the raw region began AFTER the credential.
+//   R9-H3-02 — the raw scan looked for a mark the PARSER creates. It removes
+//   every ASCII tab, CR, and LF before parsing and reads `\` as `/`, so
+//   `https:\\svc:pw@…` spells an authority the raw text never contains.
+//
+// Neither is patched. `redactUrl` reads no raw text at all now: it scans
+// `pathname + search + hash`, the parser's own rendering of everything after
+// the authority, in one contiguous string. The marks are then the ones the
+// parser wrote, the authority is wherever the parser found it, and the `?` no
+// longer takes the `@` away.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("R9 — one text: what the parser emitted, never the raw input", () => {
+  // R9-H3-01. Every spelling of THIS url's authority the parser accepts, each
+  // hiding the same embedded credential behind a terminator.
+  test.each([
+    ["a single solidus", "https:/api.test/go/https://svc:hunter2?tail@internal.test/v1"],
+    ["no solidus at all", "https:api.test/go/https://svc:hunter2?tail@internal.test/v1"],
+    ["backslashes", "https:\\\\api.test/go/https://svc:hunter2?tail@internal.test/v1"],
+    ["a solidus and a CR", "https:/\r/api.test/go/https://svc:hunter2?tail@internal.test/v1"],
+    ["an LF inside the scheme", "ht\ntps://api.test/go/https://svc:hunter2?tail@internal.test/v1"],
+  ])("an authority spelled %s does not move the scan", (_label, url) => {
+    expect(redactUrl(url)).toBe("https://api.test/go/https://internal.test/v1");
+  });
+
+  // R9-H3-02. Every spelling of the EMBEDDED authority the parser has to write
+  // out, each with the terminator that used to take the `@` away.
+  test.each([
+    ["backslashes", "https://api.test/go/https:\\\\svc:hunter2?tail@internal.test/v1"],
+    ["an ASCII tab", "https://api.test/go/https:\t//svc:hunter2?tail@internal.test/v1"],
+    ["a CR", "https://api.test/go/https:\r//svc:hunter2?tail@internal.test/v1"],
+    ["an LF", "https://api.test/go/https:/\n/svc:hunter2?tail@internal.test/v1"],
+    ["backslashes and a `#`", "https://api.test/go/https:\\\\svc:hunter2#tail@internal.test/v1"],
+    [
+      "a tab inside the password",
+      "https://api.test/go/https://svc:hun\tter2?tail@internal.test/v1",
+    ],
+  ])("an embedded authority the parser writes out — %s", (_label, url) => {
+    expect(redactUrl(url)).toBe("https://api.test/go/https://internal.test/v1");
+  });
+
+  // The RELATIVE branch had the same hole and nobody reported it: it read the
+  // raw string first for exactly the reason the absolute branch did, so a
+  // terminator inside a credential the PARSER had to spell out defeated both
+  // of its passes too. One text closes both branches at once.
+  test.each([
+    ["backslashes and a `?`", "/go/https:\\\\svc:hunter2?tail@i.test/v1"],
+    ["a tab and a `#`", "/go/https:\t//svc:hunter2#tail@i.test/v1"],
+    ["a CR and a `?`", "/go/https:\r//svc:hunter2?tail@i.test/v1"],
+  ])("the relative branch loses it too — %s", (_label, url) => {
+    expect(redactUrl(url)).toBe("/go/https://i.test/v1");
+  });
+
+  // The rebuild takes an origin and a PATH, and a path always keeps the leading
+  // `/` no span can reach. So the redactor can move text out of a url and can
+  // never move the host it names: a redaction that LIES is worse than one that
+  // leaks.
+  test.each([
+    ["an IPv6 host", "https://[::1]:8443/go/https://svc:hunter2?t@i.test/v1", "[::1]:8443"],
+    [
+      "a host with a port",
+      "https://api.test:8443/go/https://svc:hunter2?t@i.test/v1",
+      "api.test:8443",
+    ],
+    [
+      "this url's own userinfo",
+      "https://a:pw@api.test/go/https://svc:hunter2?t@i.test/v1",
+      "api.test",
+    ],
+    ["an authority with no path", "https://svc:hunter2@api.test", "api.test"],
+  ])("the host survives redaction — %s", (_label, url, host) => {
+    const redacted = redactUrl(url);
+
+    expect(redacted).not.toContain("hunter2");
+    expect(new URL(redacted).host).toBe(host);
+  });
+
+  // The shapes the one-text rule does NOT change, pinned beside the ones it
+  // does, so a later narrowing has to say which of the two it touches.
+  test.each([
+    [
+      "an `@` inside an encoded span",
+      "https://api.test/go/https://svc:hunter2%40x@i.test/v1",
+      "https://api.test/go/https://i.test/v1",
+    ],
+    [
+      "a second authority after a removed span",
+      "https://api.test/go/https://svc:hunter2?t@i.test/v1/https://svc2:pw@j.test/z",
+      "https://api.test/go/https://i.test/v1/https://j.test/z",
+    ],
+    [
+      "a dot segment before the mark",
+      "https://api.test/go/../go2/https://svc:hunter2?t@i.test/v1",
+      "https://api.test/go2/https://i.test/v1",
+    ],
+    [
+      "an uppercase embedded scheme",
+      "https://api.test/go/HTTPS://svc:hunter2?t@i.test/v1",
+      "https://api.test/go/HTTPS://i.test/v1",
+    ],
+    [
+      "a `#` before a `?`",
+      "https://api.test/go/https://svc:hunter2#a?b@i.test/v1",
+      "https://api.test/go/https://i.test/v1",
+    ],
+    [
+      "a credential in the query alone",
+      "https://api.test?next=https://svc:hunter2@i.test",
+      "https://api.test/",
+    ],
+    [
+      "an @-headed segment under a fragment `@`",
+      "https://api.test/users/@alice#invite=bob@example.com",
+      "https://api.test/users/@alice",
+    ],
+    [
+      "a file url with an embedded credential",
+      "file:///var/go/https://svc:hunter2?t@i.test/v1",
+      "file:///var/go/https://i.test/v1",
+    ],
+    [
+      "a drive letter is not an authority",
+      "file:///c:/Users/alice@corp/x",
+      "file:///c:/Users/alice@corp/x",
+    ],
+    ["an IPv6 host carrying userinfo", "https://alice:hunter2@[::1]/x", "https://[::1]/x"],
+  ])("%s", (_label, url, expected) => {
+    expect(redactUrl(url)).toBe(expected);
+  });
+
+  // A url the parser refuses does not become resolvable once a credential is
+  // taken out, and nothing here edits the input, so the question is asked of
+  // the raw string by construction rather than by an ordering rule.
+  test("an authority whose port is a password still collapses to the no-URL value", () => {
+    expect(redactUrl("https://alice:pw?x@api.test/y")).toBe("");
+  });
+});
+
+describe("R9 — the message pass reads the raw text, anchored on the SCHEME", () => {
+  // `userinfosOf` still reads the raw url, and it must: a needle has to match
+  // the spelling a platform QUOTED, and the parser rewrites what it reads. The
+  // anchor moved with the finding — the cut is made after the scheme's own
+  // authority, whatever spelling it uses, so an embedded credential is inside
+  // the region and this url's port is still outside it.
+  test.each([
+    ["a single solidus", "https:/api.test/go/https://svc:hun\\ter2@i.test/v1"],
+    ["no solidus at all", "https:api.test/go/https://svc:hun\\ter2@i.test/v1"],
+    ["backslashes", "https:\\\\api.test/go/https://svc:hun\\ter2@i.test/v1"],
+    ["a tab between the solidi", "https:/\t/api.test/go/https://svc:hun\\ter2@i.test/v1"],
+  ])("a raw needle survives an authority spelled %s", (_label, url) => {
+    // The platform quotes the target it could not reach, in the caller's own
+    // spelling — so only the RAW scan can produce this needle.
+    const message = "connect ECONNREFUSED while contacting https://svc:hun\\ter2@i.test/v1";
+
+    expect(redactUrlInMessage(message, url)).not.toContain("ter2");
+  });
+
+  test("this url's own port is still not read as a credential", () => {
+    const url = "https://host:8443/users/@alice";
+
+    expect(redactUrlInMessage(`refused ${url}`, url)).toBe(`refused ${url}`);
+  });
+
+  test("a url with no path at all yields no raw region", () => {
+    expect(redactUrlInMessage("refused ops@corp.test", "https://api.test")).toBe(
+      "refused ops@corp.test",
+    );
+  });
+});
+
 describe("the residual any single pass has", () => {
   test("a needle whose removal would create the next one is not matched", () => {
     // STATED on `withoutUserinfos`. Chained `replaceAll` re-scanned the string
@@ -932,6 +1112,179 @@ describe("R8 — a terminator inside a credential the PATH embeds", () => {
     );
     expect(redactUrl("https://api.test/go/https://cdn.test/users/@alice?x=1")).toBe(
       "https://api.test/go/https://cdn.test/users/@alice",
+    );
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// ROUND 9, RESIDUAL LANE — the single-solidus embedded authority.
+//
+// `/go/https:/svc:pw@host` kept `svc:pw`. Round 9's fixer widened the anchor,
+// which closed it, and reverted because widening the SAME constant also widened
+// where a region ENDS — and then a password that spells `:/` ends its own
+// region. That cost was real and it is pinned below: under the reverted form
+// `//svc:hun:/ter2@host` emitted `svc:hun`, which is a password prefix, not two
+// characters.
+//
+// The two are different marks and this round separates them. A region OPENS at
+// a scheme colon and every solidus after it — the spelling every slash-
+// collapsing proxy and every `path.join` produces from an ordinary
+// `/go/https://svc:pw@host`. A region CLOSES only at `://`, which is the rule
+// that exists so a password cannot choose where its own authority stops.
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("R9 residual — a scheme colon and its solidi open an authority", () => {
+  // CLOSED. Each of these kept its credential before this round.
+  test.each([
+    [
+      "a user and a password",
+      "https://api.test/go/https:/svc:hunter2@internal.test/v1",
+      "https://api.test/go/https:/internal.test/v1",
+    ],
+    [
+      "a bearer token with no colon",
+      "https://api.test/go/https:/token@internal.test/v1",
+      "https://api.test/go/https:/internal.test/v1",
+    ],
+    [
+      "a `?` terminator inside the credential",
+      "https://api.test/go/https:/svc:hunter2?tail@internal.test/v1",
+      "https://api.test/go/https:/internal.test/v1",
+    ],
+    [
+      "a `#` terminator inside the credential",
+      "https://api.test/go/https:/svc:hunter2#tail@internal.test/v1",
+      "https://api.test/go/https:/internal.test/v1",
+    ],
+    [
+      "a single backslash the parser rewrites",
+      "https://api.test/go/https:\\svc:hunter2@internal.test/v1",
+      "https://api.test/go/https:/internal.test/v1",
+    ],
+    [
+      "more solidi than the parser needs",
+      "https://api.test/go/https:///svc:hunter2@internal.test/v1",
+      "https://api.test/go/https:///internal.test/v1",
+    ],
+  ])("a single-solidus embedded authority loses its credential — %s", (_label, url, expected) => {
+    expect(redactUrl(url)).toBe(expected);
+  });
+
+  // THE TRADE-OFF THE REVERT WAS ABOUT, pinned so the next round cannot take
+  // the shortcut that reopens it. Widening the region's END as well would cut
+  // each of these at the `:/` the PASSWORD wrote and emit everything before it.
+  test.each([
+    [
+      "a `:/` in the middle",
+      "https://api.test/go/https://svc:hun:/ter2@internal.test/v1",
+      "svc:hun",
+    ],
+    ["a `:/` at the head", "https://api.test/go/https://svc::/hunter2@internal.test/v1", "svc:"],
+    [
+      "a `:/` at the tail",
+      "https://api.test/go/https://svc:hunter2:/@internal.test/v1",
+      "svc:hunter2",
+    ],
+    ["four of them", "https://api.test/go/https://svc:a:/b:/c:/d@internal.test/v1", "svc:a:/b:/c:"],
+  ])("a password that spells `:/` does not end its own region — %s", (_label, url, prefix) => {
+    // The whole credential goes, and in particular the prefix a widened region
+    // end would have left behind.
+    expect(redactUrl(url)).toBe("https://api.test/go/https://internal.test/v1");
+    expect(redactUrl(url)).not.toContain(prefix);
+  });
+
+  test("the same password behind a single solidus loses both halves too", () => {
+    expect(redactUrl("https://api.test/go/https:/svc:hun:/ter2@internal.test/v1")).toBe(
+      "https://api.test/go/https:/internal.test/v1",
+    );
+  });
+
+  // The invariant the whole module is built on, restated for the new mark: a
+  // redaction that moves the host it names is worse than one that leaks. The
+  // narrowest mark is two characters and index 0 of a pathname is already a
+  // `/`, so the earliest span starts at index 3 and the origin is unreachable.
+  test.each([
+    "https://api.test/go/https:/svc:hunter2@evil.test/v1",
+    "https://api.test:8443/go/https:/svc:hunter2@evil.test/v1",
+    "https://api.test/a:/b@evil.test",
+    "https://api.test/go/https:/svc:hun:/ter2@evil.test/v1",
+  ])("the host survives the widened anchor — %s", (url) => {
+    const redacted = redactUrl(url);
+
+    expect(redacted).not.toContain("hunter2");
+    expect(new URL(redacted).host).toBe(new URL(url).host);
+  });
+
+  // What the widened anchor COSTS, all of it over-redaction, which is this
+  // module's safe direction. Stated as pins so a later round narrowing the
+  // anchor has to say which of these it is buying back.
+  test.each([
+    [
+      "a chain of single-solidus authorities collapses to the last host",
+      "https://api.test/go/https:/svc:pw@h1/then/http:/u2:pw2@h2/v1",
+      "https://api.test/go/https:/h2/v1",
+    ],
+    [
+      "an ordinary path segment ending in `:/` before an `@`",
+      "https://api.test/a:/b@c",
+      "https://api.test/a:/c",
+    ],
+  ])("RESIDUAL: %s", (_label, url, expected) => {
+    expect(redactUrl(url)).toBe(expected);
+  });
+
+  // The shapes the widened anchor deliberately does NOT reach, each pinned
+  // with the reason, so a later widening has to name which one it takes.
+  test.each([
+    // A Windows drive letter spells a colon and one solidus in an ordinary
+    // path. This is why a SINGLE solidus does not get `looksLikeUserinfo`'s
+    // third rule — the one that reads a `/`-bearing token as a credential.
+    ["a drive letter is still not an authority", "file:///c:/Users/alice@corp/x"],
+    // The price of that: a standard-base64 token containing a `/`, behind a
+    // single-solidus scheme. Two solidi still reach it — the row below.
+    [
+      "RESIDUAL: a base64 credential with a `/` behind ONE solidus",
+      "https://api.test/go/https:/YWxpY2U/cGFzc3dvcmQ@internal.test/v1",
+    ],
+    // No colon before the solidi at all, and a percent-encoded one, which the
+    // `disclosure-channels.spec.ts` CONTROL rows record as residual 2.
+    ["a scheme-relative embedded url", "https://api.test/go//svc:pw@internal.test/v1"],
+    ["a percent-encoded scheme colon", "https://api.test/go/https%3A//svc:pw@i.test/v1"],
+    // The paths the module is required to keep, unchanged by the new mark.
+    ["an @-headed segment", "https://api.test/users/@alice"],
+    ["a scoped package", "https://api.test/@scope/pkg"],
+  ])("%s", (_label, url) => {
+    expect(redactUrl(url)).toBe(url);
+  });
+
+  test("two solidi still reach the base64 credential the single one does not", () => {
+    expect(redactUrl("https://api.test/go/https://YWxpY2U/cGFzc3dvcmQ@internal.test/v1")).toBe(
+      "https://api.test/go/https://internal.test/v1",
+    );
+  });
+
+  // The regions a wide start opens OVERLAP, where a `://` mark partitions. The
+  // forward `@` cursor is what keeps that one pass over the input; re-reading a
+  // shared region end per mark, or slicing each candidate out to test it, is
+  // the same quadratic the backward scan had. Measured before the cursor:
+  // 3924 ms for the first input below, 1499 ms for the second.
+  test.each([
+    ["repeated `:/` marks", ":/".repeat(32_000)],
+    ["repeated `:/x/` marks ending in an `@`", ":/x/".repeat(20_000) + "@h"],
+  ])("the scan stays linear on %s", (_label, hostile) => {
+    const started = performance.now();
+
+    redactUrl(hostile);
+
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+
+  test("a message quoting the single-solidus form loses the credential too", () => {
+    const url = "https://api.test/go/https:/svc:hunter2@internal.test/v1";
+    const message = `connect ECONNREFUSED while contacting https:/svc:hunter2@internal.test/v1`;
+
+    expect(redactUrlInMessage(message, url)).toBe(
+      "connect ECONNREFUSED while contacting https:/internal.test/v1",
     );
   });
 });

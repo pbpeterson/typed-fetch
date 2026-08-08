@@ -1276,25 +1276,55 @@ describe("the pathname userinfo scan, in both directions", () => {
     expect(error.message).toContain("ops@corp.test");
   });
 
-  // Shapes the `://` anchor does not read as an authority. Each is a secret in
-  // a PATH SEGMENT, which SECURITY.md records as residual 2 ("a secret in a URL
-  // PATH SEGMENT survives in error.url"), so each is pinned rather than
-  // reported.
+  // Shapes the anchor does not read as an authority. Each is a secret in a PATH
+  // SEGMENT, which SECURITY.md records as residual 2 ("a secret in a URL PATH
+  // SEGMENT survives in error.url"), so each is pinned rather than reported.
+  //
+  // Neither spells a scheme COLON before its solidi, which is what the anchor
+  // reads: one has no colon at all, and the other has it percent-encoded, so
+  // `%3A%2F%2F` spells an authority no parser reaches either.
   test.each([
     ["a scheme-relative embedded URL", "https://api.test/go//svc:SHAPE_SECRET@internal.test/v1"],
     ["a percent-encoded scheme colon", "https://api.test/go/https%3A//svc:SHAPE_SECRET@i.test/v1"],
-    ["a single-slash scheme", "https://api.test/go/https:/svc:SHAPE_SECRET@internal.test/v1"],
   ])("CONTROL: %s is read as a path segment, not as an authority", (_label, url) => {
     const response = new Response(null, { status: 404 });
     Object.defineProperty(response, "url", { value: url });
     const error = new NotFoundError(response);
 
     // Recorded, not asserted clean: this is residual 2, and the redactor's
-    // stated rule is that an authority only follows `://`.
+    // stated rule is that an authority follows a scheme colon and its solidi.
     expect(error.toJSON().url).toContain("SHAPE_SECRET");
     // The query and the fragment are still dropped, which is what residual 2
     // says the redactor still guarantees.
     expect(redactedKeepsNoQuery(error.toJSON().url)).toBe(true);
+  });
+
+  // CLOSED IN ROUND 9, and this row recorded the residual until then.
+  //
+  // The single-slash spelling was pinned above as residual 2 on the reading
+  // that "an authority only follows `://`". That reading was the defect, not
+  // the rule: a special scheme reaches its authority over ANY number of
+  // solidi, and every slash-collapsing proxy rewrites an ordinary
+  // `/go/https://svc:pw@host` into this shape before the library sees it. So
+  // the anchor is a scheme colon and the solidi after it, and the region it
+  // opens still ends only at a `://` — which is what keeps a password that
+  // spells `:/` from ending its own region. See `redact-url.spec.ts`.
+  test("a single-slash scheme IS an authority, and its credential is removed", () => {
+    const url = "https://api.test/go/https:/svc:SHAPE_SECRET@internal.test/v1";
+    const response = new Response(null, { status: 404 });
+    Object.defineProperty(response, "url", { value: url });
+    const error = new NotFoundError(response);
+
+    for (const channel of CHANNEL_NAMES) {
+      expect(
+        renderChannels(error)[channel],
+        `${channel} kept the embedded credential`,
+      ).not.toContain("SHAPE_SECRET");
+    }
+    // The origin and the rest of the forward are still diagnostic, and the
+    // escape hatch still holds the whole href.
+    expect(error.toJSON().url).toBe("https://api.test/go/https:/internal.test/v1");
+    expect(error.url).toContain("SHAPE_SECRET");
   });
 
   // The other side of the same boundary, so a later pass reads one list rather
