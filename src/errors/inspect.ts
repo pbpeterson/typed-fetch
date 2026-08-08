@@ -178,7 +178,15 @@ function render(
   // because a throwing custom inspect takes `console.log` down with it.
   let tail: string;
   try {
-    tail = typeof inspect === "function" ? inspect(record, options) : JSON.stringify(record);
+    const rendered =
+      typeof inspect === "function" ? inspect(record, options) : JSON.stringify(record);
+    // The renderer's RESULT is not typechecked either. `inspect` is the third
+    // argument the runtime supplies, and a value whose `Symbol.toPrimitive`
+    // throws would take this function down from the one expression that used to
+    // sit outside the guard — in a function whose stated invariant is that it
+    // never throws. No runtime this package targets supplies such a callback;
+    // the invariant is unconditional anyway.
+    tail = typeof rendered === "string" ? rendered : String(rendered);
   } catch {
     tail = "[record not renderable]";
   }

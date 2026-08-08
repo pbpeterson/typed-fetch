@@ -766,3 +766,44 @@ describe("a slot that refuses to answer is absent, not present-with-undefined", 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 6 — a consumer subclass cannot break the library's invariants.
 // ═══════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 7 — the inspect hook's LAST expression was outside its own guard.
+//
+// The runtime supplies the `inspect` callback as the third argument, and its
+// return value is not typechecked. Interpolating it was the one expression
+// still outside the `try`, in a function whose stated invariant is that it
+// never throws. No runtime this package targets supplies such a callback; the
+// invariant is unconditional anyway.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("the inspect hook survives its own renderer", () => {
+  function renderWith(callback: unknown): string {
+    const error = new NetworkError("boom", { url: "https://api.test/x" });
+    const hook = (error as unknown as Record<symbol, unknown>)[inspectCustom] as (
+      this: unknown,
+      depth: number,
+      options: object,
+      inspect?: unknown,
+    ) => string;
+    return hook.call(error, 2, {}, callback);
+  }
+
+  test("a renderer that answers with a non-string still produces a line", () => {
+    const line = renderWith(() => 42);
+
+    expect(typeof line).toBe("string");
+    expect(line).toContain("42");
+  });
+
+  test("a renderer whose answer refuses string conversion is reported, not thrown", () => {
+    const hostile = {
+      [Symbol.toPrimitive]() {
+        throw new TypeError("this record refuses to become a string");
+      },
+    };
+
+    expect(() => renderWith(() => hostile)).not.toThrow();
+    expect(renderWith(() => hostile)).toContain("[record not renderable]");
+  });
+});
