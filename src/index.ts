@@ -409,9 +409,8 @@ export function isKnownHttpError(error: unknown): error is ClientErrors | Server
  * The stable Fetch response baseline returned by {@link typedFetch}.
  *
  * `body` and `headers` are the AMBIENT platform types, so the success value
- * reaches a platform API without a cast: `new Response(r.body, { headers:
- * r.headers })` is the forwarding idiom every proxy writes, and it used to need
- * two. They were a `Pick` of the members {@link isResponse} validates, and that
+ * reaches a platform API without a cast. They were a `Pick` of the members
+ * {@link isResponse} validates, and that
  * narrowing bought nothing it cost: `body.tee()` and `body.pipeThrough()` are
  * typed with the full `ReadableStream`, so the exact members `body` refused to
  * promise came straight back one call later. Naming the ambient type also
@@ -419,6 +418,22 @@ export function isKnownHttpError(error: unknown): error is ClientErrors | Server
  * that types a plain `fetch` call in their project — `for await` over a body
  * compiles under `@types/node` and does not under `lib.dom`, which is correct
  * in both cases.
+ *
+ * FORWARDING, since removing the cast removed the step that made a developer
+ * stop here. `new Response(r.body, { headers: r.headers })` is the line every
+ * proxy reaches for, and it is wrong: the platform hands back a DECODED body
+ * while `content-encoding`, the wire `content-length`, and the hop-by-hop names
+ * stay on `headers`, so the response you emit declares framing its bytes
+ * contradict. Drop those first — a bare `fetch` user writing the same line has
+ * the same problem, which is why it is worth stating here:
+ *
+ * ```ts no-check
+ * const headers = new Headers(response.headers);
+ * for (const name of ["content-encoding", "content-length", "connection", "transfer-encoding"]) {
+ *   headers.delete(name);
+ * }
+ * return new Response(response.body, { status: response.status, headers });
+ * ```
  *
  * This interface is still not `Response`, and that omission is load-bearing:
  * `Response.bytes()` is absent at the package floor, Node 20.13.0, so promising
