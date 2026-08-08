@@ -30,6 +30,11 @@ test("the consumer source exercises typed JSON and the public guard", () => {
   expect(DENO_CONSUMER_SOURCE).toContain("isKnownHttpError");
 });
 
+test("the consumer source resolves the ./errors subpath as well as the main entry", () => {
+  expect(DENO_CONSUMER_SOURCE).toContain('from "@pbpeterson/typed-fetch/errors"');
+  expect(DENO_CONSUMER_SOURCE).toContain("ClientErrors");
+});
+
 test("importing the gate performs no pack, install, typecheck, or output", () => {
   const scriptDir = dirname(fileURLToPath(import.meta.url));
   const gate = pathToFileURL(join(scriptDir, "check-deno-consumer.mjs")).href;

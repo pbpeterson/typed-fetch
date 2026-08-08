@@ -18,6 +18,11 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const DENO_CONSUMER_SOURCE = `
 import { isKnownHttpError, typedFetch } from "@pbpeterson/typed-fetch";
+// The SUBPATH, which has its own exports entry, its own declaration file, and
+// its own \`errors/package.json\` stub. Importing only the main entry left every
+// one of those unresolved by any Deno gate.
+import { BaseHttpError, NotFoundError } from "@pbpeterson/typed-fetch/errors";
+import type { ClientErrors, TypedFetchError } from "@pbpeterson/typed-fetch/errors";
 
 type IsAny<T> = 0 extends 1 & T ? true : false;
 type ExpectFalse<T extends false> = T;
@@ -39,8 +44,20 @@ if (isKnownHttpError(candidate)) {
   void status;
 }
 
+// The subpath's type-only exports are load-bearing here: a declaration the
+// subpath fails to ship is a typecheck failure, not a silent import.
+declare const subpathError: NotFoundError;
+const asBase: BaseHttpError = subpathError;
+const asClientError: ClientErrors = subpathError;
+const asUnionMember: TypedFetchError = subpathError;
+const subpathStatus: 404 = subpathError.status;
+
 void (null as unknown as TypedFetchMustNotBeAny);
 void checkTypedResponse;
+void asBase;
+void asClientError;
+void asUnionMember;
+void subpathStatus;
 `;
 
 /**
