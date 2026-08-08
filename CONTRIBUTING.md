@@ -441,10 +441,12 @@ error — do all of the following:
    step 3 already registered the status code. Do not add a hand-written entry.
 
 5. **Update the tests**:
-   - in `fixtures/error-roster.ts`, add `{ Class: XxxError, status: NNN },` to
-     the `allErrors` table (in status-code order). Write the row by hand from
-     the RFC — never derive it from `src/`, or the table stops being an
-     independent second source of truth;
+   - in `fixtures/error-roster.ts`, add
+     `{ Class: XxxError, status: NNN, statusText: "<Status Text>" },` to the
+     `allErrors` table (in status-code order). Write the row by hand from the
+     RFC — never derive it from `src/`, or the table stops being an
+     independent second source of truth. The `statusText` field is compared at
+     runtime, so a wrong phrase fails `pnpm test` and not only `pnpm typecheck`;
    - in `typed-fetch.spec.ts`, add `{ status: NNN, Class: XxxError },` to the
      `errorCases` table (in status-code order). That table drives the
      `test.each` that sends one live request per status code and asserts the

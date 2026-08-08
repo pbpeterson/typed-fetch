@@ -254,3 +254,28 @@ describe("roster sync", () => {
     >().toEqualTypeOf<"Network Authentication Required">();
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 6 — the reason phrase, compared at RUNTIME against a hand-written row.
+//
+// The per-class `expectTypeOf` assertions below are the primary guardrail for
+// the literal TYPE, and they are real — but `vitest run` cannot see them. A
+// wrong-but-plausible phrase on a class no document names left every runtime
+// test green and failed only under `tsc`. `allErrors` now carries the phrase
+// its own header instructs a contributor to write from the RFC, so the check
+// has the same shape `status` already has.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("every class carries the reason phrase the roster table states", () => {
+  test.each(allErrors.map((row) => [row.Class.name, row] as const))(
+    "%s",
+    (_name, { Class, status, statusText }) => {
+      expect(Class.status).toBe(status);
+      expect(Class.statusText).toBe(statusText);
+      // The instance fields, which are what a consumer reads.
+      const instance = new Class(new Response(null, { status }));
+      expect(instance.status).toBe(status);
+      expect(instance.statusText).toBe(statusText);
+    },
+  );
+});
