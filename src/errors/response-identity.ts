@@ -247,6 +247,36 @@ export function textOf(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/**
+ * One own slot of a value a CALLER supplied: whether it is there, and what it
+ * holds. Total by construction — it never throws.
+ *
+ * Exported for the same reason {@link textOf} is: the three pre-response
+ * classes take their `cause`, `reason`, and `url` from a caller, and they are
+ * public API a consumer constructs directly. Neither half of the read is inert.
+ * `Object.hasOwn` runs `[[GetOwnProperty]]`, which a `Proxy` trap answers, and
+ * the read that follows it runs an ordinary getter, which needs no `Proxy` at
+ * all. Either one can throw, and a constructor that throws is the one outcome a
+ * library whose premise is errors-as-values must not produce.
+ *
+ * A slot that refuses to answer is ABSENT. That is the honest report: the
+ * constructors define an own `cause` or `reason` only for a value they hold, so
+ * a refusal keeps `"cause" in error` false rather than filing `undefined`.
+ *
+ * OWN, never inherited. A bare `options?.url` walks the prototype chain, so a
+ * single `Object.prototype.url` write anywhere in the process puts a URL this
+ * request never touched into the record a logger ships off-box.
+ */
+export function ownSlot(source: unknown, key: string): { present: boolean; value: unknown } {
+  if (source === null || source === undefined) return { present: false, value: undefined };
+  try {
+    if (!Object.hasOwn(source, key)) return { present: false, value: undefined };
+    return { present: true, value: (source as Record<string, unknown>)[key] };
+  } catch {
+    return { present: false, value: undefined };
+  }
+}
+
 /** Read and record one field only after its getter and normalization succeed. */
 function recordedField<T>(table: WeakMap<object, T>, key: object, read: () => T): T {
   if (table.has(key)) return table.get(key) as T;

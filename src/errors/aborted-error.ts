@@ -1,7 +1,7 @@
 import { brand, abortedErrorBrand } from "./brand";
 import { installInspect } from "./inspect";
 import { redactUrl, redactUrlInMessage } from "./redact-url";
-import { textOf } from "./response-identity";
+import { ownSlot, textOf } from "./response-identity";
 
 /**
  * Represents a request that was aborted via `AbortSignal` (e.g.
@@ -63,26 +63,31 @@ export class AbortedError extends Error {
     // premise is that errors are values. An array has `.includes`, so it got
     // through instead and sat in a `readonly string` slot. `typedFetch` already
     // applies this rule to its own resolved url.
-    const url = textOf(options && Object.hasOwn(options, "url") ? options.url : "");
+    //
+    // The READ is normalized too, not only the value: `ownSlot` reports a slot
+    // that throws as absent. See `./network-error`.
+    const cause = ownSlot(options, "cause");
+    const reason = ownSlot(options, "reason");
+    const url = textOf(ownSlot(options, "url").value);
     super(redactUrlInMessage(message, url));
-    if (options && Object.hasOwn(options, "cause")) {
+    if (cause.present) {
       // `defineProperty`, not an assignment: `cause` must be non-enumerable,
       // exactly as `new Error(message, { cause })` defines it. See
       // `./network-error` for what an enumerable one leaks.
       Object.defineProperty(this, "cause", {
-        value: options.cause,
+        value: cause.value,
         writable: true,
         enumerable: false,
         configurable: true,
       });
     }
-    if (options && Object.hasOwn(options, "reason")) {
+    if (reason.present) {
       // Non-enumerable for the same reason, plus one of its own: the reason is
       // whatever the caller passed to `controller.abort(reason)`. It can be a
       // cyclic object, and an enumerable one makes `JSON.stringify(error)`
       // throw inside whatever logger reached for it.
       Object.defineProperty(this, "reason", {
-        value: options.reason,
+        value: reason.value,
         writable: true,
         enumerable: false,
         configurable: true,

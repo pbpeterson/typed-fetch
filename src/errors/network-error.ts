@@ -1,7 +1,7 @@
 import { brand, networkErrorBrand } from "./brand";
 import { installInspect } from "./inspect";
 import { redactUrl, redactUrlInMessage } from "./redact-url";
-import { textOf } from "./response-identity";
+import { ownSlot, textOf } from "./response-identity";
 
 /**
  * Represents a request failure or an incompatible result from a custom Fetch
@@ -74,9 +74,14 @@ export class NetworkError extends Error {
     // premise is that errors are values. An array has `.includes`, so it got
     // through instead and sat in a `readonly string` slot. `typedFetch` already
     // applies this rule to its own resolved url.
-    const url = textOf(options && Object.hasOwn(options, "url") ? options.url : "");
+    //
+    // The READ is normalized too, not only the value: `ownSlot` reports a slot
+    // that throws as absent, because neither `Object.hasOwn` nor the getter
+    // after it is inert.
+    const cause = ownSlot(options, "cause");
+    const url = textOf(ownSlot(options, "url").value);
     super(redactUrlInMessage(message, url));
-    if (options && Object.hasOwn(options, "cause")) {
+    if (cause.present) {
       // `defineProperty`, not `this.cause = ...`. A plain assignment creates an
       // ENUMERABLE own property, while `new Error(message, { cause })` creates
       // a non-enumerable one. The difference is not cosmetic: an enumerable
@@ -87,7 +92,7 @@ export class NetworkError extends Error {
       // serializes the error. The descriptor below is the one the platform
       // writes: writable and configurable, never enumerable.
       Object.defineProperty(this, "cause", {
-        value: options.cause,
+        value: cause.value,
         writable: true,
         enumerable: false,
         configurable: true,
