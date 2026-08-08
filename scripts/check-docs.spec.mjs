@@ -889,3 +889,48 @@ describe("DOC_TYPECHECK_PASSES", () => {
     expect(noDom.types).toContain("node");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 7 — a missing roster document is a POLICY fact, not an adapter exit.
+//
+// The gate used to `process.exit(1)` from inside `gatherDocSources`, which no
+// spec could reach and which truncated an ACCUMULATING gate's report to one
+// message. The sibling gate treats the identical fact as data crossing the
+// seam, and `judgeDocs` now does the same.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("a documentation file named in the roster but absent from disk", () => {
+  test("is a verdict the decision returns, not an exit the adapter takes", () => {
+    const plan = {
+      blocks: [],
+      skipped: [],
+      historical: [],
+      historicalMisplaced: [],
+      unterminated: [],
+      exampleBlocks: [],
+      totalTsBlocks: 0,
+    };
+
+    expect(judgeDocs({ plan, tscOutput: null, missing: ["CONTEXT.md"] })).toEqual({
+      kind: "missing-documents",
+      missing: ["CONTEXT.md"],
+    });
+  });
+
+  test("outranks a clean tsc run, because the blocks it would carry were never read", () => {
+    const plan = {
+      blocks: [],
+      skipped: [],
+      historical: [],
+      historicalMisplaced: [],
+      unterminated: [],
+      exampleBlocks: [],
+      totalTsBlocks: 0,
+    };
+
+    expect(judgeDocs({ plan, tscOutput: null, missing: [] }).kind).toBe("ok");
+    expect(judgeDocs({ plan, tscOutput: null, missing: ["README.md"] }).kind).toBe(
+      "missing-documents",
+    );
+  });
+});

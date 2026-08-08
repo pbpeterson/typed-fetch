@@ -426,7 +426,13 @@ export function attributeDiagnostics(tscOutput, blocks) {
  *   tscOutput is null when tsc exited 0.
  * @returns {DocsVerdict}
  */
-export function judgeDocs({ plan, tscOutput }) {
+export function judgeDocs({ plan, tscOutput, missing = [] }) {
+  // A roster document that is not on disk is a POLICY fact, exactly as it is in
+  // `check-doc-style`. It outranks everything below for the same reason an
+  // unterminated fence does: the blocks it would have contributed were never
+  // extracted, so a green tsc under-reports.
+  if (missing.length > 0) return { kind: "missing-documents", missing };
+
   // Checked BEFORE the tsc verdict: an unterminated fence means the document
   // was mis-parsed, so every block after it was never extracted and a green
   // tsc run would only prove the fragment we did manage to read. That is
@@ -507,8 +513,10 @@ export const REQUIRED_DIST_ENTRIES = [
 // two I/O preconditions (dist/ and tsc must exist) whose messages are fixed.
 // ---------------------------------------------------------------------------
 
-/** @returns {DocSource[]} */
+/** @returns {{ docs: DocSource[], missing: string[] }} */
 function gatherDocSources() {
+  /** @type {string[]} */
+  const missing = [];
   /** @type {DocSource[]} */
   const docs = [];
   const roster = [
@@ -525,12 +533,16 @@ function gatherDocSources() {
   for (const { file, format } of roster) {
     const abs = join(repoRoot, file);
     if (!existsSync(abs)) {
-      console.error(`check-docs: doc file not found: ${file}`);
-      process.exit(1);
+      // A FACT for the decision, not a verdict taken here. `check-doc-style`
+      // treats the identical fact the same way, and this gate accumulates: an
+      // exit from the adapter truncated the report to one message, and no spec
+      // could reach the branch that produced it.
+      missing.push(file);
+      continue;
     }
     docs.push({ file, format, source: readFileSync(abs, "utf8") });
   }
-  return docs;
+  return { docs, missing };
 }
 
 function main() {
@@ -573,7 +585,7 @@ function main() {
   // masking real errors. We DON'T pass files on the command line: we write a
   // dedicated tsconfig here (its own `include`) and invoke `tsc -p`, which is
   // the config path — no root tsconfig.json is consulted, no TS5112.
-  const docs = gatherDocSources();
+  const { docs, missing: missingDocuments } = gatherDocSources();
 
   // One compilation per pass. The block ROSTER is the same every time — only
   // the entry a block imports and the compiler profile change — so the plan of
@@ -638,7 +650,7 @@ function main() {
   const verdicts = runs.map((run) => ({
     pass: run.pass,
     tscOutput: run.tscOutput,
-    verdict: judgeDocs({ plan: run.plan, tscOutput: run.tscOutput }),
+    verdict: judgeDocs({ plan: run.plan, tscOutput: run.tscOutput, missing: missingDocuments }),
   }));
   const failing = verdicts.find((v) => v.verdict.kind !== "ok");
   /** @type {ReturnType<typeof judgeDocs>} */
@@ -646,6 +658,13 @@ function main() {
   const tscOutput = failing ? failing.tscOutput : null;
   const failingPass = failing ? failing.pass.id : "";
 
+  if (verdict.kind === "missing-documents") {
+    console.error("check-docs: documentation file(s) named in the roster are not on disk:\n");
+    for (const file of verdict.missing) console.error(`    - ${file}`);
+    console.error("");
+    scratch.dispose();
+    process.exit(1);
+  }
   if (verdict.kind === "unterminated-fence") {
     console.error("check-docs: a fenced block is never closed, so the rest of that document was");
     console.error("  not parsed and its later examples were never checked. Close the fence:\n");

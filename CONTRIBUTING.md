@@ -240,7 +240,7 @@ excluded. Its amendments remain in scope.
 **What it cannot see.** Two limits, both deliberate, and both pinned by a test in
 `scripts/check-doc-style.spec.mjs`.
 
-The rules are **lexical**. "reissue calls the caller had explicitly aborted"
+The rules are **lexical**. "reissue calls the caller had explicitly canceled"
 says "calls", not "requests", and no regular expression reaches it. Vocabulary
 inside a fenced example is not scanned either,
 because a legitimate reproduction can contain `new Error("canceled")`. Tense and
