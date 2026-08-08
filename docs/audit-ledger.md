@@ -489,6 +489,83 @@ construction, disclosure, and the public surface.
   type-surface containment and the README's 40-row class table against the
   built package.
 
+### What round 9 settled
+
+Four lanes: request setup and classification, response and error
+construction, URL redaction, and disclosure channels.
+
+- **The setup phase read `requestInput.signal` plainly, so an own data
+  property defined over `Request.prototype.signal` captured a decoy:** the
+  transport aborted on the associated signal while the library filed a
+  `NetworkError` instead of an `AbortedError`. The read now goes through
+  `nativeRequestSignal`, chosen by the same `callerTransport` predicate that
+  admits the input. Record F1's inventory as the reason the class is closed,
+  not just the case: the setup phase takes exactly three things off a
+  handed-over `Request` — `url` (round 8), `signal` (round 9), and the own
+  `Symbol.toStringTag`, which can only widen the verdict; `method`, `headers`,
+  `body`, and `redirect` are never read, because the transport receives the
+  `Request` whole. (R9-H1-01)
+- **`installInspect` stamped only Node's key.** Deno resolves
+  `Symbol.for("Deno.customInspect")` first, so one write of that key to
+  `Object.prototype` rendered the error's own properties and put the full
+  href — userinfo password and query token — into `console.log` and
+  `Deno.inspect`. Both keys are stamped now. Record the measured runtime map:
+  Node resolves its own key; Bun's `Bun.inspect.custom` IS Node's key; Deno
+  resolves its own first; browsers and workerd gate no per-object inspect
+  key. (R9-H4-01)
+- **R9-H3-01 and R9-H3-02, both inside round 8's own fix.** Comparing two
+  texts the URL parser does not agree about was the whole defect, and the raw
+  scan is gone. Round 8 taught the absolute branch to read the raw input
+  because the path state ends `pathname` at the first `?` or `#`; round 9
+  broke that scan from both sides — `rawAfterAuthority` took the first `://`
+  for this url's own authority, which is wrong for `https:/host`,
+  `https:host`, and `https:\\host` (all reach the authority state), so the
+  raw region began after the credential (R9-H3-01); and it searched for a
+  mark the parser CREATES from a backslash pair or a removed tab, CR, or LF,
+  so an embedded `https:\\svc:pw@` was invisible while `pathname` had already
+  been cut at the `?` (R9-H3-02). `redactUrl` reads no raw text now: it scans
+  `pathname + search + hash`, the parser's own rendering of everything after
+  the authority, and rebuilds on the origin — so the marks are the ones the
+  parser wrote, the authority is wherever the parser found it, and a
+  redaction can never move the host it names. The same change closed two
+  relative-branch shapes nobody had reported. `userinfosOf` still reads raw
+  text, because a needle must match the spelling a platform quoted; its cut
+  is anchored on the scheme now, not on the first `://`. F3 validated the
+  change with differential fuzzing against HEAD — 60,000 urls and 180,000
+  messages, zero cases where the new code leaks and the old does not, zero
+  cases where the emitted host differs from the url's real host.
+- **Residual, round 9.** A `://` inside the query cuts short an embedded
+  credential's region when that credential has no `@` of its own before it,
+  so `/go/https://svc:hunter2?a=://b@c` keeps `svc:hunter2`; it is
+  under-redaction, it predates round 9, and closing it would delete `host1`
+  from `://host1/x://u2:pw@host2/v1`, which the suite pins as a path the
+  redactor keeps. Round 9 closed the single-solidus embedded authority.
+  `redactUrl` kept `svc:pw` in `/go/https:/svc:pw@host`, which is the
+  spelling every slash-collapsing proxy and every `path.join` produces from
+  an ordinary `/go/https://svc:pw@host`. The mark that OPENS a userinfo
+  region and the mark that CLOSES one are now different. A region opens at a
+  scheme colon and every solidus after it; a region closes only at `://`.
+  Widening both — which the fixer tried and reverted — gives a password that
+  spells `:/` the power to end its own region and emit the prefix, and a
+  200,000-url differential fuzz measured 5,241 new `url` leaks and 13,435 new
+  `message` leaks for that form against zero for the split. The split closed
+  15,456 leaking urls in that fuzz, moved no host in any of the 200,000, and
+  made no message worse. What it costs is over-redaction: a chain of
+  single-solidus authorities collapses to its last host, and a path segment
+  ending in `:/` before an `@` loses the segment. One residual replaces it,
+  and it is narrower: a standard-base64 credential containing a `/` behind a
+  single solidus is read as a path segment, because `looksLikeUserinfo`'s
+  third rule needs the two solidi the parser's own spelling has —
+  `file:///c:/Users/alice@corp/x` is a drive letter, not an authority.
+- **H2 returned clean.** It closed all 4096 four-operation `errorBodyOf`
+  sequences, every interleaving of two `ErrorBody` handles over one
+  `Response`, six same-tick concurrency pairs, all 81 four-operation
+  `clone()`-chain mixes, `Response`-subclass getters that shift after the
+  first read on six members, abort and timeout composition, and ADR 0003 row
+  H-14 driven through all 15 refusal points of the response phase. H2 chased
+  two candidates and discarded both because the failing test was wrong, not
+  the code.
+
 ## Adjudicated closed
 
 Correct about the code. Not defects.

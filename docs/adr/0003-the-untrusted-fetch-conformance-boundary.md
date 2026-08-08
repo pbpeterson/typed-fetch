@@ -104,8 +104,10 @@ in scope by reference, not repeated here:
   [ADR 0002](./0002-refuse-a-clone-copy-that-cannot-confirm-the-branch.md).
 - The disclosure channels an error's data can reach a reader through are
   enumerated in `disclosure-channels.spec.ts`, and a decision about one applies
-  to the set. A channel in that set resolves a member this library owns, so a
-  polluted `Object.prototype` cannot supply it.
+  to the set. A channel in that set resolves a member this library owns on
+  every runtime this package gates — the inspect channel under Node's key and
+  again under Deno's, which Deno resolves first — so a polluted
+  `Object.prototype` cannot supply it.
 
 ### Out of scope, permanently
 

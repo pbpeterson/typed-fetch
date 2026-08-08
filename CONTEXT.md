@@ -159,16 +159,18 @@ Words this codebase already uses, some of them only implicitly until now.
   - Symbol-keyed behavior is stamped onto the prototype with `defineProperty`,
     never declared as a computed class member. A computed member emits a
     `unique symbol` into both declaration files and reintroduces the `#private`
-    cross-format assignability hazard (`TS2741`). Four members are stamped this
-    way: the brands, the inspect hook, the ownership query, and the
-    string-conversion hook. The brands and the query are stamped
-    `writable: false, configurable: false`, because a replaced answer to "do
-    you own this branch?" strands a stream that only that method can vouch
-    for. The inspect hook stays replaceable, because a consumer may
-    legitimately install their own. The string-conversion hook stays
-    replaceable, for the reason the inspect hook stays replaceable. It
-    delegates to `toString`, so a subclass override still decides the
-    channel.
+    cross-format assignability hazard (`TS2741`). Five members are stamped
+    this way: the brands, the inspect hook under Node's key, the same hook
+    under Deno's key, the ownership query, and the string-conversion hook. One
+    key per gated runtime, not one key: Bun resolves Node's key, and Deno
+    resolves `Symbol.for("Deno.customInspect")` first. The brands and the
+    query are stamped `writable: false, configurable: false`, because a
+    replaced answer to "do you own this branch?" strands a stream that only
+    that method can vouch for. The inspect hook stays replaceable under both
+    keys, because a consumer may legitimately install their own. The
+    string-conversion hook stays replaceable, for the reason the inspect hook
+    stays replaceable. It delegates to `toString`, so a subclass override
+    still decides the channel.
 
 - **Residual** — something the library cannot close, stated rather than left
   undiscovered. Five exist, and the first three are disclosures a **channel**
@@ -246,7 +248,12 @@ src/index.ts                  typedFetch + the guards; owns the envelope and
                               the transport seam. The `fetch` override is read
                               as an OWN property, never through the prototype
                               chain. `typedFetch` captures the governing signal
-                              once and serializes the request input once. It
+                              once — a handed-over `Request` contributes that
+                              signal through `Request.prototype`'s accessor
+                              when the AMBIENT transport runs, and through its
+                              own property when caller code runs as the
+                              transport — and serializes the request input
+                              once. It
                               never reads `headers`; the transport does. It runs
                               in THREE PHASES with a catch each — setup,
                               transport, response — and only the transport can
