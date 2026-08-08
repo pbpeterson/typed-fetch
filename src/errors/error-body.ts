@@ -151,11 +151,13 @@ function bodyForRelease(response: Response): ReleasableBody | null | undefined {
       // chain. A native object can keep its slots after that chain is replaced,
       // so make one scoped attempt with the captured prototype and restore it.
       //
-      // UNREACHABLE else: `nativeResponseBodyGetter` is a function only when
-      // `Response` was defined at module load, and that same condition is what
-      // fills `nativeResponsePrototype`. A captured getter implies a captured
-      // prototype, so the guard below cannot fail behind the one above.
-      /* v8 ignore start */
+      // The guard is REACHABLE, and the reason is worth stating: the two values
+      // come from FOUR separate reads of a mutable global, not from one
+      // condition. A `Response` global that answers the getter lookup with the
+      // real class and the prototype lookup with anything else leaves this
+      // module holding a getter and no prototype. The arm then falls through to
+      // the visible members below, which is the right answer for an object this
+      // module cannot repair.
       if (nativeResponsePrototype !== undefined) {
         try {
           const originalPrototype = Object.getPrototypeOf(response) as object | null;
@@ -169,7 +171,6 @@ function bodyForRelease(response: Response): ReleasableBody | null | undefined {
           // Not a repairable native Response. Inspect its own chain.
         }
       }
-      /* v8 ignore stop */
     }
   }
 

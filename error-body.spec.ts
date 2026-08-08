@@ -1342,3 +1342,65 @@ describe("error-body: loaded on a runtime without Response or ReadableStream", (
     expect(cancelled).toBe(true);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 5 — the captured prototype is a SEPARATE read of a mutable global.
+//
+// `bodyForRelease` captures `Response.prototype.body`'s getter and
+// `Response.prototype` at module load, and a round-4 comment claimed the
+// second could never be missing while the first was present. It can: they are
+// four reads of `globalThis.Response`, and a global that answers them
+// differently leaves this module holding a getter and no prototype. The arm is
+// then taken, and the release falls through to the visible members.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("error-body: a Response global whose reads disagree", () => {
+  test("the release still answers, and it cannot repair a stripped prototype", async () => {
+    const savedResponse = globalThis.Response;
+    let reads = 0;
+    // The first two reads (the `typeof` guard and the descriptor lookup) get
+    // the real class, so the getter is captured. The rest get a stand-in with
+    // no `prototype`, so `nativeResponsePrototype` is `undefined`.
+    Object.defineProperty(globalThis, "Response", {
+      configurable: true,
+      get: () => (reads++ < 2 ? savedResponse : ({} as unknown as typeof Response)),
+    });
+
+    let poisoned: typeof import("./src/errors/error-body");
+    try {
+      vi.resetModules();
+      poisoned = await import("./src/errors/error-body");
+    } finally {
+      Object.defineProperty(globalThis, "Response", {
+        configurable: true,
+        writable: true,
+        value: savedResponse,
+      });
+    }
+
+    // The discriminator: a REAL response whose prototype chain was stripped.
+    // The healthy module repairs the chain with the captured prototype and
+    // releases the stream; this one cannot, so the body stays unread.
+    // `bodyUsed` is read through the native getter with the prototype put
+    // back, because a stripped chain makes the ordinary read an illegal
+    // invocation.
+    const readBodyUsed = (response: Response): boolean => {
+      Object.setPrototypeOf(response, Response.prototype);
+      const used = response.bodyUsed;
+      Object.setPrototypeOf(response, null);
+      return used;
+    };
+
+    const victim = new Response("payload");
+    Object.setPrototypeOf(victim, null);
+    expect(() => poisoned.releaseResponseBody(victim)).not.toThrow();
+    expect(readBodyUsed(victim)).toBe(false);
+
+    const healthy = new Response("payload");
+    Object.setPrototypeOf(healthy, null);
+    releaseResponseBody(healthy);
+    expect(readBodyUsed(healthy)).toBe(true);
+
+    vi.resetModules();
+  });
+});
