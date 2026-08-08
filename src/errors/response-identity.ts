@@ -311,6 +311,17 @@ const REASON_PHRASE_LIMIT = 128;
  * truncates a C string. None of it is legible text, so removing it costs the
  * diagnostic nothing.
  *
+ * The BIDI and invisible formatting characters go for the same reason, and they
+ * are the half that took a second look to see. They do not break a line, they
+ * rewrite how the rest of it READS: U+202E turns the remainder of the message
+ * around, so an origin can choose how the URL this library appends after the
+ * phrase appears to a human. Unlike a C0 byte, nothing escapes them —
+ * `JSON.stringify` and `util.inspect` both emit them raw.
+ *
+ * HOMOGLYPHS are deliberately not covered. A fullwidth `＠` never delimited an
+ * authority for any parser, so nothing is hidden behind it, and filtering
+ * look-alikes out of free text is the deny list this library refuses elsewhere.
+ *
  * A CHARACTER SCAN rather than a regular expression, deliberately: `src/` holds
  * no regular expressions at all, which makes "this library has no catastrophic
  * backtracking" a property a reader can check by looking rather than by
@@ -321,7 +332,21 @@ function safeReasonPhrase(phrase: string): string {
   for (const character of phrase) {
     const code = character.codePointAt(0) ?? 0;
     const rewritesALine =
-      code <= 0x1f || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029;
+      // C0, DEL, and C1.
+      code <= 0x1f ||
+      (code >= 0x7f && code <= 0x9f) ||
+      // ALM, and the zero-width joiners and marks.
+      code === 0x061c ||
+      (code >= 0x200b && code <= 0x200f) ||
+      // The bidi embeddings and overrides, and the line/paragraph separators.
+      (code >= 0x202a && code <= 0x202e) ||
+      code === 0x2028 ||
+      code === 0x2029 ||
+      // The invisible operators and the bidi isolates.
+      (code >= 0x2060 && code <= 0x2064) ||
+      (code >= 0x2066 && code <= 0x2069) ||
+      // BOM / zero-width no-break space.
+      code === 0xfeff;
     if (rewritesALine) continue;
     out += character;
     if (out.length >= REASON_PHRASE_LIMIT) break;

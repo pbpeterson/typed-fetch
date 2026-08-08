@@ -301,6 +301,32 @@ describe("disclosure channels — the platform message is never copied", () => {
       expect(JSON.stringify(error)).not.toContain(LS);
     });
 
+    // The half that does not break a line but rewrites how the rest of it
+    // READS. Nothing escapes these — `JSON.stringify` and `util.inspect` both
+    // emit them raw — so an origin could choose how the URL this library
+    // appends after the phrase appears to a human.
+    test("no bidi or invisible formatting character reaches the message", () => {
+      const RLO = "\u202e";
+      const ZWSP = "\u200b";
+      const ISOLATE = "\u2066";
+      const BOM = "\ufeff";
+      const error = hostileReasonPhrase(`Not Found${RLO}${ZWSP}${ISOLATE}${BOM}`);
+
+      expect(error.message).not.toContain(RLO);
+      expect(error.message).not.toContain(ZWSP);
+      expect(error.message).not.toContain(ISOLATE);
+      expect(error.message).not.toContain(BOM);
+      expect(JSON.stringify(error)).not.toContain(RLO);
+      // The legible half survives.
+      expect(error.message).toContain("HTTP 404 Not Found");
+    });
+
+    test("a homoglyph is NOT filtered — that would be the deny list", () => {
+      // A fullwidth `＠` never delimited an authority for any parser, so
+      // nothing is hidden behind it.
+      expect(hostileReasonPhrase("Not F＠und").message).toContain("Not F＠und");
+    });
+
     test("the origin does not choose how long the message is", () => {
       // Node accepts a header line of about 15 KB, so an unbounded phrase sets
       // the length of every log line the consumer writes.
