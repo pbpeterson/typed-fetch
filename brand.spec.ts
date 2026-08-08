@@ -223,6 +223,42 @@ describe("asksOwnsResponse — three answers, and never a throw", () => {
     }
   });
 
+  // The read walks the prototype chain, exactly as the brand read does, so one
+  // polluting write of this symbol answered for EVERY value — and this answer
+  // releases custody of a teed branch. A non-owner accepted here orphans the
+  // branch: nothing can cancel it, and `cancel()` on the original never
+  // settles. `hasBrand` refuses a brand from `Object.prototype`; this had no
+  // such guard.
+  describe("a polluted Object.prototype cannot answer for a value", () => {
+    function withPollutedOwnership<T>(run: () => T): T {
+      const proto = Object.prototype as unknown as Record<symbol, unknown>;
+      proto[ownsResponseSymbol] = () => true;
+      try {
+        return run();
+      } finally {
+        delete proto[ownsResponseSymbol];
+      }
+    }
+
+    it("a plain object still cannot answer", () => {
+      withPollutedOwnership(() => {
+        expect(asksOwnsResponse({}, candidate())).toBeUndefined();
+        expect(asksOwnsResponse(new Error("plain"), candidate())).toBeUndefined();
+        expect(asksOwnsResponse(() => {}, candidate())).toBeUndefined();
+      });
+    });
+
+    it("a value that owns the member on its own prototype still answers", () => {
+      // What the prototype-chain read exists for: `stampOwnsResponse` puts the
+      // member on `BaseHttpError.prototype`, including a foreign copy's.
+      const owner = withMember(() => true);
+
+      withPollutedOwnership(() => {
+        expect(asksOwnsResponse(owner, candidate())).toBe(true);
+      });
+    });
+  });
+
   it("A3: a member that throws has answered, and the answer is not yes", () => {
     const value = withMember(() => {
       throw new Error("member exploded");

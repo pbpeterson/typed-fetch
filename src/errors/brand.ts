@@ -245,6 +245,22 @@ export function stampOwnsResponse(prototype: object, owns: OwnsResponse): void {
  * conservative outcome is "did not confirm", which also leads to a rejection.
  * Both fail toward refusing the clone.
  */
+/**
+ * Does a prototype other than `Object.prototype` own the ownership member?
+ *
+ * The sibling of {@link ownsBrandBelowObject}, bounded for the same reason: the
+ * chain belongs to the caller.
+ */
+function ownsMemberBelowObject(value: object): boolean {
+  let link: object | null = value;
+  for (let steps = 0; steps < PROTOTYPE_WALK_LIMIT; steps += 1) {
+    if (link === null || link === Object.prototype) return false;
+    if (Object.getOwnPropertyDescriptor(link, ownsResponseSymbol)) return true;
+    link = Object.getPrototypeOf(link) as object | null;
+  }
+  return false;
+}
+
 export function asksOwnsResponse(value: unknown, candidate: Response): boolean | undefined {
   if (value == null || (typeof value !== "object" && typeof value !== "function")) {
     return undefined;
@@ -252,6 +268,22 @@ export function asksOwnsResponse(value: unknown, candidate: Response): boolean |
   let member: unknown;
   try {
     member = (value as Record<symbol, unknown>)[ownsResponseSymbol];
+    // The same `Object.prototype` guard {@link hasBrand} applies, for a sharper
+    // reason. This read walks the prototype chain too, so one polluting write
+    // of this symbol answers for EVERY value — and the answer releases custody
+    // of a teed branch. A non-owner accepted here orphans that branch: nothing
+    // can cancel it, and `error.cancel()` on the original never settles, which
+    // is the stranded connection this module exists to prevent.
+    //
+    // `stampOwnsResponse` puts the member on `BaseHttpError.prototype`, so no
+    // real error inherits it from `Object.prototype` and refusing that one
+    // source costs the cross-copy question nothing.
+    if (
+      typeof (Object.prototype as Record<symbol, unknown>)[ownsResponseSymbol] === "function" &&
+      !ownsMemberBelowObject(value)
+    ) {
+      return undefined;
+    }
   } catch {
     // A Proxy `get` trap or a hostile symbol-keyed getter. It refused to be
     // read, which is not a yes.
