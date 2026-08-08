@@ -1,5 +1,6 @@
 /**
- * The `util.inspect` channel — the one `toJSON()` does not cover.
+ * The two channels `toJSON()` does not cover: `util.inspect`, and the string
+ * conversion behind `String(error)`.
  *
  * `console.log(error)`, `console.error(error)`, Node's fatal-exception printer,
  * `util.format`'s `%s`/`%o`, and a test runner's failure output all reach an
@@ -194,16 +195,79 @@ function render(
 }
 
 /**
- * Stamp the hook onto a class prototype, so all 40+ status subclasses inherit
- * it from `BaseHttpError.prototype` at no per-instance cost.
+ * The string-conversion channel: `String(error)`, `` `${error}` ``, and
+ * `"log line: " + error`.
  *
- * Non-enumerable (it must never reach `Object.keys`, a spread, or `for...in`),
+ * ## Why this member has to exist
+ *
+ * Every other channel resolves a member THIS library owns, so a write to
+ * `Object.prototype` never reaches it. `toJSON` is a method on each root error
+ * prototype. The hook above is stamped under the platform's inspect key. Even
+ * `toString` is shielded, by `Error.prototype.toString`.
+ *
+ * `Symbol.toPrimitive` was the one lookup with nothing between the instance and
+ * `Object.prototype`, and it is the FIRST step of `ToPrimitive` — before
+ * `valueOf`, before `toString`. So one polluting write took over all three
+ * spellings of this channel at once and rendered the error itself, which is
+ * where the non-enumerable `url` lives: the full href, query token and userinfo
+ * password included, in the one string every log line carries.
+ *
+ * That is the `Object.prototype` source `./brand` already refuses for the brand
+ * guards and the ownership query, and the pre-response constructors already
+ * refuse for `cause`, `reason`, and `url`. It is refused here for the same
+ * stated reason: no real error inherits this member from `Object.prototype`, so
+ * owning it costs nothing.
+ *
+ * ## Why it DELEGATES rather than rendering
+ *
+ * `this.toString()`, not a line of its own. The result is what `ToPrimitive`
+ * produced before this member existed, for every hint — `Object.prototype`'s
+ * `valueOf` answers with the object, so the ordinary algorithm always fell
+ * through to `toString` anyway. Nothing a caller reads changes.
+ *
+ * It is also what keeps the subclass extension point open. A subclass that
+ * overrides `toString` still decides this channel, because the lookup starts at
+ * the instance and finds the override first. A subclass that wants the whole
+ * conversion defines its own `Symbol.toPrimitive`, which shadows this one on
+ * its own prototype. Neither needs this member to be replaceable — but it is,
+ * with the descriptor {@link installInspect} gives the inspect hook, and for
+ * the same reason: a consumer may legitimately install their own.
+ *
+ * Replaceable does not weaken the defense. The write this member answers is a
+ * pollution gadget that reaches `Object.prototype` and nothing else. A writer
+ * who can reach `BaseHttpError.prototype` can already read `error.url`, which
+ * ADR 0003 keeps as a documented escape hatch.
+ */
+function toPrimitive(this: Serializable): string {
+  return this.toString();
+}
+
+/**
+ * Stamp this module's two hooks onto a ROOT error prototype, so all 40+ status
+ * subclasses inherit them from `BaseHttpError.prototype` at no per-instance
+ * cost.
+ *
+ * BOTH hooks, from one call, because they answer one question: which member
+ * does a channel resolve when it renders this error? The four call sites are
+ * exactly the four root prototypes this library owns — `BaseHttpError`,
+ * `NetworkError`, `AbortedError`, and `TimeoutError` — so a channel the library
+ * means to own is owned on all of them or on none. Splitting the stamp into two
+ * exported functions is one forgotten call away from the asymmetry the header
+ * of this file describes.
+ *
+ * Non-enumerable (neither may reach `Object.keys`, a spread, or `for...in`),
  * but writable and configurable — the descriptor an ordinary class method gets,
- * so a consumer can still replace it.
+ * so a consumer can still replace either one.
  */
 export function installInspect(prototype: object): void {
   Object.defineProperty(prototype, inspectCustom, {
     value: render,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperty(prototype, Symbol.toPrimitive, {
+    value: toPrimitive,
     enumerable: false,
     writable: true,
     configurable: true,
