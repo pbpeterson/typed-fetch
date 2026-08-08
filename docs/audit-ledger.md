@@ -265,6 +265,57 @@ runtimes and the gate scripts, and the documents against the behavior.
   subpath, and the `require` condition matched Node exactly when driven by hand.
   Closing that is a CI change and is still open.
 
+### What round 5 settled
+
+Four lanes: the round-4 commits, the strength of the tests round 4 added, cost
+and retention, and the disclosure channels re-run as a set.
+
+- **The redactor's two branches read different things, and that was the whole
+  defect.** The absolute branch reads the normalized `pathname`; the relative
+  branch read the RAW string while emitting the normalized path. The WHATWG
+  parser CREATES the `://` the scan looks for — it rewrites a backslash pair and
+  removes an ASCII tab, CR, or LF — so `/go/https:\\svc:pw@host/v1` emitted the
+  password. Both branches now read both forms. The query and the fragment are
+  scanned too: the "pathname, never href" argument is about this url's own
+  authority, which cannot appear in either.
+- **Reading the path for a hidden authority costs a diagnostic.** A needle from
+  a path, a query, or a fragment is removed from the message wherever it
+  appears, so a proxy url can delete an ordinary host from a sentence that names
+  it. Over-redaction is the safe direction and narrowing the needle needs the
+  caller's value a second time, which is the read the library-authored-message
+  rule exists to avoid. Stated on `redactUrlInMessage`.
+- **The message pass was quadratic** once the needle list grew with the url:
+  8000 embedded credentials cost 435 ms against 4.9 ms before the path scan.
+  Every needle ends with `@`, so one walk over the message's `@` positions
+  replaces one `replaceAll` per needle — 6 ms at the same size, verified
+  byte-identical against the previous implementation on 120,000 fuzzed inputs.
+  **A timing guard for it was written and removed:** it must be a ratio against
+  a control measured in the same run, and v8 coverage instrumentation does not
+  slow the two functions by the same factor, so the guard failed one run in two
+  on unchanged code. The cost is recorded in the source and in a
+  correctness-only test at 4000 credentials.
+- **Coverage is not strength, and a mutation pass measured the gap.** Round 4
+  routed seven caller-supplied slots through `ownSlot` and the suite asserted
+  one of them, with neither half of the read covered for any slot: reverting six
+  of the seven left the suite green, and so did moving `Object.hasOwn` back
+  outside the `try`. Forty-six mutations ran against the round-4 code; 33 were
+  killed, 5 are provable equivalents, and the 8 real gaps now have tests.
+- **One `v8 ignore` justification was false.** The captured `Response.prototype`
+  and the captured body getter come from FOUR reads of a mutable global, not one
+  condition, so the guard is reachable. It is a test now, not an ignore. The
+  other four ranges were attacked and hold.
+- **The channel inventory is still seven.** Every slot round 4 touched was given
+  a sentinel across all seven channels for a dedicated class, `UnknownHttpError`,
+  a `clone()` copy, and a request failure. Nothing leaked. `util.format`, the
+  `JSON.stringify(err, getOwnPropertyNames(err))` idiom, and `console.table` are
+  each covered by an existing channel rather than being a new one. The copy's
+  matrix is identical to its original's, row for row.
+- **Nothing is retained.** Every keyed table is weak and none holds a reference
+  back to its key, proved with forced collection and a negative control: 600
+  concurrent failures, 50 errors from one response, a `clone()` chain never
+  released, and 200 requests on one aborted signal are all collectable, while
+  ten deliberately-held errors are reported as retained.
+
 ## Adjudicated closed
 
 Correct about the code. Not defects.
