@@ -654,3 +654,51 @@ describe("the diagnostic a path-derived needle costs", () => {
     );
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 5 — a url that embeds thousands of credentials.
+//
+// COST, recorded where it can be read rather than asserted as a timing. A
+// `replaceAll` per needle read the whole message once for each credential the
+// url embeds: 1000 of them took 10 ms, 4000 took 126 ms, and 8000 took 435 ms,
+// against 4.9 ms before the path scan existed. The single pass in
+// `withoutUserinfos` costs 6 ms at 8000 and grows linearly.
+//
+// A timing assertion was written for this and REMOVED. It has to be a ratio,
+// because a millisecond budget is a claim about the machine that ran it; and
+// the ratio needs a control measured in the same run, because `pnpm coverage`
+// slows everything down. v8's instrumentation does not slow the two functions
+// by the same factor, so the control did not cancel it and the guard failed
+// one run in two on code that had not changed. A guard that lies once is worse
+// than the paragraph above. What stays is the correctness half, at a size
+// where the quadratic form took minutes rather than milliseconds.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("a url that embeds thousands of credentials", () => {
+  /** A forwarding url with `count` embedded, credentialed URLs in its path. */
+  function forwarding(count: number): string {
+    let url = "https://api.test";
+    for (let i = 0; i < count; i += 1) url += `/go/https://svc${i}:pw@internal${i}.test`;
+    return url;
+  }
+
+  test("every credential is removed from the url and from the message", () => {
+    const url = forwarding(4000);
+    const message = `Request cannot be constructed from a URL that includes credentials: ${url}`;
+
+    expect(redactUrl(url)).not.toContain(":pw@");
+    const cleaned = redactUrlInMessage(message, url);
+    expect(cleaned).not.toContain(":pw@");
+    // The needles go, and the surrounding wording stays.
+    expect(cleaned).toContain(
+      "Request cannot be constructed from a URL that includes credentials:",
+    );
+  });
+
+  test("a path of nothing but authority marks is still reduced", () => {
+    // The shape the `malformedUserinfoSpans` comment already measured: 96 KB of
+    // repeated `://` took 855 ms through the backward scan it replaced.
+    const url = `https://api.test/${"https://".repeat(12000)}`;
+    expect(redactUrl(url).startsWith("https://api.test/")).toBe(true);
+  });
+});
