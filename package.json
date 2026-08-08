@@ -79,12 +79,14 @@
     "check-consumer": "node scripts/check-consumer.mjs",
     "check-deno-consumer": "node scripts/check-deno-consumer.mjs",
     "check-doc-style": "node scripts/check-doc-style.mjs",
+    "coverage": "vitest run --coverage.enabled --coverage.provider=v8 --coverage.include='src/**' --coverage.reporter=text",
     "smoke:deno": "deno check scripts/smoke/deno.ts && deno run --allow-net scripts/smoke/deno.ts",
     "smoke:node-min": "node scripts/smoke/node-min.mjs",
     "prepublishOnly": "node scripts/verify-pack.mjs"
   },
   "devDependencies": {
     "@types/node": "^25.9.5",
+    "@vitest/coverage-v8": "4.1.10",
     "node-fetch": "2.7.0",
     "oxfmt": "^0.54.0",
     "oxlint": "^1.74.0",
