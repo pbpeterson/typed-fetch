@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, test, expect } from "vitest";
 import { HOSTILE_SCENARIOS, URL_UNDER_TEST, type HostileScenario } from "./fixtures/hostile-fetch";
+import type { TypedFetchOptions } from "./src/index";
 import { isAbortError, isHttpError, isTimeoutError, typedFetch } from "./src/index";
 import { NetworkError, UnknownHttpError } from "./src/errors";
 
@@ -27,9 +28,16 @@ import { NetworkError, UnknownHttpError } from "./src/errors";
 
 const ADR = "docs/adr/0003-the-untrusted-fetch-conformance-boundary.md";
 
+/** The options `drive()` used, so a row's second act can reuse them. */
+let driven: TypedFetchOptions | undefined;
+
 async function drive(scenario: HostileScenario): Promise<unknown> {
   const input = scenario.input?.() ?? URL_UNDER_TEST;
-  const { response, error } = await typedFetch(input, scenario.options());
+  // ONE options object, kept, because a row whose claim is about the next call
+  // has to present the same value again. See `HostileScenario.after`.
+  const options = scenario.options();
+  const { response, error } = await typedFetch(input, options);
+  driven = options;
 
   // The structural promise every row shares: a hostile implementation is
   // answered with a VALUE, never a rejection. Which value the row states.
@@ -84,6 +92,8 @@ describe("the untrusted-fetch boundary — every in-scope row holds", () => {
       }
 
       scenario.verify?.(error);
+      // The second act, for a row that is about what the NEXT call sees.
+      if (scenario.after) await scenario.after(driven as TypedFetchOptions);
     },
   );
 });

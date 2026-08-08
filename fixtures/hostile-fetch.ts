@@ -1,4 +1,4 @@
-import type { TypedFetchOptions } from "../src/index";
+import { typedFetch, type TypedFetchOptions } from "../src/index";
 
 /**
  * The conformance corpus for ADR 0003 — one entry per IN-SCOPE row of the
@@ -43,6 +43,15 @@ export interface HostileScenario {
   readonly outcome: Outcome;
   /** Extra assertions for a row whose point is not only the outcome. */
   readonly verify?: (error: unknown) => void;
+  /**
+   * A second act, for a row whose claim is about what the NEXT call sees.
+   *
+   * `drive()` builds the options once and runs one request, which is all most
+   * rows need. H-14 is about what a value refused once carries afterwards, so
+   * it has to present the same value again — and without this hook that half
+   * of the row was unreachable code inside the scenario.
+   */
+  readonly after?: (options: TypedFetchOptions) => Promise<void>;
 }
 
 const URL_UNDER_TEST = "https://conformance.invalid/probe";
@@ -131,7 +140,24 @@ export const HOSTILE_SCENARIOS: readonly HostileScenario[] = [
   {
     id: "H-04",
     title: "The implementation resolves a Response whose body is not a stream",
-    options: () => ({ fetch: resolving(foreignResponse({ body: { locked: "no" } })) }),
+    // Every stream METHOD is present, so the method gate accepts this body and
+    // the `locked` typecheck is the read that decides. A body carrying none of
+    // them was refused a step earlier, which left the row driving H-03's gate
+    // and the check this row names decided nothing anywhere in the suite.
+    options: () => ({
+      fetch: resolving(
+        foreignResponse({
+          body: {
+            locked: "no",
+            cancel: () => {},
+            getReader: () => {},
+            pipeThrough: () => {},
+            pipeTo: () => {},
+            tee: () => {},
+          },
+        }),
+      ),
+    }),
     outcome: { kind: "network" },
   },
   {
@@ -195,13 +221,18 @@ export const HOSTILE_SCENARIOS: readonly HostileScenario[] = [
   {
     id: "H-11",
     title: "A statusText that is not a string is normalized, never coerced",
+    // An UNMAPPED status, because a dedicated class declares its own
+    // `statusText` literal and never publishes the wire value at all — so this
+    // row asserted a class field and the normalizer it names decided nothing.
+    // `UnknownHttpError` publishes what the identity module recorded, which is
+    // where `String(Symbol)` would throw and a coercion would show.
     options: () => ({
-      fetch: resolving(foreignResponse({ status: 404, statusText: Symbol("x") })),
+      fetch: resolving(foreignResponse({ status: 599, statusText: Symbol("x") })),
     }),
-    outcome: { kind: "http", status: 404 },
+    outcome: { kind: "unknownHttp", status: 599 },
     verify: (error) => {
-      if ((error as { statusText: unknown }).statusText !== "Not Found") {
-        throw new Error("expected the class literal, not the wire value");
+      if ((error as { statusText: unknown }).statusText !== "") {
+        throw new Error("expected the normalized empty string, not a coerced Symbol");
       }
     },
   },
@@ -236,21 +267,36 @@ export const HOSTILE_SCENARIOS: readonly HostileScenario[] = [
     id: "H-14",
     title: "A value refused once has no identity filed against it",
     options: () => {
-      const shapeshifter = foreignResponse() as unknown as Record<string, unknown>;
-      delete shapeshifter.json;
-      let call = 0;
+      // Refused LATE, on `type`, which is read AFTER the identity fields. A
+      // value refused before any identity read — a missing body reader, say —
+      // files nothing whatever this row's guard does, so it drove H-03's gate
+      // instead of this one.
+      const shapeshifter = foreignResponse({ status: 200 }) as unknown as Record<string, unknown>;
+      shapeshifter.type = "not-a-response-type";
       return {
-        fetch: (async () => {
-          call += 1;
-          if (call === 1) return shapeshifter;
-          shapeshifter.json = async () => ({});
-          shapeshifter.status = 404;
-          shapeshifter.ok = false;
-          return shapeshifter;
-        }) as unknown as typeof fetch,
+        fetch: (async () => shapeshifter) as unknown as typeof fetch,
       };
     },
     outcome: { kind: "network" },
+    // The row IS the second presentation. Without it the scenario only drove
+    // H-03's gate, and the branch below was unreachable code in the fixture.
+    after: async (options) => {
+      // The SAME value, healthy now and reporting a 404. If the refused call
+      // had filed its 200, this call would answer with that stale status and
+      // come back as a success.
+      const shapeshifter = (options.fetch as unknown as () => Promise<Record<string, unknown>>)();
+      const value = await shapeshifter;
+      value.type = "basic";
+      value.status = 404;
+      value.ok = false;
+
+      const { response, error } = await typedFetch(URL_UNDER_TEST, options);
+      if (response !== null) throw new Error("the refused value's identity was filed and reused");
+      if ((error as { status?: unknown } | null)?.status !== 404) {
+        throw new Error("expected the status this presentation reported");
+      }
+      await (error as unknown as { cancel: () => Promise<void> }).cancel();
+    },
   },
 
   // ── How the implementation fails ─────────────────────────────────────
