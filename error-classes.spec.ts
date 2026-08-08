@@ -12,7 +12,6 @@ import {
 } from "./src/errors";
 import { inspectCustom } from "./src/errors/inspect";
 import { ownSlot } from "./src/errors/response-identity";
-import { ownsResponseSymbol } from "./src/errors/brand";
 import {
   isAbortError,
   isHttpError,

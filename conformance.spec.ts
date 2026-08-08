@@ -219,7 +219,7 @@ function scenarioOf(id: string) {
 
 describe("H-11 — a statusText that is not a string is normalized, never coerced", () => {
   /**
-   * The published scenario uses status 404, and a dedicated class's
+   * The published scenario uses status 599, and a dedicated class's
    * `statusText` is its own class field, initialized AFTER `super()`. It can
    * never carry a wire value, whatever the normalizer does, so the scenario's
    * `verify` cannot fail. Verified: coercing the recorded phrase with
@@ -229,6 +229,9 @@ describe("H-11 — a statusText that is not a string is normalized, never coerce
    * where `UnknownHttpError` publishes it.
    */
   test("an unmapped status publishes the empty string, not a coerced Symbol", async () => {
+    // Guard against the isolated body above drifting from the published row.
+    expect(scenarioOf("H-11").outcome).toEqual({ kind: "unknownHttp", status: 599 });
+
     const response = new Response(null, { status: 599 });
     Object.defineProperty(response, "statusText", {
       configurable: true,
@@ -257,6 +260,9 @@ describe("H-04 — a Response whose body is not a stream", () => {
    * conformance at 31/31 green.
    */
   test("a body carrying every stream method but a non-boolean `locked` is refused", async () => {
+    // Guard against the isolated body above drifting from the published row.
+    expect(scenarioOf("H-04").outcome).toEqual({ kind: "network" });
+
     const body = {
       locked: "no",
       cancel: async () => undefined,
@@ -283,6 +289,9 @@ describe("H-02 — an object that only spoofs the Response tag", () => {
    * green.
    */
   test("a value missing one declared field is refused before class selection", async () => {
+    // Guard against the isolated body above drifting from the published row.
+    expect(scenarioOf("H-02").outcome).toEqual({ kind: "network" });
+
     const partial = foreignResponse({ status: 404 }) as unknown as Record<string, unknown>;
     delete partial.redirected;
 

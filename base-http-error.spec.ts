@@ -2322,6 +2322,7 @@ describe("L4-M — the refusal matrix for a consumer subclass", () => {
       override readonly name = "Escapee" as const;
       readonly status = 499 as const;
       readonly statusText = "Escapee" as const;
+      // oxlint-disable-next-line constructor-super -- deliberately skips super() to test refusal when no owner is filed
       constructor(_response: Response) {
         // eslint-disable-next-line no-constructor-return
         return Object.create(Escapee.prototype) as Escapee;
@@ -2350,7 +2351,9 @@ describe("L4-M — the refusal matrix for a consumer subclass", () => {
       readonly statusText = "Twice" as const;
       constructor(r: Response) {
         super(r);
+        // oxlint-disable-next-line no-this-alias -- captures the partially initialized instance before the second super() call throws
         initialized = this;
+        // oxlint-disable-next-line constructor-super -- deliberately calls super() twice to test that the second call throws
         super(r);
       }
     }
