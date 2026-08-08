@@ -482,6 +482,14 @@ describe("consumerTsconfig", () => {
     expect(eopt.compilerOptions.exactOptionalPropertyTypes).toBe(true);
   });
 
+  test("ignoreDeprecations appears only when the pass asks for it", () => {
+    expect(consumerTsconfig(basePass, TYPE_ROOTS).compilerOptions).not.toHaveProperty(
+      "ignoreDeprecations",
+    );
+    const node10 = consumerTsconfig({ ...basePass, ignoreDeprecations: "6.0" }, TYPE_ROOTS);
+    expect(node10.compilerOptions.ignoreDeprecations).toBe("6.0");
+  });
+
   test("typeRoots appear only when types are requested", () => {
     expect(consumerTsconfig(basePass, TYPE_ROOTS).compilerOptions).not.toHaveProperty("typeRoots");
     const withTypes = consumerTsconfig({ ...basePass, types: ["node"] }, TYPE_ROOTS);
@@ -506,7 +514,7 @@ describe("consumerTsconfig", () => {
 // ---------------------------------------------------------------------------
 
 describe("TYPECHECK_PASSES", () => {
-  test("covers the six consumer configurations", () => {
+  test("covers the seven consumer configurations", () => {
     expect(TYPECHECK_PASSES.map((p) => p.id)).toEqual([
       "bundler",
       "nodenext",
@@ -514,7 +522,17 @@ describe("TYPECHECK_PASSES", () => {
       "node-with-dom",
       "node-eopt",
       "cross-format-cjs-esm",
+      "node10",
     ]);
+  });
+
+  test("the node10 pass resolves the way a node10 consumer does", () => {
+    const pass = TYPECHECK_PASSES.find((p) => p.id === "node10");
+    const cfg = consumerTsconfig(pass, TYPE_ROOTS);
+    expect(cfg.compilerOptions.moduleResolution).toBe("node");
+    // TypeScript 6 hard-errors on node10 without this, so a missing value would
+    // make the pass fail for the deprecation instead of for the package.
+    expect(cfg.compilerOptions.ignoreDeprecations).toBe("6.0");
   });
 
   test("the node-eopt pass really turns exactOptionalPropertyTypes on", () => {

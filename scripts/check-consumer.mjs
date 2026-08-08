@@ -562,6 +562,26 @@ export const TYPECHECK_PASSES = [
     types: [],
     files: ["cross-format.mts", "cross-format.cts"],
   },
+  // The node10 directory redirect, resolved by `tsc` rather than emulated.
+  //
+  // `PROBE_RESOLUTION` walks `LOAD_AS_DIRECTORY` in JavaScript and proves the
+  // `errors/package.json` stub's `main` loads the same file `exports` serves.
+  // That is the RUNTIME half. The TYPES half — the stub's `types` field and the
+  // root `types` field, which a `moduleResolution: "node"` consumer follows —
+  // was proved only by `attw`, never by this repository's own `tsc`.
+  //
+  // EXPIRY, recorded rather than discovered later: TypeScript 7.0 removes
+  // node10 resolution, and 6.0 already hard-errors on it without
+  // `ignoreDeprecations`. When the compiler drops the mode, drop this pass and
+  // say so in the commit — do not silence it.
+  {
+    id: "node10",
+    moduleResolution: "node",
+    ignoreDeprecations: "6.0",
+    lib: ["ES2022", "DOM"],
+    types: [],
+    files: ["consumer.api.ts"],
+  },
 ];
 
 // ===========================================================================
@@ -817,7 +837,7 @@ export function typecheckAssertion(pass, outcome) {
  * @param {string[]} typeRoots
  */
 export function consumerTsconfig(
-  { moduleResolution, lib, types, files, exactOptionalPropertyTypes },
+  { moduleResolution, lib, types, files, exactOptionalPropertyTypes, ignoreDeprecations },
   typeRoots,
 ) {
   const moduleKind = moduleResolution === "nodenext" ? "nodenext" : "esnext";
@@ -833,6 +853,7 @@ export function consumerTsconfig(
       skipLibCheck: false,
       types,
       ...(exactOptionalPropertyTypes ? { exactOptionalPropertyTypes: true } : {}),
+      ...(ignoreDeprecations ? { ignoreDeprecations } : {}),
       ...(types.length > 0 ? { typeRoots } : {}),
     },
     files,
