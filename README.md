@@ -508,7 +508,7 @@ Without a `clone()`, the promise from `cancel()` stays pending until the body is
 `cancel()` rejects with `TypeError` in two conditions, and in no other.
 
 1. An external reader holds the stream and read nothing from it. Release that reader first, then cancel through it.
-2. The error carries no response, because the constructor never initialized it. A hand-built object with the right shape is assignable to `BaseHttpError`, and the four body readers and `clone()` reject it the same way. Build an error with `new NotFoundError(response)`, or call `super(response)` in a subclass constructor.
+2. The error carries no response, because the constructor never initialized it. A hand-built object with the right shape is assignable to `BaseHttpError`. The four body readers reject it, and `clone()` throws for the same reason. Build an error with `new NotFoundError(response)`, or call `super(response)` in a subclass constructor.
 
 A repeated `cancel()` on the same error settles with the same outcome as the first call. It never reports success before the first call settles.
 
