@@ -98,14 +98,31 @@ export function redactUrl(url: string): string {
     // they have to keep collapsing to the documented no-URL value instead of
     // becoming resolvable once the credential is removed.
     const resolved = stripValues(new URL(url, RELATIVE_BASE));
-    if (malformedUserinfoSpans(url).length === 0) return resolved.pathname;
-
-    // Once it does resolve, resolve again from the userinfo-free form. Removing
-    // the spans from the EMITTED PATH instead is not enough: `stripValues`
-    // clears the query first, so `://svc:hun?ter2@host/v1` arrives as
+    // BOTH forms, because the parser CREATES the mark this scan looks for. The
+    // raw text of `/go/https:\\svc:pw@internal.test/v1` spells `:\\`, and an
+    // ASCII tab, CR, or LF inside `https:<TAB>//svc:pw@…` is removed outright —
+    // in each case the emitted `pathname` holds a `://` the raw string never
+    // had, so a scan of the raw input alone finds nothing and emits the
+    // password. The absolute branch above has read the normalized `pathname`
+    // since the embedded-credential fix; this one still read the raw string.
+    //
+    // The RAW scan stays, and it runs FIRST, because removing the spans from
+    // the emitted path is not enough on its own: `stripValues` clears the query
+    // before this point, so `://svc:hun?ter2@host/v1` arrives as
     // `/://svc:hun` — an authority truncated mid-credential, with no `@` left
     // to find and the first half of the password still in it.
-    return stripValues(new URL(withoutMalformedUserinfo(url), RELATIVE_BASE)).pathname;
+    //
+    // The RAW input also decides whether this resolves at all. That question
+    // must be answered before any userinfo is taken out, or a parse error stops
+    // being one: `file://alice:pw@host/v1` and `http://alice:pw@/v1` are
+    // invalid, and they have to keep collapsing to the documented no-URL value
+    // instead of becoming resolvable once the credential is removed.
+    if (malformedUserinfoSpans(url).length === 0) {
+      return withoutMalformedUserinfo(resolved.pathname);
+    }
+    return withoutMalformedUserinfo(
+      stripValues(new URL(withoutMalformedUserinfo(url), RELATIVE_BASE)).pathname,
+    );
   } catch {
     return "";
   }
@@ -280,7 +297,20 @@ function userinfosOf(url: string): string[] {
     parsed = new URL(url);
   } catch {
     // A malformed scheme hides userinfo from the parser, not from a reader.
-    return hiddenUserinfos(url);
+    //
+    // BOTH forms, for the reason {@link redactUrl}'s relative branch reads
+    // both: the parser CREATES the `://` this scan looks for when it rewrites
+    // a backslash or removes an ASCII tab. The raw text carries the credential
+    // a message quotes; the resolved path carries the mark that finds it.
+    const needles = hiddenUserinfos(url);
+    try {
+      for (const needle of hiddenUserinfos(new URL(url, RELATIVE_BASE).pathname)) {
+        if (!needles.includes(needle)) needles.push(needle);
+      }
+    } catch {
+      // Unresolvable even against the base. The raw needles are all there are.
+    }
+    return needles;
   }
   const { username, password } = parsed;
   const own = username || password ? [password ? `${username}:${password}@` : `${username}@`] : [];

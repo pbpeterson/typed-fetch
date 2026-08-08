@@ -1,6 +1,6 @@
 import { describe, test, expect } from "vitest";
 import { redactUrl, redactUrlInMessage } from "./src/errors/redact-url";
-import { NetworkError } from "./src/errors";
+import { AbortedError, NetworkError, NotFoundError, TimeoutError } from "./src/errors";
 
 describe("redactUrl — structure is kept, every value slot is dropped", () => {
   test("the query goes, origin and path stay", () => {
@@ -441,5 +441,75 @@ describe("control — redaction of an embedded credential", () => {
     const error = new NetworkError(`Request cannot be constructed from a URL: ${url}`, { url });
     expect(error.message).not.toContain("hunter2");
     expect(error.message).toBe("Request cannot be constructed from a URL: https://api.test/v1");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 5 — the scan reads the raw text, the parser emits a normalized path.
+//
+// The absolute branch has read the normalized `pathname` since the
+// embedded-credential fix. The relative branch, and `userinfosOf`'s malformed
+// branch, still read the raw string — so a shape whose authority mark the
+// PARSER creates escaped both of them.
+// ═══════════════════════════════════════════════════════════════════════════
+// ───────────────────────────────────────────────────────────────────────────
+// DEFECT 1 (RESIDUAL) — the scan runs on the RAW string, the parser emits a
+// NORMALIZED path. A backslash pair, or a stripped tab/CR/LF, spells an
+// authority the raw text never contained, so `malformedUserinfoSpans(url)`
+// finds nothing and `redactUrl` emits the credential verbatim.
+// ───────────────────────────────────────────────────────────────────────────
+describe("a credential the parser normalizes into the path", () => {
+  // The literal string is: /go/https:\\svc:hunter2@internal.test/v1
+  const backslashUrl = "/go/https:\\\\svc:hunter2@internal.test/v1";
+  // The literal string is: /go/https:<TAB>//svc:hunter2@internal.test/v1
+  const tabUrl = "/go/https:\t//svc:hunter2@internal.test/v1";
+
+  test("the parser really does normalize both shapes into an authority", () => {
+    // Not an assertion about this library — an assertion about the platform,
+    // so the two tests below cannot be read as a mistake about the input.
+    expect(new URL(backslashUrl, "http://url.invalid").pathname).toBe(
+      "/go/https://svc:hunter2@internal.test/v1",
+    );
+    expect(new URL(tabUrl, "http://url.invalid").pathname).toBe(
+      "/go/https://svc:hunter2@internal.test/v1",
+    );
+    expect(backslashUrl.includes("://")).toBe(false);
+    expect(tabUrl.includes("://")).toBe(false);
+  });
+
+  test("redactUrl keeps the password", () => {
+    expect(redactUrl(backslashUrl)).not.toContain("hunter2");
+    expect(redactUrl(tabUrl)).not.toContain("hunter2");
+  });
+
+  test("the password reaches toJSON().url, the record a logger ships off-box", () => {
+    const error = new NetworkError("Network error", { url: backslashUrl });
+    expect(error.toJSON().url).not.toContain("hunter2");
+    expect(JSON.stringify(error)).not.toContain("hunter2");
+  });
+
+  test("the password reaches message on all three pre-response classes", () => {
+    const platformMessage = `Request cannot be constructed from a URL that includes credentials: ${backslashUrl}`;
+    expect(new NetworkError(platformMessage, { url: backslashUrl }).message).not.toContain(
+      "hunter2",
+    );
+    expect(new AbortedError(platformMessage, { url: backslashUrl }).message).not.toContain(
+      "hunter2",
+    );
+    expect(new TimeoutError(platformMessage, { url: backslashUrl }).message).not.toContain(
+      "hunter2",
+    );
+  });
+
+  test("an HTTP error built from a response reporting that url leaks it too", async () => {
+    const body = new Response("{}", { status: 404 });
+    Object.defineProperty(body, "url", { value: backslashUrl, configurable: true });
+    const error = new NotFoundError(body);
+    try {
+      expect(error.message).not.toContain("hunter2");
+      expect(error.toJSON().url).not.toContain("hunter2");
+    } finally {
+      await error.cancel();
+    }
   });
 });
