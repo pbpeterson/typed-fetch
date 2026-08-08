@@ -237,10 +237,26 @@ function withoutMalformedUserinfo(path: string): string {
 }
 
 /**
+ * Every userinfo an authority the parser did not read hides inside `text`.
+ *
+ * `"@"` ALONE is not a credential, and it is the one needle that must never
+ * reach `replaceAll`. `://@host/x` yields a span of exactly one character, and
+ * stripping every `@` from a message deletes e-mail addresses, handles, and
+ * anything else the diagnostic was carrying.
+ */
+function hiddenUserinfos(text: string): string[] {
+  return malformedUserinfoSpans(text)
+    .map((span) => text.slice(span.start, span.end))
+    .filter((userinfo) => userinfo.length > 1);
+}
+
+/**
  * Every userinfo the URL carries: `["user:password@"]`, `["user@"]`, or `[]`.
  *
- * A malformed URL can carry MORE than one, which is why this answers with a
- * list. See {@link malformedUserinfoSpans}.
+ * A URL can carry MORE than one, which is why this answers with a list. A
+ * malformed scheme hides userinfo from the parser, and a well-formed URL hides
+ * it in the PATH, because a path can embed another URL, credential and all.
+ * See {@link malformedUserinfoSpans}.
  */
 function userinfosOf(url: string): string[] {
   let parsed: URL;
@@ -248,20 +264,19 @@ function userinfosOf(url: string): string[] {
     parsed = new URL(url);
   } catch {
     // A malformed scheme hides userinfo from the parser, not from a reader.
-    //
-    // `"@"` ALONE is not a credential, and it is the one needle that must never
-    // reach `replaceAll`. `://@host/x` yields a span of exactly one character,
-    // and stripping every `@` from a message deletes e-mail addresses, handles,
-    // and anything else the diagnostic was carrying. The parsed branch below
-    // has always refused an empty userinfo for the same reason; this branch
-    // forgot to.
-    return malformedUserinfoSpans(url)
-      .map((span) => url.slice(span.start, span.end))
-      .filter((userinfo) => userinfo.length > 1);
+    return hiddenUserinfos(url);
   }
   const { username, password } = parsed;
-  if (!username && !password) return [];
-  return [password ? `${username}:${password}@` : `${username}@`];
+  const own = username || password ? [password ? `${username}:${password}@` : `${username}@`] : [];
+  // The path carries the SAME shape `redactUrl` scans for on this branch:
+  // `https://api.test/go/https://svc:pw@internal.test/v1` is an ordinary
+  // forward, and the parser reads only the outer authority. This pass is the
+  // second line of {@link redactUrlInMessage} and removes userinfo wherever it
+  // survives, so it reads the same slot the redactor does.
+  //
+  // The PATHNAME, never the href: the authority this URL really has is
+  // `host:8443`, and a scan over the href would read that port as userinfo.
+  return [...own, ...hiddenUserinfos(parsed.pathname)];
 }
 
 /**
