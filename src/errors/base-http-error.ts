@@ -463,6 +463,31 @@ export abstract class BaseHttpError extends Error {
     // accept. That matters HERE specifically: the branch is already teed, so a
     // throw between the tee and the construction would orphan it, leaving
     // `cancel()` on this error waiting forever for an owner that never existed.
+    // The BRANCH has to be a `Response` before anything is built from it.
+    //
+    // `teed.branch` is whatever `response.clone()` answered with, and an
+    // injected implementation can answer with a primitive. Nothing downstream
+    // refuses one: `lendIdentity` declines a non-object key silently, so
+    // `identityOf(42)` takes the unkeyed path and `Number((42).status)` is
+    // `NaN`, and `owns(42)` is `42 === 42`, so `adopt` accepts. The result was
+    // an `UnknownHttpError` with `status: NaN`, `message: "HTTP NaN"`, and no
+    // url. `clone: () => null` WAS refused, because `statusOf(null)` throws, so
+    // every other primitive was refused by accident and by nothing else.
+    //
+    // Release and throw, the policy ADR 0002 sets for a refused clone. Nothing
+    // is stranded — a primitive branch means nothing was really teed — but the
+    // release keeps that true whatever the implementation did.
+    if (
+      teed.branch === null ||
+      (typeof teed.branch !== "object" && typeof teed.branch !== "function")
+    ) {
+      teed.release();
+      throw new TypeError(
+        `Cannot clone ${this.name}: the response's clone() returned ` +
+          `${teed.branch === null ? "null" : typeof teed.branch} instead of a Response.`,
+      );
+    }
+
     const identity = identities.get(this);
     const revokeLoan = identity ? lendIdentity(teed.branch, identity) : undefined;
 

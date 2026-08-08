@@ -843,6 +843,38 @@ describe("BaseHttpError.clone() — an owner this copy cannot see", () => {
     },
   );
 
+  // The BRANCH, not the copy. `teed.branch` is whatever `response.clone()`
+  // answered with, and nothing downstream refused a primitive: `lendIdentity`
+  // declines a non-object key silently, `identityOf(42)` takes the unkeyed path
+  // so `Number((42).status)` is `NaN`, and `owns(42)` is `42 === 42`, so
+  // `adopt` accepts. The result was an `UnknownHttpError` reporting
+  // `status: NaN` and `message: "HTTP NaN"`. Only `null` was refused, and only
+  // because `statusOf(null)` happens to throw.
+  test.each([
+    { label: "a number", value: 42, pattern: /clone\(\) returned number instead of a Response/ },
+    { label: "a string", value: "x", pattern: /clone\(\) returned string instead of a Response/ },
+    {
+      label: "a boolean",
+      value: true,
+      pattern: /clone\(\) returned boolean instead of a Response/,
+    },
+    {
+      label: "undefined",
+      value: undefined,
+      pattern: /clone\(\) returned undefined instead of a Response/,
+    },
+    { label: "null", value: null, pattern: /clone\(\) returned null instead of a Response/ },
+  ])("B10a: a response clone() that answers with $label is refused", async ({ value, pattern }) => {
+    const response = new Response("payload", { status: 404 });
+    Object.defineProperty(response, "clone", { value: () => value });
+    const error = new NotFoundError(response);
+
+    expect(() => error.clone()).toThrow(TypeError);
+    expect(() => error.clone()).toThrow(pattern);
+    // Nothing was really teed, and the original still settles.
+    expect(await settlesWithin(error.cancel())).toBe("settled");
+  });
+
   test("B17: EVERY refused shape releases the branch and leaves cancel() able to settle", async () => {
     // The invariant, asserted in one place over the whole decision table. A new
     // guard added without a release would pass its own case and fail here.
