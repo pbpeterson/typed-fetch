@@ -1029,7 +1029,7 @@ const { error } = await typedFetch("https://example.test/users/1");
 
 if (isHttpError(error)) {
   console.log(JSON.stringify(error));
-  // {"name":"NotFoundError","message":"HTTP 404 Not Found (https://example.test/users/1)",
+  // {"name":"NotFoundError","message":"HTTP 404 \\"Not Found\\" (https://example.test/users/1)",
   //  "status":404,"statusText":"Not Found","url":"https://example.test/users/1",
   //  "headers":["content-type"]}
   await error.cancel();

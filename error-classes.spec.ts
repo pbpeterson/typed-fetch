@@ -410,7 +410,7 @@ describe("message and url agree on what they disclose", () => {
     });
     const error = new NotFoundError(response);
 
-    expect(error.message).toBe("HTTP 404 Not Found (https://api.test/v1/things)");
+    expect(error.message).toBe('HTTP 404 "Not Found" (https://api.test/v1/things)');
     expect(error.toJSON().url).toBe("https://api.test/v1/things");
     // The record's message and its url describe the same URL.
     expect(error.toJSON().message).toContain(error.toJSON().url);
@@ -473,10 +473,10 @@ describe("UnknownHttpError — the class where all three reads diverged", () => 
 
     expect(error.status).toBe(420);
     expect(error.statusText).toBe("Weird");
-    expect(error.message).toBe("HTTP 420 Weird");
+    expect(error.message).toBe('HTTP 420 "Weird"');
     expect(error.toJSON()).toEqual({
       name: "UnknownHttpError",
-      message: "HTTP 420 Weird",
+      message: 'HTTP 420 "Weird"',
       status: 420,
       statusText: "Weird",
       url: "",

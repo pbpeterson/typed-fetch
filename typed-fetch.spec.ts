@@ -2372,7 +2372,7 @@ describe("typedFetch", () => {
     expect(error.statusText).toBe("Not Found");
     // Characterizes the no-URL branch without making message text a public
     // SemVer guarantee.
-    expect(error.message).toBe("HTTP 404 Not Found");
+    expect(error.message).toBe('HTTP 404 "Not Found"');
   });
 
   test("error.json() parses the response body", async () => {
@@ -2943,7 +2943,7 @@ describe("typedFetch — the first successful identity reads are recorded", () =
     if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
 
     expectIdentityAgrees(result.error, 420);
-    expect(result.error.message.startsWith("HTTP 420 Weird")).toBe(true);
+    expect(result.error.message.startsWith('HTTP 420 "Weird"')).toBe(true);
     // The class was selected on 420. Before the fix the message said 200 and
     // `error.status` said 201 — three answers for one response.
     expect(result.error.message).not.toContain("200");
@@ -3367,7 +3367,7 @@ describe("typedFetch — the first successful identity reads are recorded", () =
     if (!isHttpError(result.error)) throw new Error("expected an HTTP error");
     expectIdentityAgrees(result.error, 404);
     expect(result.error.statusText).toBe("Not Found");
-    expect(result.error.message).toContain("HTTP 404 Not Found");
+    expect(result.error.message).toContain('HTTP 404 "Not Found"');
 
     await result.error.cancel();
   });
@@ -3445,7 +3445,7 @@ describe("typedFetch — the first successful identity reads are recorded", () =
     expect(second.error).toBeInstanceOf(UnknownHttpError);
     if (!isHttpError(second.error)) throw new Error("expected an HTTP error");
     expect(second.error.status).toBe(420);
-    expect(second.error.message).toContain("HTTP 420 FIRST (https://first.test/x)");
+    expect(second.error.message).toContain('HTTP 420 "FIRST" (https://first.test/x)');
     expect(second.error.url).toBe("https://first.test/x");
     expect(reads).toEqual({ status: 1, statusText: 1, url: 1, headers: 2 });
   });

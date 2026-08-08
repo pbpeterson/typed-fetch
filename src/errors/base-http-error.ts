@@ -182,15 +182,37 @@ export abstract class BaseHttpError extends Error {
     // and it arrives already filtered: `response-identity` applies
     // `safeReasonPhrase` at the recording seam, so no reader of
     // `identity.statusText` can be the one that forgot.
+    // QUOTED, so the origin's text is one field instead of free-floating words
+    // in a structured-looking line. `safeReasonPhrase` removes what breaks a
+    // line; printable ASCII aimed at this LAYOUT is a different attack, and a
+    // deny list is not the answer to it — escaping our own delimiters is.
+    // A wire phrase of `HTTP 500 Internal Server Error` on a 404 produced
+    // `HTTP 404 HTTP 500 Internal Server Error (…)`, one field indistinguishable
+    // from the next.
+    //
+    // RESIDUAL: quoting settles the STRUCTURE, not a substring search. A log
+    // query for `HTTP 500` still matches text the origin wrote inside the
+    // quotes, and no format can prevent that while the phrase is carried at
+    // all — removing it would be the deny list this module refuses elsewhere.
+    // `toJSON()` is the answer for anything that queries: its `status` and
+    // `statusText` are separate fields and neither is origin-shaped.
     const reason = identity.statusText;
-    const line = reason ? `HTTP ${identity.status} ${reason}` : `HTTP ${identity.status}`;
+    const line = reason
+      ? `HTTP ${identity.status} ${JSON.stringify(reason)}`
+      : `HTTP ${identity.status}`;
     // The REDACTED url in the message, the full href on `this.url`. A query
     // string routinely carries a credential (`?access_token=`, a signed
     // `?X-Amz-Signature=`), and `message` is the one string every log line,
     // crash dump, and test failure carries. See `./redact-url`. Both forms come
     // from the SAME single read, so the message and the escape hatch can no
     // longer point at two different servers.
-    const safeUrl = redactUrl(identity.url);
+    //
+    // The parentheses are this line's own delimiters, and `(`/`)` are not in
+    // the WHATWG path percent-encode set — so a path could close the real pair
+    // and open a fabricated one. Encoded in the MESSAGE form only: `error.url`
+    // and `toJSON().url` keep them verbatim, and a parenthesis in a path
+    // carries no diagnostic `%28` loses.
+    const safeUrl = redactUrl(identity.url).replaceAll("(", "%28").replaceAll(")", "%29");
     super(safeUrl ? `${line} (${safeUrl})` : line);
     // `defineProperty`, not an assignment: an assignment creates an ENUMERABLE
     // own property. See the field docs above, and `./network-error` for the

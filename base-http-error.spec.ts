@@ -82,7 +82,7 @@ describe("BaseHttpError.toJSON() — the record JSON.stringify produces", () => 
     // record read as a complete one that had lost the message line.
     expect(JSON.parse(JSON.stringify(error))).toEqual({
       name: "NotFoundError",
-      message: "HTTP 404 Not Found",
+      message: 'HTTP 404 "Not Found"',
       status: 404,
       statusText: "Not Found",
       url: "",
@@ -150,7 +150,7 @@ describe("BaseHttpError.toJSON() — the record JSON.stringify produces", () => 
 
     expect(error.toJSON()).toEqual({
       name: "UnknownHttpError",
-      message: "HTTP 599 Weird",
+      message: 'HTTP 599 "Weird"',
       status: 599,
       statusText: "Weird",
       url: "",
@@ -1092,10 +1092,10 @@ describe("BaseHttpError — identity is read once per response", () => {
 
     expect(error.status).toBe(420);
     expect(error.statusText).toBe("Weird");
-    expect(error.message.startsWith("HTTP 420 Weird")).toBe(true);
+    expect(error.message.startsWith('HTTP 420 "Weird"')).toBe(true);
     expect(error.toJSON()).toEqual({
       name: "UnknownHttpError",
-      message: "HTTP 420 Weird",
+      message: 'HTTP 420 "Weird"',
       status: 420,
       statusText: "Weird",
       url: "",
@@ -1115,7 +1115,7 @@ describe("BaseHttpError — identity is read once per response", () => {
     );
 
     expect(error.status).toBe(404);
-    expect(error.message).toBe("HTTP 500 Internal Server Error");
+    expect(error.message).toBe('HTTP 500 "Internal Server Error"');
   });
 
   test("BH-05: two errors from ONE response report one identity and two header copies", () => {
@@ -1372,7 +1372,7 @@ describe("BaseHttpError.clone() — an inherited identity is lent, never recorde
     const later = new UnknownHttpError(victim);
 
     expect(later.status).toBe(200);
-    expect(later.message).toBe("HTTP 200 OK");
+    expect(later.message).toBe('HTTP 200 "OK"');
 
     await Promise.all([error.cancel(), copy.cancel(), later.cancel()]);
   });
@@ -1392,7 +1392,7 @@ describe("BaseHttpError.clone() — an inherited identity is lent, never recorde
     const later = new UnknownHttpError(victim);
 
     expect(later.status).toBe(200);
-    expect(later.message).toBe("HTTP 200 OK");
+    expect(later.message).toBe('HTTP 200 "OK"');
 
     await Promise.all([error.cancel(), later.cancel()]);
   });
@@ -1417,7 +1417,7 @@ describe("BaseHttpError.clone() — an inherited identity is lent, never recorde
     const later = new UnknownHttpError(victim);
 
     expect(later.status).toBe(200);
-    expect(later.message).toBe("HTTP 200 OK");
+    expect(later.message).toBe('HTTP 200 "OK"');
 
     await Promise.all([error.cancel(), later.cancel()]);
   });

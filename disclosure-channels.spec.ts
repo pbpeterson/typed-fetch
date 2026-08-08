@@ -318,7 +318,7 @@ describe("disclosure channels — the platform message is never copied", () => {
       expect(error.message).not.toContain(BOM);
       expect(JSON.stringify(error)).not.toContain(RLO);
       // The legible half survives.
-      expect(error.message).toContain("HTTP 404 Not Found");
+      expect(error.message).toContain('HTTP 404 "Not Found"');
     });
 
     // The filter removes what reorders a reading, and ZWNJ and ZWJ do neither.
@@ -333,6 +333,47 @@ describe("disclosure channels — the platform message is never copied", () => {
       expect(hostileReasonPhrase(`\u{1f468}${ZWJ}\u{1f469}${ZWJ}\u{1f467}`).message).toContain(
         `\u{1f468}${ZWJ}\u{1f469}${ZWJ}\u{1f467}`,
       );
+    });
+
+    // The other half of log forgery, and the half a character filter cannot
+    // reach: printable ASCII aimed at the LAYOUT rather than at the terminal.
+    // `HTTP <status> <phrase> (<url>)` uses `HTTP <digits>` and a parenthesis
+    // pair as structure, and both attacker-controlled spans used to land in it
+    // unescaped. A deny list is not the answer — escaping our own delimiters is.
+    describe("the origin cannot forge the fields this line is made of", () => {
+      test("a phrase spelling a different status does not read as one", () => {
+        const message = hostileReasonPhrase("HTTP 500 Internal Server Error").message;
+
+        // Everything the origin wrote is inside the quoted field, so the only
+        // status OUTSIDE it is the real one. The forged text survives — it is
+        // what the server said — it just cannot pose as this line's own field.
+        const beforeThePhrase = message.slice(0, message.indexOf('"'));
+        expect(beforeThePhrase).toBe("HTTP 404 ");
+        expect(message).toContain('"HTTP 500 Internal Server Error"');
+      });
+
+      test("a phrase spelling a parenthesised url does not read as one", () => {
+        const error = hostileReasonPhrase("Not Found (https://api.internal.test/v1/admin)");
+
+        // The forged parentheses are inside the quoted phrase, so the real
+        // url field is still the last one and still the only bare pair.
+        expect(error.message).toContain('"Not Found (https://api.internal.test/v1/admin)"');
+        expect(error.message.endsWith('"')).toBe(true);
+      });
+
+      test("a parenthesis in the real url is encoded in the message only", () => {
+        const response = new Response(null, { status: 404 });
+        Object.defineProperty(response, "url", {
+          value: "https://api.test/a)%20(https://api.internal.test/v1/admin",
+        });
+        const error = new NotFoundError(response);
+
+        expect(error.message).toContain("%28");
+        expect(error.message).toContain("%29");
+        expect(error.message).not.toContain("a) (");
+        // The escape hatch keeps the href verbatim.
+        expect(error.url).toContain("a)");
+      });
     });
 
     test("a homoglyph is NOT filtered — that would be the deny list", () => {
@@ -351,8 +392,8 @@ describe("disclosure channels — the platform message is never copied", () => {
 
     test("an ordinary reason phrase is still carried in full", () => {
       // The filter removes what cannot be read, not what can.
-      expect(hostileReasonPhrase("Not Found").message).toContain("HTTP 404 Not Found");
-      expect(hostileReasonPhrase("Não Encontrado").message).toContain("HTTP 404 Não Encontrado");
+      expect(hostileReasonPhrase("Not Found").message).toContain('HTTP 404 "Not Found"');
+      expect(hostileReasonPhrase("Não Encontrado").message).toContain('HTTP 404 "Não Encontrado"');
     });
 
     test("a phrase with nothing legible left drops out of the line", () => {
@@ -482,7 +523,7 @@ describe("disclosure channels — the hook itself", () => {
 
     // The whole point of console.log(error): the stack must survive redaction,
     // or the redaction gets worked around.
-    expect(rendered).toContain("NotFoundError: HTTP 404 Not Found");
+    expect(rendered).toContain('NotFoundError: HTTP 404 "Not Found"');
     expect(rendered).toContain("disclosure-channels.spec.ts");
     // …while the JSON record still omits it, because a record ships off-box.
     expect(JSON.stringify(error)).not.toContain("disclosure-channels.spec.ts");
