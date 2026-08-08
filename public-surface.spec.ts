@@ -104,6 +104,12 @@ if (!distExists) {
 const importDist = (path: string): Promise<Record<string, unknown>> =>
   import(/* @vite-ignore */ new URL(path, import.meta.url).href);
 
+// The CJS half of every axis below. A snapshot reads ONE format, and the two
+// formats are built from one source by one bundler — so the CJS barrel is
+// checked by requiring it and comparing it to the ESM side, rather than by a
+// second snapshot that could drift from the first without a reviewer noticing.
+const requireDist = createRequire(import.meta.url);
+
 describe.skipIf(!distExists)("public API surface is frozen", () => {
   test("main entry named exports", async () => {
     const mod = await importDist("./dist/index.mjs");
@@ -118,11 +124,28 @@ describe.skipIf(!distExists)("public API surface is frozen", () => {
     expect(Object.keys(mod).toSorted()).toMatchSnapshot();
   });
 
+  // The CJS barrel is the format `require()` reaches, and neither snapshot
+  // above reads it. A class dropped from `dist/errors/index.js` alone left
+  // every gate green: the snapshots read `.mjs`, `check-consumer` requires the
+  // package but asserts a handful of names, and `verify-pack` checks paths.
+  test.each([
+    ["main entry", "./dist/index.mjs", "./dist/index.js"],
+    ["./errors subpath", "./dist/errors/index.mjs", "./dist/errors/index.js"],
+  ])("%s exports the same names in both formats", async (_entry, esmPath, cjsPath) => {
+    const esm = Object.keys(await importDist(esmPath)).toSorted();
+    const cjs = Object.keys(requireDist(cjsPath) as Record<string, unknown>).toSorted();
+    expect(cjs).toEqual(esm);
+  });
+
   test.each([
     ["main entry", "./dist/index.mjs"],
     ["./errors subpath", "./dist/errors/index.mjs"],
+    ["main entry (CJS)", "./dist/index.js"],
+    ["./errors subpath (CJS)", "./dist/errors/index.js"],
   ])("%s exports every dedicated class in the internal roster", async (_entry, path) => {
-    const mod = await importDist(path);
+    const mod = path.endsWith(".js")
+      ? (requireDist(path) as Record<string, unknown>)
+      : await importDist(path);
 
     for (const ErrorClass of httpErrors) {
       expect(Object.hasOwn(mod, ErrorClass.name)).toBe(true);
@@ -136,8 +159,10 @@ describe.skipIf(!distExists)("public API surface is frozen", () => {
   test.each([
     ["main entry", "./dist/index.mjs"],
     ["./errors subpath", "./dist/errors/index.mjs"],
+    ["main entry (CJS)", "./dist/index.js"],
+    ["./errors subpath (CJS)", "./dist/errors/index.js"],
   ])("%s ships toJSON on the built error classes", async (_entry, path) => {
-    const mod = (await importDist(path)) as unknown as {
+    const mod = (path.endsWith(".js") ? requireDist(path) : await importDist(path)) as unknown as {
       NotFoundError: typeof NotFoundError;
       NetworkError: typeof NetworkError;
     };
@@ -171,7 +196,7 @@ describe.skipIf(!distExists)("public API surface is frozen", () => {
 //   • re-adding a deliberately-cut type (TypedHeaders) → snapshot diff → RED
 // It runs against `dist/*.d.mts` (the artifact that ships), never `src/` —
 // this whole class of bug came from a guard that read `src/` instead of dist/.
-function typeOnlyExportsOf(dtsRelPath: string): string[] {
+function exportsOfDeclaration(dtsRelPath: string): { all: string[]; typeOnly: string[] } {
   const abs = fileURLToPath(new URL(dtsRelPath, import.meta.url));
   const program = ts.createProgram([abs], {
     moduleResolution: ts.ModuleResolutionKind.Bundler,
@@ -188,8 +213,8 @@ function typeOnlyExportsOf(dtsRelPath: string): string[] {
   const F = ts.SymbolFlags;
   const TYPE_MEANING = F.Type | F.Interface | F.TypeAlias | F.Class | F.Enum;
 
-  return checker
-    .getExportsOfModule(moduleSymbol)
+  const exported = checker.getExportsOfModule(moduleSymbol);
+  const typeOnly = exported
     .map((sym) => {
       // Follow re-export aliases to the symbol they actually point at, so a
       // barrel `export type { ClientErrors } from "./helpers"` is classified
@@ -205,6 +230,12 @@ function typeOnlyExportsOf(dtsRelPath: string): string[] {
     })
     .filter((name): name is string => name !== null)
     .toSorted();
+  return { all: exported.map((sym) => sym.getName()).toSorted(), typeOnly };
+}
+
+/** The type-only export set, which is what the snapshot pair freezes. */
+function typeOnlyExportsOf(dtsRelPath: string): string[] {
+  return exportsOfDeclaration(dtsRelPath).typeOnly;
 }
 
 describe.skipIf(!distExists)("public TYPE surface is frozen", () => {
@@ -214,6 +245,30 @@ describe.skipIf(!distExists)("public TYPE surface is frozen", () => {
 
   test("./errors subpath type-only exports", () => {
     expect(typeOnlyExportsOf("./dist/errors/index.d.mts")).toMatchSnapshot();
+  });
+
+  // The snapshots read `.d.mts`, the declaration an `import`-condition consumer
+  // gets. A `require`-condition consumer reads `.d.ts`, which no snapshot sees.
+  // Compare the two rather than snapshot both: one reviewable diff, and the two
+  // files cannot drift apart without this failing.
+  test.each([
+    ["main entry", "./dist/index.d.mts", "./dist/index.d.ts"],
+    ["./errors subpath", "./dist/errors/index.d.mts", "./dist/errors/index.d.ts"],
+  ])("%s declares the same exports in both declaration files", (_entry, mts, dts) => {
+    const esm = exportsOfDeclaration(mts);
+    const cjs = exportsOfDeclaration(dts);
+    expect(cjs.all).toEqual(esm.all);
+    expect(cjs.typeOnly).toEqual(esm.typeOnly);
+  });
+
+  test.each([
+    ["main entry", "./dist/index.d.ts", "./dist/index.mjs"],
+    ["./errors subpath", "./dist/errors/index.d.ts", "./dist/errors/index.mjs"],
+  ])("%s declares every runtime value it ships", async (_entry, dts, mjs) => {
+    const declared = new Set(exportsOfDeclaration(dts).all);
+    for (const name of Object.keys(await importDist(mjs))) {
+      expect(declared.has(name), `${name} ships at runtime but is not declared`).toBe(true);
+    }
   });
 });
 
