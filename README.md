@@ -1172,7 +1172,9 @@ console.log(network.url, aborted.reason, timedOut.url);
 
 `cause` and `reason` become own properties only when the options object carries the key. `url` defaults to the empty string.
 
-`NetworkError` copies its message from the platform rejection. When the request URL carries credentials, as in `https://user:password@host/`, the platform message contains the password. `typedFetch` removes that URL from the message before it builds the error.
+`NetworkError.message` is a library constant. The platform rejection stays on `error.cause`, unmodified. When the request URL carries credentials, as in `https://user:password@host/`, that platform message contains the password. Read [Known residuals](https://github.com/pbpeterson/typed-fetch/blob/main/SECURITY.md#known-residuals) before you copy `error.cause` into a log line.
+
+The three classes take a `message` and a `url` from the caller, and they remove the URL from the message they are given. A wrapper that passes a platform message through gets the same treatment `typedFetch` used to need.
 
 All three classes define `toJSON()`. The record is `{ name, message, url }`.
 

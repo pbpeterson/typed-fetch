@@ -318,11 +318,12 @@ function hasRedactableSlot(url: string): boolean {
 /**
  * Replace a URL this error already holds wherever it appears in a message.
  *
- * `message` is not always ours. `classifyRequestFailure` copies the platform's
- * rejection message into `NetworkError`, and undici rejects a credentialed URL
- * with `TypeError: Request cannot be constructed from a URL that includes
- * credentials: http://alice:hunter2@host/x` — a password, verbatim, in the one
- * string every log line carries.
+ * `message` is not always ours. `classifyRequestFailure` writes a library
+ * constant now, but the three pre-response classes are PUBLIC API, and a
+ * consumer wrapping an adapter passes the platform's own text: undici rejects a
+ * credentialed URL with `TypeError: Request cannot be constructed from a URL
+ * that includes credentials: http://alice:hunter2@host/x` — a password,
+ * verbatim, in the one string every log line carries.
  *
  * This is NOT a search for secrets in free text; that would be the deny list
  * again. It replaces a value we ALREADY HOLD (`url`) with its redacted form,

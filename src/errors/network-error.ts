@@ -55,8 +55,10 @@ export class NetworkError extends Error {
   constructor(message: string = "Network error", options?: { cause?: unknown; url?: string }) {
     // The url this error was told about, so the message can be cleaned of it
     // before it becomes the string every log line carries. undici rejects a
-    // credentialed URL with a TypeError whose message contains the PASSWORD,
-    // and that message is copied here verbatim. See `./redact-url`.
+    // credentialed URL with a TypeError whose message contains the PASSWORD.
+    // `typedFetch` no longer passes that text on — every message it writes is a
+    // library constant — but this constructor is public API, and a consumer
+    // wrapping an adapter passes whatever it holds. See `./redact-url`.
     //
     // OWN properties only, on both slots. A bare `options?.url` and a bare
     // `"cause" in options` each walk the prototype chain, so a single

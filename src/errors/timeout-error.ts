@@ -33,8 +33,10 @@ export class TimeoutError extends Error {
   constructor(message: string = "Request timed out", options?: { cause?: unknown; url?: string }) {
     // The url this error was told about, so the message can be cleaned of it
     // before it becomes the string every log line carries. undici rejects a
-    // credentialed URL with a TypeError whose message contains the PASSWORD,
-    // and that message is copied here verbatim. See `./redact-url`.
+    // credentialed URL with a TypeError whose message contains the PASSWORD.
+    // `typedFetch` no longer passes that text on — every message it writes is a
+    // library constant — but this constructor is public API, and a consumer
+    // wrapping an adapter passes whatever it holds. See `./redact-url`.
     //
     // OWN properties only, on every slot read here. See `./network-error` for
     // what a polluted `Object.prototype` otherwise puts into the record.
