@@ -335,9 +335,18 @@ function safeReasonPhrase(phrase: string): string {
       // C0, DEL, and C1.
       code <= 0x1f ||
       (code >= 0x7f && code <= 0x9f) ||
-      // ALM, and the zero-width joiners and marks.
+      // ALM, the zero-width SPACE, and the left/right-to-right marks.
+      //
+      // Named individually rather than as the `0x200b-0x200f` range, because
+      // that range also holds U+200C ZWNJ and U+200D ZWJ. Neither reorders or
+      // reverses anything, which is the stated reason this filter exists, and
+      // both are legible text: ZWNJ is orthographically decisive in Persian,
+      // Arabic, and the Indic scripts, and ZWJ is what holds a multi-person
+      // emoji together. Removing them respelled words and split sequences.
       code === 0x061c ||
-      (code >= 0x200b && code <= 0x200f) ||
+      code === 0x200b ||
+      code === 0x200e ||
+      code === 0x200f ||
       // The bidi embeddings and overrides, and the line/paragraph separators.
       (code >= 0x202a && code <= 0x202e) ||
       code === 0x2028 ||

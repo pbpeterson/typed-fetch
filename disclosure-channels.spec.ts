@@ -321,6 +321,20 @@ describe("disclosure channels — the platform message is never copied", () => {
       expect(error.message).toContain("HTTP 404 Not Found");
     });
 
+    // The filter removes what reorders a reading, and ZWNJ and ZWJ do neither.
+    // They are legible text: ZWNJ is orthographically decisive in Persian,
+    // Arabic and the Indic scripts, and ZWJ holds a multi-person emoji
+    // together. Filtering the whole `200b-200f` range respelled words.
+    test("a zero-width joiner and non-joiner survive — they are text", () => {
+      const ZWNJ = "\u200c";
+      const ZWJ = "\u200d";
+
+      expect(hostileReasonPhrase(`می${ZWNJ}خواهم`).message).toContain(`می${ZWNJ}خواهم`);
+      expect(hostileReasonPhrase(`\u{1f468}${ZWJ}\u{1f469}${ZWJ}\u{1f467}`).message).toContain(
+        `\u{1f468}${ZWJ}\u{1f469}${ZWJ}\u{1f467}`,
+      );
+    });
+
     test("a homoglyph is NOT filtered — that would be the deny list", () => {
       // A fullwidth `＠` never delimited an authority for any parser, so
       // nothing is hidden behind it.
