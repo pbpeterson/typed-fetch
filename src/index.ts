@@ -720,6 +720,21 @@ function nativeRequestUrl(request: Request): unknown {
 }
 
 /**
+ * `Request.prototype`'s own `signal` getter, applied to a platform `Request`.
+ *
+ * `null` for an input no transport takes as a request, which is the state the
+ * caller reads it in. Falls back to a plain read when the accessor cannot be
+ * found — a runtime where `signal` is a data property still answers correctly.
+ */
+function nativeRequestSignal(request: Request | null): AbortSignal | undefined {
+  if (request === null) return undefined;
+  const getter = Object.getOwnPropertyDescriptor(Request.prototype, "signal")?.get;
+  const raw: unknown =
+    typeof getter === "function" ? Reflect.apply(getter, request, []) : request.signal;
+  return raw as AbortSignal | undefined;
+}
+
+/**
  * The options the ambient `fetch` accepts, minus the two slots this library
  * retypes.
  *
@@ -912,8 +927,32 @@ export async function typedFetch<JsonReturnType>(
     // `classifyRequestFailure` treats as authoritative. When they disagreed, a
     // plain network failure was reported as an abort.
     const initSignal = options.signal;
-    signal =
-      initSignal !== undefined ? (initSignal ?? undefined) : (requestInput?.signal ?? undefined);
+    if (initSignal !== undefined) {
+      signal = initSignal ?? undefined;
+    } else {
+      // WHICH read reports the Request's signal is decided by the verdict
+      // above, the same way `classifyRequestInput` decides which read reports
+      // its `url` — one slot further down, and for the same reason.
+      //
+      // The AMBIENT transport receives the `Request` WHOLE and aborts on the
+      // signal in its internal slot, which is the signal
+      // `Request.prototype.signal` reports. That accessor is read-only, so
+      // `Object.defineProperty(request, "signal", { value })` shadows it for
+      // every plain read — the decoy an own `url` already was, written by the
+      // middleware that decorates a `Request` rather than by the call site. A
+      // plain read here captured the decoy, `classifyRequestFailure` treats
+      // whatever it is handed as the authority, and a request the transport DID
+      // abort came back as a `NetworkError`. A consumer's retry policy reads
+      // that class.
+      //
+      // CALLER CODE running as the transport holds no such slot. It reads the
+      // own property exactly as this line would, and `transportTakesRequest`
+      // admitted its input on the wider tag check, so the value need not be a
+      // platform `Request` at all. There the own property IS the governing
+      // signal, and the accessor would report one nothing consults.
+      const handedOver = callerTransport ? requestInput?.signal : nativeRequestSignal(requestInput);
+      signal = handedOver ?? undefined;
+    }
 
     // Fetch reads RequestInit as a WebIDL dictionary, so inherited properties
     // and prototype getters are part of the input. Preserve both while removing
