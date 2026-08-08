@@ -841,8 +841,26 @@ export async function typedFetch<JsonReturnType>(
   // selects the class also reaches `error.status`, `error.message`, and
   // `toJSON()`. A getter that throws can be retried. A successful getter cannot
   // later select a different class.
+  // STAGED across the WHOLE structural verdict, not only across `isResponse`.
+  //
+  // ADR 0003 row H-14 — "A value refused once has no identity filed against it"
+  // — is a statement about refusal, and `isResponse` is not the last place this
+  // library refuses. `hasCompatibleSuccessSurface` reads `ok`, `redirected`,
+  // and `type` WITHOUT the identity cache, so they are the only three reads in
+  // this phase a value can answer differently on a second presentation — while
+  // `status`, `statusText`, `url`, and `headers` stay filed from the call that
+  // was refused. A double refused on `type` and re-presented as an honest 404
+  // was then answered with the FILED status: `{ response, error: null }` for a
+  // failed request, which is the one outcome this union exists to prevent.
+  //
+  // Only the two STRUCTURAL refusals roll back. The HTTP-error path deliberately
+  // does not: a throwing getter inside an error constructor keeps the fields
+  // that were read successfully, which `typed-fetch.spec.ts` pins.
+  const rollbackRefusal = stageIdentity(res as Response);
+  let refusedTheValue = false;
   try {
     if (!isResponse(res)) {
+      refusedTheValue = true;
       throw new TypeError("The fetch implementation resolved a value that is not a Response.");
     }
     const status = statusOf(res);
@@ -854,11 +872,13 @@ export async function typedFetch<JsonReturnType>(
       };
     }
     if (!hasCompatibleSuccessSurface(res)) {
+      refusedTheValue = true;
       throw new TypeError(
         "The fetch implementation resolved a Response with an incompatible public surface.",
       );
     }
   } catch (cause) {
+    if (refusedTheValue) rollbackRefusal();
     // The reads above (`status`, and `statusText`, `url`, and `headers` inside
     // the error class) can each throw for an injected implementation. The
     // caller gets `response: null` and never gets a handle to the body the

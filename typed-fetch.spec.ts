@@ -3558,6 +3558,104 @@ describe("typedFetch — the first successful identity reads are recorded", () =
     expect(second.response).toBe(null);
     expect(second.error).toBeInstanceOf(NetworkError);
   });
+
+  // TF-21 and TF-23 both refuse INSIDE `isResponse`, and the staging only ever
+  // spanned that call. `hasCompatibleSuccessSurface` is a refusal point too,
+  // and it reads `ok`, `redirected`, and `type` WITHOUT the identity cache —
+  // the only three reads in this phase a value can answer differently on a
+  // second presentation. So a value refused there kept `status`, `headers`,
+  // `statusText`, and `url` filed from the refused call.
+  //
+  // TF-21's comment says "the success-surface check cannot catch it either",
+  // which was true and also the hole: the surface check was itself unstaged.
+  describe("TF-24: a value refused by the SUCCESS-SURFACE check files nothing either", () => {
+    function shapeshifterRefusedOn(field: "type" | "ok" | "redirected") {
+      const bad = { type: "not-a-type", ok: "yes", redirected: "no" } as const;
+      const shapeshifter: Record<string, unknown> = {
+        [Symbol.toStringTag]: "Response",
+        body: null,
+        bodyUsed: false,
+        headers: new Headers({ "content-type": "application/json" }),
+        ok: true,
+        redirected: false,
+        status: 200,
+        statusText: "OK",
+        type: "basic",
+        url: "https://example.invalid/late-surface",
+        arrayBuffer: async () => new ArrayBuffer(0),
+        blob: async () => new Blob(),
+        clone: () => shapeshifter,
+        formData: async () => new FormData(),
+        json: async () => ({}),
+        text: async () => "",
+      };
+      // One member off the standard, so only the surface check refuses it.
+      shapeshifter[field] = bad[field];
+      return shapeshifter;
+    }
+
+    test.each(["type", "ok", "redirected"] as const)(
+      "refused on `%s`, then re-presented as a 404, is not answered as a success",
+      async (field) => {
+        const shapeshifter = shapeshifterRefusedOn(field);
+        const fetch = resolving(shapeshifter as unknown as Response);
+
+        const refused = await typedFetch("https://example.invalid/late-surface", { fetch });
+        expect(refused.response).toBe(null);
+        expect(refused.error).toBeInstanceOf(NetworkError);
+
+        // Now honest, and reporting a FAILED request. The filed `status: 200`
+        // from the refused call must not answer for it.
+        shapeshifter[field] = { type: "basic", ok: false, redirected: false }[field];
+        shapeshifter.status = 404;
+        shapeshifter.ok = false;
+
+        const second = await typedFetch("https://example.invalid/late-surface", { fetch });
+        expect(second.response).toBe(null);
+        expect(second.error).toBeInstanceOf(NotFoundError);
+        if (isHttpError(second.error)) {
+          expect(second.error.status).toBe(404);
+          await second.error.cancel();
+        }
+      },
+    );
+
+    test("the stale headers record cannot let a headerless object escape as a success", async () => {
+      // TF-23's exact failure, one refusal point later.
+      const shapeshifter = shapeshifterRefusedOn("type");
+      const fetch = resolving(shapeshifter as unknown as Response);
+
+      expect(
+        (await typedFetch("https://example.invalid/late-surface", { fetch })).error,
+      ).toBeInstanceOf(NetworkError);
+
+      shapeshifter.type = "basic";
+      shapeshifter.headers = { notHeaders: true };
+
+      const second = await typedFetch("https://example.invalid/late-surface", { fetch });
+      expect(second.response).toBe(null);
+      expect(second.error).toBeInstanceOf(NetworkError);
+    });
+
+    test("an ACCEPTED call still fixes the identity it read", async () => {
+      // The rollback drops only what the refused call recorded. A field fixed
+      // by an earlier accepted call is that response's identity and stays.
+      const shapeshifter = shapeshifterRefusedOn("type");
+      shapeshifter.type = "basic";
+      shapeshifter.status = 404;
+      shapeshifter.ok = false;
+      const fetch = resolving(shapeshifter as unknown as Response);
+
+      const first = await typedFetch("https://example.invalid/late-surface", { fetch });
+      expect(first.error).toBeInstanceOf(NotFoundError);
+      if (isHttpError(first.error)) await first.error.cancel();
+
+      shapeshifter.status = 500;
+      const second = await typedFetch("https://example.invalid/late-surface", { fetch });
+      expect(second.error).toBeInstanceOf(NotFoundError);
+      if (isHttpError(second.error)) await second.error.cancel();
+    });
+  });
 });
 
 // ── Reflected request data never reaches an automatic channel ────────────
