@@ -287,13 +287,23 @@ and retention, and the disclosure channels re-run as a set.
 - **The message pass was quadratic** once the needle list grew with the url:
   8000 embedded credentials cost 435 ms against 4.9 ms before the path scan.
   Every needle ends with `@`, so one walk over the message's `@` positions
-  replaces one `replaceAll` per needle — 6 ms at the same size, verified
-  byte-identical against the previous implementation on 120,000 fuzzed inputs.
+  replaces one `replaceAll` per needle — 6 ms at the same size.
+
+  **That rewrite shipped with a defect, and the fuzz that cleared it was the
+  reason.** It resolved two overlapping needles by position and skipped the one
+  that reached back, which left the longer needle's tail — a password — in the
+  message; chained `replaceAll` had no such hole, because it resolved overlaps
+  by needle ORDER. The 120,000-input fuzz that reported "byte-identical" drew
+  from an alphabet that never produced a nested authority with an internal
+  `@`, so it could not generate the shape. Round 6 found it in 129 of 40,000
+  generated urls. The pass now collects every match and MERGES the overlapping
+  ones, which removes at least what the chained form removed.
   **A timing guard for it was written and removed:** it must be a ratio against
   a control measured in the same run, and v8 coverage instrumentation does not
   slow the two functions by the same factor, so the guard failed one run in two
   on unchanged code. The cost is recorded in the source and in a
   correctness-only test at 4000 credentials.
+
 - **Coverage is not strength, and a mutation pass measured the gap.** Round 4
   routed seven caller-supplied slots through `ownSlot` and the suite asserted
   one of them, with neither half of the read covered for any slot: reverting six

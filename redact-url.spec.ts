@@ -532,12 +532,39 @@ describe("removing every userinfo in one pass", () => {
     );
   });
 
-  test("a candidate that reaches back into a removed span is skipped, not applied", () => {
-    // The needles are `q@` and `@w@`. At the second `@`, the three-character
-    // candidate starts inside the span the first removal already took, so the
-    // pass declines it — which is what the chained version did by having
-    // nothing left to match.
-    expect(redactUrlInMessage("X q@w@ Y", "://q@x/://@w@host/")).toBe("X w@ Y");
+  test("overlapping needles are merged, so neither one leaves a tail", () => {
+    // The needles are `q@` and `@w@`, and the second starts inside the first's
+    // match. Chained `replaceAll` removed `q@` and then found nothing left of
+    // `@w@` to match, so it kept `w@` — which is userinfo the url really
+    // carries. The union removes the whole run.
+    expect(redactUrlInMessage("X q@w@ Y", "://q@x/://@w@host/")).toBe("X  Y");
+  });
+
+  test("a needle whose match ends inside a longer needle does not truncate it", () => {
+    // The regression this replaced: `userinfosOf` yields the LONG needle first
+    // for a path with two authorities, the short one matched at an earlier
+    // `@`, and the long one was then skipped — leaving its tail, the password,
+    // in the message.
+    const url =
+      "https://api.test/go/https://alice@sso.test/svc:hunter2@internal.test/v1" +
+      "/next/https://alice@cdn.test/";
+    const message =
+      "Request cannot be constructed from a URL that includes credentials: " +
+      "https://alice@sso.test/svc:hunter2@internal.test/v1";
+
+    expect(redactUrlInMessage(message, url)).not.toContain("hunter2");
+  });
+
+  test("a needle longer than the text before an at sign cannot match", () => {
+    // The candidate would start before index 0. It is declined rather than
+    // sliced from a negative index, which would silently match a suffix.
+    expect(redactUrlInMessage("@x", "://verylongcredential@host/")).toBe("@x");
+  });
+
+  test("a match wholly inside an earlier removal is absorbed by it", () => {
+    // The needles are `pq@r@` and `q@`. Sorted by start, the long one comes
+    // first and covers the short one entirely, so the short one adds nothing.
+    expect(redactUrlInMessage("X pq@r@ Y", "://pq@r@host/://q@x/")).toBe("X  Y");
   });
 
   test("a message with no userinfo needle is returned unchanged", () => {

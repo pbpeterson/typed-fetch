@@ -433,11 +433,17 @@ export function redactUrlInMessage(message: string, url: string): string {
  * count times the number of DISTINCT needle lengths, and each test is a lookup
  * on a short slice rather than a scan of everything.
  *
- * One semantic narrowing, stated because it is real: chained `replaceAll` can
- * match text that only became adjacent when an earlier needle was removed, and
- * a single pass cannot. Two hundred thousand fuzzed inputs produced no case
- * where the two disagree, and a needle that spans a removal is not a credential
- * the url carries.
+ * UNION, not first-match-wins. Two needles OVERLAP whenever one authority's
+ * userinfo runs to the last `@` in its region and another needle ends at an `@`
+ * inside it — `alice@sso.test/svc:hunter2@` and `alice@` both come out of
+ * `https://api.test/go/https://alice@sso.test/svc:hunter2@internal.test/v1`.
+ * Taking the first match and skipping anything that reaches back into it left
+ * the longer needle's tail — the password — in the message. Chained
+ * `replaceAll` did not have that hole, because it resolved overlaps by NEEDLE
+ * order rather than by position. So every match is collected and the
+ * overlapping ones are merged: the union removes at least what the chained form
+ * removed, and where the two differ it removes more, which is the safe
+ * direction this module already takes everywhere else.
  */
 function withoutUserinfos(message: string, userinfos: string[]): string {
   if (userinfos.length === 0) return message;
@@ -449,19 +455,28 @@ function withoutUserinfos(message: string, userinfos: string[]): string {
     else bucket.add(userinfo);
   }
 
-  let out = "";
-  let cursor = 0;
+  // EVERY match, before any of them is applied. A needle that starts inside an
+  // earlier match is the case that matters, so nothing can be decided until all
+  // of them are known.
+  const spans: { start: number; end: number }[] = [];
   for (let at = message.indexOf("@"); at >= 0; at = message.indexOf("@", at + 1)) {
     for (const [length, needles] of byLength) {
       const start = at + 1 - length;
-      // Already inside a span this pass removed. Removing again would take
-      // text the earlier needle did not cover.
-      if (start < cursor) continue;
-      if (!needles.has(message.slice(start, at + 1))) continue;
-      out += message.slice(cursor, start);
-      cursor = at + 1;
-      break;
+      if (start < 0) continue;
+      if (needles.has(message.slice(start, at + 1))) spans.push({ start, end: at + 1 });
     }
+  }
+  if (spans.length === 0) return message;
+
+  spans.sort((left, right) => left.start - right.start);
+  let out = "";
+  let cursor = 0;
+  for (const span of spans) {
+    // Wholly inside the run already removed.
+    if (span.end <= cursor) continue;
+    if (span.start > cursor) out += message.slice(cursor, span.start);
+    // Otherwise it overlaps the run, and the run simply extends over it.
+    cursor = span.end;
   }
   return out + message.slice(cursor);
 }
