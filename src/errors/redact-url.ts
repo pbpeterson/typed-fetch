@@ -187,7 +187,16 @@ function userinfosOf(url: string): string[] {
     parsed = new URL(url);
   } catch {
     // A malformed scheme hides userinfo from the parser, not from a reader.
-    return malformedUserinfoSpans(url).map((span) => url.slice(span.start, span.end));
+    //
+    // `"@"` ALONE is not a credential, and it is the one needle that must never
+    // reach `replaceAll`. `://@host/x` yields a span of exactly one character,
+    // and stripping every `@` from a message deletes e-mail addresses, handles,
+    // and anything else the diagnostic was carrying. The parsed branch below
+    // has always refused an empty userinfo for the same reason; this branch
+    // forgot to.
+    return malformedUserinfoSpans(url)
+      .map((span) => url.slice(span.start, span.end))
+      .filter((userinfo) => userinfo.length > 1);
   }
   const { username, password } = parsed;
   if (!username && !password) return [];

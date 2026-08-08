@@ -176,6 +176,27 @@ describe("redactUrlInMessage — a URL we already hold, removed from a foreign m
     expect(redactUrlInMessage(message, url)).not.toContain("hunter2");
   });
 
+  // `"@"` alone is not a credential, and it is the one needle that must never
+  // reach `replaceAll`. `://@host/x` yields a span of exactly one character,
+  // and stripping every `@` from a message deletes e-mail addresses, handles,
+  // and anything else the diagnostic was carrying. The parsed branch has always
+  // refused an empty userinfo for the same reason.
+  test("an empty userinfo does not strip every `@` from the message", () => {
+    const url = "://@host/x";
+    const message = `delivery to ops@corp.test failed for ${url}`;
+
+    expect(redactUrlInMessage(message, url)).toContain("ops@corp.test");
+  });
+
+  test("a real userinfo in the same shape is still removed", () => {
+    const url = "://svc:hunter2@host/x";
+    const message = `delivery to ops@corp.test failed for ${url.replace("host", "host:80")}`;
+
+    const redacted = redactUrlInMessage(message, url);
+    expect(redacted).not.toContain("hunter2");
+    expect(redacted).toContain("ops@corp.test");
+  });
+
   test("a message that does not mention the URL is untouched", () => {
     expect(redactUrlInMessage("fetch failed", "https://api.test/x?t=SECRET")).toBe("fetch failed");
   });
