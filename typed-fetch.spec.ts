@@ -1,4 +1,5 @@
 import { describe, test, expect, expectTypeOf, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { Readable } from "node:stream";
 import { inspect } from "node:util";
@@ -4238,5 +4239,272 @@ describe("typedFetch — only the transport phase can produce an abort or a time
 
     expect(result.response).toBe(null);
     expect(isAbortError(result.error)).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the branches no test had ever taken, plus the pair that did not
+// disagree.
+//
+// The structural guards below close branches the coverage report listed as
+// unreached. The polyfilled-`Request` block is the hypothesis that did NOT
+// reproduce: a `globalThis.Request` the ambient `fetch` did not ship with is
+// the one state where `isPlatformRequest` and the transport could disagree
+// about what a request is (ADR 0003, row H-26). They do not disagree in a way
+// a caller can observe, and both outcomes are pinned so the next pass reads
+// them instead of rebuilding them.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const ROUND4_URL = "https://round4.test/resource";
+
+/** A response-shaped foreign object that passes every structural check. */
+function foreignResponse(overrides: Record<string, unknown> = {}): Response {
+  const base: Record<string, unknown> = {
+    [Symbol.toStringTag]: "Response",
+    body: null,
+    bodyUsed: false,
+    headers: new Headers(),
+    ok: true,
+    redirected: false,
+    status: 200,
+    statusText: "OK",
+    type: "basic",
+    url: ROUND4_URL,
+    arrayBuffer: async () => new ArrayBuffer(0),
+    blob: async () => new Blob(),
+    clone: () => foreignResponse(overrides),
+    formData: async () => new FormData(),
+    json: async () => ({}),
+    text: async () => "",
+  };
+  return { ...base, ...overrides } as unknown as Response;
+}
+
+const round4Resolving = (value: unknown): typeof fetch =>
+  (async () => value as Response) as unknown as typeof fetch;
+
+// src/index.ts
+// ──────────────────────────────────────────────────────────────────────────
+describe("index: the structural guards", () => {
+  test("a body that is a primitive is refused by isObjectLike's last arm", async () => {
+    const { response, error } = await typedFetch(ROUND4_URL, {
+      fetch: round4Resolving(foreignResponse({ body: "not-a-stream" })),
+    });
+
+    expect(response).toBeNull();
+    expect(error?.name).toBe("NetworkError");
+  });
+
+  test("headers that are a primitive are refused on the success surface", async () => {
+    const { response, error } = await typedFetch(ROUND4_URL, {
+      fetch: round4Resolving(foreignResponse({ headers: "not-headers" })),
+    });
+
+    expect(response).toBeNull();
+    expect(error?.name).toBe("NetworkError");
+  });
+
+  test("a runtime with no Response global still validates a foreign response", async () => {
+    const saved = globalThis.Response;
+    // @ts-expect-error - an exotic runtime without the global
+    delete globalThis.Response;
+    try {
+      const { response, error } = await typedFetch(ROUND4_URL, {
+        fetch: round4Resolving(foreignResponse()),
+      });
+
+      expect(error).toBeNull();
+      expect(response?.status).toBe(200);
+    } finally {
+      globalThis.Response = saved;
+    }
+  });
+
+  test("a Response global with no status accessor still validates a foreign response", async () => {
+    const saved = globalThis.Response;
+    // A polyfill whose prototype carries no `status` accessor at all.
+    globalThis.Response = class PolyfillResponse {
+      readonly polyfill = true;
+    } as unknown as typeof Response;
+    try {
+      const { response, error } = await typedFetch(ROUND4_URL, {
+        fetch: round4Resolving(foreignResponse()),
+      });
+
+      expect(error).toBeNull();
+      expect(response?.status).toBe(200);
+    } finally {
+      globalThis.Response = saved;
+    }
+  });
+
+  test("a Request whose url is a data property is read plainly", async () => {
+    const saved = globalThis.Request;
+    class PolyfillRequest {
+      readonly signal: AbortSignal | undefined = undefined;
+    }
+    // `url` on the PROTOTYPE, as a data property: `nativeRequestUrl` finds no
+    // accessor and falls back to the plain read.
+    Object.defineProperty(PolyfillRequest.prototype, "url", {
+      configurable: true,
+      writable: true,
+      value: ROUND4_URL,
+    });
+    globalThis.Request = PolyfillRequest as unknown as typeof Request;
+    try {
+      const { error } = await typedFetch(new PolyfillRequest() as unknown as Request, {
+        fetch: round4Resolving(foreignResponse({ status: 404 })),
+      });
+
+      expect(error?.name).toBe("NotFoundError");
+      expect((error as NotFoundError).url).toBe(ROUND4_URL);
+      await (error as NotFoundError).cancel();
+    } finally {
+      globalThis.Request = saved;
+    }
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * ROUND 4 — COVERAGE LANE: the hypotheses that did NOT reproduce.
+ *
+ * Reaching `nativeRequestUrl`'s fallback arm needs a `globalThis.Request` this
+ * library did not ship with the transport that will run. That state is worth a
+ * second look on its own: `isPlatformRequest` reads `globalThis.Request` while
+ * the AMBIENT `fetch` resolves `RequestInfo` against its own internal class, so
+ * a MISMATCHED pair is the one shape where the two could disagree about what
+ * the transport takes as a request — ADR 0003 row H-26.
+ *
+ * They do not disagree in a way a caller can observe. Both cases below are
+ * pinned so the next pass reads the outcome instead of rebuilding it.
+ */
+const round4Server = useTestServer();
+
+describe("a polyfilled Request global paired with the ambient fetch", () => {
+  test("a polyfill that stringifies to its url reaches the same server the error names", async () => {
+    const saved = globalThis.Request;
+    const target = round4Server.url({ status: 404 });
+    class PolyfillRequest {
+      constructor(readonly url: string) {}
+      toString(): string {
+        return this.url;
+      }
+    }
+    globalThis.Request = PolyfillRequest as unknown as typeof Request;
+    try {
+      const { response, error } = await typedFetch(
+        new PolyfillRequest(target) as unknown as Request,
+      );
+
+      // The request WAS made, and it was made against the URL the error names:
+      // the transport serialized the input with the same `toString` the library
+      // recorded the URL from. No split.
+      expect(response).toBeNull();
+      expect(error?.name).toBe("NotFoundError");
+      expect((error as NotFoundError).status).toBe(404);
+      expect((error as NotFoundError).url.startsWith(new URL(target).origin)).toBe(true);
+      await (error as NotFoundError).cancel();
+    } finally {
+      globalThis.Request = saved;
+    }
+  });
+
+  test("a polyfill the transport cannot serialize fails loudly and names the requested URL", async () => {
+    const saved = globalThis.Request;
+    const target = round4Server.url({ status: 404 });
+    class PolyfillRequest {
+      constructor(readonly url: string) {}
+    }
+    globalThis.Request = PolyfillRequest as unknown as typeof Request;
+    try {
+      const { response, error } = await typedFetch(
+        new PolyfillRequest(target) as unknown as Request,
+      );
+
+      // No request left the process, the failure carries the platform's own
+      // exception on `cause`, and `url` is the URL the CALLER asked for — which
+      // is what `resolvedRequestUrl` is documented to hold.
+      expect(response).toBeNull();
+      expect(error?.name).toBe("NetworkError");
+      expect((error as { url: string }).url).toBe(target);
+      expect(error?.cause).toBeInstanceOf(TypeError);
+    } finally {
+      globalThis.Request = saved;
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the identity rollback, and the doc that names a forwarding idiom
+//
+// Round 3 fixed one channel per commit. These cases ask what the SIBLING
+// channel of each fix does, which is where rounds 2 and 3 both found their
+// defects.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("C3 — the rollback flag (3964f97) is safe by omission", () => {
+  test("a throwing read inside hasCompatibleSuccessSurface drops the staged identity", async () => {
+    let refuse = true;
+    const victim = new Response("body", { status: 404, statusText: "Not Found" });
+    Object.defineProperty(victim, "type", {
+      get() {
+        if (refuse) throw new TypeError("nope");
+        return "basic";
+      },
+      configurable: true,
+    });
+    Object.defineProperty(victim, "status", {
+      get: () => (refuse ? 200 : 404),
+      configurable: true,
+    });
+
+    const first = await typedFetch("https://api.test/x", { fetch: async () => victim });
+    expect(first.error?.name).toBe("NetworkError");
+
+    refuse = false;
+    const second = await typedFetch("https://api.test/x", { fetch: async () => victim });
+    expect(second.error).toBeInstanceOf(NotFoundError);
+    expect((second.error as NotFoundError).status).toBe(404);
+    if (second.error && "cancel" in second.error) await second.error.cancel();
+  });
+
+  test("an accepted value keeps its identity — the flag does not over-roll-back", async () => {
+    let reads = 0;
+    const victim = new Response("body", { status: 404, statusText: "Not Found" });
+    Object.defineProperty(victim, "status", {
+      get: () => (reads++ === 0 ? 404 : 200),
+      configurable: true,
+    });
+
+    const first = await typedFetch("https://api.test/x", { fetch: async () => victim });
+    expect(first.error).toBeInstanceOf(NotFoundError);
+    if (first.error && "cancel" in first.error) await first.error.cancel();
+
+    const second = await typedFetch("https://api.test/x", { fetch: async () => victim });
+    expect(second.error).toBeInstanceOf(NotFoundError);
+    if (second.error && "cancel" in second.error) await second.error.cancel();
+  });
+});
+
+describe("D3 — README still names the forwarding idiom the JSDoc stopped naming", () => {
+  const IDIOM = "new Response(r.body, { headers: r.headers })";
+
+  test("CONTROL — the JSDoc names it only beside the warning", () => {
+    const source = readFileSync(new URL("./src/index.ts", import.meta.url), "utf8");
+    expect(source).toContain("content-encoding");
+  });
+
+  test("README names it without the warning", () => {
+    const readme = readFileSync(new URL("./README.md", import.meta.url), "utf8");
+    const at = readme.indexOf(IDIOM);
+    // The claim under test: if the tarball's one document still names the
+    // idiom, it must also name the framing headers that make it wrong.
+    const namesTheIdiom = at >= 0;
+    expect({ namesTheIdiom, warnsAboutFraming: readme.includes("content-encoding") }).toEqual({
+      namesTheIdiom,
+      warnsAboutFraming: namesTheIdiom,
+    });
   });
 });

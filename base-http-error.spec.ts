@@ -3,6 +3,7 @@ import { describe, test, expect, vi } from "vitest";
 import { BaseHttpError, NotFoundError, UnknownHttpError } from "./src/errors";
 import { ownsResponseSymbol } from "./src/errors/brand";
 import { typedFetch } from "./src/index";
+import { redactUrl } from "./src/errors/redact-url";
 
 class ContextHttpError extends BaseHttpError {
   override readonly name = "ContextHttpError" as const;
@@ -1463,5 +1464,108 @@ describe("test IDs", () => {
       .map(([id, files]) => `${id} (${files.join(", ")})`);
 
     expect(duplicated).toEqual([]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the message layout's own delimiters
+//
+// Round 3 fixed one channel per commit. These cases ask what the SIBLING
+// channel of each fix does, which is where rounds 2 and 3 both found their
+// defects.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("C2 — the message layout (25f2b0a) escapes its own delimiters", () => {
+  function errorFor(statusText: string, url: string): UnknownHttpError {
+    const response = new Response(null, { status: 499 });
+    Object.defineProperty(response, "statusText", { value: statusText, configurable: true });
+    Object.defineProperty(response, "url", { value: url, configurable: true });
+    return new UnknownHttpError(response);
+  }
+
+  test("a forged status line is quoted into one field", () => {
+    const error = errorFor("HTTP 500 Internal Server Error", "https://api.test/x");
+    expect(error.message).toBe('HTTP 499 "HTTP 500 Internal Server Error" (https://api.test/x)');
+  });
+
+  test("a parenthesis in the path cannot close the layout's pair", () => {
+    const error = errorFor("Nope", "https://api.test/a)/(b");
+    expect(error.message).toBe('HTTP 499 "Nope" (https://api.test/a%29/%28b)');
+  });
+
+  // SIBLING: `(` is legal in a well-formed HOST too, not only in a path. The
+  // escape runs over the whole redacted string, so the host is covered.
+  test("SIBLING — a parenthesis in the HOST is escaped too", () => {
+    const error = errorFor("Nope", "https://a(b).test/x");
+    expect(error.message).toBe('HTTP 499 "Nope" (https://a%28b%29.test/x)');
+  });
+
+  // SIBLING: the quotes the layout now opens are delimiters of their own.
+  test("SIBLING — a quote in the reason phrase cannot close the quoted field", () => {
+    const error = errorFor('a" (https://evil.test) "b', "https://api.test/x");
+    expect(error.message).toBe('HTTP 499 "a\\" (https://evil.test) \\"b" (https://api.test/x)');
+  });
+
+  // SIBLING: the reason phrase is filtered at the recording seam; the URL is
+  // the other origin-controlled half of the same line and is NOT filtered. It
+  // does not need to be — every branch of `redactUrl` emits percent-encoded
+  // output, and a bidi code point is refused outright in a host.
+  test("SIBLING — a bidi code point cannot reach the message through the url", () => {
+    const error = errorFor("Nope", "https://api.test/a\u202Eb");
+    expect(error.message).toBe('HTTP 499 "Nope" (https://api.test/a%E2%80%AEb)');
+    expect(redactUrl("/a\u202Eb")).toBe("/a%E2%80%AEb");
+    expect(redactUrl("://svc:pw@host/a\u202Eb")).toBe("/://host/a%E2%80%AEb");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the values Deno and Bun answered with.
+//
+// The ledger's "Other runtimes" entry was measured on Deno 1.46.3, BEFORE the
+// reason-phrase filter, the absolute-path userinfo scan, and the message
+// layout's escaping existed. Round 4 re-ran all three on Deno 2.9.5 and Bun
+// 1.3.13 against `dist/index.mjs`, and every case below produced the SAME
+// string on all three runtimes. They are pinned here as the Node side of that
+// comparison, so a future divergence shows up as a plain failure.
+//
+// One runtime fact came out of it and belongs with the cases: Deno's client
+// DISCARDS the origin's reason phrase and substitutes the canonical one, so
+// the filter has nothing to filter there. Bun exercises it fully and answers
+// exactly as Node does.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** A real `Response` with one identity field shadowed by an own data property. */
+function round4Shadowed(status: number, props: Record<string, unknown>): Response {
+  const response = new Response("payload", { status });
+  for (const [key, value] of Object.entries(props)) {
+    Object.defineProperty(response, key, { value, configurable: true });
+  }
+  return response;
+}
+
+describe("control — the message layout escapes its own delimiters", () => {
+  test("a forged status line becomes one quoted field", async () => {
+    const error = new UnknownHttpError(
+      round4Shadowed(499, { statusText: "HTTP 500 Internal Server Error", url: "" }),
+    );
+    expect(error.message).toBe('HTTP 499 "HTTP 500 Internal Server Error"');
+    await error.cancel();
+  });
+
+  test("a quote in the phrase is escaped rather than closing the field", async () => {
+    const error = new UnknownHttpError(
+      round4Shadowed(499, { statusText: 'say "hi" \\ here', url: "" }),
+    );
+    expect(error.message).toBe('HTTP 499 "say \\"hi\\" \\\\ here"');
+    await error.cancel();
+  });
+
+  test("parentheses in the url are encoded in the message and verbatim on .url", async () => {
+    const error = new NotFoundError(
+      round4Shadowed(404, { statusText: "Not Found", url: "https://api.test/x)%20FORGED%20(y" }),
+    );
+    expect(error.message).toBe('HTTP 404 "Not Found" (https://api.test/x%29%20FORGED%20%28y)');
+    expect(error.url).toBe("https://api.test/x)%20FORGED%20(y");
+    await error.cancel();
   });
 });

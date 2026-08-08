@@ -477,3 +477,41 @@ describe("classifyRequestFailure — the guarded signal snapshot", () => {
     expect(error.cause).toBe(rejection);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the branches no test had ever taken.
+//
+// Every case below closes a branch the coverage report listed as unreached.
+// Writing them was the bug hunt: a branch nobody exercises is where a wrong
+// guard hides. None of them found one, so each is a regression test for a
+// guard that was already right and undefended.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const ROUND4_URL = "https://round4.test/resource";
+
+// src/request-failure.ts
+// ──────────────────────────────────────────────────────────────────────────
+describe("request-failure: reads that do not answer with a string", () => {
+  test("a DOMException whose name is not a string cannot claim an abort", () => {
+    const controller = new AbortController();
+    controller.abort(new Error("the real reason"));
+    const rejection = new DOMException("x", "AbortError");
+    Object.defineProperty(rejection, "name", { configurable: true, value: 42 });
+
+    const error = classifyRequestFailure(rejection, controller.signal, ROUND4_URL);
+
+    expect(error.name).toBe("NetworkError");
+  });
+
+  test("a primitive rejection is not an error, even while the signal is aborted", () => {
+    const controller = new AbortController();
+    controller.abort(new Error("the real reason"));
+
+    const error = classifyRequestFailure("boom", controller.signal, ROUND4_URL);
+
+    expect(error.name).toBe("NetworkError");
+    expect(error.cause).toBe("boom");
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────

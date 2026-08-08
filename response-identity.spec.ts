@@ -1,10 +1,14 @@
 import { describe, test, expect } from "vitest";
 import {
+  hasTypedResponseIdentityScalars,
+  headersOf,
   identityOf,
   lendIdentity,
   statusOf,
   type ResponseIdentity,
 } from "./src/errors/response-identity";
+import { NotFoundError, UnknownHttpError } from "./src/errors";
+import { typedFetch } from "./src/index";
 
 /**
  * THE SINGLE-READ CONTRACT, TESTED WITHOUT AN ERROR CLASS.
@@ -550,5 +554,272 @@ describe("statusOf — defensive input outside the typedFetch contract", () => {
     } finally {
       delete (String.prototype as unknown as Record<string, unknown>).status;
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the branches no test had ever taken.
+//
+// Every case below closes a branch the coverage report listed as unreached.
+// Writing them was the bug hunt: a branch nobody exercises is where a wrong
+// guard hides. None of them found one, so each is a regression test for a
+// guard that was already right and undefended.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const ROUND4_URL = "https://round4.test/resource";
+
+/** A response-shaped foreign object that passes every structural check. */
+function foreignResponse(overrides: Record<string, unknown> = {}): Response {
+  const base: Record<string, unknown> = {
+    [Symbol.toStringTag]: "Response",
+    body: null,
+    bodyUsed: false,
+    headers: new Headers(),
+    ok: true,
+    redirected: false,
+    status: 200,
+    statusText: "OK",
+    type: "basic",
+    url: ROUND4_URL,
+    arrayBuffer: async () => new ArrayBuffer(0),
+    blob: async () => new Blob(),
+    clone: () => foreignResponse(overrides),
+    formData: async () => new FormData(),
+    json: async () => ({}),
+    text: async () => "",
+  };
+  return { ...base, ...overrides } as unknown as Response;
+}
+
+const resolving = (value: unknown): typeof fetch =>
+  (async () => value as Response) as unknown as typeof fetch;
+
+// src/errors/response-identity.ts — the NON-KEYABLE paths.
+//
+// `keyable()` is false only for `null`, `undefined`, and the primitives. No
+// value of that kind reaches this module through the `fetch` seam: `isResponse`
+// refuses a primitive resolved value before any identity is read, and `clone()`
+// refuses a primitive branch before it builds anything from it. Both refusals
+// are pinned as controls at the bottom of this block.
+//
+// What remains is the module's own exported interface, which is also its test
+// surface, and the public error constructors a JavaScript caller can hand a
+// non-`Response` to. Those are the only callers these branches have.
+// ──────────────────────────────────────────────────────────────────────────
+describe("response-identity: a value that cannot key a WeakMap", () => {
+  test("identityOf answers with the normalized identity and files nothing", () => {
+    const identity = identityOf(42 as unknown as Response);
+
+    expect(Number.isNaN(identity.status)).toBe(true);
+    expect(identity.statusText).toBe("");
+    expect(identity.url).toBe("");
+    // `headersOf` passes the value through untouched on this path, and a
+    // primitive has no `headers`, so the record carries `undefined` where its
+    // type promises `Headers`. `BaseHttpError` survives it because
+    // `new Headers(undefined)` is an empty `Headers`.
+    expect(identity.headers).toBeUndefined();
+  });
+
+  test("headersOf reads straight through for a non-keyable value", () => {
+    expect(headersOf(42 as unknown as Response)).toBeUndefined();
+  });
+
+  test("hasTypedResponseIdentityScalars refuses a non-keyable value", () => {
+    expect(hasTypedResponseIdentityScalars(42 as unknown as Response)).toBe(false);
+  });
+
+  test("an error class built from a non-Response still constructs", () => {
+    const error = new NotFoundError(42 as unknown as Response);
+
+    expect(error.status).toBe(404);
+    expect(error.url).toBe("");
+    expect([...error.headers.keys()]).toEqual([]);
+    expect(error.toJSON().url).toBe("");
+  });
+
+  test("CONTROL: the fetch seam refuses a primitive before any identity read", async () => {
+    const { response, error } = await typedFetch(ROUND4_URL, { fetch: resolving(42) });
+
+    expect(response).toBeNull();
+    expect(error?.name).toBe("NetworkError");
+  });
+
+  test("CONTROL: clone() refuses a primitive branch before it builds a copy", async () => {
+    const { error } = await typedFetch(ROUND4_URL, {
+      fetch: resolving(foreignResponse({ status: 404, clone: () => 42 })),
+    });
+
+    expect(error?.name).toBe("NotFoundError");
+    expect(() => (error as NotFoundError).clone()).toThrow(TypeError);
+  });
+
+  test("CONTROL: nothing is recorded on the non-keyable path, so reads are not deduplicated", () => {
+    // A primitive has no own properties, so the only way to make its reads
+    // shift is to write an accessor onto the wrapper prototype — the caller
+    // attacking its own realm, with a value the `Response` type already forbids.
+    // The point of the control is the READ COUNT, not the attack: two reads
+    // happen where a keyable response gets one.
+    const answers = [500, 404, 599];
+    let reads = 0;
+    // oxlint-disable-next-line no-extend-native -- the control removes it again below
+    Object.defineProperty(String.prototype, "status", {
+      configurable: true,
+      get() {
+        return answers[Math.min(reads++, answers.length - 1)];
+      },
+    });
+    try {
+      // `BaseHttpError` reads the identity, `UnknownHttpError` reads it again.
+      const error = new UnknownHttpError("x" as unknown as Response);
+
+      expect(reads).toBe(2);
+      expect(error.status).toBe(404);
+    } finally {
+      // @ts-expect-error - removing the accessor this control installed
+      delete String.prototype.status;
+    }
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// src/errors/response-identity.ts — stageIdentity's rollback.
+//
+// The rollback removes only what THIS call recorded. A field fixed by an
+// earlier ACCEPTED call is that response's identity and stays — the property
+// the ledger names TF-20, and the arm no test had reached.
+// ──────────────────────────────────────────────────────────────────────────
+describe("response-identity: a refused call does not delete an earlier accepted record", () => {
+  test("a value accepted once keeps its identity through a later refusal", async () => {
+    let type: unknown = "basic";
+    const shared: Record<string, unknown> = {
+      ...(foreignResponse() as unknown as Record<string, unknown>),
+      headers: new Headers([["x-round4", "1"]]),
+    };
+    Object.defineProperty(shared, "type", { configurable: true, get: () => type });
+    const fetchImpl = resolving(shared);
+
+    const first = await typedFetch(ROUND4_URL, { fetch: fetchImpl });
+    expect(first.error).toBeNull();
+    expect(first.response?.status).toBe(200);
+
+    // The same object, refused this time on `type` — a read that is NOT
+    // identity-cached, so the refusal happens after the identity reads.
+    type = "not-a-response-type";
+    const second = await typedFetch(ROUND4_URL, { fetch: fetchImpl });
+    expect(second.response).toBeNull();
+    expect(second.error?.name).toBe("NetworkError");
+
+    // Healthy again. The identity the first ACCEPTED call fixed is still the
+    // answer, so the refusal in between deleted none of it.
+    type = "basic";
+    shared.status = 404;
+    const third = await typedFetch(ROUND4_URL, { fetch: fetchImpl });
+    expect(third.error).toBeNull();
+    expect(third.response?.headers.get("x-round4")).toBe("1");
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the reason-phrase filter at the recording seam
+//
+// Round 3 fixed one channel per commit. These cases ask what the SIBLING
+// channel of each fix does, which is where rounds 2 and 3 both found their
+// defects.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("C1 — safeReasonPhrase (83064b0) keeps ZWJ/ZWNJ and drops every reorderer", () => {
+  function reasonOf(statusText: string): string {
+    const response = new Response(null, { status: 404 });
+    Object.defineProperty(response, "statusText", { value: statusText, configurable: true });
+    return new UnknownHttpError(response).statusText;
+  }
+
+  test("ZWJ and ZWNJ survive", () => {
+    expect(reasonOf("a\u200Cb\u200Dc")).toBe("a\u200Cb\u200Dc");
+  });
+
+  test("every neighbour of the range the commit split still goes", () => {
+    expect(reasonOf("a\u200Bb")).toBe("ab"); // ZWSP
+    expect(reasonOf("a\u200Eb")).toBe("ab"); // LRM
+    expect(reasonOf("a\u200Fb")).toBe("ab"); // RLM
+    expect(reasonOf("a؜b")).toBe("ab"); // ALM
+    expect(reasonOf("a\u202Eb")).toBe("ab"); // RLO
+    expect(reasonOf("a\u2066b\u2069c")).toBe("abc"); // LRI / PDI
+    expect(reasonOf("a\u2060b\u2064c")).toBe("abc"); // word joiner / invisible plus
+    expect(reasonOf("a\uFEFFb")).toBe("ab"); // BOM
+    expect(reasonOf("a\u2028b\u2029c")).toBe("abc"); // LS / PS
+    expect(reasonOf("a\u0000b\u001Bc\u007Fd\u009Fe")).toBe("abcde"); // C0 / ESC / DEL / C1
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the values Deno and Bun answered with.
+//
+// The ledger's "Other runtimes" entry was measured on Deno 1.46.3, BEFORE the
+// reason-phrase filter, the absolute-path userinfo scan, and the message
+// layout's escaping existed. Round 4 re-ran all three on Deno 2.9.5 and Bun
+// 1.3.13 against `dist/index.mjs`, and every case below produced the SAME
+// string on all three runtimes. They are pinned here as the Node side of that
+// comparison, so a future divergence shows up as a plain failure.
+//
+// One runtime fact came out of it and belongs with the cases: Deno's client
+// DISCARDS the origin's reason phrase and substitutes the canonical one, so
+// the filter has nothing to filter there. Bun exercises it fully and answers
+// exactly as Node does.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** A real `Response` with one identity field shadowed by an own data property. */
+function shadowed(status: number, props: Record<string, unknown>): Response {
+  const response = new Response("payload", { status });
+  for (const [key, value] of Object.entries(props)) {
+    Object.defineProperty(response, key, { value, configurable: true });
+  }
+  return response;
+}
+
+describe("control — the reason-phrase filter is runtime-independent", () => {
+  test.each([
+    // [id, wire phrase, the phrase that must survive]
+    // Escape sequences ONLY — a literal control or bidi character in a source
+    // file is invisible to a reviewer, which is the property this filter exists
+    // to deny an origin.
+    ["escape sequence", "Not \u001b[2K\u001b[1A Found", "Not [2K[1A Found"],
+    ["NUL", "a\u0000b", "ab"],
+    ["C1", "a\u0080b\u009fc", "abc"],
+    ["DEL", "a\u007fb", "ab"],
+    ["bidi override", "a\u202eb", "ab"],
+    ["bidi embeddings", "a\u202ab\u202bc", "abc"],
+    ["bidi isolates", "a\u2066b\u2069c", "abc"],
+    ["ALM", "a\u061cb", "ab"],
+    ["zero-width space", "a\u200bb", "ab"],
+    ["LRM and RLM", "a\u200e\u200fb", "ab"],
+    ["BOM", "a\ufeffb", "ab"],
+    ["invisible operators", "a\u2060\u2064b", "ab"],
+    ["line and paragraph separators", "a\u2028b\u2029c", "abc"],
+    // The half the filter deliberately KEEPS.
+    ["ZWNJ and ZWJ are kept", "a\u200cb\u200dc", "a\u200cb\u200dc"],
+    ["a combining mark is kept", "a\u0301b", "a\u0301b"],
+    ["a lone surrogate is kept", "a\ud800b", "a\ud800b"],
+  ])("%s", async (_id, wire, expected) => {
+    const error = new UnknownHttpError(shadowed(499, { statusText: wire, url: "" }));
+    expect(error.statusText).toBe(expected);
+    expect(error.message).toBe(`HTTP 499 ${JSON.stringify(expected)}`);
+    await error.cancel();
+  });
+
+  test("the phrase is bounded at 128 code units", async () => {
+    const error = new UnknownHttpError(shadowed(499, { statusText: "y".repeat(200), url: "" }));
+    expect(error.statusText).toBe("y".repeat(128));
+    await error.cancel();
+  });
+
+  test("an astral phrase stops at the first code point that reaches the bound", async () => {
+    const error = new UnknownHttpError(
+      shadowed(499, { statusText: "\u{1f600}".repeat(90), url: "" }),
+    );
+    expect(error.statusText).toBe("\u{1f600}".repeat(64));
+    await error.cancel();
   });
 });

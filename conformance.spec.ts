@@ -130,3 +130,43 @@ describe("the untrusted-fetch boundary — the ADR and the corpus agree", () => 
     expect(numbers).toEqual(numbers.map((_value, index) => index + 1));
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the prose that COUNTS the rows.
+//
+// The suite already binds the ADR's rows to the fixture's scenarios. Nothing
+// bound the two documents a hostile-input reporter is told to read FIRST —
+// `CONTRIBUTING.md` and the maintainer skill — to that same number, and both
+// still said 26 after the phase split added H-27 and H-28. An under-count
+// invites a report about a row that already exists, which is the cost this
+// whole boundary was written to avoid.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("the prose row count", () => {
+  /** The number a document states, read out of the sentence that states it. */
+  function statedCount(file: string, prefix: string, suffix: string): number {
+    const line = readFileSync(new URL(file, import.meta.url), "utf8")
+      .split("\n")
+      .find((candidate) => candidate.includes(prefix) && candidate.includes(suffix));
+    if (line === undefined) throw new Error(`${file} no longer states the row count`);
+    return Number(line.slice(line.indexOf(prefix) + prefix.length, line.indexOf(suffix)).trim());
+  }
+
+  test("every document that counts the in-scope rows counts the same rows", () => {
+    const adr = readFileSync(
+      new URL("./docs/adr/0003-the-untrusted-fetch-conformance-boundary.md", import.meta.url),
+      "utf8",
+    );
+    const rows = adr.split("\n").filter((line) => line.startsWith("| H-")).length;
+
+    expect(rows).toBe(HOSTILE_SCENARIOS.length);
+    expect({
+      CONTRIBUTING: statedCount("./CONTRIBUTING.md", "in-scope table names", "behaviors"),
+      maintainerSkill: statedCount(
+        "./.claude/skills/typed-fetch-maintainer/SKILL.md",
+        "boundary.md`:",
+        "in-scope rows",
+      ),
+    }).toEqual({ CONTRIBUTING: rows, maintainerSkill: rows });
+  });
+});

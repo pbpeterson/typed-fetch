@@ -9,6 +9,7 @@ import {
   TimeoutError,
   UnknownHttpError,
 } from "./src/errors";
+import { inspectCustom } from "./src/errors/inspect";
 import {
   isAbortError,
   isHttpError,
@@ -534,4 +535,82 @@ describe("every dedicated class keys on the status it was selected on", () => {
       expect(reads.status).toBe(1);
     },
   );
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — an options object whose slots refuse to answer
+//
+// Round 3 fixed one channel per commit. These cases ask what the SIBLING
+// channel of each fix does, which is where rounds 2 and 3 both found their
+// defects.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("D4 — the same hasOwn/read pair in the public error constructors", () => {
+  test("CONTROL — the inspect record survives a refusing own-property test", () => {
+    const error = new NetworkError("boom", { url: "https://api.test/x" });
+    const wrapped = new Proxy(error, {
+      getOwnPropertyDescriptor() {
+        throw new TypeError("no");
+      },
+    });
+    const render = (error as unknown as Record<symbol, unknown>)[inspectCustom] as (
+      this: unknown,
+      depth: number,
+      options: object,
+      inspect?: unknown,
+    ) => string;
+    expect(() => render.call(wrapped, 2, {})).not.toThrow();
+  });
+
+  test("an options object with a throwing `url` getter makes the constructor throw", () => {
+    const options = {
+      get url(): string {
+        throw new TypeError("no");
+      },
+    };
+    expect(() => new NetworkError("boom", options)).not.toThrow();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the values Deno and Bun answered with.
+//
+// The ledger's "Other runtimes" entry was measured on Deno 1.46.3, BEFORE the
+// reason-phrase filter, the absolute-path userinfo scan, and the message
+// layout's escaping existed. Round 4 re-ran all three on Deno 2.9.5 and Bun
+// 1.3.13 against `dist/index.mjs`, and every case below produced the SAME
+// string on all three runtimes. They are pinned here as the Node side of that
+// comparison, so a future divergence shows up as a plain failure.
+//
+// One runtime fact came out of it and belongs with the cases: Deno's client
+// DISCARDS the origin's reason phrase and substitutes the canonical one, so
+// the filter has nothing to filter there. Bun exercises it fully and answers
+// exactly as Node does.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("control — a non-string url on the three pre-response classes", () => {
+  test.each([
+    ["an array, which answers .includes", [1, 2, 3]],
+    ["a number", 42],
+    ["null", null],
+    ["a URL object", new URL("https://u:p@api.test/v1?t=1")],
+    [
+      "a value whose toString and includes both throw",
+      {
+        toString() {
+          throw new Error("boom");
+        },
+        includes() {
+          throw new Error("boom");
+        },
+      },
+    ],
+  ])("%s normalizes to the empty string instead of throwing", (_id, raw) => {
+    for (const Klass of [NetworkError] as const) {
+      const error = new Klass("m", { url: raw as unknown as string });
+      expect(typeof error.url).toBe("string");
+      expect(error.url).toBe("");
+      expect(error.message).toBe("m");
+    }
+  });
 });

@@ -18,6 +18,8 @@ import {
   UnknownHttpError,
 } from "./src/errors";
 import type { ClientErrors, ServerErrors, TypedFetchError } from "./src/errors";
+import { TooManyRequestsError, UnauthorizedError } from "./src/errors";
+import type { TypedFetchError as TypedFetchErrorFromErrorsSubpath } from "./src/errors/index";
 import type { StrictHeaders, TypedHeaders } from "./src/headers";
 import type { HttpMethods } from "./src/methods";
 import type { TypedFetchOptions, TypedFetchReturnType, TypedResponse } from "./index";
@@ -519,5 +521,275 @@ describe("type-level", () => {
   test("json<T>() returns Promise<T>", () => {
     const error = new NotFoundError(new Response(JSON.stringify({}), { status: 404 }));
     expectTypeOf(error.json<{ message: string }>()).toEqualTypeOf<Promise<{ message: string }>>();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the documented TYPE claims, executed by the compiler.
+//
+// Round 1 proved the README's blocks COMPILE. These assert what the prose
+// around them promises: which direction each guard narrows, that the five-guard
+// chain is exhaustive, what `JsonReturnType` carries through `clone()`, which
+// methods `TypedResponse` refuses to promise, and that the root and the
+// `./errors` subpath name one set of declarations.
+//
+// `tsconfig.test.json` includes the root `*.spec.ts` files, so every assertion
+// below is checked by `pnpm typecheck` — which is the reason they live here and
+// not beside the proofs that found them.
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface Round4User {
+  id: number;
+  name: string;
+}
+
+describe("CONTROLS — errors-as-values narrowing, in both directions", () => {
+  test("README:109 checking error first narrows response, and the reverse", async () => {
+    const { response, error } = await typedFetch<Round4User>("https://api.example.test/users/1");
+    if (error) {
+      expectTypeOf(response).toEqualTypeOf<null>();
+      expectTypeOf(error).toEqualTypeOf<TypedFetchError>();
+    } else {
+      expectTypeOf(response).toEqualTypeOf<TypedResponse<Round4User>>();
+      expectTypeOf(error).toEqualTypeOf<null>();
+    }
+
+    const result = await typedFetch<Round4User>("https://api.example.test/users/1");
+    if (result.response) {
+      expectTypeOf(result.error).toEqualTypeOf<null>();
+      expectTypeOf(result.response.json()).toEqualTypeOf<Promise<Round4User>>();
+    }
+    if (result.error !== null) {
+      expectTypeOf(result.response).toEqualTypeOf<null>();
+    }
+    if (!result.error) {
+      expectTypeOf(result.response).toEqualTypeOf<TypedResponse<Round4User>>();
+    }
+  });
+
+  test("README:900 the five-guard chain is exhaustive", async () => {
+    const { error } = await typedFetch("https://api.example.test/users/1");
+    if (!error) return;
+    if (isKnownHttpError(error)) {
+      expectTypeOf(error).toEqualTypeOf<ClientErrors | ServerErrors>();
+    } else if (isHttpError(error)) {
+      // README:251 — `isHttpError` keeps `status` a plain number.
+      expectTypeOf(error.status).toEqualTypeOf<number>();
+    } else if (isNetworkError(error)) {
+      expectTypeOf(error).toEqualTypeOf<NetworkError>();
+    } else if (isAbortError(error)) {
+      expectTypeOf(error.reason).toEqualTypeOf<unknown>();
+    } else if (isTimeoutError(error)) {
+      expectTypeOf(error.message).toEqualTypeOf<string>();
+    } else {
+      const never: never = error;
+      void never;
+    }
+  });
+
+  test("README:255/1285 isKnownHttpError then switch narrows to one dedicated class", async () => {
+    const { error } = await typedFetch("https://api.example.test/users/1");
+    if (!isKnownHttpError(error)) return;
+    switch (error.status) {
+      case 404:
+        expectTypeOf(error).toEqualTypeOf<NotFoundError>();
+        break;
+      case 401:
+        expectTypeOf(error).toEqualTypeOf<UnauthorizedError>();
+        break;
+      case 429:
+        expectTypeOf(error).toEqualTypeOf<TooManyRequestsError>();
+        break;
+      default:
+        break;
+    }
+    await error.cancel();
+  });
+
+  test("README:1125 / public skill:108 error.url reads off the union without narrowing", async () => {
+    const { error } = await typedFetch("https://api.example.test/users/1");
+    if (!error) return;
+    expectTypeOf(error.url).toEqualTypeOf<string>();
+    expectTypeOf(error.message).toEqualTypeOf<string>();
+    if (isHttpError(error)) await error.cancel();
+  });
+
+  test("JSDoc on TypedFetchReturnType: both arms are readonly", () => {
+    const result = {} as TypedFetchReturnType<Round4User>;
+    // @ts-expect-error the envelope carries the discriminant, so it is readonly
+    result.error = null;
+    // @ts-expect-error same reason on the other arm
+    result.response = null;
+  });
+});
+
+describe("CONTROLS — TypedResponse and JsonReturnType", () => {
+  test("README:949/skill:345 json() is typed and clone() keeps the type", () => {
+    type Response_ = TypedResponse<Round4User>;
+    expectTypeOf<ReturnType<Response_["json"]>>().toEqualTypeOf<Promise<Round4User>>();
+    expectTypeOf<ReturnType<Response_["clone"]>>().toEqualTypeOf<TypedResponse<Round4User>>();
+    expectTypeOf<ReturnType<ReturnType<Response_["clone"]>["json"]>>().toEqualTypeOf<
+      Promise<Round4User>
+    >();
+    expectTypeOf<ReturnType<Response_["text"]>>().toEqualTypeOf<Promise<string>>();
+  });
+
+  test("README:392 TypedResponse has no cancel(), and README:957 no bytes()", () => {
+    // Declared, never called: the assertions are the compiler's.
+    const neverRun = (response: TypedResponse<Round4User>): void => {
+      // @ts-expect-error README:392 — the success Response belongs to the platform
+      response.cancel();
+      // @ts-expect-error README:957 — bytes() is absent at the Node 20.13.0 floor
+      response.bytes();
+    };
+    expectTypeOf(neverRun).toBeFunction();
+  });
+
+  test("ledger 'Adjudicated closed' #2: TypedResponse is not assignable to Response", () => {
+    const response = {} as TypedResponse<Round4User>;
+    // @ts-expect-error settled: the type does not promise bytes()
+    const asResponse: Response = response;
+    void asResponse;
+    // The other direction holds, which is what lets an injected fetch resolve.
+    const platform = {} as Response;
+    const asTyped: TypedResponse<unknown> = platform;
+    void asTyped;
+  });
+
+  test("README:951 body and headers are the ambient platform types", () => {
+    const response = {} as TypedResponse<Round4User>;
+    expectTypeOf(response.headers).toEqualTypeOf<Headers>();
+    expectTypeOf(response.body).toEqualTypeOf<ReadableStream<Uint8Array> | null>();
+    // README:952 — forwarding to a platform API needs no cast.
+    const forwarded = new Response(response.body, { headers: response.headers });
+    void forwarded;
+  });
+
+  test("README:1003 error.json<T>() is an unchecked cast, defaulting to unknown", () => {
+    expectTypeOf<BaseHttpError["json"]>().toBeCallableWith();
+    expectTypeOf<ReturnType<BaseHttpError["json"]>>().toEqualTypeOf<Promise<unknown>>();
+    expectTypeOf<ReturnType<BaseHttpError["text"]>>().toEqualTypeOf<Promise<string>>();
+    expectTypeOf<ReturnType<BaseHttpError["cancel"]>>().toEqualTypeOf<Promise<void>>();
+    // README:1011 — clone() is synchronous, so it is not a promise.
+    expectTypeOf<ReturnType<BaseHttpError["clone"]>>().toEqualTypeOf<BaseHttpError>();
+    const typed = (error: BaseHttpError): Promise<Round4User> => error.json<Round4User>();
+    expectTypeOf<ReturnType<typeof typed>>().toEqualTypeOf<Promise<Round4User>>();
+  });
+
+  test("README:987/322 literal status on a dedicated class, plain number on UnknownHttpError", () => {
+    expectTypeOf<NotFoundError["status"]>().toEqualTypeOf<404>();
+    expectTypeOf<NotFoundError["statusText"]>().toEqualTypeOf<"Not Found">();
+    expectTypeOf<typeof NotFoundError.status>().toEqualTypeOf<404>();
+    expectTypeOf<UnknownHttpError["status"]>().toEqualTypeOf<number>();
+    expectTypeOf<UnknownHttpError["statusText"]>().toEqualTypeOf<string>();
+  });
+});
+
+describe("CONTROLS — HttpMethods and TypedHeaders", () => {
+  test("README:778/964 the seven suggested methods, without CONNECT or TRACE", () => {
+    expectTypeOf<HttpMethods>().toEqualTypeOf<
+      "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+    >();
+    // @ts-expect-error README:964 — the Fetch specification forbids CONNECT
+    const connect: HttpMethods = "CONNECT";
+    // @ts-expect-error README:964 — and TRACE
+    const trace: HttpMethods = "TRACE";
+    void connect;
+    void trace;
+    // README:774 — and any string still type-checks on the option itself.
+    const options: TypedFetchOptions = { method: "REPORT" };
+    void options;
+  });
+
+  test("README:979 the 16 declared names accept a canonical and a lowercase spelling", () => {
+    const canonical: TypedFetchOptions = {
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer t",
+        Accept: "*/*",
+        "Accept-Encoding": "gzip",
+        "Accept-Language": "en-US",
+        "Cache-Control": "no-store",
+        "Content-Encoding": "br",
+        Cookie: "a=1",
+        "If-Match": "*",
+        "If-Modified-Since": "now",
+        "If-None-Match": "*",
+        Origin: "https://a.test",
+        Range: "bytes=0-1",
+        Referer: "https://a.test",
+        "Round4User-Agent": "ua",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+    };
+    const lowercase: TypedFetchOptions = {
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer t",
+        accept: "*/*",
+        "accept-encoding": "gzip",
+        "accept-language": "en-US",
+        "cache-control": "no-store",
+        "content-encoding": "br",
+        cookie: "a=1",
+        "if-match": "*",
+        "if-modified-since": "now",
+        "if-none-match": "*",
+        origin: "https://a.test",
+        range: "bytes=0-1",
+        referer: "https://a.test",
+        "user-agent": "ua",
+        "x-requested-with": "XMLHttpRequest",
+      },
+    };
+    void canonical;
+    void lowercase;
+  });
+
+  test("README:977/981 the value unions stay open and validate nothing", () => {
+    const openValue: TypedFetchOptions = {
+      headers: { "Content-Type": "not/a-real-type", "X-Custom": "anything" },
+    };
+    void openValue;
+    const containers: TypedFetchOptions[] = [
+      { headers: new Headers({ a: "1" }) },
+      { headers: [["a", "1"]] },
+    ];
+    void containers;
+  });
+
+  test("README:35/1257 undefined is rejected as a header value on every name", () => {
+    // @ts-expect-error a header set to undefined reaches the wire as "undefined"
+    const declared: TypedFetchOptions = { headers: { Authorization: undefined } };
+    // @ts-expect-error the same rule binds a custom name
+    const custom: TypedFetchOptions = { headers: { "X-Custom": undefined } };
+    void declared;
+    void custom;
+  });
+});
+
+describe("CONTROLS — the two entry points name the same declarations", () => {
+  test("ledger 'Adjudicated clean': `.` and `./errors` types are one set", () => {
+    expectTypeOf<TypedFetchError>().toEqualTypeOf<TypedFetchErrorFromErrorsSubpath>();
+    expectTypeOf<TypedFetchError>().toEqualTypeOf<
+      ClientErrors | ServerErrors | UnknownHttpError | TypedFetchError
+    >();
+    // README:965 — ClientErrors is 4xx only and ServerErrors is 5xx only.
+    const client: ClientErrors = {} as NotFoundError;
+    void client;
+    // @ts-expect-error a 5xx class is not a member of ClientErrors
+    const wrongBucket: ClientErrors = {} as ServerErrors;
+    void wrongBucket;
+  });
+
+  test("README:906/910 isHttpError accepts a consumer subclass, isKnownHttpError excludes it", () => {
+    class TenantHttpError extends BaseHttpError {
+      override readonly name = "TenantHttpError" as const;
+      readonly status = 499 as const;
+      readonly statusText = "Tenant Error" as const;
+    }
+    const error: unknown = new TenantHttpError(new Response(null, { status: 499 }));
+    if (isHttpError(error)) expectTypeOf(error).toEqualTypeOf<BaseHttpError>();
+    if (isKnownHttpError(error)) expectTypeOf(error).toEqualTypeOf<ClientErrors | ServerErrors>();
   });
 });

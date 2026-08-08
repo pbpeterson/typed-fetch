@@ -1,4 +1,4 @@
-import { describe, test, expect, expectTypeOf } from "vitest";
+import { describe, test, expect, expectTypeOf, vi } from "vitest";
 import { errorBodyOf, releaseResponseBody, type ErrorBody } from "./src/errors/error-body";
 
 /**
@@ -1244,5 +1244,101 @@ describe("errorBodyOf — the other half of the seam", () => {
     await body.cancel();
 
     expect(reads).toEqual({ status: 0, statusText: 0, url: 0, headers: 0 });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the branches no test had ever taken.
+//
+// Every case below closes a branch the coverage report listed as unreached.
+// Writing them was the bug hunt: a branch nobody exercises is where a wrong
+// guard hides. None of them found one, so each is a regression test for a
+// guard that was already right and undefended.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// src/errors/error-body.ts — the release fallbacks.
+// ──────────────────────────────────────────────────────────────────────────
+describe("error-body: releaseResponseBody's fallbacks", () => {
+  test("a hostile own body getter over a prototype chain with no body getter", () => {
+    const value = {} as Record<string, unknown>;
+    Object.defineProperty(value, "body", {
+      configurable: true,
+      get() {
+        throw new TypeError("this getter refuses");
+      },
+    });
+
+    // Nothing to release, and the walk must not throw on the way to that verdict.
+    expect(() => releaseResponseBody(value as unknown as Response)).not.toThrow();
+  });
+
+  test("a body whose cancel() answers with a non-thenable object is called once", () => {
+    let calls = 0;
+    const value = {
+      body: {
+        locked: false,
+        cancel() {
+          calls += 1;
+          return { catch: "not callable" };
+        },
+      },
+    };
+
+    releaseResponseBody(value as unknown as Response);
+
+    expect(calls).toBe(1);
+  });
+});
+
+/**
+ * ROUND 4 — COVERAGE LANE: the MODULE-LOAD platform guards of
+ * `src/errors/error-body.ts`.
+ *
+ * Four intrinsics are captured at module load, each behind a
+ * `typeof X === "undefined"` guard for a runtime that has no `Response` or no
+ * `ReadableStream`. The guards can only be observed by loading the module in
+ * that state, so this file removes the globals, re-imports through vitest's
+ * module runner, and restores them before anything else runs.
+ *
+ * It lives in its own file because it resets the module registry. Nothing else
+ * in this lane may share a registry with it.
+ */
+describe("error-body: loaded on a runtime without Response or ReadableStream", () => {
+  test("every captured intrinsic is absent and release still reaches a visible cancel", async () => {
+    const savedResponse = globalThis.Response;
+    const savedReadableStream = globalThis.ReadableStream;
+
+    vi.resetModules();
+    // @ts-expect-error - an exotic runtime that ships neither global
+    delete globalThis.Response;
+    // @ts-expect-error - an exotic runtime that ships neither global
+    delete globalThis.ReadableStream;
+
+    let errorBody: typeof import("./src/errors/error-body");
+    try {
+      errorBody = await import("./src/errors/error-body");
+    } finally {
+      globalThis.Response = savedResponse;
+      globalThis.ReadableStream = savedReadableStream;
+    }
+
+    let cancelled = false;
+    const value = {
+      body: {
+        locked: false,
+        cancel() {
+          cancelled = true;
+          return undefined;
+        },
+      },
+    };
+
+    // With no captured `Response.prototype.body` getter, the release reads the
+    // visible `body`. With no captured `ReadableStream.prototype.locked`
+    // getter, `isNativeReadableStream` answers `false` for every body, so the
+    // captured cancel is never preferred and the visible one runs.
+    errorBody.releaseResponseBody(value as unknown as Response);
+
+    expect(cancelled).toBe(true);
   });
 });

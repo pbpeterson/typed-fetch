@@ -1,5 +1,6 @@
 import { describe, test, expect } from "vitest";
 import { redactUrl, redactUrlInMessage } from "./src/errors/redact-url";
+import { NetworkError } from "./src/errors";
 
 describe("redactUrl — structure is kept, every value slot is dropped", () => {
   test("the query goes, origin and path stay", () => {
@@ -308,5 +309,137 @@ describe("redactUrlInMessage — a URL we already hold, removed from a foreign m
 
     expect(redacted).toBe("at https://api.test/a$&b/c");
     expect(redacted).not.toContain("SECRET");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the userinfo pass and the path scan
+//
+// Round 3 fixed one channel per commit. These cases ask what the SIBLING
+// channel of each fix does, which is where rounds 2 and 3 both found their
+// defects.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("D1 — the userinfo pass in a message never scans an absolute url's path", () => {
+  // A forward URL carrying an inner, credentialed URL in its path: the exact
+  // shape `da46b4f` named.
+  const forwardUrl = "https://api.test/go/https://svc:hunter2@internal.test/v1";
+  // A platform message that names only the INNER url. undici reports the
+  // redirect target it refuses, not the URL the caller typed:
+  // `TypeError: Request cannot be constructed from a URL that includes
+  // credentials: https://svc:hunter2@internal.test/v1`.
+  const platformMessage =
+    "Request cannot be constructed from a URL that includes credentials: " +
+    "https://svc:hunter2@internal.test/v1";
+
+  test("CONTROL — redactUrl itself removes the embedded credential", () => {
+    expect(redactUrl(forwardUrl)).toBe("https://api.test/go/https://internal.test/v1");
+  });
+
+  test("CONTROL — the MALFORMED sibling IS scrubbed by the userinfo pass", () => {
+    const malformed = "://api.test/go/https://svc:hunter2@internal.test/v1";
+    expect(redactUrlInMessage(platformMessage, malformed)).not.toContain("hunter2");
+  });
+
+  test("the ABSOLUTE sibling keeps the password in the message", () => {
+    expect(redactUrlInMessage(platformMessage, forwardUrl)).not.toContain("hunter2");
+  });
+
+  test("and it reaches NetworkError.message and the toJSON record", () => {
+    const error = new NetworkError(platformMessage, { url: forwardUrl });
+    expect(error.message).not.toContain("hunter2");
+    expect(JSON.stringify(error)).not.toContain("hunter2");
+  });
+});
+
+describe("the residual a trailing slash leaves open", () => {
+  test("CONTROL — the shape the rule was added for is redacted", () => {
+    expect(redactUrl("://YWxpY2U/cGFzc3dvcmQ@internal.test/v1")).not.toContain("cGFzc3dvcmQ");
+  });
+
+  // STATED, not fixed. `://host/users/@alice` and `://token/@host` spell the
+  // same three characters, so no structural rule separates them, and reading
+  // both as userinfo would delete a named segment from every diagnostic. The
+  // JSDoc on `looksLikeUserinfo` carries the reasoning; this pins the
+  // behaviour so a future change to that rule is a deliberate one.
+  test("a token whose last character is a slash is read as a path", () => {
+    expect(redactUrl("://dG9rZW4vcGFzc3dvcmQ/@internal.test/v1")).toBe(
+      "/://dG9rZW4vcGFzc3dvcmQ/@internal.test/v1",
+    );
+  });
+});
+
+describe("C4 — redactUrl's absolute pathname scan (da46b4f) keeps ordinary paths", () => {
+  test("an embedded credential in a well-formed path goes", () => {
+    expect(redactUrl("https://api.test/go/https://svc:pw@internal.test/v1")).toBe(
+      "https://api.test/go/https://internal.test/v1",
+    );
+  });
+
+  test("an ordinary @-headed segment survives", () => {
+    expect(redactUrl("https://api.test/users/@alice")).toBe("https://api.test/users/@alice");
+    expect(redactUrl("https://api.test/go/https://cdn.test/users/@alice")).toBe(
+      "https://api.test/go/https://cdn.test/users/@alice",
+    );
+  });
+
+  test("the port of THIS url is never read as userinfo", () => {
+    expect(redactUrl("https://api.test:8443/users/@alice")).toBe(
+      "https://api.test:8443/users/@alice",
+    );
+  });
+
+  test("a second embedded authority is scanned, not only the first", () => {
+    expect(
+      redactUrl("https://api.test/a/http://x:1@b.test/c/https://svc:hunter2@internal.test/v1"),
+    ).not.toContain("hunter2");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — the values Deno and Bun answered with.
+//
+// The ledger's "Other runtimes" entry was measured on Deno 1.46.3, BEFORE the
+// reason-phrase filter, the absolute-path userinfo scan, and the message
+// layout's escaping existed. Round 4 re-ran all three on Deno 2.9.5 and Bun
+// 1.3.13 against `dist/index.mjs`, and every case below produced the SAME
+// string on all three runtimes. They are pinned here as the Node side of that
+// comparison, so a future divergence shows up as a plain failure.
+//
+// One runtime fact came out of it and belongs with the cases: Deno's client
+// DISCARDS the origin's reason phrase and substitutes the canonical one, so
+// the filter has nothing to filter there. Bun exercises it fully and answers
+// exactly as Node does.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("control — redaction of an embedded credential", () => {
+  test.each([
+    [
+      "an absolute url whose PATH embeds a credentialed url",
+      "https://api.test/go/https://svc:pw@internal.test/v1",
+      "https://api.test/go/https://internal.test/v1",
+    ],
+    [
+      "two embedded urls, only the credentialed one loses its userinfo",
+      "https://api.test/go/http://plain.test/then/https://svc:hunter2@internal.test/v1",
+      "https://api.test/go/http://plain.test/then/https://internal.test/v1",
+    ],
+    ["a malformed authority", "://svc:hunter2@internal.test/v1", "/://internal.test/v1"],
+    ["a password holding the old scan terminator", "://svc:hun?ter2@host/v1", "/://host/v1"],
+    ["an empty userinfo keeps the host", "://@host/x", "/://host/x"],
+    ["a standard-base64 token", "://YWxpY2U/cGFzc3dvcmQ@host/v1", "/://host/v1"],
+    ["an opaque url keeps only its scheme", "data:text/plain,secret", "data:"],
+  ])("%s", (_id, url, redacted) => {
+    const error = new NetworkError("Network error", { url });
+    expect(error.message).toBe("Network error");
+    expect(error.url).toBe(url);
+    expect(JSON.parse(JSON.stringify(error)).url).toBe(redacted);
+  });
+
+  test("the userinfo pass removes a credential the platform quoted back", () => {
+    const url = "https://alice:hunter2@api.test/v1";
+    const error = new NetworkError(`Request cannot be constructed from a URL: ${url}`, { url });
+    expect(error.message).not.toContain("hunter2");
+    expect(error.message).toBe("Request cannot be constructed from a URL: https://api.test/v1");
   });
 });
