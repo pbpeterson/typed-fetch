@@ -621,3 +621,36 @@ describe("redact-url — the round-4 rules the suite left undefended", () => {
     expect(redactUrlInMessage(`refused ${url}`, url)).toBe("refused /://internal.test/v1");
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// DEFECT 2 (REGRESSION) — round 4 made `userinfosOf` scan `parsed.pathname` of
+// a WELL-FORMED url and feed every span to `message.replaceAll(needle, "")`.
+// A path that embeds another URL and spells an `@` inside a segment produces a
+// needle that is not a credential, and the message loses it.
+// ───────────────────────────────────────────────────────────────────────────
+describe("the diagnostic a path-derived needle costs", () => {
+  test("an e-mail-shaped segment in an embedded URL is cut out of the diagnostic", () => {
+    const url = "https://api.test/avatar/https://gravatar.test/u/alice@example.com";
+    const message = "Timed out contacting gravatar.test/u/alice@example.com via the avatar proxy";
+    // STATED, not fixed: the needle is removed wherever it appears, and
+    // narrowing it needs the caller's value a second time — the read the
+    // library-authored-message rule exists to avoid. See `redactUrlInMessage`.
+    expect(new TimeoutError(message, { url }).message).toBe(
+      "Timed out contacting example.com via the avatar proxy",
+    );
+  });
+
+  // CONTROL for the blast radius: the needle always starts at the character
+  // after `://`, so it carries the embedded host. A message that names only the
+  // tail of the segment keeps it.
+  test("CONTROL — the needle is host-anchored, so a bare segment survives", () => {
+    const url = "https://registry.test/proxy/https://npm.test/left-pad@1.2.3";
+    expect(redactUrlInMessage("cache miss for left-pad@1.2.3", url)).toBe(
+      "cache miss for left-pad@1.2.3",
+    );
+    // The same message WITH the host is the one that loses text.
+    expect(redactUrlInMessage("cache miss for npm.test/left-pad@1.2.3", url)).toBe(
+      "cache miss for 1.2.3",
+    );
+  });
+});

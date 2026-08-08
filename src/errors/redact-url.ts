@@ -378,6 +378,21 @@ function hasRedactableSlot(url: string): boolean {
  * userinfo pass is the second line — userinfo is unconditionally a credential,
  * so it is removed wherever it survives — and `toJSON()` redacts `url`
  * independently, so a miss here never reaches the record.
+ *
+ * RESIDUAL, and it is the price of reading the path, the query, and the
+ * fragment for a hidden authority: a needle from one of those slots is removed
+ * from the message WHEREVER it appears, including where it is not this url's
+ * credential. A proxy url like
+ * `https://api.test/avatar/https://gravatar.test/u/alice@example.com` yields
+ * the needle `gravatar.test/u/alice@`, so a message naming that resource loses
+ * the host and reads `…contacting example.com…`. The redactor keeps the same
+ * segment in `url`, because there it is a path — so the two can name different
+ * resources.
+ *
+ * Over-redaction is the safe direction, and it costs a diagnostic rather than a
+ * password. It stays a residual rather than a fix because narrowing the needle
+ * needs the caller's value a second time, which is the read the whole
+ * library-authored-message rule exists to avoid.
  */
 export function redactUrlInMessage(message: string, url: string): string {
   if (!url) return message;
