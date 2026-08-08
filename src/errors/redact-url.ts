@@ -193,17 +193,33 @@ function malformedUserinfoSpans(text: string): { start: number; end: number }[] 
  *
  * So `://api.test/users/@alice` keeps every segment it names.
  *
- * TWO RESIDUALS, both over-redaction, both stated because the ambiguity is real
- * and unresolvable once a malformed scheme has taken away where the authority
- * ends:
+ * THREE RESIDUALS, all stated because the ambiguity is real and unresolvable
+ * once a malformed scheme has taken away where the authority ends. The first
+ * two are over-redaction:
  *
  *  - An authority with a PORT, followed by a path `@` (`://a:1234/x/@bob`).
  *    The colon rule cannot tell `a:1234` from `user:password`.
  *  - An `@` INSIDE a path segment rather than at its head (`://host/a/b@c/d`,
  *    an e-mail-shaped path).
  *
- * Both are the safe direction. Over-redaction costs a diagnostic on a URL that
- * was already malformed; the other direction costs a password.
+ * Over-redaction is the safe direction. It costs a diagnostic on a URL that was
+ * already malformed; the other direction costs a password.
+ *
+ * The third is UNDER-redaction, and it is the price of the third rule above:
+ *
+ *  - A credential whose LAST character is `/` (`://dG9rZW4vcGFzc3dvcmQ/@host`,
+ *    one base64 alphabet position in 64). The `@` follows a `/`, which is the
+ *    one signal that tells a path segment head from a credential, so the rule
+ *    reads it as a path and the token survives.
+ *
+ * This one is NOT closed, and the reason is that closing it removes a path the
+ * redactor is required to keep. `://host/users/@alice` and `://token/@host`
+ * spell the same three characters in the same order, and no structural rule
+ * separates them. Reading both as userinfo would delete a named segment from
+ * every `/@scope/pkg` and `/users/@alice` diagnostic. Reading neither is what
+ * happens today. `redactUrl` still drops the query and the fragment, and the
+ * full href stays on `error.url` — this rule only decides where a MALFORMED
+ * authority ends.
  */
 function looksLikeUserinfo(candidate: string): boolean {
   if (candidate === "") return true;
