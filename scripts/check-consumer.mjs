@@ -570,6 +570,16 @@ export const TYPECHECK_PASSES = [
   // root `types` field, which a `moduleResolution: "node"` consumer follows —
   // was proved only by `attw`, never by this repository's own `tsc`.
   //
+  // WHAT THIS PASS PROVES, stated narrowly because the difference matters. A
+  // `types` field pointing at a missing or wrong file fails here. A DELETED
+  // root `types` field does not, and that is honest: node10's
+  // `LOAD_AS_DIRECTORY` then falls back to the declaration beside `main`, which
+  // is the same file, so nothing a consumer can observe changes. A root `types`
+  // pointing at `dist/index.d.mts` also passes, and that one IS an artifact
+  // defect no pass in this repository can see — `nodenext` never reads the root
+  // field because `exports` wins, and node10 has no conditions to choose
+  // between. `attw` is what catches it.
+  //
   // EXPIRY, recorded rather than discovered later: TypeScript 7.0 removes
   // node10 resolution, and 6.0 already hard-errors on it without
   // `ignoreDeprecations`. When the compiler drops the mode, drop this pass and
