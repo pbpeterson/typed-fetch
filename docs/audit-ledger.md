@@ -524,11 +524,11 @@ construction, URL redaction, and disclosure channels.
   mark the parser CREATES from a backslash pair or a removed tab, CR, or LF,
   so an embedded `https:\\svc:pw@` was invisible while `pathname` had already
   been cut at the `?` (R9-H3-02). `redactUrl` reads no raw text now: it scans
-  `pathname + search + hash`, the parser's own rendering of everything after
-  the authority, and rebuilds on the origin — so the marks are the ones the
-  parser wrote, the authority is wherever the parser found it, and a
-  redaction can never move the host it names. The same change closed two
-  relative-branch shapes nobody had reported. `userinfosOf` still reads raw
+  `pathname`, and looks past it only to find an `@` when the pathname ends
+  inside an authority — the removal itself is always clipped to `pathname` —
+  so the marks are the ones the parser wrote, the authority is wherever the
+  parser found it, and a redaction can never move the host it names. The
+  same change closed two relative-branch shapes nobody had reported. `userinfosOf` still reads raw
   text, because a needle must match the spelling a platform quoted; its cut
   is anchored on the scheme now, not on the first `://`. F3 validated the
   change with differential fuzzing against HEAD — 60,000 urls and 180,000
@@ -543,10 +543,12 @@ construction, URL redaction, and disclosure channels.
   `redactUrl` kept `svc:pw` in `/go/https:/svc:pw@host`, which is the
   spelling every slash-collapsing proxy and every `path.join` produces from
   an ordinary `/go/https://svc:pw@host`. The mark that OPENS a userinfo
-  region and the mark that CLOSES one are now different. A region opens at a
-  scheme colon and every solidus after it; a region closes only at `://`.
-  Widening both — which the fixer tried and reverted — gives a password that
-  spells `:/` the power to end its own region and emit the prefix, and a
+  region and the mark that CLOSES one are now different. A region opens
+  where the URL Standard opens an authority: at two or more solidi under any
+  scheme, and at a SPECIAL scheme over any number of solidi, including none;
+  a region closes only at `://`. Widening both — which the fixer tried and
+  reverted — gives a password that spells `:/` the power to end its own
+  region and emit the prefix, and a
   200,000-url differential fuzz measured 5,241 new `url` leaks and 13,435 new
   `message` leaks for that form against zero for the split. The split closed
   15,456 leaking urls in that fuzz, moved no host in any of the 200,000, and
@@ -565,6 +567,67 @@ construction, URL redaction, and disclosure channels.
   H-14 driven through all 15 refusal points of the response phase. H2 chased
   two candidates and discarded both because the failing test was wrong, not
   the code.
+
+### What round 10 settled
+
+Four lanes: request setup and classification, response and error
+construction, URL redaction, and disclosure channels. H2 returned clean for
+the third consecutive round.
+
+- **R10-H1-01 (medium).** Round 9 routed the `signal` read by
+  `callerTransport`, and which transport runs says nothing about which
+  signal governs: `{ fetch: (input, init) => globalThis.fetch(input, init) }`
+  hands the `Request` over whole, so the platform aborted on the internal
+  slot while the library read a shadowing own property and filed a
+  `NetworkError` for an aborted request. The branch is now
+  `input.platformRequest` — whether the accessor APPLIES, a fact about the
+  input this module already decided once — and it is the same axis `url` has
+  used since round 8.
+- **R10-H3-01 (critical).** A userinfo region opened in the path and closed
+  at an `@` in the QUERY, so removing the span took the `?` with it and the
+  rebuild promoted query text into the path. Two failures at once: a query
+  token survived into all seven channels, and the diagnostic named a host
+  the url never named, in place of the one it did. A redaction that lies
+  sends the reader to the wrong server. Record the invariant that replaced
+  the rule: every byte `redactUrl` emits comes from the input's origin or
+  from its parser-produced `pathname` with userinfo spans deleted, never
+  from `search` or `hash`, so the emitted url is a subsequence of the parsed
+  origin-plus-path and the query and fragment are always dropped whole.
+- **R10-H4-01 (critical).** A zero-solidus embedded authority
+  (`https:svc:pw@host`) kept its credential, because the region opened only
+  when at least one solidus followed the scheme colon. One to four solidi
+  lost it; zero kept it — and three documents said the rule held however
+  many solidi spelled it. The opening rule now asks the URL Standard's own
+  question and is verified against `new URL` in a table test rather than
+  restated in prose.
+- **The fuzz.** 295,794 urls, five checks each: nothing throws; no
+  parser-recognized credential survives; no query or fragment byte is
+  emitted; the origin never moves and the emitted path is a SUBSEQUENCE of
+  `parsed.pathname`; and a differential against the previous commit. Zero
+  origin-moved, zero path-not-a-subsequence, zero throws. 6,195 credential
+  leaks the previous commit had and this does not; 84,825 inputs where it
+  emitted a query or fragment byte and this does not. The subsequence check
+  is the one round 9's 200,000-url fuzz lacked, and that absence is why a
+  lying redaction shipped.
+- **The pin that changed.** A CONTROL row in `round9-h3-disclosure.spec.ts`
+  pinned exact bytes that were themselves promoted query text — the benign
+  instance of R10-H3-01's mechanism. The orchestrator verified against the
+  platform that `internal.test/v1` is query text in that url and upheld the
+  conversion: the expected string changed, and the two assertions the
+  control exists for (the password is absent, the host is unmoved) were
+  added. State the lesson plainly: a control that pins bytes instead of a
+  rule can pin a defect.
+- **H2 clean, third round.** It pinned the 40 classes as a generated
+  population, all 200 statuses from 400 to 599, an 864-cell identity matrix
+  through both `typedFetch` and `clone()`, the redactor's totality over
+  100,000 urls, and 100 guard answers across two real package copies. It
+  also found the gate weakness below.
+- **The roster gate.** `roster-sync.spec.ts` check 1 compared the UNION of
+  `ClientErrors` and `ServerErrors`, so a class moved between the groups was
+  invisible to it. Check 1b now derives each class's group from its own
+  `static status` and compares the groups separately, at compile time.
+  Proved by moving `NotFoundError` in a scratch copy outside the repository
+  and watching `typecheck` fail.
 
 ## Adjudicated closed
 

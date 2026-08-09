@@ -21,12 +21,22 @@ known limit rather than a surprise.
 - **A secret in a URL PATH SEGMENT survives in `error.url`.** The redactor
   drops userinfo, the query, and the fragment, and keeps the origin and path.
   Dropping the path would leave `url` unable to tell concurrent failures
-  apart. An embedded url inside that path is not a path segment. The
-  redactor reads a scheme colon and every solidus after it as an authority,
-  so `/go/https:/svc:pw@host` loses its credential however many solidi
-  spelled it. A standard-base64 credential containing a `/` behind a SINGLE
-  solidus is still kept, because one solidus is also what an ordinary
-  `file:` drive letter spells.
+  apart. An embedded url inside that path is not a path segment. A region
+  opens where the URL Standard opens an authority: at two or more solidi
+  under any scheme, and at a SPECIAL scheme (`http`, `https`, `ws`, `wss`,
+  `ftp`, `file`) over any number of solidi, including none. A non-special
+  scheme under fewer than two solidi is an opaque path and keeps its text.
+  `error.url` never emits a byte the caller wrote after a `?` or a `#`, under
+  any spelling. The one residual left is a credential whose LAST character is
+  `/`. It stays open, because `://host/users/@alice` and `://token/@host`
+  spell the same three characters, and no structural rule tells them apart.
+- **A non-special scheme under fewer than two solidi keeps its text.**
+  `/go/git:/svc:pw@host` keeps `svc:pw@host` as an ordinary path, because the
+  URL Standard reads a non-special scheme under fewer than two solidi as an
+  opaque path with no authority: `new URL("git:/svc:pw@host").username` is
+  the empty string. This narrowing is deliberate. It stops `/a:/b` from
+  being read as an authority, and it also stops `/a:/b@c` from losing a path
+  segment it must keep.
 - **`error.url` and `error.headers` hold the raw values.** They are the escape
   hatches, non-enumerable so no structured logger reaches them by accident.
 - **A forged brand passes a type guard.** The guards answer "does this claim to

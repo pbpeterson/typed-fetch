@@ -224,10 +224,11 @@ Words this codebase already uses, some of them only implicitly until now.
 
 - **Structure and value** — the rule that decides what a channel may carry.
   `headers` emits names, never values. A hierarchical `url` emits the origin and
-  path. It never emits userinfo, a query, or a fragment. An opaque URL emits
-  only its scheme. Every redaction names the property that holds the full
-  value. Read `error.headers`, `error.url`, `error.cause`, or `error.reason` for
-  deliberate access.
+  path, and only those: every emitted byte comes from the origin or from the
+  parsed `pathname`. It never emits userinfo, a query, or a fragment. An opaque
+  URL emits only its scheme. Every redaction names the property that holds the
+  full value. Read `error.headers`, `error.url`, `error.cause`, or
+  `error.reason` for deliberate access.
 - **Library-authored message** — the rule for a request failure's `message`. It
   is a constant this library wrote, never a string a platform produced. A
   platform reports a request it refused by quoting the caller's value back — a
