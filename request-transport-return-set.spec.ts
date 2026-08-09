@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { describe, expect, test } from "vitest";
 import { useTestServer } from "./fixtures/http-server";
+import { recordingTransport } from "./fixtures/recording-transport";
+import { planRequest } from "./src/request-plan";
 import {
   isAbortError,
   isHttpError,
@@ -44,22 +46,6 @@ import type { TypedFetchOptions } from "./src/index";
 // copy's guards and of both dist copies'.
 
 const server = useTestServer();
-
-/** A transport that records what it was handed and answers with a 204. */
-function recordingTransport(): {
-  readonly fetch: typeof fetch;
-  readonly inputs: readonly unknown[];
-  readonly inits: readonly unknown[];
-} {
-  const inputs: unknown[] = [];
-  const inits: unknown[] = [];
-  const impl = async (input: unknown, init: unknown): Promise<Response> => {
-    inputs.push(input);
-    inits.push(init);
-    return new Response(null, { status: 204 });
-  };
-  return { fetch: impl as unknown as typeof fetch, inputs, inits };
-}
 
 /** A transport that hands back exactly `value`, with no promise around it. */
 function returningTransport(value: unknown): typeof fetch {
@@ -141,7 +127,7 @@ describe("round 13 / H1 — the options snapshot the transport reads", () => {
     ]);
   });
 
-  test("the transport reads the caller's own signal value, never the resolved one", async () => {
+  test("the transport reads the caller's own signal value, never the resolved one", () => {
     const transport = recordingTransport();
     const controller = new AbortController();
 
@@ -149,20 +135,27 @@ describe("round 13 / H1 — the options snapshot the transport reads", () => {
     // library resolved `undefined`; the transport must still read `null`,
     // because that is what a bare `fetch` reads and it is what detaches a
     // Request's own signal.
-    await typedFetch(
+    const detached = planRequest(
       new Request("https://snapshot.test/x", { signal: controller.signal }),
       Object.freeze({ signal: null, fetch: transport.fetch }) as TypedFetchOptions,
     );
     // Branch 2 again, with no `signal` slot: the init must stay empty of one,
     // so the handed-over Request's own signal governs at the transport.
-    await typedFetch(new Request("https://snapshot.test/y", { signal: controller.signal }), {
-      fetch: transport.fetch,
-    } as TypedFetchOptions);
+    const bare = planRequest(
+      new Request("https://snapshot.test/y", { signal: controller.signal }),
+      {
+        fetch: transport.fetch,
+      } as TypedFetchOptions,
+    );
 
-    const detachedInit = transport.inits[0] as RequestInit;
-    const bareInit = transport.inits[1] as RequestInit;
+    const detachedInit = detached.init;
+    const bareInit = bare.init;
 
     expect(detachedInit.signal).toBeNull();
+    // The RESOLVED signal is the other value, and it is not what the init
+    // carries: `signal: null` detaches, so the plan governs the call with
+    // nothing while the transport still reads the caller's own `null`.
+    expect(detached.signal).toBe(undefined);
     expect("signal" in bareInit).toBe(false);
     expect(Reflect.ownKeys(bareInit)).not.toContain("signal");
   });

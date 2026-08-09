@@ -1,5 +1,8 @@
 import { describe, test, expect } from "vitest";
 import { isAbortError, isHttpError, isNetworkError, isTimeoutError, typedFetch } from "./src/index";
+import { planFailure, planRequest } from "./src/request-plan";
+import type { RequestPlan, TypedFetchOptions } from "./src/request-plan";
+import { recordingTransport } from "./fixtures/recording-transport";
 
 // Round 12, lane H1 — the setup phase's read inventory, stated as a PROPERTY
 // rather than as a list, and the transport seam's return value.
@@ -16,37 +19,27 @@ import { isAbortError, isHttpError, isNetworkError, isTimeoutError, typedFetch }
 // twice and been incomplete both times. A list is incomplete silently; a
 // property is not. So this file does not enumerate reads. It generates a
 // population of inputs that answer every read hostilely, in every combination,
-// and asserts the rule directly: the transport RAN, exactly once, for every
-// input a transport could have been given.
+// and asserts the rule directly: a PLAN was built, for every input a transport
+// could have been given.
+//
+// The property is now asked of `planRequest` itself. It used to be asked of a
+// whole request through an injected transport, because the plan had no
+// interface: "the transport ran, exactly once, and received X" was the only way
+// to observe a decision the setup phase had already made synchronously. The
+// transport double was measuring instrument and subject at once.
 //
 // The oracle is deliberately not a re-implementation of `classifyRequestInput`.
 // It asks one question the library does not get to answer — can this value be
 // converted to a string at all? — and the rule follows from it:
 //
-//   * the transport received the input ITSELF (it was handed over whole), or
-//   * the transport received exactly `String(input)`, or
+//   * the plan hands over the input ITSELF, or
+//   * the plan hands over exactly `String(input)`, or
 //   * `String(input)` throws AND the input was not handed over, which is the
-//     one state in which no transport call is possible at all.
+//     one state in which no request is possible at all.
 //
 // Anything else is a describing read that ended a call.
 
 const ABSOLUTE = "http://127.0.0.1:1/round12-h1";
-
-/** A transport that records what it was handed and answers with a 204. */
-function recordingTransport(): {
-  readonly fetch: typeof fetch;
-  readonly inputs: readonly unknown[];
-  readonly inits: readonly unknown[];
-} {
-  const inputs: unknown[] = [];
-  const inits: unknown[] = [];
-  const impl = async (input: unknown, init: unknown): Promise<Response> => {
-    inputs.push(input);
-    inits.push(init);
-    return new Response(null, { status: 204 });
-  };
-  return { fetch: impl as unknown as typeof fetch, inputs, inits };
-}
 
 /** A transport that rejects with exactly what a platform abort rejects with. */
 function rejectingTransport(reason: unknown): typeof fetch {
@@ -76,6 +69,18 @@ function serializationOf(value: unknown): { readonly ok: boolean; readonly text:
     return { ok: true, text: String(value) };
   } catch {
     return { ok: false, text: "" };
+  }
+}
+
+/** `planRequest(value, options)`, as a value rather than as an exception. */
+function planOf(
+  value: unknown,
+  options: TypedFetchOptions,
+): { readonly plan: RequestPlan | null; readonly refusal: unknown } {
+  try {
+    return { plan: planRequest(value as never, options), refusal: undefined };
+  } catch (refusal) {
+    return { plan: null, refusal };
   }
 }
 
@@ -300,12 +305,17 @@ function exoticPopulation(): { readonly label: string; readonly value: unknown }
   ];
 }
 
-describe("the setup phase never stops a transport that could have run", () => {
-  test("over 1063 hostile inputs, the transport ran whenever a transport could run", async () => {
+describe("the setup phase never refuses a request that could have been made", () => {
+  test("over 1063 hostile inputs, a plan was built whenever a request is possible", () => {
     // The population answers each of the setup phase's reads hostilely, in
     // every combination, so a read this file does not know about is covered by
     // the same assertion as the four it does. That is the difference between a
     // property and the inventory round 11 recorded as twice incomplete.
+    //
+    // A caller transport, because that is the arm that takes the WIDE tag check
+    // and therefore hands over the largest set of inputs. It is never called:
+    // the plan is the whole subject.
+    const options = { fetch: recordingTransport().fetch };
     const population = [...generatedPopulation(), ...exoticPopulation()];
     // A witness count per outcome, asserted below, so the property cannot pass
     // by generating a population that reaches only one arm of the rule.
@@ -315,62 +325,35 @@ describe("the setup phase never stops a transport that could have run", () => {
     const violations: string[] = [];
 
     for (const { label, value } of population) {
-      const transport = recordingTransport();
-      let envelope: Awaited<ReturnType<typeof typedFetch>> | undefined;
-      let rejection: unknown;
-      let rejected = false;
-      try {
-        envelope = await typedFetch(value as never, { fetch: transport.fetch });
-      } catch (thrown) {
-        rejected = true;
-        rejection = thrown;
-      }
-      // Copied before any assertion: a structural comparison against these
-      // values is itself a read of them, and how they answer a read is the
-      // subject.
-      const calls = transport.inputs.length;
-      const received = transport.inputs[0];
-      const error = envelope?.error ?? null;
-      const status = envelope?.response?.status;
+      const { plan, refusal } = planOf(value, options);
       // Every slot above is stateless, so the oracle can ask the value the
       // same question the setup phase asked it, after the fact.
       const text = serializationOf(value);
 
-      if (rejected) {
-        violations.push(`${label}: the envelope REJECTED with ${String(rejection)}`);
-        continue;
-      }
-      if (calls > 1) {
-        violations.push(`${label}: the transport ran ${calls} times`);
-        continue;
-      }
-      if (calls === 1 && received === value) {
+      if (plan !== null && plan.transportInput === value) {
         // Handed over whole. No serialization was needed, so nothing about
         // this value could have refused the request.
         handedOver += 1;
-        if (error !== null || status !== 204) {
-          violations.push(`${label}: handed over, yet the envelope carries an error`);
-        }
         continue;
       }
       if (text.ok) {
         // The one string this module produces, and the transport must receive
         // exactly it.
         serialized += 1;
-        if (calls !== 1) {
+        if (plan === null) {
           violations.push(
-            `${label}: String(input) is ${JSON.stringify(text.text)}, yet the transport did not run`,
+            `${label}: String(input) is ${JSON.stringify(text.text)}, yet the plan was refused`,
           );
           continue;
         }
-        if (received !== text.text) {
+        if (plan.transportInput !== text.text) {
           violations.push(
-            `${label}: the transport received ${JSON.stringify(received)}, not ${JSON.stringify(text.text)}`,
+            `${label}: the plan hands over ${JSON.stringify(plan.transportInput)}, not ${JSON.stringify(text.text)}`,
           );
           continue;
         }
-        if (error !== null || status !== 204) {
-          violations.push(`${label}: serialized, yet the envelope carries an error`);
+        if (plan.requestUrl !== text.text) {
+          violations.push(`${label}: the plan filed a url the transport never receives`);
         }
         continue;
       }
@@ -379,15 +362,16 @@ describe("the setup phase never stops a transport that could have run", () => {
       // the setup phase may end the call, and the failure is a network failure
       // with no url, because no url was ever produced.
       unserializable += 1;
-      if (calls !== 0) {
-        violations.push(`${label}: String(input) throws, yet the transport ran`);
+      if (plan !== null) {
+        violations.push(`${label}: String(input) throws, yet a plan was built`);
         continue;
       }
+      const error: { readonly name: string; readonly url: string } = planFailure(refusal);
       if (!isNetworkError(error)) {
-        violations.push(`${label}: expected a NetworkError, got ${String((error as Error)?.name)}`);
+        violations.push(`${label}: expected a NetworkError, got ${error.name}`);
         continue;
       }
-      if ((error as unknown as { readonly url: string }).url !== "") {
+      if (error.url !== "") {
         violations.push(`${label}: the refusal filed a url it never produced`);
       }
     }
@@ -406,13 +390,47 @@ describe("the setup phase never stops a transport that could have run", () => {
     });
     expect(handedOver + serialized + unserializable).toBe(population.length);
   });
+
+  test("the same population reaches a transport through typedFetch", async () => {
+    // The end-to-end half, kept as a sample rather than as the property. The
+    // property above is about the PLAN; this is about the plan being what the
+    // transport is actually given. Three inputs, one per arm of the rule.
+    const handedOver = { [Symbol.toStringTag]: "Request", url: ABSOLUTE } as unknown as Request;
+    const serializable = {
+      toString(): string {
+        return ABSOLUTE;
+      },
+    };
+    const unserializable = {
+      toString(): never {
+        throw new RangeError("no string for you");
+      },
+    };
+
+    const first = recordingTransport();
+    expect((await typedFetch(handedOver, { fetch: first.fetch })).error).toBe(null);
+    expect(first.inputs).toEqual([handedOver]);
+
+    const second = recordingTransport();
+    expect(
+      (await typedFetch(serializable as unknown as string, { fetch: second.fetch })).error,
+    ).toBe(null);
+    expect(second.inputs).toEqual([ABSOLUTE]);
+
+    const third = recordingTransport();
+    const refused = await typedFetch(unserializable as unknown as string, { fetch: third.fetch });
+    expect(third.inputs).toEqual([]);
+    expect(isNetworkError(refused.error)).toBe(true);
+    expect(refused.error?.url).toBe("");
+  });
 });
 
 describe("the reads that produce what the transport receives", () => {
   // The other half of the rule. These reads MAY end a call, and each one ends
-  // it the same way: an envelope, never a rejection; a `NetworkError`, never an
-  // abort or a timeout; the platform's own exception on `cause`; and the url
-  // already filed, because phase 1 resolves the input BEFORE it reads options.
+  // it the same way: a refusal, never an escaping exception; a `NetworkError`,
+  // never an abort or a timeout; the platform's own exception on `cause`; and
+  // the url already filed, because the plan resolves the input BEFORE it reads
+  // options.
   const hostileOptions: readonly {
     readonly label: string;
     readonly make: (transport: typeof fetch) => unknown;
@@ -478,69 +496,76 @@ describe("the reads that produce what the transport receives", () => {
     },
   ];
 
-  test.each(hostileOptions)(
-    "$label ends the call as a network failure",
-    async ({ make, cause }) => {
-      const transport = recordingTransport();
+  test.each(hostileOptions)("$label refuses the plan as a network failure", ({ make, cause }) => {
+    const transport = recordingTransport();
+    const { plan, refusal } = planOf(ABSOLUTE, make(transport.fetch) as TypedFetchOptions);
 
-      const { response, error } = await typedFetch(ABSOLUTE, make(transport.fetch) as never);
+    expect(plan).toBe(null);
+    const error = planFailure(refusal);
+    expect(isNetworkError(error)).toBe(true);
+    expect(isAbortError(error)).toBe(false);
+    expect(isTimeoutError(error)).toBe(false);
+    // The INPUT is resolved first and from the input alone, so a failure while
+    // the options are read is still correlated with the request it belongs to.
+    expect(error.url).toBe(ABSOLUTE);
+    expect((error.cause as Error).message).toBe(cause);
+  });
 
-      expect(transport.inputs.length).toBe(0);
-      expect(response).toBe(null);
-      expect(isNetworkError(error)).toBe(true);
-      expect(isAbortError(error)).toBe(false);
-      expect(isTimeoutError(error)).toBe(false);
-      // The INPUT is resolved first and from the input alone, so a failure while
-      // the options are read is still correlated with the request it belongs to.
-      expect((error as unknown as { readonly url: string }).url).toBe(ABSOLUTE);
-      expect((error as unknown as { readonly cause: Error }).cause.message).toBe(cause);
-    },
-  );
+  test("a refused plan ends a typedFetch call as a network failure", async () => {
+    // One representative, through the public interface, because the plan's
+    // refusal and the caller's envelope are two different promises. The five
+    // shapes above are the plan's subject; this is the envelope's.
+    const transport = recordingTransport();
+    const first = hostileOptions[0]!;
 
-  test("an options signal slot that answers twice hands the transport the first answer", async () => {
+    const { response, error } = await typedFetch(ABSOLUTE, first.make(transport.fetch) as never);
+
+    expect(transport.inputs).toEqual([]);
+    expect(response).toBe(null);
+    expect(isNetworkError(error)).toBe(true);
+    expect(isAbortError(error)).toBe(false);
+    expect(isTimeoutError(error)).toBe(false);
+    expect((error as unknown as { readonly url: string }).url).toBe(ABSOLUTE);
+    expect((error as unknown as { readonly cause: Error }).cause.message).toBe(first.cause);
+  });
+
+  test("an options signal slot that answers twice puts the first answer in the init", () => {
     // The signal is captured ONCE. The init the transport receives must carry
     // that same capture, or the classifier and the request would be governed by
     // two different signals.
     const second = new AbortController().signal;
     let reads = 0;
     const options = {
-      fetch: undefined as unknown as typeof fetch,
+      fetch: recordingTransport().fetch,
       get signal(): AbortSignal | undefined {
         reads += 1;
         return reads === 1 ? undefined : second;
       },
     };
-    const transport = recordingTransport();
-    options.fetch = transport.fetch;
 
-    const { error } = await typedFetch(ABSOLUTE, options);
+    const plan = planRequest(ABSOLUTE, options);
 
-    expect(error).toBe(null);
-    expect(transport.inputs.length).toBe(1);
-    expect((transport.inits[0] as { readonly signal?: unknown }).signal).toBe(undefined);
-    expect((transport.inits[0] as { readonly signal?: unknown }).signal).not.toBe(second);
+    expect(reads).toBe(1);
+    expect((plan.init as { readonly signal?: unknown }).signal).toBe(undefined);
+    expect((plan.init as { readonly signal?: unknown }).signal).not.toBe(second);
+    // Reading the init again does not re-run the caller's getter.
+    expect(reads).toBe(1);
   });
 });
 
 describe("the signal a handed-over Request contributes", () => {
-  test("the prototype accessor answers before an own decoy does", async () => {
+  test("the prototype accessor answers before an own decoy does", () => {
     // `Request.prototype.signal` reports the slot the platform aborts on, and
     // an own data property shadows it for every plain read. The accessor is
     // tried first for exactly this reason.
-    const governing = new AbortController();
-    governing.abort();
-    const request = new Request(ABSOLUTE, { signal: governing.signal });
+    const request = new Request(ABSOLUTE, { signal: new AbortController().signal });
+    const governing = request.signal;
     Object.defineProperty(request, "signal", {
       configurable: true,
       value: new AbortController().signal,
     });
 
-    const { error } = await typedFetch(request, {
-      fetch: rejectingTransport(governing.signal.reason),
-    });
-
-    expect(isAbortError(error)).toBe(true);
-    expect(isNetworkError(error)).toBe(false);
+    expect(planRequest(request, {}).signal).toBe(governing);
   });
 
   test("a subclass whose signal getter throws does not degrade the classification", async () => {
@@ -596,9 +621,13 @@ describe("the signal a handed-over Request contributes", () => {
       },
     } as unknown as Request;
 
-    const { error } = await typedFetch(tagged, {
-      fetch: rejectingTransport(new TypeError("fetch failed")),
-    });
+    const transport = rejectingTransport(new TypeError("fetch failed"));
+    // The plan captures it without reading it: a describing read never refuses.
+    // Identity, never structure — a deep comparison would read `aborted`.
+    const captured: unknown = planRequest(tagged, { fetch: transport }).signal;
+    expect(captured === (tagged as unknown as { readonly signal: unknown }).signal).toBe(true);
+
+    const { error } = await typedFetch(tagged, { fetch: transport });
 
     expect(isNetworkError(error)).toBe(true);
     expect(isAbortError(error)).toBe(false);

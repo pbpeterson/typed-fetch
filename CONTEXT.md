@@ -251,21 +251,42 @@ Words this codebase already uses, some of them only implicitly until now.
 ```
 index.ts                      public barrel — deliberately small
 src/index.ts                  typedFetch + the guards; owns the envelope and
-                              the transport seam. The `fetch` override is read
-                              as an OWN property, never through the prototype
-                              chain. `typedFetch` captures the governing signal
-                              once — a handed-over `Request` contributes that
-                              signal through `Request.prototype`'s accessor,
-                              falling back to a plain read and then to no
-                              signal at all, because a read that cannot
-                              answer never refuses the request — and
-                              serializes the request input once. It
-                              never reads `headers`; the transport does. It runs
-                              in THREE PHASES with a catch each — setup,
+                              the transport seam. It runs THREE PHASES — setup,
                               transport, response — and only the transport can
-                              produce an abort or a timeout. It validates the
-                              visible Response surface before handoff, then
-                              returns the same object unmodified.
+                              produce an abort or a timeout. The setup and the
+                              response phases are the two modules below, so
+                              `classifyRequestFailure` has ONE call site and
+                              neither of those modules reads a signal. What is
+                              left here is the transport phase, the abort
+                              window around its synchronous prologue, and two
+                              envelope constructors that hold the
+                              `{ response, error }` shape and the file's one
+                              cast in a single place.
+src/request-plan.ts           the SETUP phase, behind one call: the caller's
+                              input and options become the plan a request runs
+                              on — the transport input, the init, the governing
+                              signal, the resolved request url, the selected
+                              transport, and whether it is the ambient one. The
+                              input is serialized ONCE, and the url is filed
+                              from the input alone, before anything reads the
+                              options. The `fetch` override is read as an OWN
+                              property, never through the prototype chain, so a
+                              polluted prototype cannot redirect a transport. A
+                              handed-over `Request` contributes its signal
+                              through `Request.prototype`'s accessor, falling
+                              back to a plain read and then to no signal at
+                              all, because a read that cannot answer never
+                              refuses the request. It never reads `headers`;
+                              the transport does. No read that only DESCRIBES
+                              the request can end a call. INTERNAL.
+src/response-verdict.ts       the RESPONSE phase, behind one call: what a
+                              resolved value becomes — a success, an HTTP error
+                              for its status, or a refusal. Total; it never
+                              throws. It owns the staged identity, the rollback
+                              every refusal takes, and the release of a body no
+                              caller will ever hold. It validates the visible
+                              Response surface before handoff, then hands the
+                              same object back unmodified. INTERNAL.
 src/request-failure.ts        classifies a rejected request attempt as an
                               abort, a timeout, or a network failure. The
                               AbortSignal is the authority, never the

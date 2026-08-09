@@ -2,6 +2,8 @@ import http from "node:http";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { isAbortError, isHttpError, isNetworkError, isTimeoutError, typedFetch } from "./src/index";
 import type { TypedFetchOptions } from "./src/index";
+import { planRequest } from "./src/request-plan";
+import { recordingTransport } from "./fixtures/recording-transport";
 
 // Round 14, lane H1.
 //
@@ -38,27 +40,11 @@ import type { TypedFetchOptions } from "./src/index";
 
 const ABSOLUTE = "https://population.test/resource";
 
-/** A transport that records what it was handed and answers with a 204. */
-function recordingTransport(): {
-  readonly fetch: typeof fetch;
-  readonly inputs: unknown[];
-  readonly inits: unknown[];
-} {
-  const inputs: unknown[] = [];
-  const inits: unknown[] = [];
-  const impl = async (input: unknown, init: unknown): Promise<Response> => {
-    inputs.push(input);
-    inits.push(init);
-    return new Response(null, { status: 204 });
-  };
-  return { fetch: impl as unknown as typeof fetch, inputs, inits };
-}
-
 // ── 1. The init the transport reads, over a generated population ───────────
 //
 // One property, five clauses, asserted for every member of the population:
 //
-//   (a) the call resolves as an envelope and the transport ran;
+//   (a) the plan was built;
 //   (b) reading `signal` off the init answers the caller's own FIRST read of
 //       its own slot — never the RESOLVED signal, never a second answer;
 //   (c) no read of the init throws. A `get` trap that reported a value other
@@ -362,7 +348,69 @@ function initViolations(
 }
 
 describe("round 14 / H1 — the init the transport reads, over a generated population", () => {
-  test("288 options objects: the snapshot is faithful and no read of it throws", async () => {
+  test("288 options objects: the snapshot is faithful and no read of it throws", () => {
+    // The init is a value the setup phase RETURNS, so it is read off the plan.
+    // Driving 288 whole requests through an injected transport to recover it
+    // measured the transport double as much as the snapshot, and it forced the
+    // no-override branch to be reached by replacing `globalThis.fetch` — a
+    // global mutation the property is not about.
+    const transport = recordingTransport();
+    const failures: string[] = [];
+    let checked = 0;
+
+    for (const item of buildPopulation(transport.fetch)) {
+      let init: unknown;
+      try {
+        init = planRequest(ABSOLUTE, item.options).init;
+      } catch (refusal) {
+        failures.push(`${item.label}: the plan was REFUSED — ${String(refusal)}`);
+        continue;
+      }
+
+      // Measured BEFORE the checker runs, because the checker reads the init
+      // itself. A member that is not snapshotted — `integrity` here — is read
+      // through the proxy on every read, which is the design: only `signal`
+      // is captured.
+      const signalReadsDuringCall = item.slot.reads();
+      const integrityReadsDuringCall = item.integrityReads();
+
+      const ownFetchKey = Object.hasOwn(item.options, "fetch");
+      for (const problem of initViolations(init, {
+        signal: item.expectedSignal,
+        ownFetchKey,
+        hasAnyFetchKey: Reflect.has(item.options, "fetch"),
+      })) {
+        failures.push(`${item.label}: ${problem}`);
+      }
+
+      // Clause (e), in two halves. The plan reads the caller's slot at most
+      // once, and every LATER read of the init — the four the checker just
+      // performed — is answered by the trap without touching the slot again.
+      if (signalReadsDuringCall > 1) {
+        failures.push(
+          `${item.label}: the plan read the signal slot ${signalReadsDuringCall} times`,
+        );
+      }
+      if (item.slot.reads() !== signalReadsDuringCall) {
+        failures.push(`${item.label}: reading the init re-ran the caller's signal getter`);
+      }
+      // The transport is the only reader of a member this module does not
+      // snapshot, so the plan never reads it at all.
+      if (integrityReadsDuringCall > 0) {
+        failures.push(`${item.label}: the plan read integrity ${integrityReadsDuringCall} times`);
+      }
+      checked += 1;
+    }
+
+    expect(failures).toEqual([]);
+    expect(checked).toBe(288);
+  });
+
+  test("every one of the 288 shapes still performs its request end to end", async () => {
+    // The plan is not the promise a caller holds. The same population, driven
+    // through `typedFetch` against a recording transport, must resolve as a
+    // success every time — which is what says the init the plan built is an
+    // init a transport accepts.
     const transport = recordingTransport();
     const nativeFetch = globalThis.fetch;
     const failures: string[] = [];
@@ -372,13 +420,7 @@ describe("round 14 / H1 — the init the transport reads, over a generated popul
     try {
       for (const item of buildPopulation(transport.fetch)) {
         const before = transport.inits.length;
-        let envelope;
-        try {
-          envelope = await typedFetch(ABSOLUTE, item.options);
-        } catch (cause) {
-          failures.push(`${item.label}: typedFetch REJECTED — ${String(cause)}`);
-          continue;
-        }
+        const envelope = await typedFetch(ABSOLUTE, item.options);
         if (envelope.error !== null) {
           failures.push(`${item.label}: the call failed — ${String(envelope.error)}`);
           continue;
@@ -386,40 +428,6 @@ describe("round 14 / H1 — the init the transport reads, over a generated popul
         if (transport.inits.length !== before + 1) {
           failures.push(`${item.label}: the transport did not run exactly once`);
           continue;
-        }
-
-        // Measured BEFORE the checker runs, because the checker reads the init
-        // itself. A member that is not snapshotted — `integrity` here — is read
-        // through the proxy on every read, which is the design: only `signal`
-        // is captured.
-        const signalReadsDuringCall = item.slot.reads();
-        const integrityReadsDuringCall = item.integrityReads();
-
-        const ownFetchKey = Object.hasOwn(item.options, "fetch");
-        for (const problem of initViolations(transport.inits[before], {
-          signal: item.expectedSignal,
-          ownFetchKey,
-          hasAnyFetchKey: Reflect.has(item.options, "fetch"),
-        })) {
-          failures.push(`${item.label}: ${problem}`);
-        }
-
-        // Clause (e), in two halves. The call itself reads the caller's slot at
-        // most once, and every LATER read of the init — the four the checker
-        // just performed — is answered by the trap without touching the slot
-        // again.
-        if (signalReadsDuringCall > 1) {
-          failures.push(
-            `${item.label}: the call read the signal slot ${signalReadsDuringCall} times`,
-          );
-        }
-        if (item.slot.reads() !== signalReadsDuringCall) {
-          failures.push(`${item.label}: reading the init re-ran the caller's signal getter`);
-        }
-        // The transport is the only reader of a member this module does not
-        // snapshot, so the call itself reads it once.
-        if (integrityReadsDuringCall > 1) {
-          failures.push(`${item.label}: the call read integrity ${integrityReadsDuringCall} times`);
         }
         checked += 1;
       }
@@ -585,14 +593,12 @@ function recordingOptions(withFetch: typeof fetch | undefined): {
 }
 
 describe("round 14 / H1 — which init members the setup phase reads", () => {
-  test("the override branch reads exactly two slots before the transport runs", async () => {
+  test("the override branch reads exactly two slots", () => {
     const transport = recordingTransport();
     const { options, order } = recordingOptions(transport.fetch);
 
-    const { error } = await typedFetch(ABSOLUTE, options);
+    planRequest(ABSOLUTE, options);
 
-    expect(error).toBe(null);
-    expect(transport.inits.length).toBe(1);
     // `fetch` is this library's own extension, not a WebIDL member: a bare
     // `fetch` never reads it at all. Among the fifteen members the Fetch
     // Standard declares, `signal` is the ONLY one the setup phase reads, and
@@ -600,20 +606,11 @@ describe("round 14 / H1 — which init members the setup phase reads", () => {
     expect(order).toEqual(["fetch", "signal"]);
   });
 
-  test("the no-override branch reads exactly one slot before the transport runs", async () => {
-    const transport = recordingTransport();
+  test("the no-override branch reads exactly one slot", () => {
     const { options, order } = recordingOptions(undefined);
-    const nativeFetch = globalThis.fetch;
 
-    globalThis.fetch = transport.fetch;
-    try {
-      const { error } = await typedFetch(ABSOLUTE, options);
-      expect(error).toBe(null);
-    } finally {
-      globalThis.fetch = nativeFetch;
-    }
+    planRequest(ABSOLUTE, options);
 
-    expect(transport.inits.length).toBe(1);
     expect(order).toEqual(["signal"]);
   });
 

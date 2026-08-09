@@ -1,69 +1,70 @@
 import { describe, test, expect, afterEach } from "vitest";
-import { typedFetch, isHttpError, isKnownHttpError, isNetworkError } from "./src/index";
+import { recordingTransport } from "./fixtures/recording-transport";
+import { isHttpError, isKnownHttpError, isNetworkError } from "./src/index";
+import { planFailure, planRequest } from "./src/request-plan";
 import { httpErrorBrand, knownHttpErrorBrand } from "./src/errors/brand";
 
 // Round 8, lane H1 — request setup and input classification.
 //
 // Two parts, and they are different KINDS of work.
 //
-//  1. The four defensive arms of `src/index.ts` that no test reached: the
-//     `catch` in `hasRequestTag` (line 40), the `catch` in `isPlatformRequest`
-//     (line 58), the `catch` in `isKnownHttpError` (line 426), and the `catch`
-//     in `classifyRequestInput` (line 699). Each test below makes the throw
-//     happen through the public interface and asserts the DOCUMENTED outcome of
-//     the arm — the guard answers false, the envelope resolves, `requestUrl` is
-//     empty — never merely that the line ran. These pass on `main`.
+//  1. The four defensive arms no test reached: the `catch` in `hasRequestTag`,
+//     the `catch` in `isPlatformRequest`, the `catch` in `isKnownHttpError`,
+//     and the `catch` in `classifyRequestInput`. Each test below makes the
+//     throw happen and asserts the DOCUMENTED outcome of the arm — the guard
+//     answers false, the plan is still built, `requestUrl` is empty — never
+//     merely that the line ran.
 //  2. One finding: which transport RUNS decides whether a tagged input is
-//     handed over as a request, and the setup phase asks a different question.
+//     handed over as a request, and the setup phase asked a different question.
+//
+// The three input-classification arms are read off the PLAN now. They are
+// decisions `planRequest` makes about the input alone, so driving a whole
+// request through an injected transport to read them back was measuring the
+// transport double, not the decision.
 
-/** A transport double that records what it received. */
-function recordingTransport(respond: () => Response | Promise<Response>): {
-  readonly fetch: typeof fetch;
-  readonly inputs: unknown[];
-} {
-  const inputs: unknown[] = [];
-  const impl = async (input: unknown): Promise<Response> => {
-    inputs.push(input);
-    return respond();
-  };
-  return { fetch: impl as unknown as typeof fetch, inputs };
-}
+/** The transport that makes `transportTakesRequest` take the wide tag check. */
+const CALLER_TRANSPORT = { fetch: recordingTransport().fetch };
 
 // ── Coverage: the four defensive arms ────────────────────────────────────────
 
 describe("input classification survives an input that cannot be inspected", () => {
-  test("a revoked Proxy is refused by both classification guards, inside the envelope", async () => {
+  test("a revoked Proxy is refused by both classification guards, and refuses the plan", () => {
     // ONE input reaches both arms. `value instanceof Request` walks the revoked
     // Proxy's prototype chain and throws, so `isPlatformRequest`'s catch answers
-    // false (line 58). `Object.prototype.toString.call` then reads
-    // `Symbol.toStringTag` through the same revoked trap and throws, so
-    // `hasRequestTag`'s catch answers false (line 40).
+    // false. `Object.prototype.toString.call` then reads `Symbol.toStringTag`
+    // through the same revoked trap and throws, so `hasRequestTag`'s catch
+    // answers false.
     //
     // Answering false is the documented outcome: the input is NOT a request, so
-    // the setup phase serializes it — and `String()` on a revoked Proxy throws
-    // too. That throw is the setup phase's, and the phase turns it into a
-    // `NetworkError` with an empty `url`. Nothing escapes as an exception, and
-    // no request is attempted.
+    // the plan serializes it — and `String()` on a revoked Proxy throws too.
+    // That throw is a read that PRODUCES what the transport receives, so it is
+    // the one class of read that may end a call. It becomes a `NetworkError`
+    // with an empty `url`, because no url was ever produced.
     const { proxy, revoke } = Proxy.revocable({}, {});
     revoke();
-    const transport = recordingTransport(() => new Response(null, { status: 204 }));
 
-    const result = await typedFetch(proxy as unknown as string, { fetch: transport.fetch });
+    let thrown: unknown;
+    expect(() => {
+      try {
+        planRequest(proxy as unknown as string, CALLER_TRANSPORT);
+      } catch (refusal) {
+        thrown = refusal;
+        throw refusal;
+      }
+    }).toThrow();
 
-    expect(result.response).toBe(null);
-    expect(isNetworkError(result.error)).toBe(true);
+    const error = planFailure(thrown);
+    expect(isNetworkError(error)).toBe(true);
     // The library-authored constant, never a platform echo.
-    expect(result.error?.message).toBe("Network error");
+    expect(error.message).toBe("Network error");
     // No URL could be resolved, so the correlation field is the empty string.
-    expect(result.error?.url).toBe("");
-    // The guards refused it, so the request was never attempted.
-    expect(transport.inputs).toEqual([]);
+    expect(error.url).toBe("");
   });
 
-  test("a Proxy whose prototype walk throws is classified as URL-like", async () => {
-    // Line 58 in isolation. The `getPrototypeOf` trap breaks `instanceof`, and
-    // the tag read forwards to the plain target, so `hasRequestTag` answers
-    // `[object Object]` without entering its own catch.
+  test("a Proxy whose prototype walk throws is classified as URL-like", () => {
+    // `isPlatformRequest`'s catch in isolation. The `getPrototypeOf` trap breaks
+    // `instanceof`, and the tag read forwards to the plain target, so
+    // `hasRequestTag` answers `[object Object]` without entering its own catch.
     //
     // The documented outcome: the guard answers false, so the input is
     // serialized once and the transport receives that exact string.
@@ -75,23 +76,19 @@ describe("input classification survives an input that cannot be inspected", () =
         },
       },
     );
-    const transport = recordingTransport(() => new Response(null, { status: 204 }));
 
-    const result = await typedFetch(hostilePrototypeWalk as unknown as string, {
-      fetch: transport.fetch,
-    });
+    const plan = planRequest(hostilePrototypeWalk as unknown as string, CALLER_TRANSPORT);
 
-    expect(result.error).toBe(null);
-    expect(result.response?.status).toBe(204);
     // A string, not the object: the input was not taken as a request.
-    expect(transport.inputs).toEqual(["[object Object]"]);
+    expect(plan.transportInput).toBe("[object Object]");
+    expect(plan.requestUrl).toBe("[object Object]");
   });
 
-  test("an input whose Symbol.toStringTag getter throws is classified as URL-like", async () => {
-    // Line 40 in isolation. `instanceof Request` walks an ordinary prototype
-    // chain and answers false without throwing, so `isPlatformRequest`'s catch
-    // is not entered; the tag read throws and `hasRequestTag`'s catch answers
-    // false.
+  test("an input whose Symbol.toStringTag getter throws is classified as URL-like", () => {
+    // `hasRequestTag`'s catch in isolation. `instanceof Request` walks an
+    // ordinary prototype chain and answers false without throwing, so
+    // `isPlatformRequest`'s catch is not entered; the tag read throws and
+    // `hasRequestTag`'s catch answers false.
     //
     // The own `toString` keeps the serialization working, which is what makes
     // the arm's outcome observable: the transport receives the serialized URL.
@@ -104,50 +101,41 @@ describe("input classification survives an input that cannot be inspected", () =
         return target;
       },
     };
-    const transport = recordingTransport(() => new Response(null, { status: 204 }));
 
-    const result = await typedFetch(tagThrower as unknown as string, { fetch: transport.fetch });
+    const plan = planRequest(tagThrower as unknown as string, CALLER_TRANSPORT);
 
-    expect(result.error).toBe(null);
-    expect(result.response?.status).toBe(204);
-    expect(transport.inputs).toEqual([target]);
+    expect(plan.transportInput).toBe(target);
+    expect(plan.requestUrl).toBe(target);
   });
 
-  test("a tagged input whose url getter throws still reaches the transport", async () => {
-    // Line 699. The tag gate accepts the value, and the `url` read throws. The
-    // documented outcome is stated on the catch itself: "a hostile `url` getter
-    // is not a reason to refuse a Request the transport may still be able to
-    // send". So classification records an EMPTY `requestUrl`, and the transport
-    // receives the input object unchanged.
-    const cause = new Error("transport refused");
+  test("a tagged input whose url getter throws is still handed to the transport", () => {
+    // `classifyRequestInput`'s catch. The tag gate accepts the value, and the
+    // `url` read throws. The documented outcome is stated on the catch itself:
+    // "a hostile `url` getter is not a reason to refuse a Request the transport
+    // may still be able to send". So classification records an EMPTY
+    // `requestUrl`, and the transport receives the input object unchanged.
     const fakeRequest = {
       [Symbol.toStringTag]: "Request",
       get url(): string {
         throw new Error("hostile url getter");
       },
     };
-    const transport = recordingTransport(() => {
-      throw cause;
-    });
 
-    const result = await typedFetch(fakeRequest as unknown as Request, { fetch: transport.fetch });
+    const plan = planRequest(fakeRequest as unknown as Request, CALLER_TRANSPORT);
 
-    // The transport got the object itself, not a serialization of it.
-    expect(transport.inputs).toEqual([fakeRequest]);
-    expect(result.response).toBe(null);
-    expect(isNetworkError(result.error)).toBe(true);
-    expect(result.error?.cause).toBe(cause);
+    // The plan hands over the object itself, not a serialization of it.
+    expect(plan.transportInput).toBe(fakeRequest);
     // No url could be read, so the correlation field stays empty.
-    expect(result.error?.url).toBe("");
+    expect(plan.requestUrl).toBe("");
   });
 });
 
 describe("isKnownHttpError refuses a value whose status cannot be read", () => {
-  test("a forged pair of brands over a throwing status getter answers false", async () => {
-    // Line 426. A brand forged on the VALUE is accepted by design (ADR 0003,
-    // out-of-scope item 5), so both brand reads pass and the guard goes on to
-    // the status. The status getter throws, and the catch's documented outcome
-    // is "hostile proxies/getters are not valid library errors".
+  test("a forged pair of brands over a throwing status getter answers false", () => {
+    // A brand forged on the VALUE is accepted by design (ADR 0003, out-of-scope
+    // item 5), so both brand reads pass and the guard goes on to the status. The
+    // status getter throws, and the catch's documented outcome is "hostile
+    // proxies/getters are not valid library errors".
     const forged: Record<PropertyKey, unknown> = {};
     for (const brandKey of [httpErrorBrand, knownHttpErrorBrand]) {
       Object.defineProperty(forged, brandKey, { value: true });
@@ -170,8 +158,7 @@ describe("isKnownHttpError refuses a value whose status cannot be read", () => {
 /**
  * A `Request`-TAGGED value that is not a platform `Request` — the shape
  * `node-fetch@2` ships. Its `url` and its serialization name different servers,
- * so whichever one `error.url` reports says which value the transport was
- * handed.
+ * so whichever one the plan reports says which value the transport is handed.
  */
 function taggedForeignRequest(): Request {
   return {
@@ -190,20 +177,31 @@ describe("which transport runs decides whether a tagged input is a request", () 
     globalThis.fetch = ambient;
   });
 
-  test("passing the ambient fetch explicitly does not widen the request check", async () => {
+  test("passing the ambient fetch explicitly does not widen the request check", () => {
     // `{ fetch: globalThis.fetch }` is what dependency injection writes:
     // `typedFetch(u, { fetch: injected ?? globalThis.fetch })`. The transport
     // that RUNS is the platform's, so it resolves `RequestInfo` with its own
     // realm-bound brand check and converts this value to a `USVString` — the
-    // request goes to the serialization. `error.url` must name that same
-    // string, exactly as it does when the option is absent.
-    const { error } = await typedFetch(taggedForeignRequest(), { fetch: ambient });
+    // request goes to the serialization. The plan must name that same string as
+    // both the transport input and the correlation url, exactly as it does when
+    // the option is absent.
+    const plan = planRequest(taggedForeignRequest(), { fetch: ambient });
 
-    expect(isNetworkError(error)).toBe(true);
-    expect(error?.url).toBe("https://actually-sent.invalid/serialized");
+    expect(plan.ambientTransport).toBe(true);
+    expect(plan.transportInput).toBe("https://actually-sent.invalid/serialized");
+    expect(plan.requestUrl).toBe("https://actually-sent.invalid/serialized");
   });
 
-  test("a replaced global fetch is caller code and takes the tagged input", async () => {
+  test("the same input under no options at all reaches the same plan", () => {
+    // The control for the test above: the option is what dependency injection
+    // adds, and adding it must change nothing.
+    const plan = planRequest(taggedForeignRequest(), {});
+
+    expect(plan.ambientTransport).toBe(true);
+    expect(plan.transportInput).toBe("https://actually-sent.invalid/serialized");
+  });
+
+  test("a replaced global fetch is caller code and takes the tagged input", () => {
     // The other direction of the same question. Installing a Fetch
     // implementation on the global is how a polyfill is adopted, and that
     // implementation writes its own rule about what it accepts as a request —
@@ -211,12 +209,12 @@ describe("which transport runs decides whether a tagged input is a request", () 
     // shipped with it. The setup phase must hand the value over rather than
     // serialize it behind the caller's back.
     const tagged = taggedForeignRequest();
-    const transport = recordingTransport(() => new Response(null, { status: 204 }));
-    globalThis.fetch = transport.fetch;
+    globalThis.fetch = recordingTransport().fetch;
 
-    const result = await typedFetch(tagged);
+    const plan = planRequest(tagged, {});
 
-    expect(result.error).toBe(null);
-    expect(transport.inputs).toEqual([tagged]);
+    expect(plan.ambientTransport).toBe(false);
+    expect(plan.transportInput).toBe(tagged);
+    expect(plan.requestUrl).toBe("https://never-requested.invalid/tagged-url");
   });
 });

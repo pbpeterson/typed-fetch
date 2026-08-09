@@ -72,32 +72,50 @@ function foreignResponse(overrides: Record<string, unknown> = {}): MutableForeig
   return value;
 }
 
+/** Every module-scoped `const`/`let`/`var` a source file declares, in order. */
+async function declarationsIn(file: string): Promise<string[]> {
+  const source = await readFile(new URL(file, import.meta.url), "utf8");
+  return [...source.matchAll(/^(?:const|let|var)\s+(?<name>\w+)/gmu)].map(
+    (match) => match.groups?.name ?? "",
+  );
+}
+
 // ── 1. The state that outlives a call ──────────────────────────────────────
 
 describe("round 15 / H1 — what one call leaves behind for the next", () => {
-  test("the module's cross-call state is one WeakSet, and the list is closed", async () => {
+  test("the request path's cross-call state is one WeakSet, and the list is closed", async () => {
     // The inventory, executable. Every question in this file about one call
-    // observing another reduces to what the module keeps between calls, and a
-    // prose list of that goes stale silently — round 11 recorded a read
+    // observing another reduces to what the request path keeps between calls,
+    // and a prose list of that goes stale silently — round 11 recorded a read
     // inventory that had been incomplete twice. This one fails when a binding is
     // added, which is the only way a list stays true.
-    const source = await readFile(new URL("./src/index.ts", import.meta.url), "utf8");
-    const declared = [...source.matchAll(/^(?:const|let|var)\s+(?<name>\w+)/gmu)].map(
-      (match) => match.groups?.name ?? "",
-    );
-
-    expect(declared).toEqual([
-      // Five constant tables, read-only for the life of the process.
-      "FOREIGN_RESPONSE_FIELDS",
-      "FOREIGN_RESPONSE_METHODS",
-      "FOREIGN_RESPONSE_BODY_METHODS",
-      "FOREIGN_RESPONSE_HEADERS_METHODS",
-      "FOREIGN_RESPONSE_TYPES",
+    //
+    // THREE modules now, because the phases were given seams: `src/index.ts`
+    // owns the envelope and the transport phase, `src/request-plan.ts` owns the
+    // setup phase, and `src/response-verdict.ts` owns the response phase. The
+    // inventory is a property of the path, not of one file, so it reads all
+    // three. A binding moved between them changes nothing here; a binding ADDED
+    // to any of them fails.
+    expect({
+      "src/index.ts": await declarationsIn("./src/index.ts"),
+      "src/request-plan.ts": await declarationsIn("./src/request-plan.ts"),
+      "src/response-verdict.ts": await declarationsIn("./src/response-verdict.ts"),
+    }).toEqual({
+      // The envelope and the transport phase hold nothing at all.
+      "src/index.ts": [],
       // One intrinsic captured at load, which is a value and never rewritten.
-      "nativeFetch",
-      // One mutable table — the whole of this module's cross-call state.
-      "validatedResponseStructures",
-    ]);
+      "src/request-plan.ts": ["nativeFetch"],
+      "src/response-verdict.ts": [
+        // Five constant tables, read-only for the life of the process.
+        "FOREIGN_RESPONSE_FIELDS",
+        "FOREIGN_RESPONSE_METHODS",
+        "FOREIGN_RESPONSE_BODY_METHODS",
+        "FOREIGN_RESPONSE_HEADERS_METHODS",
+        "FOREIGN_RESPONSE_TYPES",
+        // One mutable table — the whole of the request path's cross-call state.
+        "validatedResponseStructures",
+      ],
+    });
   });
 
   // `validatedResponseStructures` is the only table `src/index.ts` writes, and
