@@ -13,7 +13,6 @@ import {
   NotFoundError,
   TimeoutError,
 } from "../../src/errors";
-import { inspectCustom } from "../../src/errors/inspect";
 import {
   abortedErrorBrand,
   asksOwnsResponse,
@@ -600,13 +599,30 @@ describe("the stamp map", () => {
     expect((target as unknown as Record<symbol, unknown>)[key]).toBe(before);
   });
 
-  it("the inspect hook is replaceable, deliberately", () => {
-    const descriptor = Object.getOwnPropertyDescriptor(BaseHttpError.prototype, inspectCustom);
+  it("every stamp that is not frozen is replaceable, deliberately", () => {
+    // Read as the COMPLEMENT of `FROZEN`, rather than by naming the three
+    // channel hooks. Naming them asked one key and left the other unasked —
+    // the drift CONTEXT.md's channel-set rule forbids — and a fourth hook
+    // stamped tomorrow would land in no case at all. The complement asks
+    // every stamp the library owns, and a new one arrives already covered.
+    const frozen = new Set<symbol>(
+      FROZEN.filter(([, target]) => target === BaseHttpError.prototype).map(([, , key]) => key),
+    );
+    const replaceable = Object.getOwnPropertySymbols(BaseHttpError.prototype).filter(
+      (key) => !frozen.has(key),
+    );
 
-    expect(descriptor).toBeDefined();
-    expect(descriptor?.enumerable).toBe(false);
-    expect(descriptor?.writable).toBe(true);
-    expect(descriptor?.configurable).toBe(true);
+    // The inspect hook under Node's key, the same hook under Deno's key, and
+    // the string-conversion hook. A missing one is a red test.
+    expect(replaceable).toHaveLength(3);
+    for (const key of replaceable) {
+      const descriptor = Object.getOwnPropertyDescriptor(BaseHttpError.prototype, key);
+
+      expect(descriptor, String(key)).toBeDefined();
+      expect(descriptor?.enumerable, String(key)).toBe(false);
+      expect(descriptor?.writable, String(key)).toBe(true);
+      expect(descriptor?.configurable, String(key)).toBe(true);
+    }
   });
 
   it("a dedicated class owns no symbol of its own — every stamp is inherited", () => {

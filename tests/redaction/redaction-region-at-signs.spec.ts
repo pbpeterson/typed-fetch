@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 import { NotFoundError } from "../../src/errors";
 import { BaseHttpError } from "../../src/errors/base-http-error";
 import { httpErrorBrand, ownsResponseSymbol } from "../../src/errors/brand";
-import { denoCustomInspect, inspectCustom } from "../../src/errors/inspect";
 import { NetworkError } from "../../src/errors/network-error";
 import { AbortedError } from "../../src/errors/aborted-error";
 import { TimeoutError } from "../../src/errors/timeout-error";
@@ -371,8 +370,25 @@ describe("CLEAN — the five stamped members, on the committed tree", () => {
     ["TimeoutError", TimeoutError.prototype],
   ] as const;
 
+  /** A stamp under this package's OWN `Symbol.for` namespace: a brand, or the query. */
+  const packageKeyed = (key: symbol): boolean => String(key).includes("@pbpeterson/typed-fetch.");
+
   test.each(ROOTS)("%s owns the three replaceable channel hooks", (_name, prototype) => {
-    for (const key of [inspectCustom, denoCustomInspect, Symbol.toPrimitive]) {
+    // Split by WHOSE key each stamp sits under, rather than by naming the two
+    // platform symbols. CONTEXT.md draws the same line: the package-keyed
+    // stamps are the brands and the ownership query, and those are frozen; a
+    // channel hook sits under the PLATFORM's key and stays replaceable.
+    // Naming the two inspect keys let a case ask one and leave the other
+    // unasked, and a hook stamped under a third key would reach no case here.
+    const hooks = Object.getOwnPropertySymbols(prototype).filter((key) => !packageKeyed(key));
+
+    // Node's inspect key, Deno's inspect key, and `Symbol.toPrimitive`.
+    expect(hooks.map(String).toSorted()).toEqual([
+      "Symbol(Deno.customInspect)",
+      "Symbol(Symbol.toPrimitive)",
+      "Symbol(nodejs.util.inspect.custom)",
+    ]);
+    for (const key of hooks) {
       const descriptor = Object.getOwnPropertyDescriptor(prototype, key);
       expect(descriptor, String(key)).toBeDefined();
       expect(descriptor?.enumerable, String(key)).toBe(false);

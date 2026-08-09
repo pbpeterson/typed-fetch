@@ -15,7 +15,7 @@ import {
   unknownHttpErrorBrand,
   ownsResponseSymbol,
 } from "../../src/errors/brand";
-import { inspectCustom, denoCustomInspect } from "../../src/errors/inspect";
+import { inspectRendersOf } from "../../src/errors/inspect";
 import { distExists, loadRootCjs, loadRootEsm } from "../../fixtures/built-package";
 import { mulberry } from "../../fixtures/responses";
 
@@ -77,8 +77,15 @@ describe("round 10 / H2 — the 40 dedicated classes checked as one population",
 
       // Every stamped member, inherited from the one root prototype.
       if (typeof bag[ownsResponseSymbol] !== "function") push("no ownership query");
-      if (typeof bag[inspectCustom] !== "function") push("no Node inspect hook");
-      if (typeof bag[denoCustomInspect] !== "function") push("no Deno inspect hook");
+      // The inspect hook of every gated runtime, asked for as one channel.
+      // `inspectRendersOf` resolves each key from the value itself and throws
+      // naming the runtime whose hook is missing, so this file never spells a
+      // platform symbol and a runtime added later is covered here already.
+      try {
+        inspectRendersOf(error);
+      } catch (cause) {
+        push((cause as Error).message);
+      }
       if (typeof bag[Symbol.toPrimitive] !== "function") push("no Symbol.toPrimitive");
 
       // Message shape and the record, for a response carrying no reason phrase.

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test, expect } from "vitest";
 import { NetworkError } from "../../src/errors";
-import { denoCustomInspect, inspectCustom } from "../../src/errors/inspect";
+import { inspectRendersOf } from "../../src/errors/inspect";
 import {
   builtEntryUrl,
   errorsDistExists as distExists,
@@ -294,6 +294,10 @@ describe.skipIf(!distExists)("the string-conversion hook survives the bundle", (
 // the same record, and keeps the same never-throws invariant, when the
 // arguments arrive in Deno's order. They run on every runtime the suite runs
 // on, so a change to the shared renderer cannot pass Node and fail Deno.
+//
+// `inspectRendersOf` owns both conventions, and answers both renders from one
+// call. So a case here CANNOT ask one runtime and leave the other unasked,
+// which is the drift CONTEXT.md's channel-set rule forbids.
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("the Deno hook renders through the same record", () => {
@@ -303,46 +307,94 @@ describe("the Deno hook renders through the same record", () => {
       url: `https://alice:${SECRET}@api.example.com/v1/x?token=${SECRET}`,
     });
 
-  type DenoHook = (this: unknown, inspect?: unknown, options?: unknown) => string;
-  type NodeHook = (this: unknown, depth: number, options: unknown, inspect?: unknown) => string;
-  const hookOf = <T>(error: object, key: symbol): T =>
-    (error as unknown as Record<symbol, unknown>)[key] as T;
-  const denoHookOf = (error: object): DenoHook => hookOf<DenoHook>(error, denoCustomInspect);
-
   test("Deno's (inspect, options) order produces the same line as Node's", () => {
-    const error = withSecret();
-    const render = hookOf<NodeHook>(error, inspectCustom);
-    const renderer = (value: unknown): string => JSON.stringify(value);
+    const { node, deno } = inspectRendersOf(withSecret(), (value) => JSON.stringify(value));
 
-    const viaNode = render.call(error, 2, {}, renderer);
-    const viaDeno = denoHookOf(error).call(error, renderer, {});
-
-    expect(viaDeno).toBe(viaNode);
+    expect(deno).toBe(node);
     // `structure and value`: the redacted origin and path may appear, and the
     // userinfo password and query token never may.
-    expect(viaDeno).toContain("api.example.com/v1/x");
-    expect(viaDeno).not.toContain(SECRET);
+    expect(deno).toContain("api.example.com/v1/x");
+    expect(deno).not.toContain(SECRET);
   });
 
-  test("called with neither argument it still answers, and still withholds", () => {
+  test("called with no renderer both hooks still answer, and still withhold", () => {
     // A runtime is not obliged to pass anything. The record then renders
     // through `JSON.stringify`, which is the documented no-callback path.
-    const error = withSecret();
-    const line = denoHookOf(error).call(error);
+    const { node, deno } = inspectRendersOf(withSecret());
 
-    expect(typeof line).toBe("string");
-    expect(line).toContain("NetworkError");
-    expect(line).not.toContain(SECRET);
+    expect(typeof deno).toBe("string");
+    expect(deno).toContain("NetworkError");
+    expect(deno).not.toContain(SECRET);
+    expect(node).toBe(deno);
   });
 
-  test("a throwing renderer does not take the hook down", () => {
+  test("a throwing renderer does not take either hook down", () => {
     // Deno propagates a throwing custom inspect straight out of `Deno.inspect`,
     // exactly as Node does out of `util.inspect`.
-    const error = withSecret();
     const hostile = (): string => {
       throw new TypeError("no");
     };
 
-    expect(() => denoHookOf(error).call(error, hostile, {})).not.toThrow();
+    expect(() => inspectRendersOf(withSecret(), hostile)).not.toThrow();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The refusal, and why it is one lookup per KEY before either hook runs.
+//
+// `inspectRendersOf` takes the value and resolves both keys on it, so the pair
+// of lookups is the only place a caller could come away holding one runtime's
+// render and not the other's. That asymmetry is the drift CONTEXT.md's
+// channel-set rule forbids, and round 8 shipped it: Node's key stamped, Deno's
+// resolving `Object.prototype`. So a value that answers under one key and not
+// the other is REFUSED rather than half-rendered, and the message names the
+// RUNTIME whose hook is missing — a caller reads "Deno", never a symbol.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** A bare object carrying `member` under `key`, and carrying nothing else. */
+function valueUnder(key: symbol, member: unknown): object {
+  const value: Record<symbol, unknown> = {};
+  value[key] = member;
+  return value;
+}
+
+describe("a value that resolves no hook is refused, and the refusal names the runtime", () => {
+  test("a value owning neither key is refused for Node, which is asked first", () => {
+    expect(() => inspectRendersOf({})).toThrow(TypeError);
+    expect(() => inspectRendersOf({})).toThrow("this value resolves no Node inspect hook");
+  });
+
+  test("the key alone is not the channel — a member that is not callable is no hook", () => {
+    // Nothing typechecks what comes off an object of unknown shape, and a
+    // polluting write can leave any value under the key. Only a callable one
+    // renders, which is what makes `hookAt`'s cast true.
+    const value = valueUnder(NODE_INSPECT_KEY, "not a function");
+
+    expect(() => inspectRendersOf(value)).toThrow("this value resolves no Node inspect hook");
+  });
+
+  test("owning Node's key alone is refused for Deno, and renders nothing at all", () => {
+    let calls = 0;
+    const value = valueUnder(NODE_INSPECT_KEY, (): string => {
+      calls += 1;
+      return "[node]";
+    });
+
+    expect(() => inspectRendersOf(value)).toThrow("this value resolves no Deno inspect hook");
+    // Both renders come back, or neither does. BOTH keys are resolved before
+    // either hook is called, so asking for one never leaves the other unasked
+    // and no caller ever holds Node's answer by itself.
+    expect(calls).toBe(0);
+  });
+
+  test("owning Deno's key alone is refused for Node, and renders nothing at all", () => {
+    let calls = 0;
+    const value = valueUnder(DENO_INSPECT_KEY, (): string => {
+      calls += 1;
+      return "[deno]";
+    });
+
+    expect(() => inspectRendersOf(value)).toThrow("this value resolves no Node inspect hook");
+    expect(calls).toBe(0);
   });
 });

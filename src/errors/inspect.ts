@@ -54,7 +54,7 @@
  */
 
 /** `util.inspect.custom`, obtained without importing `node:util`. */
-export const inspectCustom: unique symbol = Symbol.for("nodejs.util.inspect.custom");
+const inspectCustom: unique symbol = Symbol.for("nodejs.util.inspect.custom");
 
 /**
  * Deno's inspect hook key.
@@ -84,15 +84,21 @@ export const inspectCustom: unique symbol = Symbol.for("nodejs.util.inspect.cust
  * workerd expose no per-object inspect hook to stamp; a devtools formatter is a
  * global array, not a member on the value.
  */
-export const denoCustomInspect: unique symbol = Symbol.for("Deno.customInspect");
+const denoCustomInspect: unique symbol = Symbol.for("Deno.customInspect");
 
 /** The subset of Node's inspect options this hook touches. */
 interface InspectOptions {
   readonly stylize?: (text: string, style: string) => string;
 }
 
-/** The `util.inspect` reference Node passes as the third argument. */
-type Inspect = (value: unknown, options: InspectOptions) => string;
+/**
+ * The `util.inspect` reference Node passes as the third argument.
+ *
+ * Its result is `unknown` because nothing typechecks what a runtime hands over.
+ * {@link render} already states an invariant that survives a non-string answer,
+ * and the type now says the same thing the guard there says.
+ */
+type Inspect = (value: unknown, options: InspectOptions) => unknown;
 
 const HIDDEN_CAUSE = "[not shown - read error.cause]";
 const HIDDEN_REASON = "[not shown - read error.reason]";
@@ -336,4 +342,78 @@ export function installInspect(prototype: object): void {
     writable: true,
     configurable: true,
   });
+}
+
+/** One render of one value, one entry per gated runtime. */
+export interface InspectRenders {
+  /** What `util.inspect` prints on Node. Bun resolves the same key. */
+  readonly node: string;
+  /** What `Deno.inspect` prints. */
+  readonly deno: string;
+}
+
+/** Node's convention: `error[inspectCustom](depth, options, inspect)`. */
+type NodeHook = (this: object, depth: number, options: InspectOptions, inspect?: Inspect) => string;
+
+/** Deno's convention: `error[denoCustomInspect](inspect, options)`. */
+type DenoHook = (this: object, inspect?: Inspect, options?: InspectOptions) => string;
+
+/**
+ * The hook `key` resolves on `value`, or a refusal that names the runtime.
+ *
+ * The cast is the one read this file cannot type. The member comes off an
+ * object of unknown shape, and the callability test above it is what makes the
+ * cast true.
+ */
+function hookAt<Hook>(value: object, key: symbol, runtime: string): Hook {
+  const hook = (value as Record<symbol, unknown>)[key];
+  if (typeof hook !== "function") {
+    throw new TypeError(`this value resolves no ${runtime} inspect hook`);
+  }
+  return hook as Hook;
+}
+
+/**
+ * Render one value the way each gated runtime renders it, and answer with both
+ * renders.
+ *
+ * ## Why both renders, from one call
+ *
+ * The two keys are ONE channel, reached from two runtimes. CONTEXT.md states
+ * the rule: a disclosure decision applies to the channel set, never to one
+ * channel. A caller that can ask for Node's render alone reproduces the drift
+ * this module already paid for once. {@link installInspect} stamped Node's key
+ * only, and on Deno the inspect channel resolved `Object.prototype`. So this
+ * function takes no runtime argument. Both renders come back, or neither does.
+ *
+ * ## Why it takes the VALUE and finds the hook itself
+ *
+ * Each runtime resolves its member by a lookup on the value, so the lookup
+ * belongs here rather than in the caller. It starts at the instance. A subclass
+ * override answers, a replacement a consumer installed answers, and a `Proxy`
+ * around an error answers. A class from another package **copy** answers with
+ * its own hook, which is how a prototype from the built package under `dist/`
+ * is reachable at all. A caller holding the key alone would also learn two
+ * calling conventions: Node passes `(depth, options, inspect)`, and Deno passes
+ * `(inspect, options)`.
+ *
+ * `renderer` is the callback a runtime supplies. Omit it, and both hooks take
+ * the documented no-callback path, which is `JSON.stringify`.
+ *
+ * Node's hook receives depth `0`. That is the value which means "not below the
+ * limit". {@link render} answers a placeholder for `depth < 0`, and a caller
+ * that wants the placeholder measures Node's depth protocol, not a render.
+ *
+ * This function adds no guard of its own. Both hooks state that they never
+ * throw, and a guard here would answer in place of that invariant.
+ *
+ * @throws TypeError when the value resolves no hook under one of the two keys.
+ */
+export function inspectRendersOf(value: object, renderer?: Inspect): InspectRenders {
+  const node = hookAt<NodeHook>(value, inspectCustom, "Node");
+  const deno = hookAt<DenoHook>(value, denoCustomInspect, "Deno");
+  return {
+    node: node.call(value, 0, {}, renderer),
+    deno: deno.call(value, renderer, {}),
+  };
 }
