@@ -57,6 +57,17 @@ function stripValues(parsed: URL): URL {
 const HIERARCHICAL_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:", "ftp:", "file:"]);
 
 /**
+ * The same six schemes by NAME, which is how {@link isSpecialScheme} reads them
+ * out of a path. These are the WHATWG "special" schemes, and the URL Standard
+ * gives them the one property this module has to ask about: they reach their
+ * authority over ANY number of solidi, including none. Derived rather than
+ * written twice, so the two lists cannot disagree about what "special" means.
+ */
+const SPECIAL_SCHEMES = new Set(
+  [...HIERARCHICAL_PROTOCOLS].map((protocol) => protocol.slice(0, -1)),
+);
+
+/**
  * The href with every value slot removed: no userinfo, no query, no fragment.
  *
  * Total by construction. An empty string stays empty (the documented "no URL
@@ -97,51 +108,83 @@ export function redactUrl(url: string): string {
  * `parsed` with every value slot cleared and every userinfo hidden after its
  * authority removed, rebuilt on `origin`.
  *
- * ONE TEXT, and that is the whole of this module's redaction rule.
+ * ONE TEXT, AND IT IS `pathname`. That is the whole of this module's redaction
+ * rule, and the sentence below is the invariant every other comment here
+ * serves: **every byte this function emits comes from `origin` or from
+ * `parsed.pathname`.** Nothing from `search` or `hash` is ever emitted, under
+ * any spelling, so the module's own header claim — "it drops userinfo, the
+ * whole query, and the fragment" — holds by construction rather than by a rule
+ * that has to be got right.
  *
- * Rounds 5 and 8 each fixed a place where this module compared two texts the
- * URL parser does not agree about — the raw input, and the normalized parse.
- * Round 9 broke that comparison twice more, in both directions at once, which
- * is the signal that the comparison itself was the defect:
+ * Rounds 5, 8 and 9 each fixed a place where this module compared two texts the
+ * URL parser does not agree about, and each fix was broken by a spelling the
+ * previous rule had not anticipated. Round 9 answered by scanning
+ * `pathname + search + hash` as one contiguous string, and that is what round 10
+ * found: a removed span could OPEN in the path and CLOSE at an `@` in the
+ * query, taking the `?` with it. Everything the query held after that `@` then
+ * became ordinary path text in the rebuild —
+ * `/proxy/https://cdn.test/img?owner=alice@example.com&sig=…` emitted a proxy to
+ * `example.com` with the signature attached, naming a host the url never named
+ * and shipping a query token through all seven channels. An `@` in a query
+ * value is ordinary data, and treating it as a userinfo terminator is what
+ * produced both halves of that.
  *
- *  - The parser CREATES marks the raw text never spelled. It removes every
- *    ASCII tab, CR, and LF from the input before parsing, and it reads `\` as
- *    `/` for a special scheme, so `/go/https:\\svc:pw@host` and
- *    `/go/https:<TAB>//svc:pw@host` are authorities only after parsing.
- *  - The parser accepts marks the raw scan cannot find. `https:/host`,
- *    `https:host`, and `https:\\host` all reach the authority state — the
- *    special-authority-slashes state raises a validation error and carries on —
- *    so "the first `://` in the raw text" is not this url's own authority, and
- *    a raw scan anchored on it started AFTER an embedded credential.
+ * So a region never crosses a `?` or a `#`. The concatenated text is scanned in
+ * exactly ONE state, and the parser decides which: the path state hands
+ * everything after the first `?` or `#` to the query state, so `pathname` can
+ * end INSIDE an embedded authority — `/go/https://svc:hun?ter2@host/v1` emits
+ * the pathname `/go/https://svc:hun`, an authority truncated mid-credential with
+ * no `@` left to find and half the password still in it. That is the one state
+ * in which the cut is not a boundary of the embedded url, because the embedded
+ * authority never reached one. {@link endsInsideAuthority} asks the question,
+ * and the answer only ever widens where the `@` is LOOKED FOR. What is removed
+ * is still clipped to `pathname`, so a credential the `?` cut in half goes and
+ * the query still goes whole.
  *
- * So the scan reads no raw text at all. `pathname + search + hash` is the
- * parser's own rendering of everything after this url's authority, in one
- * contiguous string, which answers both halves at once: the marks are the ones
- * the parser wrote, and the authority is wherever the parser found it, however
- * the caller spelled it.
- *
- * CONCATENATED, not `pathname` alone, because the parser CUTS. The path state
- * hands everything after the first `?` or `#` to the query state, so
- * `/go/https://svc:hun?ter2@host/v1` emits the pathname `/go/https://svc:hun` —
- * an authority truncated mid-credential, with no `@` left to find and half the
- * password still in it. The three slots put back what the cut took apart.
- *
- * RE-PARSED, not patched: a removed span can cross the `?` or `#` that ended
- * `pathname`, so there is no single slot to write the result back to, and
- * `url.pathname = …` would percent-encode a surviving `?` into the path instead
- * of letting it start a query that `stripValues` then drops.
+ * RE-PARSED, not patched: `url.pathname = …` would percent-encode the marks a
+ * kept embedded url spells, and the rebuild has to answer with a url a caller
+ * can read.
  *
  * The rebuild takes `origin` and a path, and the path always begins with the
- * `/` no span can reach. The narrowest mark this module reads is a colon and
- * one solidus, and index 0 of `pathname` is already a `/`, so the earliest
- * colon sits at index 1 and the earliest span starts at index 3. So a redaction
- * can move text out of this url, and can never move the HOST it names: a
- * redaction that lies is worse than one that leaks.
+ * `/` no span can reach. Index 0 of `pathname` is already a `/`, so the
+ * earliest colon sits at index 1 and the earliest span starts at index 2. So a
+ * redaction can move text out of this url, and can never move the HOST it
+ * names: a redaction that lies is worse than one that leaks.
  */
 function cleaned(parsed: URL, origin: string): URL {
-  const afterAuthority = parsed.pathname + parsed.search + parsed.hash;
-  const clean = withoutMalformedUserinfo(afterAuthority);
-  return stripValues(clean === afterAuthority ? parsed : new URL(origin + clean));
+  const path = parsed.pathname;
+  const scanned = endsInsideAuthority(path) ? path + parsed.search + parsed.hash : path;
+  const clean = withoutMalformedUserinfo(scanned, path.length);
+  return stripValues(clean === path ? parsed : new URL(origin + clean));
+}
+
+/**
+ * Does `path` END inside an authority?
+ *
+ * The `?` or the `#` that ended `pathname` is the OUTER url's delimiter, placed
+ * by the outer parse. For an embedded url it is a boundary only once that url's
+ * own authority has ended — and an authority ends at the first `/`. So a mark
+ * with no `/` after it anywhere in `path` is an authority the cut interrupted,
+ * and the `@` that would close it, if it has one, is on the other side.
+ *
+ * That is the ONLY state in which {@link cleaned} looks past `pathname`, and it
+ * is why `/proxy/https://cdn.test/img?owner=alice@example.com` does not: the
+ * embedded url reached `/img`, so its authority is complete, the `?` starts its
+ * query, and the `@` in that query is an e-mail address rather than a
+ * terminator.
+ *
+ * THE LAST `/`, not a scan per mark. `indexOf("/", start)` walks to the end of
+ * the string for every mark that has no `/` after it, which is quadratic on
+ * `/go/` + `https:`-repeated; one `lastIndexOf` answers the same question for
+ * every mark at once.
+ */
+function endsInsideAuthority(path: string): boolean {
+  const lastSlash = path.lastIndexOf("/");
+  for (let colon = path.indexOf(":"); colon >= 0; colon = path.indexOf(":", colon + 1)) {
+    const start = authorityAt(path, colon);
+    if (start !== null && start > lastSlash) return true;
+  }
+  return false;
 }
 
 /**
@@ -172,15 +215,16 @@ const AUTHORITY_MARK = "://";
  * malformed scheme at all, only a forward or callback URL, which is the shape
  * that carries credentials in the first place.
  *
- * A region STARTS at a scheme colon and every solidus after it, and it ENDS at
- * the next `://`. Those are two different marks on purpose, and round 9 closed
- * a leak by separating them.
+ * A region STARTS where {@link authorityAt} says the URL Standard opens one,
+ * and it ENDS at the next `://`. Those are two different marks on purpose, and
+ * round 9 closed a leak by separating them.
  *
  * The START has to be the wide mark. A special scheme reaches its authority
- * over any number of solidi, so `https:/svc:pw@host` inside a path is an
- * embedded credential — and it is not exotic: every slash-collapsing proxy and
- * every `path.join` turns an ordinary `/go/https://svc:pw@host` into exactly
- * that spelling before this library ever sees it.
+ * over any number of solidi, INCLUDING NONE, so `https:/svc:pw@host` and
+ * `https:svc:pw@host` inside a path are embedded credentials — and neither is
+ * exotic: every slash-collapsing proxy and every `path.join` turns an ordinary
+ * `/go/https://svc:pw@host` into one of those spellings before this library ever
+ * sees it.
  *
  * The END has to stay the narrow one. Ending a region at a delimiter let the
  * password choose where its own authority stopped: a `\` in a credential is
@@ -208,6 +252,13 @@ const AUTHORITY_MARK = "://";
  * is a path segment, the query and the fragment are still dropped, and
  * `error.url` still holds the whole href.
  *
+ * SPANS ARE FOUND HERE AND CLIPPED BY THE CALLER. This function reads whatever
+ * text it is handed, which for {@link cleaned} may run past `pathname` into the
+ * query — see {@link endsInsideAuthority} for the one state in which it does.
+ * What that widening buys is the `@` of a credential the outer `?` cut in half.
+ * It never buys the right to EMIT the text after that `@`, which is why the
+ * clip lives in {@link withoutMalformedUserinfo} rather than in this scan.
+ *
  * Which leaves ONE question per `@`: is the text before it an authority, or a
  * path that happens to contain an `@`? {@link looksLikeUserinfo} answers it.
  *
@@ -233,16 +284,15 @@ function malformedUserinfoSpans(text: string): { start: number; end: number }[] 
   let scanned = 0;
   let lastAt = -1;
   for (;;) {
-    const authority = nextAuthority(text, from);
-    if (authority === null) break;
-    const start = authority.start;
+    const start = nextAuthority(text, from);
+    if (start === null) break;
     if (stop >= 0 && stop < start) stop = text.indexOf(AUTHORITY_MARK, start);
     const end = stop < 0 ? text.length : stop;
     while (scanned < end) {
       if (text[scanned] === "@") lastAt = scanned;
       scanned += 1;
     }
-    if (lastAt >= start && looksLikeUserinfo(text, start, lastAt, authority.solidi)) {
+    if (lastAt >= start && looksLikeUserinfo(text, start, lastAt)) {
       spans.push({ start, end: lastAt + 1 });
       // Past the `@` this region ended on: any region opening inside the span
       // just removed reads the same `@` and nests inside it.
@@ -255,20 +305,88 @@ function malformedUserinfoSpans(text: string): { start: number; end: number }[] 
 }
 
 /**
- * Where the authority after the next scheme colon begins, and how many solidi
- * spelled the mark. `null` once no mark is left.
+ * Where the authority after the next scheme colon begins. `null` once no mark
+ * is left.
  *
  * EVERY solidus is consumed, because the parser consumes every one:
- * `https:///host` and `https:/host` name the host `https://host` names. See
- * {@link isSolidus}.
+ * `https:///host`, `https:/host` and `https:host` all name the host
+ * `https://host` names. See {@link isSolidus} and {@link authorityAt}.
  */
-function nextAuthority(text: string, from: number): { start: number; solidi: number } | null {
+function nextAuthority(text: string, from: number): number | null {
   for (let colon = text.indexOf(":", from); colon >= 0; colon = text.indexOf(":", colon + 1)) {
-    let start = colon + 1;
-    while (isSolidus(text[start])) start += 1;
-    if (start > colon + 1) return { start, solidi: start - colon - 1 };
+    const start = authorityAt(text, colon);
+    if (start !== null) return start;
   }
   return null;
+}
+
+/**
+ * The authority this colon opens, or `null` when the colon opens none.
+ *
+ * TWO SPELLINGS, and they are the URL Standard's own two, not an approximation
+ * of them:
+ *
+ *  - TWO OR MORE solidi. `://` is the mark the grammar writes for an authority
+ *    under ANY scheme, valid or not — the path-or-authority state reads it for a
+ *    scheme this module has never heard of, and for the empty scheme a template
+ *    left behind.
+ *  - A SPECIAL scheme, over any number of solidi INCLUDING NONE. The
+ *    special-authority-slashes state raises
+ *    `special-scheme-missing-following-solidus`, moves to the
+ *    special-authority-ignore-slashes state, and decreases the pointer by one;
+ *    that state then leaves for the authority state on the first character that
+ *    is neither `/` nor `\`. So `https:svc:pw@host` names the host `host` with
+ *    the username `svc` and the password `pw`, exactly as `https://svc:pw@host`
+ *    does, and round 10 found the credential riding out through every channel
+ *    because `start > colon + 1` had made ZERO the one count that opened nothing.
+ *
+ * Both halves matter, and the second is what makes the FIRST safe to narrow.
+ * The old rule opened a region for one solidus after any colon at all, which
+ * read `/a:/b` as an authority — an ordinary path segment, and the shape that
+ * let an `@` in a QUERY reach back through it. A non-special scheme does NOT
+ * reach an authority over one solidus: the URL Standard sends it to the opaque
+ * path state instead. So a colon with fewer than two solidi opens a region only
+ * where the parser would open one, which is where the scheme is special —
+ * `/go/https:/svc:pw@host`, the spelling every slash-collapsing proxy and every
+ * `path.join` produces — and nowhere else. A Windows drive letter
+ * (`file:///c:/Users/alice@corp/x`) is now excluded by the same rule rather than
+ * by a separate carve-out in {@link looksLikeUserinfo}.
+ */
+function authorityAt(text: string, colon: number): number | null {
+  let start = colon + 1;
+  while (isSolidus(text[start])) start += 1;
+  if (start > colon + 2) return start;
+  return isSpecialScheme(text, colon) ? start : null;
+}
+
+/**
+ * Is the text immediately before `colon` one of the six {@link SPECIAL_SCHEMES}?
+ *
+ * READ FORWARD FROM A BOUNDED OFFSET, never scanned backwards to the start of
+ * the token. A backward walk over scheme characters is linear in the token it
+ * walks, and a path can spell one token per colon; each candidate here is at
+ * most five characters long, so the whole question costs the same however long
+ * the text before the colon is.
+ *
+ * The character BEFORE the match decides it, because a scheme is a whole token:
+ * `xhttps:` is not `https:`, and `/go/https:` is. `text[-1]` is `undefined` when
+ * the scheme starts the string, which is not a scheme character, so the mark at
+ * index 0 of a raw url needs no separate case.
+ */
+function isSpecialScheme(text: string, colon: number): boolean {
+  for (const scheme of SPECIAL_SCHEMES) {
+    const start = colon - scheme.length;
+    if (start < 0 || text.slice(start, colon).toLowerCase() !== scheme) continue;
+    return !isSchemeCharacter(text[start - 1]);
+  }
+  return false;
+}
+
+/** ALPHA / DIGIT / `+` / `-` / `.` — the characters a scheme is spelled from. */
+const SCHEME_CHARACTER = /[a-z0-9+\-.]/i;
+
+function isSchemeCharacter(character: string | undefined): boolean {
+  return character !== undefined && SCHEME_CHARACTER.test(character);
 }
 
 /**
@@ -308,16 +426,19 @@ function isSolidus(character: string | undefined): boolean {
  *
  * So `://api.test/users/@alice` keeps every segment it names.
  *
- * The third rule needs the mark spelled IN FULL, and `solidi` is why this
- * function counts them. A single solidus is the weakest mark there is, and an
- * ordinary path spells one: `file:///c:/Users/alice@corp/x` holds a Windows
- * drive letter, not a scheme, and the URL Standard carves that shape out by
- * name. The first two rules still read `https:/svc:pw@host` as the credential
- * it is — a credential is `user:password`, or a token with no `/` in it — but
- * reading a `/`-bearing token as one takes the two solidi the parser's own
- * spelling has. That leaves a residual, stated rather than hidden: a
- * standard-base64 token containing a `/`, behind a single-solidus scheme, is
- * kept as a path segment.
+ * THE THREE RULES DO NOT COUNT SOLIDI, and round 10 removed the count they used
+ * to carry. Round 9 gated the third rule on two solidi for ONE reason: a Windows
+ * drive letter spells a colon and one solidus in an ordinary path
+ * (`file:///c:/Users/alice@corp/x`), and reading `Users/alice@` there as a
+ * credential would delete a named segment. That guard was in the wrong place.
+ * `c` is not a SPECIAL scheme, so the URL Standard never reaches an authority
+ * from `c:/…` at all, and {@link authorityAt} now says so — the drive letter
+ * opens no region and never reaches this function. Paying for it here instead
+ * cost a credential: `https:/YWxpY2U/cGFzc3dvcmQ@host` and
+ * `https:YWxpY2U/cGFzc3dvcmQ@host` are the same embedded credential as the
+ * two-solidus spelling, and both were kept as path segments. A rule that
+ * answered differently for the same text under three spellings of one mark was
+ * closing the case rather than the class.
  *
  * THREE RESIDUALS, all stated because the ambiguity is real and unresolvable
  * once a malformed scheme has taken away where the authority ends. The first
@@ -347,21 +468,29 @@ function isSolidus(character: string | undefined): boolean {
  * full href stays on `error.url` — this rule only decides where a MALFORMED
  * authority ends.
  */
-function looksLikeUserinfo(text: string, start: number, end: number, solidi: number): boolean {
+function looksLikeUserinfo(text: string, start: number, end: number): boolean {
   if (end === start) return true;
   const slash = text.indexOf("/", start);
   if (slash < 0 || slash >= end) return true;
   const colon = text.indexOf(":", start);
   if (colon >= 0 && colon < slash) return true;
-  return solidi > 1 && text[end - 1] !== "/";
+  return text[end - 1] !== "/";
 }
 
 /**
- * The same string with every malformed authority's userinfo removed.
+ * The first `limit` characters of `text` with every malformed authority's
+ * userinfo removed.
  *
  * Never applied to the INPUT — {@link cleaned} hands it what a URL parser
  * emitted, and {@link userinfosOf} hands it a slot of one. Which URLs resolve
  * stays the raw input's own answer to give.
+ *
+ * CLIPPED, and that is round 10's whole correction. `limit` is the length of
+ * `pathname`, so a span may be FOUND past it — the `@` that closes a credential
+ * the `?` cut in half is on the other side — and can never be EMITTED past it.
+ * A span that crosses the limit removes everything from its start to the limit;
+ * a span that starts at or after the limit is query or fragment text, which this
+ * function's caller drops whole either way.
  *
  * Percent-encoding does not weaken the scan where the delimiters are literal:
  * it removes the whole span up to the `@`, so an encoded password
@@ -371,17 +500,15 @@ function looksLikeUserinfo(text: string, start: number, end: number, solidi: num
  * `disclosure-channels.spec.ts`, which pins the shapes on each side of that
  * line.
  */
-function withoutMalformedUserinfo(path: string): string {
-  const spans = malformedUserinfoSpans(path);
-  if (spans.length === 0) return path;
-
+function withoutMalformedUserinfo(text: string, limit: number): string {
   let out = "";
   let cursor = 0;
-  for (const span of spans) {
-    out += path.slice(cursor, span.start);
-    cursor = span.end;
+  for (const span of malformedUserinfoSpans(text)) {
+    if (span.start >= limit) break;
+    out += text.slice(cursor, span.start);
+    cursor = span.end < limit ? span.end : limit;
   }
-  return out + path.slice(cursor);
+  return out + text.slice(cursor, limit);
 }
 
 /**

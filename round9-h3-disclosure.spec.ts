@@ -124,9 +124,25 @@ describe("R9-H3-01 — an authority spelled without `://` moves the raw scan", (
   test("CONTROL: the same url spelled with `://` is already redacted", () => {
     // Round 8's shape, unchanged. It is what makes the four above a defect in
     // the ANCHOR rather than a gap in the scan.
-    expect(redactUrl(`https://api.test/go/https://svc:${PASSWORD}?tail@internal.test/v1`)).toBe(
-      "https://api.test/go/https://internal.test/v1",
-    );
+    //
+    // ROUND 10 changed the BYTES this control pins, and nothing about what it
+    // controls for. `internal.test/v1` is QUERY text — the parser hands
+    // everything after `?tail` to the query state — and round 9 emitted it as
+    // path because the removed span had swallowed the `?` that started it. That
+    // is R10-H3-01: a span that crosses the `?` promotes the query into the
+    // path the redactor keeps, and names a host the request never named. The
+    // same mechanism carried `sig=QUERY_TOKEN_SECRET` out through all seven
+    // channels for `/proxy/https://cdn.test/img?owner=alice@example.com&sig=…`,
+    // so the two are one defect and no rule separates them. A query byte is
+    // never emitted now: the `@` is still LOOKED FOR past the cut, so the
+    // truncated password still goes, and the removal is clipped at `pathname`.
+    // The control's own claim — this shape needs no raw anchor to be redacted —
+    // is asserted below exactly as it always was.
+    const url = `https://api.test/go/https://svc:${PASSWORD}?tail@internal.test/v1`;
+
+    expect(redactUrl(url)).toBe("https://api.test/go/https://");
+    expect(redactUrl(url)).not.toContain(PASSWORD);
+    expect(new URL(redactUrl(url)).host).toBe(new URL(url).host);
   });
 
   test("no channel of an HTTP error carries the password", async () => {

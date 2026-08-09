@@ -425,7 +425,12 @@ describe("control — redaction of an embedded credential", () => {
       "https://api.test/go/http://plain.test/then/https://internal.test/v1",
     ],
     ["a malformed authority", "://svc:hunter2@internal.test/v1", "/://internal.test/v1"],
-    ["a password holding the old scan terminator", "://svc:hun?ter2@host/v1", "/://host/v1"],
+    // ROUND 10 changed the BYTES of this row, not its rule. `host/v1` is text
+    // the caller wrote after a `?`, and the redactor promoted it into the path
+    // when the removed span swallowed that `?`. A query byte is never emitted
+    // now, so what is left is the mark and nothing the query held. The password
+    // is gone here exactly as it was before. See R10-H3-01.
+    ["a password holding the old scan terminator", "://svc:hun?ter2@host/v1", "/://"],
     ["an empty userinfo keeps the host", "://@host/x", "/://host/x"],
     ["a standard-base64 token", "://YWxpY2U/cGFzc3dvcmQ@host/v1", "/://host/v1"],
     ["an opaque url keeps only its scheme", "data:text/plain,secret", "data:"],
@@ -880,7 +885,14 @@ describe("R9 — one text: what the parser emitted, never the raw input", () => 
     ["a solidus and a CR", "https:/\r/api.test/go/https://svc:hunter2?tail@internal.test/v1"],
     ["an LF inside the scheme", "ht\ntps://api.test/go/https://svc:hunter2?tail@internal.test/v1"],
   ])("an authority spelled %s does not move the scan", (_label, url) => {
-    expect(redactUrl(url)).toBe("https://api.test/go/https://internal.test/v1");
+    // ROUND 10 changed the BYTES, not the rule. `internal.test/v1` is QUERY
+    // text — the parser put everything after `?tail` in `search` — and round 9
+    // emitted it as path because the removed span swallowed the `?`. It named a
+    // host this url never named. The password went then and goes now; what has
+    // stopped is the promotion. See R10-H3-01.
+    expect(redactUrl(url)).toBe("https://api.test/go/https://");
+    expect(redactUrl(url)).not.toContain("hunter2");
+    expect(new URL(redactUrl(url)).host).toBe(new URL(url).host);
   });
 
   // R9-H3-02. Every spelling of the EMBEDDED authority the parser has to write
@@ -896,7 +908,9 @@ describe("R9 — one text: what the parser emitted, never the raw input", () => 
       "https://api.test/go/https://svc:hun\tter2?tail@internal.test/v1",
     ],
   ])("an embedded authority the parser writes out — %s", (_label, url) => {
-    expect(redactUrl(url)).toBe("https://api.test/go/https://internal.test/v1");
+    // ROUND 10: same byte change, same reason as the block above.
+    expect(redactUrl(url)).toBe("https://api.test/go/https://");
+    expect(redactUrl(url)).not.toContain("hunter2");
   });
 
   // The RELATIVE branch had the same hole and nobody reported it: it read the
@@ -908,7 +922,10 @@ describe("R9 — one text: what the parser emitted, never the raw input", () => 
     ["a tab and a `#`", "/go/https:\t//svc:hunter2#tail@i.test/v1"],
     ["a CR and a `?`", "/go/https:\r//svc:hunter2?tail@i.test/v1"],
   ])("the relative branch loses it too — %s", (_label, url) => {
-    expect(redactUrl(url)).toBe("/go/https://i.test/v1");
+    // ROUND 10: `i.test/v1` was query text here too, and both branches rebuild
+    // through the same `cleaned`, so both stop promoting it together.
+    expect(redactUrl(url)).toBe("/go/https://");
+    expect(redactUrl(url)).not.toContain("hunter2");
   });
 
   // The rebuild takes an origin and a PATH, and a path always keeps the leading
@@ -943,25 +960,30 @@ describe("R9 — one text: what the parser emitted, never the raw input", () => 
       "https://api.test/go/https://svc:hunter2%40x@i.test/v1",
       "https://api.test/go/https://i.test/v1",
     ],
+    // ROUND 10 changed the four rows below, and only their BYTES. In each one
+    // the `?` or the `#` fell inside the pathname's last authority, so
+    // everything after it — the second authority, `i.test/v1`, `j.test/z` — is
+    // QUERY or FRAGMENT text that round 9 emitted as path. The credential goes
+    // as it always did; the promotion is what stopped. See R10-H3-01.
     [
       "a second authority after a removed span",
       "https://api.test/go/https://svc:hunter2?t@i.test/v1/https://svc2:pw@j.test/z",
-      "https://api.test/go/https://i.test/v1/https://j.test/z",
+      "https://api.test/go/https://",
     ],
     [
       "a dot segment before the mark",
       "https://api.test/go/../go2/https://svc:hunter2?t@i.test/v1",
-      "https://api.test/go2/https://i.test/v1",
+      "https://api.test/go2/https://",
     ],
     [
       "an uppercase embedded scheme",
       "https://api.test/go/HTTPS://svc:hunter2?t@i.test/v1",
-      "https://api.test/go/HTTPS://i.test/v1",
+      "https://api.test/go/HTTPS://",
     ],
     [
       "a `#` before a `?`",
       "https://api.test/go/https://svc:hunter2#a?b@i.test/v1",
-      "https://api.test/go/https://i.test/v1",
+      "https://api.test/go/https://",
     ],
     [
       "a credential in the query alone",
@@ -976,7 +998,7 @@ describe("R9 — one text: what the parser emitted, never the raw input", () => 
     [
       "a file url with an embedded credential",
       "file:///var/go/https://svc:hunter2?t@i.test/v1",
-      "file:///var/go/https://i.test/v1",
+      "file:///var/go/https://",
     ],
     [
       "a drive letter is not an authority",
@@ -1057,34 +1079,45 @@ describe("the residual any single pass has", () => {
 // ───────────────────────────────────────────────────────────────────────────
 
 describe("R8 — a terminator inside a credential the PATH embeds", () => {
+  // ROUND 10 changed every expected string in this block and none of its rule.
+  // Round 8's finding was that the truncated password survived; it still goes.
+  // What the row used to pin BESIDE that was the tail of the query, emitted as
+  // path because the removed span had swallowed the `?` that started it —
+  // `internal.test` is a host the request never named. A query byte is never
+  // emitted now, so the span is clipped at the pathname and the mark is what is
+  // left. See R10-H3-01.
   test.each([
     [
       "a `?` ends the pathname mid-credential",
       "https://api.test/go/https://svc:hunter2?tail@internal.test/v1",
-      "https://api.test/go/https://internal.test/v1",
+      "https://api.test/go/https://",
     ],
     [
       "a `#` ends it the same way",
       "https://api.test/go/https://svc:hunter2#tail@internal.test/v1",
-      "https://api.test/go/https://internal.test/v1",
+      "https://api.test/go/https://",
     ],
     [
       "a username-only bearer token is cut too",
       "https://api.test/callback/https://tok_hunter2?x@internal.test/v1",
-      "https://api.test/callback/https://internal.test/v1",
+      "https://api.test/callback/https://",
     ],
     [
       "this url's OWN userinfo still goes with it",
       "https://alice:pw@api.test/go/https://svc:hunter2?t@internal.test/v1",
-      "https://api.test/go/https://internal.test/v1",
+      "https://api.test/go/https://",
     ],
     [
       "the port of THIS url is still not read as userinfo",
       "https://api.test:8443/go/https://svc:hunter2?t@internal.test/v1",
-      "https://api.test:8443/go/https://internal.test/v1",
+      "https://api.test:8443/go/https://",
     ],
   ])("%s", (_label, url, expected) => {
     expect(redactUrl(url)).toBe(expected);
+    // The half of each row that has never changed, asserted on its own so a
+    // later round cannot read the byte change as a loosening.
+    expect(redactUrl(url)).not.toContain("hunter2");
+    expect(new URL(redactUrl(url)).host).toBe(new URL(url).host);
   });
 
   // The twins the parser does NOT cut, pinned beside the ones it does, so a
@@ -1146,15 +1179,17 @@ describe("R9 residual — a scheme colon and its solidi open an authority", () =
       "https://api.test/go/https:/token@internal.test/v1",
       "https://api.test/go/https:/internal.test/v1",
     ],
+    // ROUND 10: bytes only, for the reason the R8 block above states — the tail
+    // these two used to pin was query text.
     [
       "a `?` terminator inside the credential",
       "https://api.test/go/https:/svc:hunter2?tail@internal.test/v1",
-      "https://api.test/go/https:/internal.test/v1",
+      "https://api.test/go/https:/",
     ],
     [
       "a `#` terminator inside the credential",
       "https://api.test/go/https:/svc:hunter2#tail@internal.test/v1",
-      "https://api.test/go/https:/internal.test/v1",
+      "https://api.test/go/https:/",
     ],
     [
       "a single backslash the parser rewrites",
@@ -1224,28 +1259,47 @@ describe("R9 residual — a scheme colon and its solidi open an authority", () =
       "https://api.test/go/https:/svc:pw@h1/then/http:/u2:pw2@h2/v1",
       "https://api.test/go/https:/h2/v1",
     ],
-    [
-      "an ordinary path segment ending in `:/` before an `@`",
-      "https://api.test/a:/b@c",
-      "https://api.test/a:/c",
-    ],
   ])("RESIDUAL: %s", (_label, url, expected) => {
     expect(redactUrl(url)).toBe(expected);
+  });
+
+  // CLOSED IN ROUND 10, and this row recorded the residual until then.
+  //
+  // Round 9 opened a region for ONE solidus after ANY colon, so `/a:/b@c` — an
+  // ordinary path segment — lost `b@` as if it were a credential. A single
+  // solidus reaches an authority only for a SPECIAL scheme: the URL Standard
+  // sends every other scheme to the opaque path state instead, and `a` is not
+  // one of the six. So the over-redaction goes, and the shape that actually
+  // motivated the widened anchor — `/go/https:/svc:pw@host`, where the scheme
+  // IS special — is untouched by the narrowing. See the row above.
+  test("CLOSED (round 10): an ordinary path segment ending in `:/` before an `@`", () => {
+    expect(redactUrl("https://api.test/a:/b@c")).toBe("https://api.test/a:/b@c");
+  });
+
+  // CLOSED IN ROUND 10, and this pair recorded the residual until then.
+  //
+  // Round 9 gated `looksLikeUserinfo`'s third rule — the one that reads a
+  // `/`-bearing token as a credential — on two solidi, and paid for a Windows
+  // drive letter with a kept credential. The guard was in the wrong place: `c`
+  // is not a SPECIAL scheme, so the URL Standard reaches no authority from
+  // `c:/…` and the drive letter now opens no region at all. With that carve-out
+  // where it belongs, the rule no longer counts solidi, and the same base64
+  // credential is removed however many of them spelled the mark.
+  test.each([
+    ["one solidus", "https://api.test/go/https:/YWxpY2U/cGFzc3dvcmQ@internal.test/v1"],
+    ["none at all", "https://api.test/go/https:YWxpY2U/cGFzc3dvcmQ@internal.test/v1"],
+  ])("CLOSED (round 10): a base64 credential with a `/` behind %s", (_label, url) => {
+    expect(redactUrl(url)).not.toContain("cGFzc3dvcmQ");
+    expect(new URL(redactUrl(url)).host).toBe("api.test");
   });
 
   // The shapes the widened anchor deliberately does NOT reach, each pinned
   // with the reason, so a later widening has to name which one it takes.
   test.each([
     // A Windows drive letter spells a colon and one solidus in an ordinary
-    // path. This is why a SINGLE solidus does not get `looksLikeUserinfo`'s
-    // third rule — the one that reads a `/`-bearing token as a credential.
+    // path, and `c` is not one of the six SPECIAL schemes — so the URL Standard
+    // sends it to the opaque path state and no region opens here either.
     ["a drive letter is still not an authority", "file:///c:/Users/alice@corp/x"],
-    // The price of that: a standard-base64 token containing a `/`, behind a
-    // single-solidus scheme. Two solidi still reach it — the row below.
-    [
-      "RESIDUAL: a base64 credential with a `/` behind ONE solidus",
-      "https://api.test/go/https:/YWxpY2U/cGFzc3dvcmQ@internal.test/v1",
-    ],
     // No colon before the solidi at all, and a percent-encoded one, which the
     // `disclosure-channels.spec.ts` CONTROL rows record as residual 2.
     ["a scheme-relative embedded url", "https://api.test/go//svc:pw@internal.test/v1"],
@@ -1255,6 +1309,54 @@ describe("R9 residual — a scheme colon and its solidi open an authority", () =
     ["a scoped package", "https://api.test/@scope/pkg"],
   ])("%s", (_label, url) => {
     expect(redactUrl(url)).toBe(url);
+  });
+
+  // ROUND 10 — the mark that opens a region is now the URL Standard's own
+  // question, asked of the PLATFORM here rather than restated as a rule.
+  //
+  // Round 9 opened a region for one solidus after ANY colon. That is not what
+  // the parser does: the special-authority-slashes and
+  // special-authority-ignore-slashes states belong to the six SPECIAL schemes,
+  // and every other scheme goes to the OPAQUE PATH state instead. So
+  // `git:/svc:pw@host` carries no authority and no credential — it is a path —
+  // while `https:/svc:pw@host` and `https:svc:pw@host` carry both.
+  test.each([
+    ["a special scheme, no solidus", "https:svc:pw@api.test/x", true],
+    ["a special scheme, one solidus", "https:/svc:pw@api.test/x", true],
+    ["a special scheme, two solidi", "https://svc:pw@api.test/x", true],
+    ["a non-special scheme, no solidus", "git:svc:pw@api.test/x", false],
+    ["a non-special scheme, one solidus", "git:/svc:pw@api.test/x", false],
+    ["a non-special scheme, two solidi", "git://svc:pw@api.test/x", true],
+    // The Windows drive letter's own spelling, which is why round 9 needed a
+    // solidus count in `looksLikeUserinfo` and this round does not.
+    ["a one-letter non-special scheme", "c:/svc:pw@api.test/x", false],
+  ])("the platform decides which marks are authorities — %s", (_label, embedded, isAuthority) => {
+    // The oracle first, so the row below is about the redactor and nothing else.
+    const parsed = new URL(embedded);
+    expect(parsed.username !== "" || parsed.password !== "" || parsed.host !== "").toBe(
+      isAuthority,
+    );
+
+    const redacted = redactUrl(`https://api.test/go/${embedded}`);
+
+    // Where the parser reads an authority, the credential goes. Where it reads
+    // a path, the text stays — that is residual 2, and it is the SAME answer
+    // the parser gives, not a second opinion about it.
+    expect(redacted.includes("svc:pw@")).toBe(!isAuthority);
+    expect(new URL(redacted).host).toBe("api.test");
+  });
+
+  // RESIDUAL, NEW IN ROUND 10 and stated because it is the price of the row
+  // above. Round 9's anchor removed `svc:pw@` from `/go/git:/svc:pw@host`;
+  // this one does not, because the URL Standard puts no authority there. What
+  // the narrowing buys is that `/a:/b` stops being read as an authority at all,
+  // which is what let an `@` in a QUERY reach back through an ordinary path
+  // segment. The query and the fragment are still dropped, and `error.url`
+  // still holds the whole href.
+  test("RESIDUAL: a non-special scheme under two solidi is a path, credential and all", () => {
+    expect(redactUrl("https://api.test/go/git:/svc:pw@internal.test/v1")).toBe(
+      "https://api.test/go/git:/svc:pw@internal.test/v1",
+    );
   });
 
   test("two solidi still reach the base64 credential the single one does not", () => {
