@@ -223,6 +223,14 @@ Run every step, in order, for every release:
    commit, and workflow. Install the exact version in a clean consumer once.
    `pnpm verify-pack` is the authoritative dry-run manifest check; the release
    workflow executes it before staging the immutable publication artifact.
+9. **Publish the security advisory.** If the release fixes no reported
+   vulnerability, skip this step. `SECURITY.md` sends every reporter to
+   [GitHub Security Advisories](https://github.com/pbpeterson/typed-fetch/security/advisories),
+   so a reported fix already has a private draft there. Add the fixed version
+   to that draft. Credit the reporter. Request a CVE from the same page.
+   Publish the draft after step 8 confirms the version is live on npm. A
+   shipped fix with a private advisory leaves no public record that a consumer
+   scanner can read.
 
 ## Semver policy
 
@@ -292,3 +300,16 @@ the rule, not intuition.
    it cannot see the previous version, so it cannot decide a question that is
    about a diff against a released one. Adding a text match for the key would
    make it a second source of truth for something two gates already prove.
+
+8. **A change in what `toJSON().url` emits is a `minor` at least.** That field
+   is `redactUrl(error.url)`, and it is the record a structured logger writes.
+   A consumer builds a correlation key, an alert rule, and a log query from it.
+   A patch that moves the string therefore breaks a consumer that changed no
+   code. Rule 2 frees the `error.message` TEXT, and it does not free this
+   field. A security fix that moves the redacted URL ships as a `minor` or
+   higher. `CHANGELOG.md` states each direction the output moved, and names one
+   ordinary input per direction.
+
+   The rule binds the redacted OUTPUT, never the redactor's internal shape.
+   `redactUrl` is not exported, so no consumer can call it. A refactor that
+   leaves every emitted string identical is a `patch`.

@@ -259,6 +259,13 @@ Words this codebase already uses, some of them only implicitly until now.
   setup phase can end a call only for a read that PRODUCES what the
   transport receives — the input serialization, the transport selection, the
   init — never for a read that only describes the request.
+- **Transport re-entry** — what a transport sees of the `fetch` option that
+  selected it. The init a transport receives carries no `fetch` extension under
+  any of the three reads: a property get answers `undefined`, an `in` check
+  answers `false`, and the own-key list omits the name. So a transport that
+  calls `typedFetch` again with that init re-enters on the AMBIENT transport. It
+  never re-enters on itself, and a forwarding transport that spreads its init
+  cannot build an infinite loop out of one option.
 
 ## The modules
 

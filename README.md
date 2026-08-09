@@ -577,8 +577,10 @@ or inspection failure.
 
 Each of these errors also has a `url` value. Use this value to identify a failed request among concurrent requests.
 
-`error.url` holds the full href. For a hierarchical URL, the `toJSON()` record
-holds the origin and path. It removes userinfo, query strings, and fragments.
+`error.url` holds the full href. The `toJSON()` record holds a redacted copy.
+[Known residuals](https://github.com/pbpeterson/typed-fetch/blob/main/SECURITY.md#known-residuals)
+in `SECURITY.md` states the redaction rule and every shape that still reaches
+the record. Read it before you correlate failures by the record's `url`.
 
 WARNING: `error.message` for a request failure is a library constant, such as
 `Network error`. This library does not copy the platform's message, because a
@@ -589,8 +591,10 @@ platform error, unmodified. Decide what a log line may carry before you copy
 
 The path is kept because it names the resource, which is what tells concurrent
 failures apart. That holds for `http:`, `https:`, `ws:`, `wss:`, `ftp:`, and
-`file:`. An opaque scheme carries its payload in the path instead. The redactor
-therefore keeps only `data:` or `blob:`.
+`file:`. Every other scheme is opaque, and an opaque scheme carries its payload
+in the path instead. For an opaque URL the record holds the scheme and the
+colon, and nothing after them. The rule reads the scheme rather than a list, so
+do not build a log allow-list from a set of example schemes.
 
 ### Network failures
 
@@ -1049,16 +1053,18 @@ if (isHttpError(error)) {
 
 `headers` holds header names, never values. A response carries values a log must not keep: `set-cookie` holds the session, and a custom header holds whatever the server chose to put there. A logger calls `toJSON()` on whatever it is handed, so the record cannot carry a value that nobody judged. A deny list does not solve this, because the dangerous name is the one this library has never heard of.
 
-`url` follows the same rule. For a hierarchical URL, the record holds the
-origin and path. It drops userinfo, the query string, and the fragment.
+`url` follows the same rule, and it is redacted. `error.url` still holds the
+full href. This document does not restate the redaction rule, because a second
+copy of it drifts from the first. Read
+[Known residuals](https://github.com/pbpeterson/typed-fetch/blob/main/SECURITY.md#known-residuals)
+in `SECURITY.md`, which owns the rule and every shape that still reaches the
+record.
 
-An opaque URL carries its payload in the path. The record therefore keeps only
-its scheme. `error.url` still holds the full href.
-
-A hierarchical path is kept, so a secret in a path segment reaches the record.
-Dropping the path would reduce `url` to the origin and prevent request
-correlation. Read [Known residuals](https://github.com/pbpeterson/typed-fetch/blob/main/SECURITY.md#known-residuals)
-for the exact shapes that still reach the record.
+CAUTION: An embedded URL inside the path is not a path segment, so the record
+can drop a segment the caller requested. `toJSON()` on a failure of
+`https://api.test/go/https://svc:hunter2@i.test/v1` reports the `url`
+`https://api.test/go/https://i.test/v1`. Do not read the record's path as the
+path you asked for.
 
 A repeated `set-cookie` appears once per arrival, so `["set-cookie", "set-cookie"]` tells you the server sent two. Every other repeated name is combined into one entry by the platform, and its values are joined with a comma. Two `warning` headers therefore produce one `"warning"` entry. Read `error.headers` for the values, and `error.headers.getSetCookie()` for the cookies.
 

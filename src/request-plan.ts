@@ -38,6 +38,11 @@ import type { HttpMethods } from "./methods";
  *   selection, the init — can end a call.
  * - The `fetch` override is read as an OWN property. A polluted prototype never
  *   redirects a transport.
+ * - The init a transport receives carries no `fetch` extension under any of the
+ *   three reads: a property get answers `undefined`, an `in` check answers
+ *   `false`, and the own-key list omits the name. So a transport that calls
+ *   `typedFetch` again with that init re-enters on the AMBIENT transport. It
+ *   never re-enters on itself.
  * - Every failure this module raises is a plan refusal, and
  *   {@link planFailure} turns any of them into a `NetworkError`. The setup
  *   phase never produces an `AbortedError` or a `TimeoutError`, because no

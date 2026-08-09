@@ -333,3 +333,20 @@ The corpus cannot drive this half, because every scenario there injects a
 server, and they cover the thirteen dictionary slots the transport reads, a
 read inside a header container, both legitimate abort timings, and the injected
 transport that keeps its abort.
+
+## Amendment — 2026-08-09: the release in phase 3 reaches a body a caller holds
+
+This amendment changes no row. It names the one behavior out-of-scope item 3
+covers on the release path, which round 15 recorded and no sentence here
+stated.
+
+Phase 3's release cancels the body of a `Response` an earlier call already
+handed to a caller, on BOTH arms. The success arm ends the caller's stream. The
+HTTP-error arm makes `error.text()` reject with `Body is unusable`, while
+`error.cancel()` still settles. Only a value that answers a structural read
+differently after the handoff reaches this path, which is item 3 exactly. The
+release stays unconditional, because a skipped release strands a stream.
+
+`tests/request/round16-h1-request.spec.ts` pins both arms, and it pins the
+other side too: a value that no earlier call handed out is still released on a
+refusal.

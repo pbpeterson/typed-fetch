@@ -10,6 +10,26 @@ security updates.
 These are deliberate limits, not defects. Each one is tested, so it stays a
 known limit rather than a surprise.
 
+One rule decides membership, and it decides every entry below. A limit belongs
+here when this library's own output can harm the reader who acts on it. Two
+shapes reach that bar. In the first, a secret the caller wrote in a URL or a
+header reaches a reader through a channel this library controls. In the second,
+a value this library emits misleads that reader. A record that names a host the
+request never contacted is one such value. A guard that accepts a forged brand
+is another.
+
+A limit whose whole cost is a diagnostic does not reach the bar, and this list
+names none. Four such limits ship in the current package:
+
+1. the 128-character bound on the origin's reason phrase;
+2. the character filter on that phrase;
+3. the over-redaction that `redactUrlInMessage` performs on a message;
+4. the `%28` and `%29` escaping of a path inside a message.
+
+Each one costs a detail a reader wants. None of them emits a value an attacker
+wants. So an absence from this list is a decision, and a reader can test any
+limit found in the source against the rule above.
+
 - **A credential can reach a crash dump through `error.cause`.** A platform
   quotes the URL it refused back in its own message, credentials included.
   Every channel this library controls redacts that value: `error.message`,
@@ -48,8 +68,12 @@ known limit rather than a surprise.
   resolution base's scheme, which the URL Standard resolves as a relative
   path with its scheme colon eaten.
 
-  A region ends where the parser ends an authority it can read. A region
-  whose start is not an authority the parser can read does not end at all.
+  A region ends at the next `://`, and only where the parser reads a complete
+  authority at the region's START. `parsesAsAuthority` decides whether that
+  `://` is BELIEVED. It never reports where the authority finished, so a
+  region runs PAST the embedded host it opened on. Where the parser cannot
+  read an authority at the start, no `://` ends the region. A region with no
+  `://` after it ends at the end of the text.
   Inside a region, each `@` is asked, on its own, whether the text before it
   is userinfo, and the removed span is the union of the `@` marks that
   answer yes. The target path's trailing segments cannot decide whether the
@@ -92,6 +116,26 @@ known limit rather than a surprise.
   parser reads as a host, such as `/go/https://YWxpY2U/cGFzc3dvcmQ://x@host`.
   It stays open for the same reason: `://host1/x://u2:pw@host2/v1` spells
   the same characters and must keep `host1`.
+
+- **An embedded URL loses the authority the parser reads, when a later path
+  segment holds an ordinary `@`.** The region opens at the embedded `://` and
+  runs past the embedded host, because the region's end is the NEXT `://` and
+  there is none. `looksLikeUserinfo` then reads the host and the segments
+  after it as one credential, and the span takes the host with it.
+  `https://api.test/proxy/https://cdn.test/img/alice@example.com/avatar.png`
+  emits `https://api.test/proxy/https://example.com/avatar.png`. That record
+  NAMES `example.com`, a host the request never contacted, and it drops
+  `cdn.test`, the host the request did contact. The url is well formed, and
+  `response.url` after a redirect is text the SERVER chose.
+
+  It stays open because no structural rule separates it from a credential the
+  suite requires this library to remove.
+  `https://api.test/go/https://YWxpY2U/cGFzc3dvcmQ@internal.test/v1` spells
+  the same characters in the same order, and its base64 credential must go.
+  Ending a region at the authority the parser reads keeps 2,425 further
+  planted credentials of 4,375 in the emitted url, up from 750.
+  `tests/redaction/round16-h3-disclosure.spec.ts` pins the answer, so a change
+  in either direction fails.
 
 - **A percent-encoded delimiter is not a delimiter, for a scheme colon and
   for `@` alike.** The scan that opens a region needs a LITERAL colon, and
