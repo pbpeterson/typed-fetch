@@ -49,7 +49,14 @@ export function useTestServer(): {
         res.setHeader(entry.slice(0, separator).trim(), entry.slice(separator + 1).trim());
       }
 
+      // UNREACHABLE `?? ""`: this `req` is a node:http IncomingMessage for a
+      // request this server itself received. Node's HTTP parser always
+      // populates `method` from the request line before the `request` event
+      // fires, so it is undefined only for the OTHER IncomingMessage use —
+      // a client-side response — which this handler never sees.
+      /* v8 ignore start */
       res.setHeader("X-Echo-Method", req.method ?? "");
+      /* v8 ignore stop */
 
       if (echoHeader) {
         const received = req.headers[echoHeader.toLowerCase()];

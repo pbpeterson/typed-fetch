@@ -61,8 +61,16 @@ export function everyChannel(error: Error): RenderedChannels {
   return {
     // ── Channel 1: JSON.stringify / toJSON ────────────────────────────────
     "1 JSON.stringify": JSON.stringify(error) ?? "",
+    // UNREACHABLE `?? ""`: the value handed to JSON.stringify here is the
+    // plain object literal `{ msg, err }`, not `error` itself. JSON.stringify
+    // answers `undefined` only when the TOP-LEVEL value is undefined, a
+    // function, or a symbol (or a `toJSON` that returns one of those), and a
+    // plain object literal with no `toJSON` of its own is none of those,
+    // whatever `error`'s own `toJSON` answers for the `err` property.
+    /* v8 ignore start */
     "1 JSON.stringify in a log envelope":
       JSON.stringify({ msg: "request failed", err: error }) ?? "",
+    /* v8 ignore stop */
 
     // ── Channel 2: util.inspect / console.* ───────────────────────────────
     // console.log and console.error format their arguments with util.inspect,

@@ -21,6 +21,7 @@
 import http from "node:http";
 import process from "node:process";
 import { typedFetch, isHttpError, isKnownHttpError, isNetworkError } from "../../dist/index.mjs";
+import { isMainModule } from "../lib/is-main-module.mjs";
 
 const MINIMUM = [20, 13, 0];
 
@@ -47,102 +48,120 @@ function compareToMinimum(version) {
   return 0;
 }
 
-const order = compareToMinimum(process.versions.node);
-if (order < 0) {
-  console.error(
-    `node-min smoke: refusing to run on Node ${process.versions.node}; ` +
-      `the declared floor is ${MINIMUM.join(".")}.`,
-  );
-  process.exit(1);
-}
-if (order > 0) {
-  const notice =
-    `node-min smoke: running on Node ${process.versions.node}, not the ` +
-    `${MINIMUM.join(".")} floor. This run does NOT prove floor support.`;
-  if (process.env.CI) {
-    // In CI the whole point of this job is the floor. If the runtime is not
-    // 20.13.0, the setup-node step is misconfigured and a green run would be a
-    // lie — fail rather than warn.
-    console.error(`${notice} Refusing to report a pass in CI.`);
-    process.exit(1);
-  }
-  // Locally, a developer may not have a 20.13.0 binary. Say so loudly instead
-  // of failing, so the smoke stays runnable during development.
-  console.warn(`${notice}`);
-}
+// The io this smoke reaches for, and nothing else: the version string it
+// judges, the environment it reads CI from, a writer for each stream, and the
+// way it stops. No argv, no cwd — this smoke takes no path and no flag.
+const defaultIo = {
+  version: process.versions.node,
+  env: process.env,
+  out: (line) => console.log(line),
+  err: (line) => console.error(line),
+  exit: (code) => process.exit(code),
+};
 
-const server = http.createServer((req, res) => {
-  if (req.url === "/ok") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ id: 1 }));
+/** @internal Exported for the entry-point spec. Not a public interface. */
+export async function main(io = defaultIo) {
+  const order = compareToMinimum(io.version);
+  if (order < 0) {
+    io.err(
+      `node-min smoke: refusing to run on Node ${io.version}; ` +
+        `the declared floor is ${MINIMUM.join(".")}.`,
+    );
+    io.exit(1);
     return;
   }
-  res.writeHead(404, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ error: "not found" }));
-});
-
-function assert(condition, message) {
-  if (!condition) throw new Error(message);
-}
-
-await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-const { port } = server.address();
-const base = `http://127.0.0.1:${port}`;
-
-try {
-  // 1. The entry point imports and a basic request works.
-  const ok = await typedFetch(`${base}/ok`);
-  assert(ok.error === null, `expected no error, got ${ok.error && ok.error.name}`);
-  const body = await ok.response.json();
-  assert(body.id === 1, `expected { id: 1 }, got ${JSON.stringify(body)}`);
-
-  // 2. HTTP errors classify, and the brand guards work.
-  const missing = await typedFetch(`${base}/missing`);
-  assert(missing.response === null, "expected a null response for 404");
-  assert(missing.error.name === "NotFoundError", `got ${missing.error.name}`);
-  assert(missing.error.status === 404, `got ${missing.error.status}`);
-  assert(isHttpError(missing.error), "isHttpError should hold");
-  assert(isKnownHttpError(missing.error), "isKnownHttpError should hold");
-
-  // 3. The error body can be released without buffering it. `cancel()` calls
-  //    ReadableStream.cancel(), which is the newest platform API this package
-  //    depends on — the one worth pinning at the floor.
-  await missing.error.cancel();
-  let readAfterCancel = null;
-  try {
-    await missing.error.text();
-  } catch (err) {
-    readAfterCancel = err;
+  if (order > 0) {
+    const notice =
+      `node-min smoke: running on Node ${io.version}, not the ` +
+      `${MINIMUM.join(".")} floor. This run does NOT prove floor support.`;
+    if (io.env.CI) {
+      // In CI the whole point of this job is the floor. If the runtime is not
+      // 20.13.0, the setup-node step is misconfigured and a green run would be a
+      // lie — fail rather than warn.
+      io.err(`${notice} Refusing to report a pass in CI.`);
+      io.exit(1);
+      return;
+    }
+    // Locally, a developer may not have a 20.13.0 binary. Say so loudly instead
+    // of failing, so the smoke stays runnable during development.
+    io.err(`${notice}`);
   }
-  assert(readAfterCancel instanceof TypeError, "a read after cancel() must throw a TypeError");
 
-  // 4. Cancellation classifies. AbortSignal.timeout() exists from Node 20.0.0;
-  //    AbortSignal.any() does NOT (it landed in 20.3.0), so this smoke must
-  //    never use it.
-  const controller = new AbortController();
-  controller.abort(new Error("smoke abort"));
-  const aborted = await typedFetch(`${base}/ok`, { signal: controller.signal });
-  assert(aborted.error.name === "AbortedError", `got ${aborted.error.name}`);
+  const server = http.createServer((req, res) => {
+    if (req.url === "/ok") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ id: 1 }));
+      return;
+    }
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "not found" }));
+  });
 
-  // 5. A transport failure is a value, not a rejection.
-  const refused = await typedFetch("http://127.0.0.1:1/nope");
-  assert(isNetworkError(refused.error), `expected a NetworkError, got ${refused.error.name}`);
+  function assert(condition, message) {
+    if (!condition) throw new Error(message);
+  }
 
-  // 6. The documented two-branch cleanup SETTLES. This is the step that pins
-  //    the floor: `clone()` tees the body, and on undici 5.x (Node 20.0-20.12)
-  //    cancelling the branch never settles, so the README's own
-  //    `Promise.all([error.cancel(), copy.cancel()])` hangs forever. A timeout
-  //    rather than a bare await, because the failure mode is a hang and a hung
-  //    smoke reports nothing.
-  const teed = await typedFetch(`${base}/missing`);
-  const copy = teed.error.clone();
-  const settled = await Promise.race([
-    Promise.all([teed.error.cancel(), copy.cancel()]).then(() => true),
-    new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
-  ]);
-  assert(settled, "clone() + Promise.all(cancel, cancel) must settle at the floor");
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  const base = `http://127.0.0.1:${port}`;
 
-  console.log(`node-min smoke: OK on Node ${process.versions.node}`);
-} finally {
-  server.close();
+  try {
+    // 1. The entry point imports and a basic request works.
+    const ok = await typedFetch(`${base}/ok`);
+    assert(ok.error === null, `expected no error, got ${ok.error && ok.error.name}`);
+    const body = await ok.response.json();
+    assert(body.id === 1, `expected { id: 1 }, got ${JSON.stringify(body)}`);
+
+    // 2. HTTP errors classify, and the brand guards work.
+    const missing = await typedFetch(`${base}/missing`);
+    assert(missing.response === null, "expected a null response for 404");
+    assert(missing.error.name === "NotFoundError", `got ${missing.error.name}`);
+    assert(missing.error.status === 404, `got ${missing.error.status}`);
+    assert(isHttpError(missing.error), "isHttpError should hold");
+    assert(isKnownHttpError(missing.error), "isKnownHttpError should hold");
+
+    // 3. The error body can be released without buffering it. `cancel()` calls
+    //    ReadableStream.cancel(), which is the newest platform API this package
+    //    depends on — the one worth pinning at the floor.
+    await missing.error.cancel();
+    let readAfterCancel = null;
+    try {
+      await missing.error.text();
+    } catch (err) {
+      readAfterCancel = err;
+    }
+    assert(readAfterCancel instanceof TypeError, "a read after cancel() must throw a TypeError");
+
+    // 4. Cancellation classifies. AbortSignal.timeout() exists from Node 20.0.0;
+    //    AbortSignal.any() does NOT (it landed in 20.3.0), so this smoke must
+    //    never use it.
+    const controller = new AbortController();
+    controller.abort(new Error("smoke abort"));
+    const aborted = await typedFetch(`${base}/ok`, { signal: controller.signal });
+    assert(aborted.error.name === "AbortedError", `got ${aborted.error.name}`);
+
+    // 5. A transport failure is a value, not a rejection.
+    const refused = await typedFetch("http://127.0.0.1:1/nope");
+    assert(isNetworkError(refused.error), `expected a NetworkError, got ${refused.error.name}`);
+
+    // 6. The documented two-branch cleanup SETTLES. This is the step that pins
+    //    the floor: `clone()` tees the body, and on undici 5.x (Node 20.0-20.12)
+    //    cancelling the branch never settles, so the README's own
+    //    `Promise.all([error.cancel(), copy.cancel()])` hangs forever. A timeout
+    //    rather than a bare await, because the failure mode is a hang and a hung
+    //    smoke reports nothing.
+    const teed = await typedFetch(`${base}/missing`);
+    const copy = teed.error.clone();
+    const settled = await Promise.race([
+      Promise.all([teed.error.cancel(), copy.cancel()]).then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
+    ]);
+    assert(settled, "clone() + Promise.all(cancel, cancel) must settle at the floor");
+
+    io.out(`node-min smoke: OK on Node ${io.version}`);
+  } finally {
+    server.close();
+  }
 }
+
+if (isMainModule(import.meta.url)) await main();
