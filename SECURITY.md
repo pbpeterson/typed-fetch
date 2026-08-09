@@ -30,13 +30,19 @@ known limit rather than a surprise.
 
   A region opens where the URL Standard opens an authority: at two or more
   solidi under any scheme, at a SPECIAL scheme (`http`, `https`, `ws`, `wss`,
-  `ftp`, `file`) over any number of solidi, including none, and at two or
-  more solidi with NO scheme in front of them, anywhere in the path, because
-  a relative reference beginning with two solidi is protocol-relative. Where
-  the parser CONSUMED the opening mark instead of leaving it in the text — a
-  host-less origin's `scheme://` seam, and the path a protocol-relative
-  reference leaves behind — the removed span is the parser's own answer and
-  nothing wider.
+  `ftp`) over any number of solidi, including none, and at two or more
+  solidi with NO scheme in front of them, anywhere in the path, because a
+  relative reference beginning with two solidi is protocol-relative. `file:`
+  is the one special scheme this rule excludes: the URL Standard gives it its
+  own state, so a `file:` reference under fewer than two solidi is a path
+  with an empty host, exactly as `git:/svc:pw@host` is, and keeps its text.
+
+  Where the parser CONSUMED the opening mark instead of leaving it in the
+  text, the removed span is the parser's own answer and nothing wider. Three
+  seams do this: a host-less origin's `scheme://` seam, the path a
+  protocol-relative reference leaves behind, and a reference whose scheme
+  equals the resolution base's scheme, which the URL Standard resolves as a
+  relative path with its scheme colon eaten.
 
   A region ends where the parser ends an authority it can read. A region
   whose start is not an authority the parser can read does not end at all.
@@ -47,8 +53,10 @@ known limit rather than a surprise.
   independently. A non-special scheme under fewer than two solidi is an
   opaque path and keeps its text.
 
-  A relative answer never begins with two solidi. It is resolved until it
-  stops moving, so `redactUrl` is a fixed point of itself.
+  A relative answer never begins with two solidi. Redacting it re-asks three
+  questions of what the previous answer leaves behind — a region's `@`
+  question, its END question, and the seam's own span — so `redactUrl` is a
+  fixed point of itself: `redactUrl(redactUrl(u)) === redactUrl(u)`.
 
   `error.url` never emits a byte the caller wrote after a `?` or a `#`,
   under any spelling. Two residuals are left, and neither can be told apart
@@ -60,16 +68,24 @@ known limit rather than a surprise.
   It stays open for the same reason: `://host1/x://u2:pw@host2/v1` spells
   the same characters and must keep `host1`.
 
-- **A percent-encoded scheme colon no longer shields a credential, and a
-  percent-encoded `@` still does.** The scan that opens a region needs a
-  LITERAL colon; a `%3A` is not one, so it no longer stops the bare-`//`
-  rule from opening a region at the solidi that follow it:
-  `https://api.test/go/https%3A//svc:SECRET@i.test/v1` redacts to
-  `https://api.test/go/https%3A//i.test/v1`. The scan that ends userinfo
-  needs a LITERAL `@`; a `%40` is not one, so it hides the credential it
-  stands in for:
-  `https://api.test/go/https://svc%3APW%40host/v1` keeps
-  `svc%3APW%40host` in full. Only the second shape is open.
+- **A percent-encoded delimiter is not a delimiter, for a scheme colon and
+  for `@` alike.** The scan that opens a region needs a LITERAL colon, and
+  the scan that ends userinfo needs a LITERAL `@`. A `%3A` and a `%40` are
+  neither, so both still shield a credential at zero and one solidus:
+  `https://api.test/go/https%3A/svc:SECRET@i.test/v1` and
+  `https://api.test/go/https%3Asvc:SECRET@i.test/v1` keep `svc:SECRET@` in
+  full, and `https://api.test/go/https://svc%3APW%40host/v1` keeps
+  `svc%3APW%40host` in full. The two-solidus spelling,
+  `https://api.test/go/https%3A//svc:SECRET@i.test/v1`, DOES redact to
+  `https://api.test/go/https%3A//i.test/v1` — but not because the colon
+  opened anything. Its LITERAL `//` opens a region under the bare-`//` rule,
+  which fires whatever text precedes it: swapping `https%3A` for `zz%3A` in
+  that url redacts the same way. Opening a region on a percent-decoded copy
+  of the text would be the first rule in this module that fires where no
+  parser opens an authority — the same defect rounds 5, 8, and 9 each found
+  under a different name: two texts the parser does not agree about. All
+  three spellings THROW as a standalone url
+  (`new URL("https%3A/svc:pw@i.test/v1")` is Invalid URL).
 - **A non-special scheme under fewer than two solidi keeps its text.**
   `/go/git:/svc:pw@host` keeps `svc:pw@host` as an ordinary path, because the
   URL Standard reads a non-special scheme under fewer than two solidi as an

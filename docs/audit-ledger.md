@@ -62,10 +62,14 @@ re-open one should read the reasoning first and say what it gets wrong.
   library adds no listener to a signal and sets no timer. The only keyed tables
   written on the failure path are the identity `WeakMap`s.
 - **The options snapshot's proxy invariants.** A frozen `options` carrying an own
-  `fetch` does not trip a proxy `get` invariant; the `signal` slot is always
-  re-declared configurable and writable, and the trap delegates with `options`
-  as the receiver. `headers` is no longer replaced at all, so the shape that
-  used to need the descriptor clone is now an ordinary read.
+  `fetch` does not trip a proxy `get` invariant. On that branch, the `signal`
+  slot is re-declared configurable and writable, and the trap delegates with
+  `options` as the receiver. The no-override branch proxies the caller's own
+  object directly and does no descriptor work at all; it is safe for a
+  different reason. `typedFetch` passes the caller's own first read of
+  `signal`, not a value read again, so the trap's answer is by construction
+  the value the target already holds. `headers` is no longer replaced at all,
+  so the shape that used to need the descriptor clone is now an ordinary read.
 - **The init dictionary stays empty when the caller passes nothing**, so
   `typedFetch(request)` does not trip the Fetch Standard's "init is not empty"
   branch and does not detach the `Request`'s own signal.
@@ -75,6 +79,13 @@ re-open one should read the reasoning first and say what it gets wrong.
   `NetworkError`, and caller code in the setup or response phase cannot claim an
   abort at all. Nothing runs between the transport's rejection and its
   classification, because the request input is serialized before the request.
+- **`typedFetch` reads `options.signal` earlier than a bare `fetch` does, and
+  that is a decision, not a defect.** The setup phase reads it in phase 1. A
+  bare `fetch` converts `init` as a WebIDL dictionary in member order and
+  reads `method` first, `signal` later. A self-mutating `signal` getter can
+  therefore change the request under one and not the other. No caller
+  observes a request it did not describe itself, and reading the governing
+  signal once, up front, is inherent to capturing it at all.
 - **Header-container coverage is no longer a thing this library needs.** The
   collector matched WebIDL's `HeadersInit` conversion for a record, an array of
   pairs, a `Headers` instance, an inner pair that is any iterable, and a
@@ -758,6 +769,66 @@ clean for the fifth consecutive round.
   reached — identity as a function over 512 generated read schedules, and
   the error body releasing its source exactly once, measured by counting the
   source's own cancel algorithm rather than inferred.
+
+### What round 13 settled
+
+Five findings; H1 returned clean.
+
+- **R13-H2-01 and R13-H3-01 (critical), one class.** Round 12 made the URL
+  parser the final authority on where an authority begins and ends, and did
+  not define what happens when the parser DECLINES to answer. Both criticals
+  are that gap. `seamUserinfo`'s parse THREW for an empty host or an
+  out-of-range port, so the guard answered null and no region opened — 112 of
+  a 200-url seam population leaked. A reference whose scheme equals
+  `RELATIVE_BASE`'s had its mark CONSUMED by the parser, so no mark was ever
+  seen. Record the principle that closed both: when a parse the module leans
+  on throws, the module removes the span anyway. A structure the parser
+  declines to read is not one it has ruled out, it is one nobody can bound. A
+  parse that SUCCEEDS and names no credential is a different answer and is
+  still believed, which is what keeps `file:///c:/Users/alice@corp/x` whole.
+- **`RELATIVE_BASE` was not changed, and why.** Its scheme's identity was
+  silently load-bearing, but every special scheme collides with an input
+  that spells it, and every non-special one gives up the second load-bearing
+  property: speciality, which makes `\` a solidus and keeps `\` out of the
+  emitted `pathname` — without it the relative branch's loop loses its
+  termination bound and hangs the response phase. All three properties are
+  now written on the constant.
+- **R13-H4-01 (medium).** Redaction was not a fixed point of itself on a
+  family of urls whose userinfo carries both a solidus-colon run and an
+  embedded `://` behind a bare `//`. Fixed by re-asking the END question at
+  each new cut, not the `@` question alone.
+- **Two findings that were the DOCUMENT, not the module** — the `file:`
+  entry in the special-scheme list, and the `%3A` bullet's claims in both
+  directions. Both are corrected in `SECURITY.md`. Record that the
+  orchestrator verified both on the platform and upheld the fixer's dispute,
+  and that the `file:` error had propagated into the round-12 oracle, whose
+  `opensRegion` helper quoted the false sentence. State the lesson in one
+  sentence: quoting a contract makes a spec-derived judge exactly as correct
+  as the contract.
+- **The oracle now asks the parser instead of the document.** It probes with
+  a canary userinfo at the exact scheme and solidus spelling written, and
+  distinguishes three answers — an authority with a userinfo, an authority
+  the parse refuses (still an opener, because the credential in
+  `https://u:p@/v1` is real), and no region. It found a bug in itself while
+  being rewired: it had been passing its base unconditionally, so a
+  reference whose scheme equalled the base's was read as relative with the
+  mark eaten — round 13's own second finding, turned against the instrument.
+  28 properties green over 4,163 inputs.
+- **The fuzz.** 140,856 urls over nine checks, all green: zero throws, zero
+  idempotence failures, zero credential survivals, zero moved origins, zero
+  subsequence violations, zero query or fragment bytes, zero message
+  disagreements; 18,204 sentinel exposures closed against the previous
+  commit and zero opened. Two failure classes were found DURING the fix by
+  the repository's own pins rather than by the fixer's corpus — the
+  fail-closed seam broke a 150,000-url fixed-point pin because removing the
+  first authority re-creates the seam.
+- **H1 clean.** It closed the transport's return value as a set: 13 shapes
+  and 90 combinations against five properties, with non-vacuity verified
+  three ways including an inversion that produced six real violations. It
+  also recorded two corrections to the ledger, above: the proxy-invariant
+  entry under "The request path" was true of one branch only, and the
+  `options.signal`-versus-bare-`fetch` read-order difference is recorded as
+  a decision rather than a defect.
 
 ## Adjudicated closed
 

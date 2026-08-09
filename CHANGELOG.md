@@ -27,6 +27,32 @@
   only Node's inspect key. Deno resolves its own key first, so a polluted
   prototype rendered the built-in error's own properties instead of the
   redacted `toJSON()` record. Both keys are stamped now.
+- **`redactUrl` no longer trusts a userinfo scan that throws.** The scan
+  that asks whether the text in front of a parseable authority is userinfo
+  can itself throw — an empty host and an out-of-range port both throw
+  inside `new URL` — and a thrown scan answered null, so the credential in
+  front of it never entered a region and reached `error.message`,
+  `toJSON()`, and every other redacted channel unredacted. 112 of a
+  200-url seam population leaked this way. The removed span is now the
+  parser's own answer whether the parse SUCCEEDS with a credential or
+  THROWS; only a parse that succeeds and reports no credential is believed,
+  which is what keeps a `file:` drive letter
+  (`file:///c:/Users/alice@corp/x`) whole. See `SECURITY.md` for the shapes
+  that remain open.
+- **`redactUrl` no longer loses a credential behind a scheme that matches
+  its own internal resolution base.** A relative reference whose scheme
+  equals the internal base's resolves to a path with its scheme colon eaten
+  by the URL Standard itself, so no mark was ever there to open a region
+  and the credential rode out whole:
+  `http:alice:pw@api.test:99999/v1` kept its credential while `https:`,
+  `ws:`, and `ftp:` spelling the same shape did not. The internal base now
+  answers for every special scheme, not only its own spelling.
+- **`redactUrl` is a fixed point of itself for a userinfo that carries both
+  a solidus-colon run and an embedded `://` behind a bare `//`.** Redacting
+  an already-redacted url in that family could change it again, because
+  only the region's `@` question was re-asked of what the previous answer
+  left behind. The region's END question is now re-asked at each new cut,
+  too.
 
 ## [2.0.1] - 2026-08-03
 
