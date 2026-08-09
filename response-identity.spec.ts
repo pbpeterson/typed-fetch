@@ -9,6 +9,7 @@ import {
 } from "./src/errors/response-identity";
 import { NotFoundError, UnknownHttpError } from "./src/errors";
 import { typedFetch } from "./src/index";
+import { foreignResponses } from "./fixtures/responses";
 
 /**
  * THE SINGLE-READ CONTRACT, TESTED WITHOUT AN ERROR CLASS.
@@ -569,27 +570,7 @@ describe("statusOf — defensive input outside the typedFetch contract", () => {
 const ROUND4_URL = "https://round4.test/resource";
 
 /** A response-shaped foreign object that passes every structural check. */
-function foreignResponse(overrides: Record<string, unknown> = {}): Response {
-  const base: Record<string, unknown> = {
-    [Symbol.toStringTag]: "Response",
-    body: null,
-    bodyUsed: false,
-    headers: new Headers(),
-    ok: true,
-    redirected: false,
-    status: 200,
-    statusText: "OK",
-    type: "basic",
-    url: ROUND4_URL,
-    arrayBuffer: async () => new ArrayBuffer(0),
-    blob: async () => new Blob(),
-    clone: () => foreignResponse(overrides),
-    formData: async () => new FormData(),
-    json: async () => ({}),
-    text: async () => "",
-  };
-  return { ...base, ...overrides } as unknown as Response;
-}
+const foreignResponse = foreignResponses(ROUND4_URL);
 
 const resolving = (value: unknown): typeof fetch =>
   (async () => value as Response) as unknown as typeof fetch;

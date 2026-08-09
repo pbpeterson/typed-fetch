@@ -1,5 +1,3 @@
-import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
 import { describe, test, expect } from "vitest";
 import { typedFetch, isHttpError, isKnownHttpError } from "./src/index";
 import { statusCodeErrorMap } from "./src/http-status-codes";
@@ -18,6 +16,8 @@ import {
   ownsResponseSymbol,
 } from "./src/errors/brand";
 import { inspectCustom, denoCustomInspect } from "./src/errors/inspect";
+import { distExists, loadRootCjs, loadRootEsm } from "./fixtures/built-package";
+import { mulberry } from "./fixtures/responses";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 10 — H2. Two clean rounds closed the body lifecycle as a state
@@ -352,17 +352,6 @@ const ALPHABET = [
   "*",
 ];
 
-function mulberry(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 function urlsFrom(seed: number, count: number): string[] {
   const random = mulberry(seed);
   const urls: string[] = [];
@@ -507,9 +496,6 @@ describe("round 10 / H2 — the identity tables over a response's lifetime", () 
 
 // ── 5. Two genuine package copies ──────────────────────────────────────────
 
-const distExists = existsSync(new URL("./dist/index.mjs", import.meta.url));
-const requireDist = createRequire(import.meta.url);
-
 interface RootCopy {
   readonly NotFoundError: new (response: Response) => BaseHttpError;
   readonly UnknownHttpError: new (response: Response) => BaseHttpError;
@@ -583,10 +569,8 @@ const EXPECTED: Record<string, Record<GuardName, boolean>> = {
 
 describe.skipIf(!distExists)("round 10 / H2 — every guard, both directions, two copies", () => {
   test("100 guard answers across the copy seam, and none disagrees", async () => {
-    const esm = (await import(
-      /* @vite-ignore */ new URL("./dist/index.mjs", import.meta.url).href
-    )) as unknown as RootCopy;
-    const cjs = requireDist("./dist/index.js") as RootCopy;
+    const esm = await loadRootEsm<RootCopy>();
+    const cjs = loadRootCjs<RootCopy>();
     const copies: [string, RootCopy][] = [
       ["esm", esm],
       ["cjs", cjs],

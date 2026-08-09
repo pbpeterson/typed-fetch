@@ -1,6 +1,7 @@
 import { describe, test, expect } from "vitest";
 import { errorBodyOf, type ErrorBody, type TeedErrorBody } from "./src/errors/error-body";
 import { typedFetch, isHttpError } from "./src/index";
+import { releaseTrackedResponse } from "./fixtures/responses";
 
 /**
  * ROUND 8, LANE H2 — response handling and error construction.
@@ -49,20 +50,7 @@ async function settle(promise: Promise<unknown>, ms = 25): Promise<string> {
  * A `Response` over a stream that records whether its source was released,
  * either by a cancellation or by a read that ran to completion.
  */
-function trackedResponse(): { response: Response; state: { released: boolean } } {
-  const state = { released: false };
-  const body = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      controller.enqueue(new TextEncoder().encode('{"a":1}'));
-      controller.close();
-      state.released = true;
-    },
-    cancel() {
-      state.released = true;
-    },
-  });
-  return { response: new Response(body, { status: 500 }), state };
-}
+const trackedResponse = () => releaseTrackedResponse(500);
 
 describe("round 8 / H2 — the body lifecycle over every short operation sequence", () => {
   type Op = "json" | "text" | "blob" | "arrayBuffer" | "cancel" | "tee" | "release" | "adopt";

@@ -5,6 +5,7 @@ import { errorBodyOf } from "./src/errors/error-body";
 import { redactUrl, redactUrlInMessage } from "./src/errors/redact-url";
 import { NotFoundError } from "./src/errors/not-found-error";
 import { UnknownHttpError } from "./src/errors/unknown-http-error";
+import { mulberry, responseWith } from "./fixtures/responses";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 11 — H2. Rounds 8, 9 and 10 closed the body lifecycle as a state
@@ -141,18 +142,6 @@ const PREFIXES = [
   "./",
   "../",
 ];
-
-/** A deterministic PRNG, so a failure names an input a rerun reproduces. */
-function mulberry(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 function randomUrls(count: number, seed: number): string[] {
   const next = mulberry(seed);
@@ -291,12 +280,6 @@ describe("round 11 / H2 — the redaction of a hierarchical url is a fixed point
 // suite pins is that they agree for EVERY url — which is what round 10's
 // change to the emission rule could have broken without breaking a single
 // existing expectation, because every existing expectation names one url.
-
-function responseWith(url: string, status = 404): Response {
-  const response = new Response("{}", { status, statusText: "Not Found" });
-  Object.defineProperty(response, "url", { value: url, configurable: true });
-  return response;
-}
 
 describe("round 11 / H2 — message, toJSON and the escape hatch agree on every url", () => {
   test("over the structured corpus", async () => {

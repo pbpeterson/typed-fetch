@@ -6,6 +6,7 @@ import { inspect } from "node:util";
 import { isHttpError, isKnownHttpError } from "./src/index";
 import { typedFetch } from "./src/index";
 import { redactUrl } from "./src/errors/redact-url";
+import { pullTrackedResponse } from "./fixtures/responses";
 
 class ContextHttpError extends BaseHttpError {
   override readonly name = "ContextHttpError" as const;
@@ -238,24 +239,8 @@ describe("BaseHttpError — an instance the constructor never initialized", () =
  * ever pulled from it. `cancel()` must reach the stream WITHOUT buffering, so
  * `pulled` has to stay false.
  */
-function trackedResponse(status = 404): {
-  response: Response;
-  state: { cancelled: boolean; reason: unknown; pulled: boolean };
-} {
-  const state = { cancelled: false, reason: undefined as unknown, pulled: false };
-  const body = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      state.pulled = true;
-      controller.enqueue(new TextEncoder().encode("payload"));
-      controller.close();
-    },
-    cancel(reason) {
-      state.cancelled = true;
-      state.reason = reason;
-    },
-  });
-  return { response: new Response(body, { status }), state };
-}
+// 404 by default, because most cases here build a `NotFoundError`.
+const trackedResponse = (status = 404) => pullTrackedResponse(status);
 
 describe("BaseHttpError.cancel()", () => {
   test("cancel() is available on UnknownHttpError too", async () => {

@@ -1,11 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test, expect } from "vitest";
 import { NetworkError } from "./src/errors";
 import { denoCustomInspect, inspectCustom } from "./src/errors/inspect";
+import {
+  builtEntryUrl,
+  errorsDistExists as distExists,
+  loadErrorsCjs,
+  loadErrorsEsm,
+  warnWhenDistMissing,
+} from "./fixtures/built-package";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 9, LANE H4 — the rendering contract round 8 added, read from the
@@ -19,36 +25,16 @@ import { denoCustomInspect, inspectCustom } from "./src/errors/inspect";
 // invisible to both.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const distExists = existsSync(new URL("./dist/errors/index.mjs", import.meta.url));
-
-if (!distExists) {
-  if (process.env.CI) {
-    throw new Error(
-      "[round9-h4] dist/ not found in CI — .github/workflows/ci.yml must run " +
-        "`pnpm build` before `pnpm test` so the dist-gated suites run for real.",
-    );
-  }
-  // eslint-disable-next-line no-console
-  console.warn(
-    "\n[round9-h4] dist/ not found — skipping the built-surface suites. " +
-      "Run `pnpm build` first (e.g. `pnpm build && pnpm test`) to exercise them.\n",
-  );
-}
-
-const requireBuilt = createRequire(import.meta.url);
+warnWhenDistMissing("round9-h4", distExists);
 
 /** The four ROOT prototypes — the four `installInspect` call sites. */
 const ROOT_CLASSES = ["BaseHttpError", "NetworkError", "AbortedError", "TimeoutError"] as const;
 
 type ProtoBag = Record<string, { prototype: object }>;
 
-const loadEsm = async (): Promise<ProtoBag> =>
-  (await import(
-    /* @vite-ignore */ new URL("./dist/errors/index.mjs", import.meta.url).href
-  )) as ProtoBag;
+const loadEsm = (): Promise<ProtoBag> => loadErrorsEsm<ProtoBag>();
 
-const loadCjs = (): ProtoBag =>
-  requireBuilt(new URL("./dist/errors/index.js", import.meta.url).pathname) as ProtoBag;
+const loadCjs = (): ProtoBag => loadErrorsCjs<ProtoBag>();
 
 /** The named class's prototype, or a failure that names the missing export. */
 function protoOf(bag: ProtoBag, name: string): object {
@@ -160,7 +146,7 @@ describe.skipIf(!distExists)("R9-H4-01: the inspect channel every gated runtime 
   test.runIf(denoAvailable)(
     "under Deno, a polluted Object.prototype cannot render the error",
     () => {
-      const distUrl = new URL("./dist/errors/index.mjs", import.meta.url).href;
+      const distUrl = builtEntryUrl("dist/errors/index.mjs").href;
       const printed = runUnderDeno(`
 import { NotFoundError } from ${JSON.stringify(distUrl)};
 

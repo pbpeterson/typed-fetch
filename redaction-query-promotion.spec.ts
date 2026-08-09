@@ -1,8 +1,8 @@
-import { inspect } from "node:util";
 import { describe, test, expect } from "vitest";
 import { typedFetch, isNetworkError } from "./src/index";
 import { NetworkError, NotFoundError } from "./src/errors";
 import { redactUrl } from "./src/errors/redact-url";
+import { PASSWORD, everyChannel, leakingChannels } from "./fixtures/channels";
 
 /**
  * ROUND 10, LANE H3 — disclosure and security.
@@ -72,41 +72,6 @@ const QUERY_TOKEN_SECRET = "QUERY_TOKEN_SECRET";
 
 /** Planted in the fragment, for the same reason. */
 const FRAGMENT_SECRET = "FRAGMENT_SECRET";
-
-/** The credential an embedded url carries, where a shape carries one. */
-const PASSWORD = "hunter2";
-
-/**
- * The seven channels, rendered and labelled, so a failure names the channel.
- *
- * The `disclosure-channels.spec.ts` harness, copied rather than shared: that
- * file is the inventory and this one is a hunt.
- */
-function everyChannel(error: Error): [string, string][] {
-  return [
-    ["1 JSON.stringify", JSON.stringify(error) ?? ""],
-    ["1 JSON.stringify in a log envelope", JSON.stringify({ msg: "request failed", err: error })],
-    ["2 util.inspect", inspect(error, { depth: null })],
-    ["2 util.inspect with colors", inspect(error, { colors: true, depth: null })],
-    ["3 String(error)", String(error)],
-    ["3 template interpolation", `${error}`],
-    ["4 error.message", error.message],
-    ["5 Object.keys", JSON.stringify(Object.keys(error))],
-    ["5 spread", JSON.stringify({ ...error })],
-    ["6 structuredClone", inspect(structuredClone(error), { depth: null })],
-    [
-      "7 the fatal-exception printer",
-      inspect(error, { customInspect: false, showHidden: false, depth: null }),
-    ],
-  ];
-}
-
-/** The channels that emitted any of `secrets`, by label. The empty list is the pass. */
-function leakingChannels(rendered: [string, string][], secrets: string[]): string[] {
-  return rendered
-    .filter(([, text]) => secrets.some((secret) => text.includes(secret)))
-    .map(([channel]) => channel);
-}
 
 /** An HTTP error whose response reports `url`, the way a real fetch would. */
 function httpErrorFor(url: string): NotFoundError {

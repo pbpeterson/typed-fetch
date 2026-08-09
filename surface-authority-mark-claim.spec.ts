@@ -1,7 +1,13 @@
 import { createRequire } from "node:module";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { inspect } from "node:util";
 import { describe, test, expect } from "vitest";
+import {
+  errorsDistExists as distExists,
+  loadErrorsEsm,
+  loadRootEsm,
+  warnWhenDistMissing,
+} from "./fixtures/built-package";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 12, LANE H4 — the prose rounds 10 and 11 wrote, executed against the
@@ -15,21 +21,7 @@ import { describe, test, expect } from "vitest";
 // — rather than through `src/`.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const distExists = existsSync(new URL("./dist/errors/index.mjs", import.meta.url));
-
-if (!distExists) {
-  if (process.env.CI) {
-    throw new Error(
-      "[round12-h4] dist/ not found in CI — .github/workflows/ci.yml must run " +
-        "`pnpm build` before `pnpm test` so the dist-gated suites run for real.",
-    );
-  }
-  // eslint-disable-next-line no-console
-  console.warn(
-    "\n[round12-h4] dist/ not found — skipping the built-surface suites. " +
-      "Run `pnpm build` first (e.g. `pnpm build && pnpm test`) to exercise them.\n",
-  );
-}
+warnWhenDistMissing("round12-h4", distExists);
 
 type ErrorLike = Error & {
   url: string;
@@ -44,13 +36,9 @@ type RootBag = {
   ) => Promise<{ response: Response | null; error: (Error & { cause?: unknown }) | null }>;
 };
 
-const loadErrors = async (): Promise<ErrorsBag> =>
-  (await import(
-    /* @vite-ignore */ new URL("./dist/errors/index.mjs", import.meta.url).href
-  )) as ErrorsBag;
+const loadErrors = (): Promise<ErrorsBag> => loadErrorsEsm<ErrorsBag>();
 
-const loadRoot = async (): Promise<RootBag> =>
-  (await import(/* @vite-ignore */ new URL("./dist/index.mjs", import.meta.url).href)) as RootBag;
+const loadRoot = (): Promise<RootBag> => loadRootEsm<RootBag>();
 
 /** The `url` the BUILT package emits for a 404 over a response reporting `url`. */
 async function emittedUrl(url: string): Promise<string> {

@@ -10,6 +10,7 @@ import {
 import { NotFoundError } from "./src/errors/not-found-error";
 import { InternalServerError } from "./src/errors/internal-server-error";
 import { UnknownHttpError } from "./src/errors/unknown-http-error";
+import { releaseTrackedResponse } from "./fixtures/responses";
 
 /**
  * ROUND 9, LANE H2 — response handling and error construction.
@@ -64,20 +65,7 @@ async function settle(promise: Promise<unknown>, ms = 25): Promise<string> {
 }
 
 /** A `Response` over a stream that records whether its source was released. */
-function trackedResponse(status = 500): { response: Response; state: { released: boolean } } {
-  const state = { released: false };
-  const body = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      controller.enqueue(new TextEncoder().encode('{"a":1}'));
-      controller.close();
-      state.released = true;
-    },
-    cancel() {
-      state.released = true;
-    },
-  });
-  return { response: new Response(body, { status }), state };
-}
+const trackedResponse = (status = 500) => releaseTrackedResponse(status);
 
 describe("round 9 / H2 — every FOUR-operation sequence over one error body", () => {
   type Op = "json" | "text" | "blob" | "arrayBuffer" | "cancel" | "tee" | "release" | "adopt";

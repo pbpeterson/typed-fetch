@@ -1,29 +1,15 @@
 import { describe, test, expect, expectTypeOf, vi } from "vitest";
 import { errorBodyOf, releaseResponseBody, type ErrorBody } from "./src/errors/error-body";
+import { pullTrackedResponse } from "./fixtures/responses";
 
 /**
  * A response whose body records whether it was cancelled and whether anything
  * ever pulled from it. `cancel()` must reach the stream WITHOUT buffering, so
  * `pulled` has to stay false.
  */
-function trackedResponse(): {
-  response: Response;
-  state: { cancelled: boolean; reason: unknown; pulled: boolean };
-} {
-  const state = { cancelled: false, reason: undefined as unknown, pulled: false };
-  const body = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      state.pulled = true;
-      controller.enqueue(new TextEncoder().encode("payload"));
-      controller.close();
-    },
-    cancel(reason) {
-      state.cancelled = true;
-      state.reason = reason;
-    },
-  });
-  return { response: new Response(body), state };
-}
+// This suite reaches `errorBodyOf` directly, so no status selects a class:
+// 200 is what `new Response(body)` reported before the helper was shared.
+const trackedResponse = () => pullTrackedResponse(200);
 
 /**
  * A `Response` whose `bodyUsed` NEVER flips, whatever happens to the stream.

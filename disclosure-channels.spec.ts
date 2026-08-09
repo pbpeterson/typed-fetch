@@ -9,6 +9,7 @@ import {
   UnknownHttpError,
 } from "./src/errors";
 import { classifyRequestFailure } from "./src/request-failure";
+import { everyChannel, leakingChannels } from "./fixtures/channels";
 
 /**
  * THE CHANNEL INVENTORY, AS TESTS.
@@ -236,6 +237,50 @@ describe("disclosure channels — no channel emits a secret value", () => {
       // `cause` is printed by Node's error special-case and cannot be
       // suppressed on this channel; see the residual test below.
       expectNoSecrets(rendered.replaceAll("CAUSE_SECRET", "<cause>"));
+    });
+  });
+
+  // ── The shared harness, asked the same question ───────────────────────────
+  //
+  // The tests above are the inventory: one named test per channel, each stating
+  // in its own title what the channel is and why it is on the list. They stay
+  // written out, because that is what a reader comes here for.
+  //
+  // `fixtures/channels` renders the same seven channels for the redaction
+  // hunts, which ask about one url shape rather than about the inventory's
+  // planted population. Seven hand-copied versions of that renderer drifted
+  // apart before it was shared. This block is what keeps the shared renderer
+  // and the inventory from drifting the same way: every render the harness
+  // performs is asked the inventory's own question, so a channel dropped from
+  // the harness — or an option set weakened in it — fails HERE, in the file
+  // CONTEXT.md names as the authority.
+  describe.each(everyErrorKind)("%s — through the shared channel harness", (_name, make) => {
+    test("no channel the harness renders emits a secret value", () => {
+      const rendered = everyChannel(make());
+
+      // The two documented residuals, applied rather than reopened: `cause`
+      // survives `structuredClone` and the fatal-exception printer, because
+      // both are platform algorithms with no hook.
+      const leaking = leakingChannels(
+        Object.fromEntries(
+          Object.entries(rendered).map(([channel, text]) => [
+            channel,
+            text.replaceAll("CAUSE_SECRET", "<cause>"),
+          ]),
+        ),
+        SECRETS,
+      );
+
+      expect(leaking, `these channels emitted a secret: ${leaking.join(", ")}`).toEqual([]);
+    });
+
+    test("the harness still renders all seven channels", () => {
+      // A harness that stopped rendering a channel would pass the test above by
+      // asking nothing. The labels carry the channel number as their first
+      // character, so the set of numbers is the set of channels.
+      const numbers = new Set(Object.keys(everyChannel(make())).map((label) => label[0]));
+
+      expect([...numbers].toSorted()).toEqual(["1", "2", "3", "4", "5", "6", "7"]);
     });
   });
 });

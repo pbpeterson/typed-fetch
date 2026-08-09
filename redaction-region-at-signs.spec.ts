@@ -1,4 +1,3 @@
-import { inspect } from "node:util";
 import { describe, expect, test } from "vitest";
 import { NotFoundError } from "./src/errors";
 import { BaseHttpError } from "./src/errors/base-http-error";
@@ -7,6 +6,7 @@ import { denoCustomInspect, inspectCustom } from "./src/errors/inspect";
 import { NetworkError } from "./src/errors/network-error";
 import { AbortedError } from "./src/errors/aborted-error";
 import { TimeoutError } from "./src/errors/timeout-error";
+import { everyChannel } from "./fixtures/channels";
 import { redactUrl, redactUrlInMessage } from "./src/errors/redact-url";
 
 /**
@@ -45,32 +45,6 @@ function expectNoSecrets(rendered: string, only?: readonly string[]): void {
   for (const secret of only ?? SECRETS) {
     expect(rendered, `channel emitted the secret ${secret}`).not.toContain(secret);
   }
-}
-
-/**
- * Every channel of the inventory, rendered from one error, as one string per
- * channel. The seven are `disclosure-channels.spec.ts`'s seven, at the same
- * option sets — channel 7 is reproduced at the exact options Node's
- * fatal-exception printer uses (`customInspect: false`), which is what makes
- * property ENUMERABILITY the only control over it.
- */
-function everyChannel(error: Error): Record<string, string> {
-  return {
-    "1 JSON.stringify/toJSON": JSON.stringify({ msg: "request failed", err: error }) ?? "",
-    "2 util.inspect/console.*":
-      inspect(error, { depth: null }) +
-      inspect(error, { showHidden: true, depth: null }) +
-      inspect({ wrapped: error }, { depth: null }),
-    "3 toString/template": `${error}` + String(error) + error.toString(),
-    "4 message": error.message,
-    "5 own enumerable": JSON.stringify(Object.keys(error)) + JSON.stringify({ ...error }),
-    "6 structuredClone": inspect(structuredClone(error), { showHidden: true, depth: null }),
-    "7 fatal-exception printer": inspect(error, {
-      customInspect: false,
-      showHidden: false,
-      depth: null,
-    }),
-  };
 }
 
 /* ────────────────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { isHttpError, typedFetch } from "./src/index";
 import { NotFoundError } from "./src/errors/not-found-error";
 import { redactUrl } from "./src/errors/redact-url";
+import { mulberry, responseWith } from "./fixtures/responses";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 13 — H2. Round 12 rewrote `src/errors/redact-url.ts` (commit
@@ -30,11 +31,6 @@ import { redactUrl } from "./src/errors/redact-url";
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** A real 4xx `Response` whose `url` is the one under test. */
-function responseWith(url: string, status = 404): Response {
-  const response = new Response("{}", { status, statusText: "Not Found" });
-  Object.defineProperty(response, "url", { value: url, configurable: true });
-  return response;
-}
 
 // ── 1. R13-H2-01 — the seam's userinfo survives a host that does not parse ──
 //
@@ -192,18 +188,6 @@ describe("round 13 / H2 — the seam removes a credential whatever the host afte
 // properties below are that argument made executable: the loop answers for
 // every input, it drains every authority a caller can nest, and what it emits
 // no longer opens one.
-
-/** A deterministic PRNG, so a failure names an input a rerun reproduces. */
-function mulberry(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 /**
  * The pieces a hostile `response.url` is spelled from, weighted at the loop:

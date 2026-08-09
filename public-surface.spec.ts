@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -12,6 +12,14 @@ import {
   isTimeoutError,
 } from "./src/index";
 import { httpErrors } from "./src/errors/helpers";
+import {
+  distExists,
+  importBuilt,
+  loadRootCjs,
+  loadRootEsm,
+  requireBuilt,
+  warnWhenDistMissing,
+} from "./fixtures/built-package";
 import {
   AbortedError,
   BaseHttpError,
@@ -83,32 +91,16 @@ async function settlesWithin(promise: Promise<unknown>, ms = 500): Promise<strin
 // ordering and the surface would silently stop being checked. Present dist/
 // runs for real everywhere — e.g. the documented verification flow
 // `pnpm build && pnpm lint && pnpm format:check && pnpm typecheck && pnpm test`.
-const distExists = existsSync(new URL("./dist/index.mjs", import.meta.url));
+warnWhenDistMissing("api-surface", distExists);
 
-if (!distExists) {
-  if (process.env.CI) {
-    throw new Error(
-      "[api-surface] dist/ not found in CI — .github/workflows/ci.yml must run " +
-        "`pnpm build` before `pnpm test` so the dist-gated suites run for real.",
-    );
-  }
-  // eslint-disable-next-line no-console
-  console.warn(
-    "\n[api-surface] dist/ not found — skipping the public API surface snapshot tests. " +
-      "Run `pnpm build` first (e.g. `pnpm build && pnpm test`) to exercise them.\n",
-  );
-}
-
-// The specifier is built at runtime so `tsc` does not try to resolve dist/,
-// which does not exist until `pnpm build` has run.
 const importDist = (path: string): Promise<Record<string, unknown>> =>
-  import(/* @vite-ignore */ new URL(path, import.meta.url).href);
+  importBuilt<Record<string, unknown>>(path);
 
 // The CJS half of every axis below. A snapshot reads ONE format, and the two
 // formats are built from one source by one bundler — so the CJS barrel is
 // checked by requiring it and comparing it to the ESM side, rather than by a
 // second snapshot that could drift from the first without a reviewer noticing.
-const requireDist = createRequire(import.meta.url);
+const requireDist = <T = Record<string, unknown>>(path: string): T => requireBuilt<T>(path);
 
 describe.skipIf(!distExists)("public API surface is frozen", () => {
   test("main entry named exports", async () => {
@@ -543,17 +535,10 @@ describe.skipIf(!distExists)("guards work across module copies (dist)", () => {
 // confirm the branch is refused with the branch released.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const copies6_distExists = existsSync(new URL("./dist/index.mjs", import.meta.url));
-
-if (!copies6_distExists) {
-  // eslint-disable-next-line no-console
-  console.warn("\n[lane4] dist/ not found — run `pnpm build` to exercise the two-copy suite.\n");
-}
-
-const copies6_importDist = (path: string): Promise<Record<string, unknown>> =>
-  import(/* @vite-ignore */ new URL(path, import.meta.url).href);
-const copies6_requireDist = createRequire(import.meta.url);
-
+// The round-6 block reads the same `dist/index.mjs` as the surface blocks
+// above, so the one `warnWhenDistMissing` call at the top of this file already
+// reports a missing build. It used to carry a second probe and a second
+// warning, which printed twice and could disagree with the first.
 interface Copy {
   BaseHttpError: new (response: Response) => BaseHttpError;
   NotFoundError: new (response: Response) => BaseHttpError;
@@ -562,9 +547,8 @@ interface Copy {
   isKnownHttpError: (value: unknown) => boolean;
 }
 
-const esmCopy = (): Promise<Copy> =>
-  copies6_importDist("./dist/index.mjs") as unknown as Promise<Copy>;
-const cjsCopy = (): Copy => copies6_requireDist("./dist/index.js") as unknown as Copy;
+const esmCopy = (): Promise<Copy> => loadRootEsm<Copy>();
+const cjsCopy = (): Copy => loadRootCjs<Copy>();
 
 async function copies6_settlesWithin(promise: Promise<unknown>, ms = 500): Promise<string> {
   return Promise.race([
@@ -578,7 +562,7 @@ async function copies6_settlesWithin(promise: Promise<unknown>, ms = 500): Promi
 
 const payload = (status = 404): Response => new Response("payload", { status });
 
-describe.skipIf(!copies6_distExists)("L4-C — two genuine package copies", () => {
+describe.skipIf(!distExists)("L4-C — two genuine package copies", () => {
   test("L4-C1: the copies are distinct, and only the brand-keyed guards cross the seam", async () => {
     const esm = await esmCopy();
     const cjs = cjsCopy();

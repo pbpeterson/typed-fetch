@@ -1,44 +1,15 @@
-import { inspect } from "node:util";
 import { describe, test, expect } from "vitest";
 import { AbortedError, NetworkError, NotFoundError, TimeoutError } from "./src/errors";
 import { redactUrl } from "./src/errors/redact-url";
+import { PASSWORD, everyChannel, leakingChannels } from "./fixtures/channels";
 
 /**
  * ROUND 8, LANE H3 — disclosure and security.
  *
  * Two findings, both proved across the channel SET rather than against one
- * channel, because a disclosure decision applies to the set. The harness below
- * is the `disclosure-channels.spec.ts` pattern, copied rather than shared: that
- * file is the inventory and this one is a hunt.
+ * channel, because a disclosure decision applies to the set. `fixtures/channels`
+ * renders that set; this file is a hunt over it.
  */
-
-/** The seven channels, rendered. Labelled, so a failure names the channel. */
-function everyChannel(error: Error): [string, string][] {
-  return [
-    ["1 JSON.stringify", JSON.stringify(error) ?? ""],
-    ["1 JSON.stringify in a log envelope", JSON.stringify({ msg: "request failed", err: error })],
-    ["2 util.inspect", inspect(error, { depth: null })],
-    ["2 util.inspect with colors", inspect(error, { colors: true, depth: null })],
-    ["3 String(error)", String(error)],
-    ["3 template interpolation", `${error}`],
-    ["3 string concatenation", "log line: " + (error as unknown as string)],
-    ["4 error.message", error.message],
-    ["5 Object.keys", JSON.stringify(Object.keys(error))],
-    ["5 spread", JSON.stringify({ ...error })],
-    ["6 structuredClone", inspect(structuredClone(error), { depth: null })],
-    [
-      "7 the fatal-exception printer",
-      inspect(error, { customInspect: false, showHidden: false, depth: null }),
-    ],
-  ];
-}
-
-/** The channels that emitted any of `secrets`, by label. The empty list is the pass. */
-function leakingChannels(rendered: [string, string][], secrets: string[]): string[] {
-  return rendered
-    .filter(([, text]) => secrets.some((secret) => text.includes(secret)))
-    .map(([channel]) => channel);
-}
 
 /** An HTTP error whose response reports `url`, the way a real fetch would. */
 function httpErrorFor(url: string): NotFoundError {
@@ -68,8 +39,6 @@ function httpErrorFor(url: string): NotFoundError {
  * and never presents the absolute twin.
  */
 describe("R8-H3-01 — an absolute url's embedded credential survives a `?` or `#`", () => {
-  const PASSWORD = "hunter2";
-
   test.each([
     ["a query terminator", `https://api.test/go/https://svc:${PASSWORD}?tail@internal.test/v1`],
     ["a fragment terminator", `https://api.test/go/https://svc:${PASSWORD}#tail@internal.test/v1`],
@@ -203,9 +172,9 @@ describe("R8-H3-02 — a polluted Object.prototype takes over channel 3", () => 
     const error = make();
     void error.stack;
 
-    const rendered = underPollution(Symbol.toPrimitive, () => [
-      ["3 template interpolation", `${error}`] as [string, string],
-    ]);
+    const rendered = underPollution(Symbol.toPrimitive, () => ({
+      "3 template interpolation": `${error}`,
+    }));
 
     expect(leakingChannels(rendered, ["hunter2"])).toEqual([]);
   });

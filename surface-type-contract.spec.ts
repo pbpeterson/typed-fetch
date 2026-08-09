@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, test, expect, expectTypeOf } from "vitest";
@@ -8,6 +8,7 @@ import type { HttpMethods } from "./src/methods";
 import type { TypedFetchError } from "./src/errors";
 import { httpErrors } from "./src/errors/helpers";
 import { useTestServer } from "./fixtures/http-server";
+import { distExists, importBuilt, warnWhenDistMissing } from "./fixtures/built-package";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 8, LANE H4 — the public surface, the exported types, and the README
@@ -26,24 +27,10 @@ const server = useTestServer();
 // missing dist/ is a graceful local skip with a printed warning, and a hard
 // error in CI, where .github/workflows/ci.yml runs `pnpm build` before
 // `pnpm test` and a silent skip would mean the surface stopped being checked.
-const distExists = existsSync(new URL("./dist/index.mjs", import.meta.url));
-
-if (!distExists) {
-  if (process.env.CI) {
-    throw new Error(
-      "[round8-h4] dist/ not found in CI — .github/workflows/ci.yml must run " +
-        "`pnpm build` before `pnpm test` so the dist-gated suites run for real.",
-    );
-  }
-  // eslint-disable-next-line no-console
-  console.warn(
-    "\n[round8-h4] dist/ not found — skipping the built-surface suites. " +
-      "Run `pnpm build` first (e.g. `pnpm build && pnpm test`) to exercise them.\n",
-  );
-}
+warnWhenDistMissing("round8-h4", distExists);
 
 const importDist = (path: string): Promise<Record<string, unknown>> =>
-  import(/* @vite-ignore */ new URL(path, import.meta.url).href);
+  importBuilt<Record<string, unknown>>(path);
 
 /** Every exported symbol of a built declaration file, split by meaning. */
 function exportsOfDeclaration(dtsRelPath: string): { all: string[]; typeOnly: string[] } {

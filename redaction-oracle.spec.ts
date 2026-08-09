@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { redactUrl, redactUrlInMessage } from "./src/errors/redact-url";
+import { mulberry } from "./fixtures/responses";
 
 /**
  * ROUND 12, LANE F2 — an independent oracle for `src/errors/redact-url.ts`.
@@ -521,17 +522,6 @@ const CROSS_PRODUCT_SIZE =
   PATHS.length *
   QUERIES.length *
   FRAGMENTS.length;
-
-/** A seeded generator, so a failure names an input a reader can paste. */
-function mulberry(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let drawn = Math.imul(state ^ (state >>> 15), 1 | state);
-    drawn = (drawn + Math.imul(drawn ^ (drawn >>> 7), 61 | drawn)) ^ drawn;
-    return ((drawn ^ (drawn >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 function pick<T>(list: readonly T[], random: () => number): T {
   const item = list[Math.floor(random() * list.length) % list.length];

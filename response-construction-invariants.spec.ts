@@ -6,6 +6,7 @@ import { NotFoundError } from "./src/errors/not-found-error";
 import { httpErrors } from "./src/errors/helpers";
 import { identityOf } from "./src/errors/response-identity";
 import { redactUrl } from "./src/errors/redact-url";
+import { responseWith as builtResponseWith } from "./fixtures/responses";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 14 — H2. Round 13 changed `src/errors/redact-url.ts` again (commit
@@ -40,11 +41,11 @@ import { redactUrl } from "./src/errors/redact-url";
 const SECRET = "hunter2";
 
 /** A real 4xx `Response` whose `url` is the one under test. */
-function responseWith(url: string, status = 404): Response {
-  const response = new Response(null, { status, statusText: "Not Found" });
-  Object.defineProperty(response, "url", { value: url, configurable: true });
-  return response;
-}
+/**
+ * The suite's own default body: `null`. Everything here is about identity, and
+ * a null body has no stream to leave open when a test does not cancel.
+ */
+const responseWith = (url: string, status = 404): Response => builtResponseWith(url, status, null);
 
 /** The error `typedFetch` returns for a response carrying `url`. */
 async function errorFor(url: string, status = 404) {

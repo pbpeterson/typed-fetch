@@ -1,5 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
+import {
+  errorsDistExists as distExists,
+  loadErrorsEsm,
+  warnWhenDistMissing,
+} from "./fixtures/built-package";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 15, LANE H4 — the LAST round. Two jobs, in this file in this order:
@@ -18,21 +23,7 @@ import { describe, expect, test } from "vitest";
 // sentence cannot leave a stale quotation behind.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const distExists = existsSync(new URL("./dist/errors/index.mjs", import.meta.url));
-
-if (!distExists) {
-  if (process.env.CI) {
-    throw new Error(
-      "[round15-h4] dist/ not found in CI — .github/workflows/ci.yml must run " +
-        "`pnpm build` before `pnpm test` so the dist-gated suites run for real.",
-    );
-  }
-  // eslint-disable-next-line no-console
-  console.warn(
-    "\n[round15-h4] dist/ not found — skipping the built-surface suites. " +
-      "Run `pnpm build` first (e.g. `pnpm build && pnpm test`) to exercise them.\n",
-  );
-}
+warnWhenDistMissing("round15-h4", distExists);
 
 type ErrorLike = Error & {
   url: string;
@@ -45,10 +36,7 @@ type ErrorsBag = {
   NetworkError: new (message?: string, options?: { cause?: unknown; url?: string }) => ErrorLike;
 };
 
-const loadErrors = async (): Promise<ErrorsBag> =>
-  (await import(
-    /* @vite-ignore */ new URL("./dist/errors/index.mjs", import.meta.url).href
-  )) as ErrorsBag;
+const loadErrors = (): Promise<ErrorsBag> => loadErrorsEsm<ErrorsBag>();
 
 /** A built `NotFoundError` over a `Response` reporting `url`, body released. */
 async function errorFor(url: string): Promise<ErrorLike> {

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { isHttpError, isNetworkError, typedFetch } from "./src/index";
 import { errorBodyOf, type ErrorBody } from "./src/errors/error-body";
 import { redactUrl, redactUrlInMessage } from "./src/errors/redact-url";
+import { mulberry } from "./fixtures/responses";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 12 — H2. The lane has returned clean four times, and the one thing it
@@ -31,18 +32,6 @@ import { redactUrl, redactUrlInMessage } from "./src/errors/redact-url";
 //     invocations of the underlying source's own cancel algorithm — and runs
 //     it over operation streams of arbitrary length instead of a fixed one.
 // ═══════════════════════════════════════════════════════════════════════════
-
-/** A deterministic PRNG, so a failure names an input a rerun reproduces. */
-function mulberry(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 // ── 1. Redaction: the fixed point, and two siblings ─────────────────────────
 

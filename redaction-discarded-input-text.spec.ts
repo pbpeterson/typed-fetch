@@ -1,9 +1,10 @@
-import { inspect } from "node:util";
 import { describe, expect, test } from "vitest";
 import { typedFetch } from "./src/index";
 import { NetworkError } from "./src/errors/network-error";
 import { NotFoundError } from "./src/errors/not-found-error";
 import { redactUrl, redactUrlInMessage } from "./src/errors/redact-url";
+import { PASSWORD, everyChannel } from "./fixtures/channels";
+import { responseWith } from "./fixtures/responses";
 
 /**
  * ROUND 14, LANE H3 — disclosure and security.
@@ -31,9 +32,6 @@ import { redactUrl, redactUrlInMessage } from "./src/errors/redact-url";
  * 13 each found under a different name — and round 13's own critical comes back
  * whole, one keystroke away from the spelling that closed it.
  */
-
-/** The password planted below. No channel this library controls may emit it. */
-const PASSWORD = "hunter2";
 
 /**
  * A leading character the URL parser strips: U+0020 SPACE.
@@ -66,36 +64,7 @@ const LED_REFUSED_PORT = `${LEAD}http:alice:${PASSWORD}@api.test:99999/v1`;
  */
 const REFUSED_PORT = `http:alice:${PASSWORD}@api.test:99999/v1`;
 
-/**
- * Every channel of the inventory, rendered from one error, as one string per
- * channel. The seven are `disclosure-channels.spec.ts`'s seven, at the same
- * option sets — channel 7 is reproduced at the exact options Node's
- * fatal-exception printer uses (`customInspect: false`), which is what makes
- * property ENUMERABILITY the only control over it.
- */
-function everyChannel(error: Error): Record<string, string> {
-  return {
-    "1 JSON.stringify/toJSON": JSON.stringify({ msg: "request failed", err: error }) ?? "",
-    "2 util.inspect/console.*":
-      inspect(error, { depth: null }) + inspect({ wrapped: error }, { depth: null }),
-    "3 toString/template": `${error}` + String(error) + error.toString(),
-    "4 message": error.message,
-    "5 own enumerable": JSON.stringify(Object.keys(error)) + JSON.stringify({ ...error }),
-    "6 structuredClone": inspect(structuredClone(error), { showHidden: true, depth: null }),
-    "7 fatal-exception printer": inspect(error, {
-      customInspect: false,
-      showHidden: false,
-      depth: null,
-    }),
-  };
-}
-
 /** A 404 `Response` whose `url` is the one under test, the way a fetch sets it. */
-function responseWith(url: string): Response {
-  const response = new Response("{}", { status: 404, statusText: "Not Found" });
-  Object.defineProperty(response, "url", { value: url, configurable: true });
-  return response;
-}
 
 /* ────────────────────────────────────────────────────────────────────────────
  * R14-H3-01 — a leading character the parser STRIPS moves the mark out from

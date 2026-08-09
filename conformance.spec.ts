@@ -4,6 +4,7 @@ import { HOSTILE_SCENARIOS, URL_UNDER_TEST, type HostileScenario } from "./fixtu
 import type { TypedFetchOptions } from "./src/index";
 import { isAbortError, isHttpError, isTimeoutError, typedFetch } from "./src/index";
 import { NetworkError, UnknownHttpError } from "./src/errors";
+import { foreignResponses } from "./fixtures/responses";
 
 /**
  * THE UNTRUSTED-`fetch` BOUNDARY, AS TESTS.
@@ -189,27 +190,7 @@ describe("the prose row count", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** A response-shaped foreign object that passes every structural check. */
-function foreignResponse(overrides: Record<string, unknown> = {}): Response {
-  const base: Record<string, unknown> = {
-    [Symbol.toStringTag]: "Response",
-    body: null,
-    bodyUsed: false,
-    headers: new Headers(),
-    ok: true,
-    redirected: false,
-    status: 200,
-    statusText: "OK",
-    type: "basic",
-    url: URL_UNDER_TEST,
-    arrayBuffer: async () => new ArrayBuffer(0),
-    blob: async () => new Blob(),
-    clone: () => foreignResponse(overrides),
-    formData: async () => new FormData(),
-    json: async () => ({}),
-    text: async () => "",
-  };
-  return Object.assign(base, overrides) as unknown as Response;
-}
+const foreignResponse = foreignResponses(URL_UNDER_TEST);
 
 function scenarioOf(id: string) {
   const scenario = HOSTILE_SCENARIOS.find((candidate) => candidate.id === id);

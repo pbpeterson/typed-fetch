@@ -1,9 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, test, expect } from "vitest";
+import {
+  builtEntryUrl,
+  errorsDistExists as distExists,
+  loadErrorsCjs,
+  loadErrorsEsm,
+  warnWhenDistMissing,
+} from "./fixtures/built-package";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 10, LANE H4 — the sentences rounds 8 and 9 wrote, read back from the
@@ -15,23 +22,7 @@ import { describe, test, expect } from "vitest";
 // assertion here reads `dist/`, or runs a gated runtime, and never `src/`.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const distExists = existsSync(new URL("./dist/errors/index.mjs", import.meta.url));
-
-if (!distExists) {
-  if (process.env.CI) {
-    throw new Error(
-      "[round10-h4] dist/ not found in CI — .github/workflows/ci.yml must run " +
-        "`pnpm build` before `pnpm test` so the dist-gated suites run for real.",
-    );
-  }
-  // eslint-disable-next-line no-console
-  console.warn(
-    "\n[round10-h4] dist/ not found — skipping the built-surface suites. " +
-      "Run `pnpm build` first (e.g. `pnpm build && pnpm test`) to exercise them.\n",
-  );
-}
-
-const requireBuilt = createRequire(import.meta.url);
+warnWhenDistMissing("round10-h4", distExists);
 
 type ErrorClass = new (response: Response) => Error & {
   url: string;
@@ -40,13 +31,9 @@ type ErrorClass = new (response: Response) => Error & {
 };
 type Bag = Record<string, { prototype: object }> & { NotFoundError: ErrorClass };
 
-const loadEsm = async (): Promise<Bag> =>
-  (await import(
-    /* @vite-ignore */ new URL("./dist/errors/index.mjs", import.meta.url).href
-  )) as Bag;
+const loadEsm = (): Promise<Bag> => loadErrorsEsm<Bag>();
 
-const loadCjs = (): Bag =>
-  requireBuilt(new URL("./dist/errors/index.js", import.meta.url).pathname) as Bag;
+const loadCjs = (): Bag => loadErrorsCjs<Bag>();
 
 /** The four ROOT prototypes — the four `installInspect` call sites. */
 const ROOT_CLASSES = ["BaseHttpError", "NetworkError", "AbortedError", "TimeoutError"] as const;
@@ -257,7 +244,7 @@ ${tail}
 }
 
 describe.skipIf(!distExists)("every gated runtime renders without the secret", () => {
-  const distUrl = new URL("./dist/errors/index.mjs", import.meta.url).href;
+  const distUrl = builtEntryUrl("dist/errors/index.mjs").href;
 
   test.runIf(bunAvailable)("Bun renders the record through the hook it resolves", () => {
     const printed = runUnder(
@@ -325,7 +312,7 @@ describe.skipIf(!distExists || !esbuildAvailable)(
       try {
         const entry = join(dir, "entry.mjs");
         const bundle = join(dir, "bundle.mjs");
-        const distPath = new URL("./dist/errors/index.mjs", import.meta.url).pathname;
+        const distPath = fileURLToPath(builtEntryUrl("dist/errors/index.mjs"));
 
         // The import is resolved through the package's own `package.json`, which
         // says `"sideEffects": false`, so the bundler is free to drop every

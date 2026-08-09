@@ -1,8 +1,8 @@
-import { inspect } from "node:util";
 import { describe, expect, test } from "vitest";
 import { typedFetch } from "./src/index";
 import { NetworkError } from "./src/errors/network-error";
 import { redactUrl, redactUrlInMessage } from "./src/errors/redact-url";
+import { PASSWORD, everyChannel } from "./fixtures/channels";
 
 /**
  * ROUND 12, LANE H3 — disclosure and security.
@@ -29,9 +29,6 @@ import { redactUrl, redactUrlInMessage } from "./src/errors/redact-url";
  * module keeps: the path.
  */
 
-/** The password planted below. No channel may emit it. */
-const PASSWORD = "hunter2";
-
 /**
  * A protocol-relative request url whose path is a forward to a credentialed
  * service.
@@ -46,32 +43,6 @@ const PASSWORD = "hunter2";
  * percent-encoded, and the credential does not end in `/`.
  */
 const PROTOCOL_RELATIVE_FORWARD = `//https://svc:${PASSWORD}@internal.test/v1`;
-
-/**
- * Every channel of the inventory, rendered from one error, as one string per
- * channel. The seven are `disclosure-channels.spec.ts`'s seven, at the same
- * option sets — channel 7 is reproduced at the exact options Node's
- * fatal-exception printer uses (`customInspect: false`), which is what makes
- * property ENUMERABILITY the only control over it.
- */
-function everyChannel(error: Error): Record<string, string> {
-  return {
-    "1 JSON.stringify/toJSON": JSON.stringify({ msg: "request failed", err: error }) ?? "",
-    "2 util.inspect/console.*":
-      inspect(error, { depth: null }) +
-      inspect(error, { showHidden: true, depth: null }) +
-      inspect({ wrapped: error }, { depth: null }),
-    "3 toString/template": `${error}` + String(error) + error.toString(),
-    "4 message": error.message,
-    "5 own enumerable": JSON.stringify(Object.keys(error)) + JSON.stringify({ ...error }),
-    "6 structuredClone": inspect(structuredClone(error), { showHidden: true, depth: null }),
-    "7 fatal-exception printer": inspect(error, {
-      customInspect: false,
-      showHidden: false,
-      depth: null,
-    }),
-  };
-}
 
 /* ────────────────────────────────────────────────────────────────────────────
  * R12-H3-01 — a protocol-relative url hides the mark that opens a region.
