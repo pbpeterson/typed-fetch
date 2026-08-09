@@ -722,12 +722,12 @@ function nativeRequestUrl(request: Request): unknown {
 /**
  * `Request.prototype`'s own `signal` getter, applied to a platform `Request`.
  *
- * `null` for an input no transport takes as a request, which is the state the
- * caller reads it in. Falls back to a plain read when the accessor cannot be
- * found — a runtime where `signal` is a data property still answers correctly.
+ * Called only for a value {@link isPlatformRequest} accepted, so the accessor
+ * always has its slot to report. Falls back to a plain read when the accessor
+ * cannot be found — a runtime where `signal` is a data property still answers
+ * correctly.
  */
-function nativeRequestSignal(request: Request | null): AbortSignal | undefined {
-  if (request === null) return undefined;
+function nativeRequestSignal(request: Request): AbortSignal | undefined {
   const getter = Object.getOwnPropertyDescriptor(Request.prototype, "signal")?.get;
   const raw: unknown =
     typeof getter === "function" ? Reflect.apply(getter, request, []) : request.signal;
@@ -930,27 +930,45 @@ export async function typedFetch<JsonReturnType>(
     if (initSignal !== undefined) {
       signal = initSignal ?? undefined;
     } else {
-      // WHICH read reports the Request's signal is decided by the verdict
-      // above, the same way `classifyRequestInput` decides which read reports
-      // its `url` — one slot further down, and for the same reason.
+      // THE RULE, for both fields the setup phase takes off a handed-over
+      // `Request`: read it through `Request.prototype`'s accessor whenever the
+      // input is a platform `Request`, and as a plain own property only when it
+      // is not one — because only then is there no slot for the accessor to
+      // report. `classifyRequestInput` already reads `url` this way, one slot
+      // further up, and this is the same read for the same reason.
       //
-      // The AMBIENT transport receives the `Request` WHOLE and aborts on the
-      // signal in its internal slot, which is the signal
-      // `Request.prototype.signal` reports. That accessor is read-only, so
-      // `Object.defineProperty(request, "signal", { value })` shadows it for
-      // every plain read — the decoy an own `url` already was, written by the
-      // middleware that decorates a `Request` rather than by the call site. A
-      // plain read here captured the decoy, `classifyRequestFailure` treats
-      // whatever it is handed as the authority, and a request the transport DID
-      // abort came back as a `NetworkError`. A consumer's retry policy reads
-      // that class.
+      // The slot behind the accessor is what a platform `fetch` aborts on. That
+      // accessor is read-only, so `Object.defineProperty(request, "signal",
+      // { value })` shadows it for every plain read — the decoy an own `url`
+      // already was, written by the middleware that decorates a `Request`
+      // rather than by the call site.
       //
-      // CALLER CODE running as the transport holds no such slot. It reads the
-      // own property exactly as this line would, and `transportTakesRequest`
-      // admitted its input on the wider tag check, so the value need not be a
-      // platform `Request` at all. There the own property IS the governing
-      // signal, and the accessor would report one nothing consults.
-      const handedOver = callerTransport ? requestInput?.signal : nativeRequestSignal(requestInput);
+      // WHICH TRANSPORT RUNS cannot decide this, and that was the previous
+      // spelling. A `Request` reaches the platform under caller code as much as
+      // under the ambient transport: `{ fetch: (input, init) =>
+      // globalThis.fetch(input, init) }` — the wrapper that logs, retries, or
+      // counts calls — hands the `Request` over WHOLE, so the platform aborts
+      // on the slot while the library read the shadow, and a request that WAS
+      // aborted came back as a `NetworkError`. A consumer's retry policy reads
+      // that class. This module cannot see what caller code does with a
+      // `Request`, so it must not branch on it; whether the accessor APPLIES is
+      // a fact about the INPUT, which it already decided for itself.
+      //
+      // A tagged non-platform input keeps the plain read for the only reason
+      // there ever was: `transportTakesRequest` admitted it on the wider tag
+      // check, it carries no slot, and the accessor would throw on it. Its own
+      // property is the whole of its signal.
+      //
+      // One case is under-reported: caller code that reads the own property
+      // AND aborts on it, over a platform `Request` whose slot signal is not
+      // aborted. It resolves to `NetworkError`, the safe direction the
+      // transport phase below already documents for an untrustworthy signal.
+      //
+      // `requestInput` is never null on the accessor arm: a platform `Request`
+      // is also tagged, so BOTH arms of `transportTakesRequest` hand it over.
+      const handedOver = input.platformRequest
+        ? nativeRequestSignal(requestInput as Request)
+        : requestInput?.signal;
       signal = handedOver ?? undefined;
     }
 
