@@ -87,15 +87,36 @@ function stripValues(parsed: URL): URL {
 const HIERARCHICAL_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:", "ftp:", "file:"]);
 
 /**
- * The same six schemes by NAME, which is how {@link isSpecialScheme} reads them
- * out of a path. These are the WHATWG "special" schemes, and the URL Standard
- * gives them the one property this module has to ask about: they reach their
- * authority over ANY number of solidi, including none. Derived rather than
- * written twice, so the two lists cannot disagree about what "special" means.
+ * The same six schemes by NAME, which is the spelling a path holds them in.
+ * Derived rather than written twice, so a scheme cannot be hierarchical here
+ * and unknown there.
  */
-const SPECIAL_SCHEMES = new Set(
+const HIERARCHICAL_SCHEMES = new Set(
   [...HIERARCHICAL_PROTOCOLS].map((protocol) => protocol.slice(0, -1)),
 );
+
+/**
+ * The schemes that reach their authority over ANY number of solidi, INCLUDING
+ * NONE — the one property {@link isSpecialScheme} asks about.
+ *
+ * FIVE, NOT SIX, and the two lists MUST disagree about `file:`. It is a special
+ * scheme, and it is the one special scheme the URL Standard gives a state of its
+ * own: the file state reads a reference under fewer than two solidi as a path
+ * with an EMPTY HOST, and never as an authority. `new URL("file:/svc:pw@host")`
+ * and `new URL("file:svc:pw@host")` both report no username and the pathname
+ * `/svc:pw@host`, exactly as `git:/svc:pw@host` does.
+ *
+ * So a `file:` colon under fewer than two solidi opens NOTHING, and reading one
+ * as a mark deleted a segment of a real path: `/go/file:/Users/alice@corp/x`
+ * emitted `/go/file:/corp/x`, which names a file the caller never requested. Two
+ * or more solidi are a different state and are opened by their COUNT, in
+ * {@link authorityAt}, under every scheme including this one.
+ *
+ * `file:` stays in {@link HIERARCHICAL_PROTOCOLS}, because that list answers a
+ * different question — is this path structure rather than a value — and for a
+ * `file:` URL the path IS the structure.
+ */
+const SPECIAL_SCHEMES = new Set([...HIERARCHICAL_SCHEMES].filter((scheme) => scheme !== "file"));
 
 /**
  * The href with every value slot removed: no userinfo, no query, no fragment.
@@ -165,20 +186,33 @@ function resolvedPath(text: string): string {
  *  - TWO SOLIDI. The reference is protocol-relative: the relative-slash state
  *    hands it to the authority state, so the parser takes its host from the
  *    reference and not from the base.
- *  - A SPECIAL SCHEME at the head. `RELATIVE_BASE` is special, so a reference
- *    whose scheme EQUALS the base's goes to the special-relative-or-authority
- *    state and then to the relative state: the parser drops the scheme colon
- *    and reads the rest as a path against the base.
- *    `new URL("http:alice:pw@api.test:99999/v1", RELATIVE_BASE)` answers the
- *    path `/alice:pw@api.test:99999/v1` with the base's own host, and the mark
- *    that would have opened a region is gone. Asked of ALL SIX rather than of
- *    the base's own scheme: the other five reach this branch only when they
+ *  - A HIERARCHICAL SCHEME at the head. `RELATIVE_BASE` is special, so a
+ *    reference whose scheme EQUALS the base's goes to the
+ *    special-relative-or-authority state and then to the relative state: the
+ *    parser drops the scheme colon and reads the rest as a path against the
+ *    base. `new URL("http:alice:pw@api.test:99999/v1", RELATIVE_BASE)` answers
+ *    the path `/alice:pw@api.test:99999/v1` with the base's own host, and the
+ *    mark that would have opened a region is gone. Asked of ALL SIX rather than
+ *    of the base's own scheme: the other five reach this branch only when they
  *    already failed to parse absolutely, and they fail here for the same
  *    reason, so the answer never reaches a text — while a rule written around
- *    ONE scheme is a rule that a change of base silently invalidates.
+ *    ONE scheme is a rule that a change of base silently invalidates. This is
+ *    the one question in this module that reads all six, and `file:` belongs in
+ *    it for a reason of its own: the file state eats the colon too, and hands
+ *    what follows to the path state. See {@link SPECIAL_SCHEMES} for the
+ *    question where the same scheme must answer the other way.
  *
- * The tab, CR and LF the parser removes before it reads anything are skipped in
- * both, and `\` counts as a solidus because the base is special.
+ * WHAT THE PARSER DISCARDS IS SKIPPED IN BOTH, and the two removals are
+ * DIFFERENT STEPS of the URL Standard rather than one set of characters. The
+ * basic URL parser first removes every LEADING and trailing C0 control or space
+ * — U+0000 to U+001F plus U+0020 — and then removes every ASCII tab and newline
+ * WHEREVER it sits. So the head of the input is skipped with
+ * {@link isStripped} and the inside with {@link isIgnored}, and one leading
+ * space no longer moves the scheme out from under this walk while leaving it
+ * exactly where the parser reads it. An interior space is removed by neither
+ * step: it is a forbidden host code point, and in a path it is percent-encoded.
+ *
+ * `\` counts as a solidus because the base is special.
  *
  * ASKED OF THE INPUT, and it is the one question this module asks there. It is
  * a yes-or-no about the SHAPE of the parse, never a position in a text that
@@ -188,31 +222,33 @@ function resolvedPath(text: string): string {
  */
 function bringsOwnAuthority(text: string): boolean {
   let at = 0;
-  while (isIgnored(text[at])) at += 1;
+  while (isStripped(text[at])) at += 1;
   if (isSolidus(text[at])) {
     at += 1;
     while (isIgnored(text[at])) at += 1;
     return isSolidus(text[at]);
   }
-  return leadsWithSpecialScheme(text, at);
+  return leadsWithHierarchicalScheme(text, at);
 }
 
 /**
- * Is the token at `from` one of the six {@link SPECIAL_SCHEMES}, then a colon?
+ * Is the token at `from` one of the six {@link HIERARCHICAL_SCHEMES}, then a
+ * colon?
  *
- * BOUNDED at the longest special scheme, so the walk costs the same whatever
- * follows it — the same reason {@link isSpecialScheme} reads forward from an
- * offset rather than backwards to a token start.
+ * BOUNDED at the longest of them, so the walk costs the same whatever follows
+ * it — the same reason {@link isSpecialScheme} reads forward from an offset
+ * rather than backwards to a token start.
  */
-const LONGEST_SPECIAL_SCHEME = 5;
+const LONGEST_HIERARCHICAL_SCHEME = 5;
 
-function leadsWithSpecialScheme(text: string, from: number): boolean {
+function leadsWithHierarchicalScheme(text: string, from: number): boolean {
   let scheme = "";
   for (let at = from; at < text.length; at += 1) {
     const character = text[at]!;
     if (isIgnored(character)) continue;
-    if (character === ":") return SPECIAL_SCHEMES.has(scheme.toLowerCase());
-    if (scheme.length === LONGEST_SPECIAL_SCHEME || !isSchemeCharacter(character)) return false;
+    if (character === ":") return HIERARCHICAL_SCHEMES.has(scheme.toLowerCase());
+    if (scheme.length === LONGEST_HIERARCHICAL_SCHEME || !isSchemeCharacter(character))
+      return false;
     scheme += character;
   }
   return false;
@@ -264,12 +300,36 @@ function leadsWithSpecialScheme(text: string, from: number): boolean {
  * earliest colon sits at index 1 and the earliest span starts at index 2. So a
  * redaction can move text out of this url, and can never move the HOST it
  * names: a redaction that lies is worse than one that leaks.
+ *
+ * AND EVERY QUESTION IS ASKED OF THE TEXT THIS FUNCTION EMITS, which is what
+ * the loop below is for and is the invariant rounds 13 and 14 each found a
+ * third and fourth instance of. The rebuild is a PARSE, and a parse moves text:
+ * the URL Standard's path state removes a `.` or `..` segment — under that
+ * spelling or under `%2e`, in either case — and every byte after it moves left.
+ * A removal can UNCOVER such a segment, so the answer to one question can slide
+ * the next authority into the seam another question had just cleared.
+ * `file:///x@./alice:pw@internal.test/v1` is that shape: removing `x@` leaves
+ * `/./alice:pw@…`, and the rebuild collapses the dot to emit the credential at
+ * the seam whole.
+ *
+ * RE-ASKING `redactUrl` OF ITS OWN ANSWER DOES NOT CLOSE THIS, and that is the
+ * distinction worth keeping. A second call recomputes the origin and re-reads
+ * `bringsOwnAuthority` from a text that no longer holds the mark, so it asks
+ * DIFFERENT questions — and `//https:/x@./alice:pw@internal.test/v1` emits a
+ * value that is already a fixed point of the whole redactor and still carries
+ * the password. The loop asks the SAME questions, of the text that came out.
+ * It ends because a pass either emits what it scanned or removes at least one
+ * character, and the rebuild of a path a parser already produced is never
+ * longer than that path.
  */
 function cleaned(parsed: URL, origin: string, consumed = false): URL {
-  const path = parsed.pathname;
-  const scanned = endsInsideAuthority(path) ? path + parsed.search + parsed.hash : path;
-  const clean = withoutMalformedUserinfo(scanned, path.length, seamUserinfo(parsed, consumed));
-  return stripValues(clean === path ? parsed : new URL(origin + clean));
+  for (;;) {
+    const path = parsed.pathname;
+    const scanned = endsInsideAuthority(path) ? path + parsed.search + parsed.hash : path;
+    const clean = withoutMalformedUserinfo(scanned, path.length, seamUserinfo(parsed, consumed));
+    if (clean === path) return stripValues(parsed);
+    parsed = new URL(origin + clean);
+  }
 }
 
 /**
@@ -316,24 +376,34 @@ function cleaned(parsed: URL, origin: string, consumed = false): URL {
  *    the state between them, and the seam is where it shows.
  *    {@link bringsOwnAuthority} names both spellings that reach it.
  *
- * AND IT FAILS CLOSED WHEN IT CANNOT ANSWER, which is the rule the rest of this
- * module already follows and this seam did not. The confirming parse THROWS for
- * an authority the caller got wrong — an empty host, a port out of range, a
- * space, a bracketed host that is not an address, a forbidden code point — and
- * a credential is exactly where a caller gets one wrong. Reading a throw as
- * "no credential here" inverted the module's own answer about one text:
- * `file:///alice:pw@internal.test/v1` lost its password and
- * `file:///alice:pw@/v1` emitted it whole, so two digits of HOST, written after
- * the credential, decided whether the credential went. What the parser declines
- * to read is not an authority it has ruled out; it is an authority nobody can
- * bound, and the same reasoning {@link parsesAsAuthority} states for the END of
- * a region governs the start of this one. Over-redaction is this module's safe
+ * AND IT READS THE PARSER'S SPLIT POINT, NEVER THE REPORT IT PRINTS. Round 13
+ * confirmed the span with a parse of `https://<authority>/` and believed a
+ * success that named neither a username nor a password. Exactly two texts
+ * answer that way, and only one of them is empty: `@` has nothing in front of
+ * it, and `:@` has a userinfo the parser CONSUMED and then normalised away —
+ * `new URL("https://:@x/").href` is `https://x/`. So the seam read "no
+ * credential" where the parser had read an empty one, and
+ * `file:///:@./alice:pw@internal.test/v1` kept its password behind two
+ * characters.
+ *
+ * The authority state consumes everything up to the LAST `@` before the
+ * authority ends, so any text in front of that `@` IS the userinfo the parser
+ * read, whatever the two accessors go on to say about it. The span ends there,
+ * and nothing is left for a parse to decline — which is also how the failure
+ * round 13 closed stays closed. Its parse THREW for an authority the caller got
+ * wrong — an empty host, a port out of range, a space, a bracketed host that is
+ * not an address — and reading a throw as "no credential here" inverted this
+ * module's own answer about one text: `file:///alice:pw@internal.test/v1` lost
+ * its password and `file:///alice:pw@/v1` emitted it whole, so two digits of
+ * HOST, written after the credential, decided whether the credential went.
+ * Neither text asks a parse anything now. Over-redaction stays the safe
  * direction, and it is the only direction available where the structure cannot
- * be determined at all. A parse that SUCCEEDS and names no credential is a
- * different answer and is still believed: the parser read the authority and
- * said there is none, which is what keeps `file:///c:/Users/alice@corp/x`
- * whole — the drive letter is followed by a solidus, so no `@` precedes the
- * authority's end and the question is never even asked.
+ * be determined at all.
+ *
+ * WHAT KEEPS AN ORDINARY PATH IS THE AUTHORITY'S END, not a verdict about the
+ * text inside it. An authority ends at the first `/`, `\`, `?` or `#`, which is
+ * the bound the URL parser itself uses, so `file:///c:/Users/alice@corp/x` has
+ * no `@` before its end at all and the question is never even asked.
  *
  * AND IT IS ASKED AGAIN OF WHAT ITS OWN ANSWER LEAVES BEHIND, for the reason
  * {@link malformedUserinfoSpans} asks its two questions again: this span is
@@ -354,10 +424,51 @@ function seamUserinfo(parsed: URL, consumed: boolean): { start: number; end: num
     const at = seamUserinfoEnd(path, from);
     if (at < 0) break;
     end = at + 1;
-    from = end;
-    while (isSolidus(path[from])) from += 1;
+    from = pastSeamFiller(path, end);
   }
   return end < 0 ? null : { start, end };
+}
+
+/**
+ * `from`, advanced over everything the parser will DROP from the front of what
+ * a removal leaves behind: solidi, and the dot segments the path state removes.
+ *
+ * THE SOLIDI GO because the parser consumes every one of them, which is the same
+ * rule {@link malformedUserinfoSpans} states for an ordinary region. THE DOT
+ * SEGMENTS GO for the same reason one step later: a removed span is rejoined to
+ * the leading solidi, so what follows it starts a segment, and a segment the
+ * path state removes leaves the text after it at the seam. `file:///a@./b:pw@h`
+ * is that shape — take away `a@` and the parser reads `/./b:pw@h` as `/b:pw@h`.
+ *
+ * COST, NOT CORRECTNESS, and the difference is worth stating because it decides
+ * how much this rule has to be right. {@link cleaned} re-asks every question of
+ * the text its own rebuild produced, so a dot spelling missed here is found on
+ * the next pass — it costs one pass and never a credential. What this buys is
+ * the pass COUNT: without it a path spelling one credential and one dot segment
+ * per group drains one group per pass, and `redactUrl` becomes quadratic in a
+ * value a redirecting server chooses. Measured: 16 KB of them took 465 ms in one
+ * error construction, against 0.9 ms with this.
+ *
+ * THE SPELLINGS ARE THE URL STANDARD'S OWN CLOSED LIST, and they are a closed
+ * list: a single-dot path segment is `.` or `%2e`, and a double-dot path segment
+ * is `..`, `.%2e`, `%2e.`, or `%2e%2e`, each ASCII case-insensitive. A `..` at
+ * this position pops nothing, because the span starts at the first character
+ * after the leading solidi and there is no earlier segment to shorten.
+ *
+ * A `pathname` holds no literal `?` or `#` — the path percent-encode set covers
+ * both — so a segment here ends at a solidus or at the end of the text.
+ */
+const DOT_SEGMENTS = new Set([".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]);
+
+function pastSeamFiller(path: string, from: number): number {
+  let at = from;
+  for (;;) {
+    while (isSolidus(path[at])) at += 1;
+    let segment = at;
+    while (segment < path.length && !isSolidus(path[segment])) segment += 1;
+    if (!DOT_SEGMENTS.has(path.slice(at, segment).toLowerCase())) return at;
+    at = segment;
+  }
 }
 
 /**
@@ -370,18 +481,14 @@ function seamUserinfoEnd(path: string, from: number): number {
     term += 1;
   }
   // The last `@` before the authority ends is where the parser splits userinfo
-  // from host, so it is where the span ends. Asked of the text rather than of
-  // the parsed values, which percent-encoding rewrites.
+  // from host, so it is where the span ends. Asked of the TEXT rather than of
+  // the parsed values, which percent-encoding rewrites and which report an
+  // empty userinfo and an absent one with the same two empty strings.
+  //
+  // An `@` AT `from` has no text in front of it, so it names no userinfo and
+  // there is nothing to remove: `file:///@api.test/v1` keeps its mark.
   const at = path.lastIndexOf("@", term - 1);
-  if (at < from) return -1;
-  try {
-    const authority = new URL(`https://${path.slice(from, term)}/`);
-    if (!authority.username && !authority.password) return -1;
-  } catch {
-    // The parser DECLINED. Fall through to the answer: an authority nobody can
-    // read is an authority nobody can bound. See the note above.
-  }
-  return at;
+  return at <= from ? -1 : at;
 }
 
 /**
@@ -1012,9 +1119,29 @@ function rawAfterAuthority(url: string): string {
   return "";
 }
 
-/** The three characters the URL parser removes from its input before parsing. */
+/**
+ * The three characters the URL parser removes from ANYWHERE in its input before
+ * parsing: ASCII tab, LF and CR.
+ */
 function isIgnored(character: string | undefined): boolean {
   return character === "\t" || character === "\n" || character === "\r";
+}
+
+/**
+ * A character the URL parser removes from the two ENDS of its input: a C0
+ * control or a space, which is U+0000 to U+001F plus U+0020.
+ *
+ * A SEPARATE STEP from {@link isIgnored}, and reading the two as one set is
+ * round 14's critical. The basic URL parser strips the leading and trailing run
+ * of these characters FIRST, and only then removes every tab and newline
+ * wherever it sits. So this set is wider — it holds the space, the NUL, the
+ * vertical tab, the form feed — and it applies at the head alone. One leading
+ * space in front of `http:alice:pw@api.test:99999/v1` is enough to move the
+ * scheme by one character for a reader that skips only the narrow set, while the
+ * parser goes on reading the scheme exactly where it was.
+ */
+function isStripped(character: string | undefined): boolean {
+  return character !== undefined && character.charCodeAt(0) <= 0x20;
 }
 
 /**

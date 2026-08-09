@@ -1752,3 +1752,91 @@ describe("R12 — a credential that the output spells but does not carry", () =>
     expect(new URL(url, "http://url.invalid").username).toBe("");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 14 — three closed cases, all of one class: the module asked its
+// questions of one text and emitted another.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("R14 — every question is asked of the text the redactor emits", () => {
+  test("a dot segment a removal uncovers cannot slide a credential into the seam", () => {
+    // The rebuild is a PARSE, and the path state removes a `.` or `..` segment
+    // the removal exposed, moving every byte after it left. So one credential
+    // in front of another, with a dot segment between them, put the second one
+    // back at the seam the first had just been taken from.
+    expect(redactUrl("file:///x@./alice:hunter2@internal.test/v1")).toBe(
+      "file:///internal.test/v1",
+    );
+    expect(redactUrl("file:///x@%2E%2E/alice:hunter2@/v1")).toBe("file:////v1");
+    // The protocol-relative spelling emitted a value that is a FIXED POINT of
+    // the whole redactor and still carried the password, which is why re-asking
+    // `redactUrl` of its own answer is not what closes this.
+    expect(redactUrl("//https:/x@./alice:hunter2@internal.test/v1")).toBe("/internal.test/v1");
+    // The control: the same credential at the same seam with nothing in front
+    // of it. Adding text in front of a credential must not be what keeps it.
+    expect(redactUrl("file:///alice:hunter2@internal.test/v1")).toBe("file:///internal.test/v1");
+  });
+
+  test("the seam reads the parser's split point, never the report it prints", () => {
+    // `new URL("https://:@x/").href` is `https://x/`: the parser CONSUMES a
+    // userinfo spelled `:` and then reports two empty strings for it, so a seam
+    // that asked `username` and `password` read "no credential" where the
+    // parser had read an empty one — and stopped before the real credential.
+    expect(new URL("https://:@x/").href).toBe("https://x/");
+    expect(redactUrl("file:///:@./alice:hunter2@internal.test/v1")).toBe(
+      "file:///internal.test/v1",
+    );
+    expect(redactUrl("file:///:@api.test/v1")).toBe("file:///api.test/v1");
+    // An `@` with nothing in front of it names no userinfo, so the mark stays.
+    expect(redactUrl("file:///@api.test/v1")).toBe("file:///@api.test/v1");
+  });
+
+  test("a leading character the parser strips never decides the answer", () => {
+    // The basic URL parser removes the leading run of C0 controls and spaces in
+    // a step of its own, BEFORE it removes tab, CR and LF from anywhere. A walk
+    // that skipped only those three moved the scheme out from under itself
+    // while the parser went on reading it exactly where it was.
+    const bare = "http:alice:hunter2@api.test:99999/v1";
+    const leads = [
+      " ",
+      "  ",
+      String.fromCharCode(0),
+      String.fromCharCode(11),
+      String.fromCharCode(31),
+      " \t ",
+      "\t ",
+      "",
+    ];
+    for (const lead of leads) {
+      expect(redactUrl(lead + bare), JSON.stringify(lead)).toBe("/api.test:99999/v1");
+    }
+    // And the message pass agrees with `redactUrl` about the same text.
+    const led = " http:alice:hunter2@/v1";
+    expect(redactUrlInMessage(`Failed to parse URL from ${led}`, led)).not.toContain("hunter2");
+  });
+
+  test("`file:` under fewer than two solidi opens no region, and keeps its text", () => {
+    // `file:` is a SPECIAL scheme with a state of its own: under fewer than two
+    // solidi the URL Standard reads it as a path with an empty host, exactly as
+    // it reads a non-special scheme. Opening a region there deleted a segment
+    // of a real path and named a file the caller never requested.
+    expect(new URL("file:/svc:pw@host").username).toBe("");
+    expect(redactUrl("https://api.test/go/file:/Users/alice@corp/report.pdf")).toBe(
+      "https://api.test/go/file:/Users/alice@corp/report.pdf",
+    );
+    expect(redactUrl("https://api.test/go/file:/svc:pw@host/v1")).toBe(
+      "https://api.test/go/file:/svc:pw@host/v1",
+    );
+    expect(redactUrl("https://api.test/go/file:svc:pw@host/v1")).toBe(
+      "https://api.test/go/file:svc:pw@host/v1",
+    );
+    // TWO solidi are a different state, opened by their COUNT under every
+    // scheme — and the other five special schemes still open at any count.
+    expect(redactUrl("https://api.test/go/file://svc:pw@host/v1")).toBe(
+      "https://api.test/go/file://host/v1",
+    );
+    expect(redactUrl("https://api.test/go/https:svc:pw@host.test/v1")).toBe(
+      "https://api.test/go/https:host.test/v1",
+    );
+  });
+});
