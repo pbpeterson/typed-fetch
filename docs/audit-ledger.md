@@ -1014,6 +1014,98 @@ eight rounds. Round 15 is the protocol's cap: see the closing entry below.
   fifteen of them critical. The audit did not converge. A human should
   read the four handovers above before deciding this module is done.
 
+### What round 16 settled
+
+The audit reopened after the round-15 cap. Four hunt lanes ran — the request
+path and cross-call custody, the response phase and redactor cost, disclosure
+and the generators, and the public surface with the release documents — beside
+one workstream: the gate scripts and the fixtures under test.
+
+- **R16-H2-01 (medium), fixed. A redirect target still picked the pass
+  count.** Round 15 taught the SEAM's cursor to pass a dot segment that its own
+  removal exposes, and it left the ORDINARY region's cursor stopping in front
+  of one. Stopping there is correct for the SPAN and wrong for the SCAN. The
+  removal exposes the `..`, the rebuild pops the empty segment that a solidus
+  spells, and the group behind it opens a region only on the pass after that.
+  So `/x` plus 2N solidi plus N `@../` groups cost N + 1 whole-string passes
+  over a text that stays Θ(N) long. `response.url` after a redirect is a text
+  the SERVER wrote, and `toJSON()` paid the count again per log line.
+  `pastOnePop` and `popsBefore` close it. The cursor CROSSES a `..` exactly as
+  often as the slow spelling would have re-opened the region, which for a run
+  of `run` solidi is `run - 2` crossings. The span CLOSES in front of the `..`,
+  so the `..` is still emitted and the rebuild still performs it. The answer
+  therefore cannot move, and the fix lane measured that: 131.7 ms to 1.2 ms
+  over a 16 KB target, with zero answer differences across 519,070 urls.
+  `round16-h2-response.spec.ts` pins CONSTANCY rather than a literal — four
+  groups and four hundred groups cost the same number of parses — because the
+  first version of that test pinned the defective tree's four-group value.
+- **R16-H3-01, adjudicated to RES-6 rather than fixed.** A well-formed embedded
+  url whose authority the parser reads completely, followed by a path segment
+  holding an ordinary `@`, loses that authority.
+  `https://api.test/proxy/https://cdn.test/img/alice@example.com/avatar.png`
+  emits `https://api.test/proxy/https://example.com/avatar.png`. The record
+  NAMES `example.com` and drops `cdn.test`, so the harm here is a record that
+  lies rather than one that leaks. F3 built the fix that the document's own
+  sentence implied — a region ends where the parser ends an authority it can
+  read — and measured it. It passes all 96 rows of the new corpus, turns 33
+  other tests red, and leaves 2,425 further planted credentials of 4,375 in the
+  emitted url, up from 750. One of the 33 is the exact twin:
+  `https://api.test/go/https://YWxpY2U/cGFzc3dvcmQ@internal.test/v1` spells the
+  same characters in the same order, and the suite requires its base64
+  credential to go. The refusal was upheld. The limit is RES-6 in
+  `SECURITY.md`, pinned in both directions by `round16-h3-disclosure.spec.ts`.
+- **The over-redaction judge condemns the answer the suite pins, so the corpus
+  rule and the suite pin are in direct conflict.** The judge's rule is that the
+  emitted url must name no host the input did not name. Run it over
+  `https://api.test/go/https://YWxpY2U/cGFzc3dvcmQ@internal.test/v1`, whose
+  answer `redact-url.spec.ts` pins as
+  `https://api.test/go/https://internal.test/v1`, and it reports
+  `invented=internal.test dropped=ywxpy2u`. That is the same verdict shape it
+  reports for RES-6. The platform reads `YWxpY2U` as the host of the embedded
+  url, so removing the credential MOVES the host the answer names. Either the
+  corpus rule is too strong or the pinned answer is wrong, and no round has
+  decided which. A later round must decide it before it reads either one as
+  evidence.
+- **Five document findings, all in the release surface.** R16-H4-04: the README
+  kept its own copy of the redaction rule and stated it without the qualifier
+  `SECURITY.md` carries, so "the record holds the origin and path" was false
+  for an ordinary forwarding url. The copy is deleted and the README links the
+  residual list, which is the third time two copies produced one false
+  sentence. R16-H4-05: the README enumerated the opaque schemes the record can
+  hold as `data:` and `blob:`, while dist also emits `mailto:`, `urn:`, `git:`,
+  and `about:`, so the README states the RULE now. R16-H4-01: the semver policy
+  named no redacted field, so a release that moves `toJSON().url` in both
+  directions was permitted as a patch; rule 8 binds it to a `minor` at least.
+  R16-H4-02: the release checklist had eight steps and none published a
+  security advisory, although `SECURITY.md` sends every reporter to one, so
+  step 9 publishes it. R16-H4-03: the residual list stated no membership rule
+  at its head, so a reader who found one of the four diagnostic-only limits in
+  the source could not tell a decision from an oversight; the head now states
+  what the list holds and what it excludes.
+- **The two assertions that guard the residual head cannot both pass.** The
+  head test requires the word `diagnostic` in the text before the first bullet.
+  Its sibling EVIDENCE assertion requires that word to be absent from the WHOLE
+  section, and the head is part of that section. F4b wrote the head and
+  reported the conflict rather than editing the spec. The remedy is a scope fix
+  in the test, which reads the bullets rather than the section, and it belongs
+  to the orchestrator.
+- **`scripts/**`and`fixtures/**` came under test for the first time.** For
+  seven rounds every gate ran green over a coverage `include` of `src/**`
+  alone. The gate scripts' ENTRY POINTS had never run under a test at all, so
+  every gate that decides whether this package may publish was a gate nobody
+  had seen work. `vitest.config.ts` now includes `scripts/**` and `fixtures/**`
+  beside `src/**`, at 100 on all four axes. Two cross-runtime smokes are
+  excluded with a written reason, and `round16-h4-surface.spec.ts` pins the
+  exclusion list to exactly those two paths.
+- **Three hunter tests encoded the DEFECTIVE tree's arithmetic, and the
+  orchestrator rewrote them.** A test written against the tree that holds the
+  defect pins that tree's numbers. It then fails on the fix for the right
+  reason, and the next reader corrects it toward the defect. The replacements
+  assert a PROPERTY instead of a literal: the pass count is CONSTANT across
+  group counts, rather than equal to the four-group value one tree produced. A
+  fixer may not edit a hunter's spec, so this repair belongs to the
+  orchestrator.
+
 ## The audit files, renamed by subject
 
 The audit closed at round 15. Each round-numbered spec file above still holds

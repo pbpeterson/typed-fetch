@@ -154,9 +154,14 @@ Attack first:
    except its answer. Round 15 found the seam already exists in the platform:
    the module resolves `URL` as a global on every call, so a `URL` subclass
    installed for one synchronous call observes every parse the loop performs.
-3. **State the termination measure in a comment on `cleaned`.** The measure is
+3. ~~**State the termination measure in a comment on `cleaned`.** The measure is
    written nowhere, and the surrounding comment stops one step short of the
-   bound.
+   bound.~~ CORRECTED, 2026-08-09: this item was already closed when it was
+   written. Round 15 landed the measure in the doc comment on `cleaned`, which
+   names `parsed.pathname.length` and states that the emitted text never grows.
+   Section 2.2's own "Proved" list above says the same thing. The item is struck
+   rather than deleted, so a reader who meets it in a hunter's return can find
+   the correction.
 4. **The relative branch's own loop is still quadratic**, and its
    unreachability rests on one property of one platform serialization.
 
