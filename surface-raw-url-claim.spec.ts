@@ -152,7 +152,7 @@ describe.skipIf(!distExists)("residual 2 names a property that does not have the
 //    solidi is a path with an empty host, exactly as `git:/svc:pw@host` is,
 //    and keeps its text."
 //
-// The URL Standard half is right, and `round12-f2-redaction-oracle.spec.ts`
+// The URL Standard half is right, and `redaction-oracle.spec.ts`
 // pins it from the platform. The MODULE never moved. `SPECIAL_SCHEMES` is
 // derived from `HIERARCHICAL_PROTOCOLS` — the "path is structure" list, which
 // must contain `file:` — and `authorityAt` opens a region for every member of

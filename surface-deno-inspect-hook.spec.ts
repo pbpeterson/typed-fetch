@@ -14,7 +14,7 @@ import { denoCustomInspect, inspectCustom } from "./src/errors/inspect";
 // Round 8 stamped `Symbol.toPrimitive` on the four root prototypes, and three
 // documents grew sentences about it. Every assertion here reads `dist/`, or a
 // runtime, and never `src/`: `disclosure-channels.spec.ts` and
-// `round8-h3-disclosure.spec.ts` already drive the source under Node, and a
+// `redaction-query-terminator.spec.ts` already drive the source under Node, and a
 // hook that survives `src/` but not the bundle, or Node but not Deno, is
 // invisible to both.
 // ═══════════════════════════════════════════════════════════════════════════

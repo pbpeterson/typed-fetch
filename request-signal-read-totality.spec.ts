@@ -88,7 +88,7 @@ describe("a signal that cannot be read governs nothing", () => {
     // than the branch above it.
     //
     // Arm 1, the plain read: a tagged non-platform input whose own `signal`
-    // getter throws. `round8-h1-request-input.spec.ts` pins the sibling case —
+    // getter throws. `request-transport-selection.spec.ts` pins the sibling case —
     // the same input class with a throwing `url` getter reaches the transport,
     // and the correlation field stays empty. One property over, the same kind
     // of read refuses the whole call.

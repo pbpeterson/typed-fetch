@@ -62,8 +62,8 @@ import { redactUrl } from "./src/errors/redact-url";
  * what is pinned is a byte count, not a rule. Every assertion here therefore
  * states only that a value slot's bytes must not be emitted, and none of them
  * states what replaces them — clipping a span at the `pathname` boundary and
- * dropping the query outright satisfies this file, `round8-h3-disclosure.spec.ts`,
- * and `round9-h3-disclosure.spec.ts`, and changes the exact strings
+ * dropping the query outright satisfies this file, `redaction-query-terminator.spec.ts`,
+ * and `redaction-authority-spelling.spec.ts`, and changes the exact strings
  * `redact-url.spec.ts` pins for the round 8 shape.
  */
 

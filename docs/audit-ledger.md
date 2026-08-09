@@ -620,7 +620,7 @@ the third consecutive round.
   emitted a query or fragment byte and this does not. The subsequence check
   is the one round 9's 200,000-url fuzz lacked, and that absence is why a
   lying redaction shipped.
-- **The pin that changed.** A CONTROL row in `round9-h3-disclosure.spec.ts`
+- **The pin that changed.** A CONTROL row in `redaction-authority-spelling.spec.ts`
   pinned exact bytes that were themselves promoted query text — the benign
   instance of R10-H3-01's mechanism. The orchestrator verified against the
   platform that `internal.test/v1` is query text in that url and upheld the
@@ -737,7 +737,7 @@ clean for the fifth consecutive round.
 - **The fuzz.** 124,355 inputs over fifteen checks, zero failures, plus
   26,250 structured urls for the fixed point alone.
 - **The oracle, and why this round is different.** Round 12 built an
-  independent judge, `round12-f2-redaction-oracle.spec.ts`, derived from the
+  independent judge, `redaction-oracle.spec.ts`, derived from the
   URL Standard rather than from this module's bug history — every credential
   is whatever `new URL` reports for the input and for every url-shaped
   substring of it. It found the third region-opening class that both
@@ -974,9 +974,9 @@ eight rounds. Round 15 is the protocol's cap: see the closing entry below.
   pre-fix tree.
 - **The four lane handovers.** Each round-15 lane file states, in its own
   comments, what it leaves PROVEN, what it leaves ASSUMED, and what to
-  attack first. The full text lives in `round15-h1-request-input.spec.ts`,
-  `round15-h2-response-error.spec.ts`, `round15-h3-disclosure.spec.ts`, and
-  `round15-h4-surface.spec.ts`. The load-bearing items:
+  attack first. The full text lives in `request-cross-call-isolation.spec.ts`,
+  `response-loop-bound.spec.ts`, `redaction-normalisation-enumeration.spec.ts`, and
+  `surface-message-guarantee.spec.ts`. The load-bearing items:
   - **H1.** The module's cross-call state is exactly one `WeakSet`, pinned
     executably against the module's own declaration list. Phases 1 and 3
     of `typedFetch` contain no `await`, which is the structural reason two
@@ -1013,6 +1013,52 @@ eight rounds. Round 15 is the protocol's cap: see the closing entry below.
   them found at least one defect: 5, 4, 3, 4, 4, 5, 4, and 3 findings,
   fifteen of them critical. The audit did not converge. A human should
   read the four handovers above before deciding this module is done.
+
+## The audit files, renamed by subject
+
+The audit closed at round 15. Each round-numbered spec file above still holds
+its own round and lane in its header comment, but the file NAME no longer
+carries that number. The round stays recorded here and in
+[`docs/audit-round-8-protocol.md`](./audit-round-8-protocol.md), which states
+the `roundN-hX-*` convention the audit followed while it was open. The table
+below maps an old name to the current one, so a reader who meets a round
+number in this ledger can find the file it names.
+
+| Old name                              | New name                                        | Round |
+| ------------------------------------- | ----------------------------------------------- | ----- |
+| `round8-h1-request-input.spec.ts`     | `request-transport-selection.spec.ts`           | 8     |
+| `round9-h1-request-input.spec.ts`     | `request-signal-source.spec.ts`                 | 9     |
+| `round10-h1-request-input.spec.ts`    | `request-signal-under-caller-transport.spec.ts` | 10    |
+| `round11-h1-request-input.spec.ts`    | `request-signal-read-totality.spec.ts`          | 11    |
+| `round12-h1-request-input.spec.ts`    | `request-setup-cannot-refuse.spec.ts`           | 12    |
+| `round13-h1-request-input.spec.ts`    | `request-transport-return-set.spec.ts`          | 13    |
+| `round14-h1-request-input.spec.ts`    | `request-init-fidelity.spec.ts`                 | 14    |
+| `round15-h1-request-input.spec.ts`    | `request-cross-call-isolation.spec.ts`          | 15    |
+| `round8-h2-response-error.spec.ts`    | `response-body-lifecycle.spec.ts`               | 8     |
+| `round9-h2-response-error.spec.ts`    | `response-body-concurrency.spec.ts`             | 9     |
+| `round10-h2-response-error.spec.ts`   | `response-class-population.spec.ts`             | 10    |
+| `round11-h2-response-error.spec.ts`   | `response-redaction-algebra.spec.ts`            | 11    |
+| `round12-h2-response-error.spec.ts`   | `response-read-inventory.spec.ts`               | 12    |
+| `round13-h2-response-error.spec.ts`   | `response-seam-and-status.spec.ts`              | 13    |
+| `round14-h2-response-error.spec.ts`   | `response-construction-invariants.spec.ts`      | 14    |
+| `round15-h2-response-error.spec.ts`   | `response-loop-bound.spec.ts`                   | 15    |
+| `round8-h3-disclosure.spec.ts`        | `redaction-query-terminator.spec.ts`            | 8     |
+| `round9-h3-disclosure.spec.ts`        | `redaction-authority-spelling.spec.ts`          | 9     |
+| `round10-h3-disclosure.spec.ts`       | `redaction-query-promotion.spec.ts`             | 10    |
+| `round11-h3-disclosure.spec.ts`       | `redaction-region-at-signs.spec.ts`             | 11    |
+| `round12-h3-disclosure.spec.ts`       | `redaction-protocol-relative.spec.ts`           | 12    |
+| `round13-h3-disclosure.spec.ts`       | `redaction-relative-base-scheme.spec.ts`        | 13    |
+| `round14-h3-disclosure.spec.ts`       | `redaction-discarded-input-text.spec.ts`        | 14    |
+| `round15-h3-disclosure.spec.ts`       | `redaction-normalisation-enumeration.spec.ts`   | 15    |
+| `round12-f2-redaction-oracle.spec.ts` | `redaction-oracle.spec.ts`                      | 12    |
+| `round8-h4-surface.spec.ts`           | `surface-type-contract.spec.ts`                 | 8     |
+| `round9-h4-surface.spec.ts`           | `surface-deno-inspect-hook.spec.ts`             | 9     |
+| `round10-h4-surface.spec.ts`          | `surface-solidus-count-claim.spec.ts`           | 10    |
+| `round11-h4-surface.spec.ts`          | `surface-cause-channels.spec.ts`                | 11    |
+| `round12-h4-surface.spec.ts`          | `surface-authority-mark-claim.spec.ts`          | 12    |
+| `round13-h4-surface.spec.ts`          | `surface-encoded-delimiter-claims.spec.ts`      | 13    |
+| `round14-h4-surface.spec.ts`          | `surface-raw-url-claim.spec.ts`                 | 14    |
+| `round15-h4-surface.spec.ts`          | `surface-message-guarantee.spec.ts`             | 15    |
 
 ## Adjudicated closed
 

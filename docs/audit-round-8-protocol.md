@@ -760,6 +760,12 @@ Later rounds reuse this protocol unchanged, with one substitution: round N
 spec files are named `roundN-h1-…` through `roundN-h4-…`, and finding ids are
 `RN-<lane>-<nn>`.
 
+NOTE: This section is a historical record of the protocol as it ran, and it
+keeps the `roundN-hX-*` names the audit actually used. After the audit closed
+at round 15, the spec files were renamed by subject. `docs/audit-ledger.md`
+carries the map from each round-numbered name to its current name, in the
+section "The audit files, renamed by subject".
+
 ## 13. Context hygiene and return contracts
 
 Everything runs inside subagents. The main thread holds the state machine and

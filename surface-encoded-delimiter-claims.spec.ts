@@ -82,7 +82,7 @@ async function emittedUrl(url: string): Promise<string> {
 // which is the shape round 11 measured over 604,204 urls and round 12's
 // second finding recorded as a defect. Neither document qualifies the claim,
 // and round 12's own corpora cannot reach it: `redact-url.spec.ts` and
-// `round12-h2-response-error.spec.ts` both build their paths from `/a:/b` and
+// `response-read-inventory.spec.ts` both build their paths from `/a:/b` and
 // `/go/https:…`, and a region whose start the parser reads as an authority
 // only to stop reading it as one after the removal needs the bare-`//`
 // opening that round 12 added.
