@@ -16,6 +16,34 @@ import { isMainModule } from "./lib/is-main-module.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+/**
+ * @typedef {{
+ *   argv: string[],
+ *   cwd: string,
+ *   out: (msg: string) => void,
+ *   err: (msg: string) => void,
+ *   exit: (code: number) => void,
+ * }} MainIo
+ */
+
+/**
+ * The real world this gate runs against. `cwd` is the package directory to
+ * pack. `exit` matches production exactly: the gate never hard-exits, it sets
+ * `process.exitCode` and lets Node shut down on its own.
+ *
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @type {MainIo}
+ */
+export const defaultIo = {
+  argv: process.argv,
+  cwd: repoRoot,
+  out: (msg) => console.log(msg),
+  err: (msg) => console.error(msg),
+  exit: (code) => {
+    process.exitCode = code;
+  },
+};
+
 export const DENO_CONSUMER_SOURCE = `
 import { isKnownHttpError, typedFetch } from "@pbpeterson/typed-fetch";
 // The SUBPATH, which has its own exports entry, its own declaration file, and
@@ -87,8 +115,9 @@ export function judgeDenoVersion(output) {
  * the version policy lives in {@link judgeDenoVersion}.
  *
  * @param {number} denoMajor
+ * @param {string} cwd the package directory to pack
  */
-function gatherDenoConsumerFacts(denoMajor) {
+function gatherDenoConsumerFacts(denoMajor, cwd) {
   // A `finally` is not enough when the process dies from SIGINT. The two slow
   // subprocesses are exactly where a human interrupts it. This helper also
   // cleans up on signals.
@@ -98,7 +127,7 @@ function gatherDenoConsumerFacts(denoMajor) {
     // packTarball resolves the tarball by reading workDir back rather than by
     // trusting npm's reported filename — npm 8 reported the scope-prefixed name
     // while writing the scope-stripped one, and this gate used to trust it.
-    const { path: tarball } = packTarball(repoRoot, workDir);
+    const { path: tarball } = packTarball(cwd, workDir);
 
     writeFileSync(
       join(workDir, "package.json"),
@@ -148,22 +177,24 @@ function gatherDenoConsumerFacts(denoMajor) {
   }
 }
 
-function main() {
-  const denoVersion = execFileSync("deno", ["--version"], { encoding: "utf8" });
-  const { major } = judgeDenoVersion(denoVersion);
-  const facts = gatherDenoConsumerFacts(major);
-  console.log(
-    `deno consumer: OK with Deno ${facts.denoMajor} ` +
-      `(${facts.packageName}@${facts.packageVersion}, published types loaded)`,
-  );
-}
-
-if (isMainModule(import.meta.url)) {
+/**
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @param {MainIo} [io]
+ */
+export function main(io = defaultIo) {
   try {
-    main();
+    const denoVersion = execFileSync("deno", ["--version"], { encoding: "utf8" });
+    const { major } = judgeDenoVersion(denoVersion);
+    const facts = gatherDenoConsumerFacts(major, io.cwd);
+    io.out(
+      `deno consumer: OK with Deno ${facts.denoMajor} ` +
+        `(${facts.packageName}@${facts.packageVersion}, published types loaded)`,
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`deno consumer: FAILED — ${message}`);
-    process.exitCode = 1;
+    io.err(`deno consumer: FAILED — ${message}`);
+    io.exit(1);
   }
 }
+
+if (isMainModule(import.meta.url)) main();

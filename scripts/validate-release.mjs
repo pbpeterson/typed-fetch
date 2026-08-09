@@ -3,7 +3,44 @@
 
 import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/is-main-module.mjs";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/**
+ * @typedef {{
+ *   argv: string[],
+ *   cwd: string,
+ *   env: NodeJS.ProcessEnv,
+ *   out: (msg: string) => void,
+ *   err: (msg: string) => void,
+ *   exit: (code: number) => void,
+ *   git: (args: string[]) => string,
+ * }} MainIo
+ */
+
+/**
+ * The real world this gate runs against. `exit` matches production exactly:
+ * the gate never hard-exits, it sets `process.exitCode` and lets Node shut
+ * down on its own. `git` is the one shell-out this gate makes, named so a test
+ * can answer for it without a real repository.
+ *
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @type {MainIo}
+ */
+export const defaultIo = {
+  argv: process.argv,
+  cwd: REPO_ROOT,
+  env: process.env,
+  out: (msg) => console.log(msg),
+  err: (msg) => console.error(msg),
+  exit: (code) => {
+    process.exitCode = code;
+  },
+  git: (args) => execFileSync("git", args, { encoding: "utf8" }).trim(),
+};
 
 const SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
@@ -148,33 +185,46 @@ export function validateRelease(candidate) {
   return { distTag: semverMatch[4] === undefined ? "latest" : "next" };
 }
 
-/** @param {string} ref */
-function gitCommit(ref) {
-  return execFileSync("git", ["rev-parse", "--verify", ref], { encoding: "utf8" }).trim();
+/**
+ * @param {string} ref
+ * @param {MainIo} io
+ */
+function gitCommit(ref, io) {
+  return io.git(["rev-parse", "--verify", ref]);
 }
 
-function main() {
-  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  const tag = process.env.GITHUB_REF_NAME ?? "";
-  const result = validateRelease({
-    tag,
-    refType: process.env.GITHUB_REF_TYPE ?? "",
-    packageName: packageJson.name,
-    version: packageJson.version,
-    repositoryUrl: packageJson.repository?.url,
-    publishAccess: packageJson.publishConfig?.access,
-    provenance: packageJson.publishConfig?.provenance,
-    changelog: readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8"),
-    headCommit: gitCommit("HEAD"),
-    tagCommit: gitCommit(`refs/tags/${tag}^{commit}`),
-    mainCommit: gitCommit("origin/main"),
-  });
+/**
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @param {MainIo} [io]
+ */
+export function main(io = defaultIo) {
+  try {
+    const packageJson = JSON.parse(readFileSync(join(io.cwd, "package.json"), "utf8"));
+    const tag = io.env.GITHUB_REF_NAME ?? "";
+    const result = validateRelease({
+      tag,
+      refType: io.env.GITHUB_REF_TYPE ?? "",
+      packageName: packageJson.name,
+      version: packageJson.version,
+      repositoryUrl: packageJson.repository?.url,
+      publishAccess: packageJson.publishConfig?.access,
+      provenance: packageJson.publishConfig?.provenance,
+      changelog: readFileSync(join(io.cwd, "CHANGELOG.md"), "utf8"),
+      headCommit: gitCommit("HEAD", io),
+      tagCommit: gitCommit(`refs/tags/${tag}^{commit}`, io),
+      mainCommit: gitCommit("origin/main", io),
+    });
 
-  const outputFile = process.env.GITHUB_OUTPUT;
-  if (outputFile) appendFileSync(outputFile, `dist_tag=${result.distTag}\n`);
-  console.log(
-    `✔ validate-release: ${tag} matches package.json and CHANGELOG.md at the origin/main tip; npm dist-tag=${result.distTag}`,
-  );
+    const outputFile = io.env.GITHUB_OUTPUT;
+    if (outputFile) appendFileSync(outputFile, `dist_tag=${result.distTag}\n`);
+    io.out(
+      `✔ validate-release: ${tag} matches package.json and CHANGELOG.md at the origin/main tip; npm dist-tag=${result.distTag}`,
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    io.err(`✖ validate-release: ${message}`);
+    io.exit(1);
+  }
 }
 
 // Importing this module must do nothing at all; only
@@ -182,12 +232,4 @@ function main() {
 // symlinks on both sides — a lexical comparison makes this gate exit 0 in
 // silence whenever a symlink sits in the invocation path, and this gate is the
 // only check between a tag and `npm publish`.
-if (isMainModule(import.meta.url)) {
-  try {
-    main();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`✖ validate-release: ${message}`);
-    process.exitCode = 1;
-  }
-}
+if (isMainModule(import.meta.url)) main();

@@ -80,7 +80,11 @@ function collectFiles(dir, prefix, extension) {
   /** @type {string[]} */
   const found = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    // Every caller passes a non-empty prefix ("docs" or "src"), and every
+    // recursive call inherits a non-empty prefix built from one, so the
+    // string is never empty here. No branch on an empty prefix: nothing can
+    // take it.
+    const rel = `${prefix}/${entry.name}`;
     if (entry.isDirectory()) {
       found.push(...collectFiles(join(dir, entry.name), rel, extension));
     } else if (entry.name.endsWith(extension)) {
@@ -513,8 +517,40 @@ export const REQUIRED_DIST_ENTRIES = [
 // two I/O preconditions (dist/ and tsc must exist) whose messages are fixed.
 // ---------------------------------------------------------------------------
 
-/** @returns {{ docs: DocSource[], missing: string[] }} */
-function gatherDocSources() {
+/**
+ * The parts of the process a test must control to drive `main` without
+ * killing the vitest worker: the argv the entry point would read, the
+ * directory it resolves `dist/` and `node_modules/.bin/tsc` against, a writer
+ * for each of standard out and standard error, and the exit function. A gate
+ * that calls `process.exit` directly makes `io.exit` load-bearing — the
+ * production call site's default keeps behavior unchanged.
+ * @typedef {{
+ *   argv: string[],
+ *   cwd: string,
+ *   out: (line: string) => void,
+ *   err: (line: string) => void,
+ *   exit: (code: number) => void,
+ * }} Io
+ */
+
+/**
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @type {Io}
+ */
+export const defaultIo = {
+  argv: process.argv,
+  cwd: repoRoot,
+  out: (line) => console.log(line),
+  err: (line) => console.error(line),
+  exit: (code) => process.exit(code),
+};
+
+/**
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @param {string} repoRoot
+ * @returns {{ docs: DocSource[], missing: string[] }}
+ */
+export function gatherDocSources(repoRoot) {
   /** @type {string[]} */
   const missing = [];
   /** @type {DocSource[]} */
@@ -545,7 +581,9 @@ function gatherDocSources() {
   return { docs, missing };
 }
 
-function main() {
+/** @internal Exported for the entry-point spec. Not a public interface. */
+export function main(io = defaultIo) {
+  const repoRoot = io.cwd;
   const distDir = join(repoRoot, "dist");
 
   // (c) dist/ may be stale or absent. FAIL LOUDLY — never skip.
@@ -553,12 +591,11 @@ function main() {
     (p) => !existsSync(p),
   );
   if (missing.length > 0) {
-    console.error("check-docs: dist/ is missing or incomplete.");
-    for (const p of missing) console.error(`  expected: ${p}`);
-    console.error(
-      "  Run `pnpm build` first. This guard typechecks docs against the BUILT package.",
-    );
-    process.exit(1);
+    io.err("check-docs: dist/ is missing or incomplete.");
+    for (const p of missing) io.err(`  expected: ${p}`);
+    io.err("  Run `pnpm build` first. This guard typechecks docs against the BUILT package.");
+    io.exit(1);
+    return;
   }
 
   const tscBin = join(
@@ -568,8 +605,9 @@ function main() {
     process.platform === "win32" ? "tsc.cmd" : "tsc",
   );
   if (!existsSync(tscBin)) {
-    console.error(`check-docs: tsc not found at ${tscBin}. Run \`pnpm install\`.`);
-    process.exit(1);
+    io.err(`check-docs: tsc not found at ${tscBin}. Run \`pnpm install\`.`);
+    io.exit(1);
+    return;
   }
 
   // Scratch tmp dir for the per-block .ts files + a dedicated tsconfig.
@@ -585,7 +623,7 @@ function main() {
   // masking real errors. We DON'T pass files on the command line: we write a
   // dedicated tsconfig here (its own `include`) and invoke `tsc -p`, which is
   // the config path — no root tsconfig.json is consulted, no TS5112.
-  const { docs, missing: missingDocuments } = gatherDocSources();
+  const { docs, missing: missingDocuments } = gatherDocSources(repoRoot);
 
   // One compilation per pass. The block ROSTER is the same every time — only
   // the entry a block imports and the compiler profile change — so the plan of
@@ -659,116 +697,118 @@ function main() {
   const failingPass = failing ? failing.pass.id : "";
 
   if (verdict.kind === "missing-documents") {
-    console.error("check-docs: documentation file(s) named in the roster are not on disk:\n");
-    for (const file of verdict.missing) console.error(`    - ${file}`);
-    console.error("");
+    io.err("check-docs: documentation file(s) named in the roster are not on disk:\n");
+    for (const file of verdict.missing) io.err(`    - ${file}`);
+    io.err("");
     scratch.dispose();
-    process.exit(1);
+    io.exit(1);
+    return;
   }
   if (verdict.kind === "unterminated-fence") {
-    console.error("check-docs: a fenced block is never closed, so the rest of that document was");
-    console.error("  not parsed and its later examples were never checked. Close the fence:\n");
+    io.err("check-docs: a fenced block is never closed, so the rest of that document was");
+    io.err("  not parsed and its later examples were never checked. Close the fence:\n");
     for (const u of plan.unterminated) {
-      console.error(`    - ${u.file}:${u.line}`);
+      io.err(`    - ${u.file}:${u.line}`);
     }
-    console.error("");
+    io.err("");
     scratch.dispose();
-    process.exit(1);
+    io.exit(1);
+    return;
   }
   if (verdict.kind === "historical-misplaced") {
-    console.error(
+    io.err(
       `check-docs: the \`${HISTORICAL_MARKER}\` marker is valid only in ` +
         `${HISTORICAL_SOURCES.join(", ")}. These blocks were excluded from`,
     );
-    console.error("  compilation and should not have been:\n");
+    io.err("  compilation and should not have been:\n");
     for (const b of verdict.blocks) {
-      console.error(`    - ${b.file}:${b.line}`);
+      io.err(`    - ${b.file}:${b.line}`);
     }
-    console.error(
+    io.err(
       `\n  Use \`${SKIP_MARKER}\` for a fragment that cannot compile standalone ` +
         "(see CONTRIBUTING.md).\n",
     );
     scratch.dispose();
-    process.exit(1);
+    io.exit(1);
+    return;
   }
   if (verdict.kind === "tsc-config-regression") {
-    console.error("check-docs: tsc emitted TS5112 (root tsconfig leaked in). This masks real");
-    console.error("  errors and is a bug in this script. Aborting.\n");
-    console.error(tscOutput);
-    process.exit(1);
+    io.err("check-docs: tsc emitted TS5112 (root tsconfig leaked in). This masks real");
+    io.err("  errors and is a bug in this script. Aborting.\n");
+    io.err(tscOutput);
+    io.exit(1);
+    return;
   }
   if (verdict.kind === "unattributable") {
-    console.error("check-docs: tsc failed but no block diagnostics were parsed. Raw output:\n");
-    console.error(tscOutput);
+    io.err("check-docs: tsc failed but no block diagnostics were parsed. Raw output:\n");
+    io.err(tscOutput);
     scratch.dispose();
-    process.exit(1);
+    io.exit(1);
+    return;
   }
 
   scratch.dispose();
 
   // ----- Report -----------------------------------------------------------
-  console.log(`check-docs: scanned ${docs.length} documentation sources`);
-  console.log(`  TypeScript blocks found : ${plan.totalTsBlocks}`);
-  console.log(`  checked against dist/    : ${plan.blocks.length}`);
-  console.log(`  skipped (\`${SKIP_MARKER}\`)      : ${plan.skipped.length}`);
-  console.log(`  historical (\`${HISTORICAL_MARKER}\`) : ${plan.historical.length}`);
+  io.out(`check-docs: scanned ${docs.length} documentation sources`);
+  io.out(`  TypeScript blocks found : ${plan.totalTsBlocks}`);
+  io.out(`  checked against dist/    : ${plan.blocks.length}`);
+  io.out(`  skipped (\`${SKIP_MARKER}\`)      : ${plan.skipped.length}`);
+  io.out(`  historical (\`${HISTORICAL_MARKER}\`) : ${plan.historical.length}`);
 
   if (plan.skipped.length > 0) {
-    console.log("\n  Skipped blocks (must be fragments/templates that cannot compile standalone):");
+    io.out("\n  Skipped blocks (must be fragments/templates that cannot compile standalone):");
     for (const s of plan.skipped) {
-      console.log(`    - ${s.file}:${s.line}`);
+      io.out(`    - ${s.file}:${s.line}`);
     }
   }
 
   if (plan.historical.length > 0) {
-    console.log("\n  Historical blocks (document a removed API; never edit them to compile):");
+    io.out("\n  Historical blocks (document a removed API; never edit them to compile):");
     for (const h of plan.historical) {
-      console.log(`    - ${h.file}:${h.line}`);
+      io.out(`    - ${h.file}:${h.line}`);
     }
   }
 
   if (verdict.kind === "block-failures") {
-    console.error(
+    io.err(
       `\ncheck-docs: ${verdict.failures.length} documentation block(s) FAILED to typecheck ` +
         `under the \`${failingPass}\` pass:\n`,
     );
     for (const f of verdict.failures) {
-      console.error(`  ${f.file} (fence at line ${f.line}): ${f.msg}`);
+      io.err(`  ${f.file} (fence at line ${f.line}): ${f.msg}`);
     }
-    console.error("\nFix the doc example, or — only if it is a genuine non-compilable fragment —");
-    console.error(`mark its fence \`\`\`ts ${SKIP_MARKER} (see CONTRIBUTING.md).`);
-    process.exit(1);
+    io.err("\nFix the doc example, or — only if it is a genuine non-compilable fragment —");
+    io.err(`mark its fence \`\`\`ts ${SKIP_MARKER} (see CONTRIBUTING.md).`);
+    io.exit(1);
+    return;
   }
 
   if (verdict.kind === "example-urls") {
-    console.error(
-      `\ncheck-docs: ${verdict.urls.length} example request URL(s) are not absolute:\n`,
-    );
+    io.err(`\ncheck-docs: ${verdict.urls.length} example request URL(s) are not absolute:\n`);
     for (const u of verdict.urls) {
-      console.error(`  ${u.file} (fence at line ${u.line}): typedFetch("${u.url}")`);
+      io.err(`  ${u.file} (fence at line ${u.line}): typedFetch("${u.url}")`);
     }
-    console.error(
-      "\nA relative URL resolves against a document base, which exists in a browser and does",
-    );
-    console.error(
+    io.err("\nA relative URL resolves against a document base, which exists in a browser and does");
+    io.err(
       'not exist on Node. `typedFetch("/api/users")` rejects there with `TypeError: Failed to',
     );
-    console.error("parse URL`. Use an absolute URL, e.g. https://api.example.com/users.");
-    process.exit(1);
+    io.err("parse URL`. Use an absolute URL, e.g. https://api.example.com/users.");
+    io.exit(1);
+    return;
   }
 
   if (verdict.kind === "skip-ratio") {
-    console.error(
+    io.err(
       `\ncheck-docs: skip ratio ${(verdict.skipRatio * 100).toFixed(0)}% exceeds ` +
         `${(MAX_SKIP_RATIO * 100).toFixed(0)}% — too many blocks are marked \`${SKIP_MARKER}\`.`,
     );
-    console.error("  The guard only protects blocks it actually compiles. Reduce the skips.");
-    process.exit(1);
+    io.err("  The guard only protects blocks it actually compiles. Reduce the skips.");
+    io.exit(1);
+    return;
   }
 
-  console.log(
-    `\ncheck-docs: OK — all ${plan.blocks.length} checked block(s) typecheck against dist/.`,
-  );
+  io.out(`\ncheck-docs: OK — all ${plan.blocks.length} checked block(s) typecheck against dist/.`);
 }
 
 /**

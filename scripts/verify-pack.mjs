@@ -252,61 +252,117 @@ export function verifyPackManifest(packedFiles, fileCount = packedFiles.length) 
 // Adapter + thin main. Everything below this line touches the world.
 // ---------------------------------------------------------------------------
 
-function fail(message) {
-  console.error(`\n✖ verify-pack: ${message}\n`);
-  console.error(
+/**
+ * @typedef {{
+ *   argv: string[],
+ *   cwd: string,
+ *   out: (msg: string) => void,
+ *   err: (msg: string) => void,
+ *   exit: (code: number) => void,
+ *   execFileSync: typeof execFileSync,
+ * }} MainIo
+ */
+
+/**
+ * The real world this gate runs against. `execFileSync` is the one shell-out
+ * this gate makes (`tar`, `npm pack`), named so a test can answer for it
+ * without a real tarball or a real npm.
+ *
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @type {MainIo}
+ */
+export const defaultIo = {
+  argv: process.argv,
+  cwd: process.cwd(),
+  out: (msg) => console.log(msg),
+  err: (msg) => console.error(msg),
+  exit: (code) => process.exit(code),
+  execFileSync,
+};
+
+/**
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @param {string} message
+ * @param {MainIo} io
+ */
+export function fail(message, io) {
+  io.err(`\n✖ verify-pack: ${message}\n`);
+  io.err(
     "The published tarball manifest is wrong. Refusing to publish.\n" +
       "Run `pnpm build` and check the `files` allow-list in package.json.\n",
   );
-  process.exit(1);
+  io.exit(1);
 }
 
-/** The manifest of the staged tarball at `tarballPath`. */
-function stagedManifest(tarballPath) {
+/**
+ * The manifest of the staged tarball at `tarballPath`.
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @param {string} tarballPath
+ * @param {MainIo} io
+ * @returns {{ files: string[], fileCount: number } | null} `null` when
+ *   `fail` already reported the problem and asked to exit.
+ */
+export function stagedManifest(tarballPath, io) {
   let listing;
   try {
-    listing = execFileSync("tar", ["-tzf", tarballPath], {
+    listing = io.execFileSync("tar", ["-tzf", tarballPath], {
       encoding: "utf8",
+      cwd: io.cwd,
       stdio: ["ignore", "pipe", "inherit"],
     });
   } catch (err) {
-    fail(`\`tar -tzf ${tarballPath}\` failed to run: ${err.message}`);
+    fail(`\`tar -tzf ${tarballPath}\` failed to run: ${err.message}`, io);
+    return null;
   }
   return readTarballManifest(listing);
 }
 
-/** The manifest `npm pack` would produce from the working tree right now. */
-function dryRunManifest() {
+/**
+ * The manifest `npm pack` would produce from the working tree right now.
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @param {MainIo} io
+ * @returns {{ files: string[], fileCount: number } | null} `null` when
+ *   `fail` already reported the problem and asked to exit.
+ */
+export function dryRunManifest(io) {
   let raw;
   try {
-    raw = execFileSync("npm", ["pack", "--dry-run", "--json"], {
+    raw = io.execFileSync("npm", ["pack", "--dry-run", "--json"], {
       encoding: "utf8",
+      cwd: io.cwd,
       env: NPM_ENV,
       stdio: ["ignore", "pipe", "inherit"],
     });
   } catch (err) {
-    fail(`\`npm pack --dry-run --json\` failed to run: ${err.message}`);
+    fail(`\`npm pack --dry-run --json\` failed to run: ${err.message}`, io);
+    return null;
   }
 
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    fail(`could not parse \`npm pack\` JSON output: ${err.message}`);
+    fail(`could not parse \`npm pack\` JSON output: ${err.message}`, io);
+    return null;
   }
   return readPackManifest(parsed);
 }
 
-function main() {
+/**
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @param {MainIo} [io]
+ */
+export function main(io = defaultIo) {
   // With a path, inspect THAT file. Without one, inspect what a pack would
   // produce now. The release workflow uses both: the dry run as an early gate,
   // and the staged file as the last word before it is uploaded.
-  const tarballPath = process.argv[2];
+  const tarballPath = io.argv[2];
   const source = tarballPath ? `staged tarball ${tarballPath}` : "dry-run manifest";
 
   let fileCount;
   try {
-    const manifest = tarballPath ? stagedManifest(tarballPath) : dryRunManifest();
+    const manifest = tarballPath ? stagedManifest(tarballPath, io) : dryRunManifest(io);
+    if (manifest === null) return; // fail() already reported the problem and exited.
     ({ fileCount } = verifyPackManifest(manifest.files, manifest.fileCount));
   } catch (err) {
     // Note: a genuine bug in the decision (say a TypeError) is also reported as
@@ -314,16 +370,17 @@ function main() {
     // release is corrupted, but an incident gets a misleading first line.
     // validate-release.mjs has the identical wart; fixing both together with a
     // marker Error subclass is a separate, deliberate change.
-    fail(err.message);
+    fail(err.message, io);
+    return;
   }
 
-  console.log(
+  io.out(
     `✔ verify-pack: ${source} OK — ${fileCount} files; ` +
       `all ${REQUIRED_DIST_FILES.length} required entry points + LICENSE/README present, ` +
       "every packed path on the allow-list.",
   );
   for (const f of [...REQUIRED_DIST_FILES, ...REQUIRED_META_FILES, ...REQUIRED_STUB_FILES]) {
-    console.log(`    ✓ ${f}`);
+    io.out(`    ✓ ${f}`);
   }
 }
 

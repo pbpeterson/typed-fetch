@@ -28,11 +28,38 @@ import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { basename, join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isMainModule } from "./lib/is-main-module.mjs";
-import { installTarball, NPM_ENV, packTarball } from "./lib/npm-pack.mjs";
+import { installTarball, packTarball } from "./lib/npm-pack.mjs";
 import { createScratchDir } from "./lib/scratch-dir.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PKG_NAME = "@pbpeterson/typed-fetch";
+
+/**
+ * @typedef {{
+ *   argv: string[],
+ *   cwd: string,
+ *   out: (msg: string) => void,
+ *   err: (msg: string) => void,
+ *   exit: (code: number) => void,
+ * }} MainIo
+ */
+
+/**
+ * The real world this gate runs against. `cwd` is the package directory to
+ * pack AND the root a consumer's `tsc` is resolved under — both are the
+ * repository root in production, and a test substitutes a fixture directory
+ * for either purpose without touching a global.
+ *
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @type {MainIo}
+ */
+export const defaultIo = {
+  argv: process.argv,
+  cwd: REPO_ROOT,
+  out: (msg) => console.log(msg),
+  err: (msg) => console.error(msg),
+  exit: (code) => process.exit(code),
+};
 
 // ---------------------------------------------------------------------------
 // KNOWN_FAILING — assertions that fail against the CURRENT (unfixed) artifact.
@@ -45,8 +72,12 @@ const PKG_NAME = "@pbpeterson/typed-fetch";
 // is a hard error.
 //
 // If this set is empty, the gate is strict: every assertion must pass.
+//
+// @internal Exported for the entry-point spec. Not a public interface. A test
+// that mutates this set must remove what it added, in a `finally`, before it
+// returns — this is the one piece of module state a spec is allowed to touch.
 // ---------------------------------------------------------------------------
-const KNOWN_FAILING = new Set([
+export const KNOWN_FAILING = new Set([
   // Empty: all three shipped-artifact bugs this gate was written to catch are
   // now fixed in src/, and every assertion below passes strictly. History,
   // for the record:
@@ -920,9 +951,12 @@ export function judgeConsumer({ results, notes, knownFailing }) {
 // C. THE ADAPTER. All I/O, no pass/fail judgement.
 // ===========================================================================
 
+// This adapter's only two call sites (below) pass `process.execPath` or
+// `tscBin` — never "npm" — so it needs no env switch of its own. `npm pack`
+// and `npm install` run through `packTarball`/`installTarball` in
+// `lib/npm-pack.mjs`, which carries the NPM_ENV scrub for those calls.
 function run(cmd, args, opts = {}) {
-  const env = cmd === "npm" ? NPM_ENV : process.env;
-  return execFileSync(cmd, args, { encoding: "utf8", env, ...opts });
+  return execFileSync(cmd, args, { encoding: "utf8", env: process.env, ...opts });
 }
 
 // ---------------------------------------------------------------------------
@@ -964,7 +998,67 @@ function typecheckInConsumer(consumer, tscBin, pass) {
 // D. THE THIN MAIN. Composition, rendering, exit code — and nothing else.
 // ===========================================================================
 
-function main() {
+/**
+ * The final report block: totals, informational notes, known failures, stale
+ * KNOWN_FAILING entries, unexpected failures, and the exit decision.
+ *
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @param {{ results: Assertion[], notes: Note[], knownFailing: Set<string> }} run
+ * @param {MainIo} io
+ */
+export function printConsumerReport({ results, notes, knownFailing }, io) {
+  io.out("\n" + "─".repeat(70));
+  io.out("Consumer contract report");
+  io.out("─".repeat(70));
+
+  const verdict = judgeConsumer({ results, notes, knownFailing });
+
+  io.out(`  total assertions : ${verdict.counts.total}`);
+  io.out(`  passed           : ${verdict.counts.passed}`);
+  io.out(`  known-failing    : ${verdict.counts.known}`);
+  io.out(`  informational    : ${verdict.counts.informational}`);
+  io.out(`  UNEXPECTED fail  : ${verdict.counts.unexpectedFail}`);
+  io.out(`  UNEXPECTED pass  : ${verdict.counts.unexpectedPass}`);
+
+  if (notes.length) {
+    io.out("\n  Informational (documented limitations, not contracts):");
+    for (const n of notes) io.out(`    · ${n.id}: ${n.detail}`);
+  }
+
+  if (verdict.knownFailures.length) {
+    io.out("\n  Known failures (tracked, will turn green when bugs are fixed):");
+    for (const f of verdict.knownFailures) io.out(`    ⚠ ${f.id}\n        ${f.detail}`);
+  }
+
+  if (verdict.unexpectedPasses.length) {
+    io.out("\n  ✖ KNOWN_FAILING is stale — these now PASS and must be removed from the list:");
+    for (const f of verdict.unexpectedPasses) io.out(`    - ${f.id}`);
+  }
+
+  if (verdict.unexpectedFailures.length) {
+    io.out("\n  ✖ Unexpected failures:");
+    for (const f of verdict.unexpectedFailures) io.out(`    - ${f.id}: ${f.detail}`);
+  }
+
+  if (!verdict.ok) {
+    io.out("\n✖ check-consumer: FAILED\n");
+    io.exit(1);
+    return;
+  }
+
+  io.out(
+    `\n✔ check-consumer: OK — ${verdict.counts.passed} passed` +
+      (verdict.counts.known ? `, ${verdict.counts.known} known-failing (tracked)` : "") +
+      ". Tarball behaves as a real consumer expects.\n",
+  );
+  io.exit(0);
+}
+
+/**
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @param {MainIo} [io]
+ */
+export function main(io = defaultIo) {
   // Everything lives under one mkdtemp root so a single rm cleans it all, even
   // on early exit or a Ctrl-C mid-install. Created HERE, not at module scope:
   // importing this file must not make a temp dir in every vitest worker.
@@ -980,11 +1074,11 @@ function main() {
   const record = (a) => {
     results.push(a);
     if (a.ok) {
-      console.log(`  ✔ ${a.id}`);
+      io.out(`  ✔ ${a.id}`);
     } else if (KNOWN_FAILING.has(a.id)) {
-      console.log(`  ⚠ ${a.id} — FAILED (known, tracked in KNOWN_FAILING): ${a.detail}`);
+      io.out(`  ⚠ ${a.id} — FAILED (known, tracked in KNOWN_FAILING): ${a.detail}`);
     } else {
-      console.log(`  ✖ ${a.id} — ${a.detail}`);
+      io.out(`  ✖ ${a.id} — ${a.detail}`);
     }
   };
   // Informational only — printed in the report, never affects the exit code.
@@ -992,7 +1086,7 @@ function main() {
   // rather than a contract the artifact must satisfy.
   const note = (n) => {
     notes.push(n);
-    console.log(`  · ${n.id} — ${n.detail}`);
+    io.out(`  · ${n.id} — ${n.detail}`);
   };
   const emit = (verdict) => {
     for (const a of verdict.results) record(a);
@@ -1002,7 +1096,7 @@ function main() {
   // -------------------------------------------------------------------------
   // 1. Pack the tarball.
   // -------------------------------------------------------------------------
-  console.log(`\n▸ Packing ${PKG_NAME} …`);
+  io.out(`\n▸ Packing ${PKG_NAME} …`);
   const packDir = join(WORK, "pack");
   mkdirSync(packDir, { recursive: true });
   let tarball;
@@ -1011,18 +1105,19 @@ function main() {
     // sanitized (scope-stripped) name. packTarball resolves against what
     // actually landed in packDir and hands back npm's claim only so the report
     // can show both.
-    const packed = packTarball(REPO_ROOT, packDir);
+    const packed = packTarball(io.cwd, packDir);
     tarball = packed.path;
-    console.log(`  packed: ${basename(tarball)} (reported ${packed.reported})`);
+    io.out(`  packed: ${basename(tarball)} (reported ${packed.reported})`);
   } catch (err) {
-    console.error(`\n✖ npm pack failed: ${err.message}`);
-    process.exit(1);
+    io.err(`\n✖ npm pack failed: ${err.message}`);
+    io.exit(1);
+    return;
   }
 
   // -------------------------------------------------------------------------
   // 2. Scratch consumer project, install the tarball as a file: dependency.
   // -------------------------------------------------------------------------
-  console.log("\n▸ Installing tarball into a scratch consumer project …");
+  io.out("\n▸ Installing tarball into a scratch consumer project …");
   const consumer = join(WORK, "consumer");
   mkdirSync(consumer, { recursive: true });
   writeFileSync(
@@ -1041,10 +1136,11 @@ function main() {
   );
   try {
     installTarball(consumer, tarball, { flags: ["--no-audit", "--no-fund", "--save"] });
-    console.log("  install OK");
+    io.out("  install OK");
   } catch (err) {
-    console.error(`\n✖ npm install of tarball failed: ${err.message}`);
-    process.exit(1);
+    io.err(`\n✖ npm install of tarball failed: ${err.message}`);
+    io.exit(1);
+    return;
   }
 
   writeFileSync(join(consumer, "server.mjs"), SERVER_HELPER);
@@ -1052,42 +1148,42 @@ function main() {
   // -------------------------------------------------------------------------
   // 3. Runtime probes.
   // -------------------------------------------------------------------------
-  console.log("\n▸ ESM (main entry) probes …");
+  io.out("\n▸ ESM (main entry) probes …");
   try {
     emit(esmAssertions(runProbe(consumer, "probe-esm.mjs", PROBE_ESM)));
   } catch (err) {
     record(assert("esm:probe", false, `ESM probe crashed: ${err.message}`));
   }
 
-  console.log("\n▸ CJS (require) probes …");
+  io.out("\n▸ CJS (require) probes …");
   try {
     emit(cjsAssertions(runProbe(consumer, "probe-cjs.cjs", PROBE_CJS)));
   } catch (err) {
     record(assert("cjs:probe", false, `CJS probe crashed: ${err.message}`));
   }
 
-  console.log("\n▸ Subpath (./errors) cross-entry instanceof probe …");
+  io.out("\n▸ Subpath (./errors) cross-entry instanceof probe …");
   try {
     emit(subpathAssertions(runProbe(consumer, "probe-subpath.mjs", PROBE_SUBPATH)));
   } catch (err) {
     record(assert("subpath:probe", false, `subpath probe crashed: ${err.message}`));
   }
 
-  console.log("\n▸ Cross-format (CJS guard on ESM-minted error) probe …");
+  io.out("\n▸ Cross-format (CJS guard on ESM-minted error) probe …");
   try {
     emit(crossformatAssertions(runProbe(consumer, "probe-crossformat.mjs", PROBE_CROSSFORMAT)));
   } catch (err) {
     record(assert("crossformat:probe", false, `cross-format probe crashed: ${err.message}`));
   }
 
-  console.log("\n▸ Cross-copy clone (ESM clones, CJS supplies the new error) probe …");
+  io.out("\n▸ Cross-copy clone (ESM clones, CJS supplies the new error) probe …");
   try {
     emit(crossCopyAssertions(runProbe(consumer, "probe-crosscopy.mjs", PROBE_CROSSCOPY)));
   } catch (err) {
     record(assert("crosscopy:probe", false, `cross-copy probe crashed: ${err.message}`));
   }
 
-  console.log("\n▸ Resolution (./package.json subpath, node10 ./errors redirect) probes …");
+  io.out("\n▸ Resolution (./package.json subpath, node10 ./errors redirect) probes …");
   try {
     emit(resolutionAssertions(runProbe(consumer, "probe-resolution.cjs", PROBE_RESOLUTION)));
   } catch (err) {
@@ -1097,18 +1193,19 @@ function main() {
   // -------------------------------------------------------------------------
   // 4. Consumer typechecks.
   // -------------------------------------------------------------------------
-  console.log("\n▸ Consumer typecheck (resolution modes, lib matrix, cross-format) …");
+  io.out("\n▸ Consumer typecheck (resolution modes, lib matrix, cross-format) …");
   // On Windows the shim is `tsc.cmd`; execFileSync does not resolve the
   // extension for you, so a bare "tsc" is an ENOENT there.
   const tscBin = join(
-    REPO_ROOT,
+    io.cwd,
     "node_modules",
     ".bin",
     process.platform === "win32" ? "tsc.cmd" : "tsc",
   );
   if (!existsSync(tscBin)) {
-    console.error(`check-consumer: tsc not found at ${tscBin}. Run \`pnpm install\`.`);
-    process.exit(1);
+    io.err(`check-consumer: tsc not found at ${tscBin}. Run \`pnpm install\`.`);
+    io.exit(1);
+    return;
   }
 
   writeFileSync(join(consumer, "consumer.api.ts"), CONSUMER_TS);
@@ -1125,50 +1222,7 @@ function main() {
   // -------------------------------------------------------------------------
   // 5. Report + exit.
   // -------------------------------------------------------------------------
-  console.log("\n" + "─".repeat(70));
-  console.log("Consumer contract report");
-  console.log("─".repeat(70));
-
-  const verdict = judgeConsumer({ results, notes, knownFailing: KNOWN_FAILING });
-
-  console.log(`  total assertions : ${verdict.counts.total}`);
-  console.log(`  passed           : ${verdict.counts.passed}`);
-  console.log(`  known-failing    : ${verdict.counts.known}`);
-  console.log(`  informational    : ${verdict.counts.informational}`);
-  console.log(`  UNEXPECTED fail  : ${verdict.counts.unexpectedFail}`);
-  console.log(`  UNEXPECTED pass  : ${verdict.counts.unexpectedPass}`);
-
-  if (notes.length) {
-    console.log("\n  Informational (documented limitations, not contracts):");
-    for (const n of notes) console.log(`    · ${n.id}: ${n.detail}`);
-  }
-
-  if (verdict.knownFailures.length) {
-    console.log("\n  Known failures (tracked, will turn green when bugs are fixed):");
-    for (const f of verdict.knownFailures) console.log(`    ⚠ ${f.id}\n        ${f.detail}`);
-  }
-
-  if (verdict.unexpectedPasses.length) {
-    console.log("\n  ✖ KNOWN_FAILING is stale — these now PASS and must be removed from the list:");
-    for (const f of verdict.unexpectedPasses) console.log(`    - ${f.id}`);
-  }
-
-  if (verdict.unexpectedFailures.length) {
-    console.log("\n  ✖ Unexpected failures:");
-    for (const f of verdict.unexpectedFailures) console.log(`    - ${f.id}: ${f.detail}`);
-  }
-
-  if (!verdict.ok) {
-    console.log("\n✖ check-consumer: FAILED\n");
-    process.exit(1);
-  }
-
-  console.log(
-    `\n✔ check-consumer: OK — ${verdict.counts.passed} passed` +
-      (verdict.counts.known ? `, ${verdict.counts.known} known-failing (tracked)` : "") +
-      ". Tarball behaves as a real consumer expects.\n",
-  );
-  process.exit(0);
+  printConsumerReport({ results, notes, knownFailing: KNOWN_FAILING }, io);
 }
 
 // Importing this module must do nothing at all; only

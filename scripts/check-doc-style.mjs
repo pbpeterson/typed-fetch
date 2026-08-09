@@ -684,7 +684,11 @@ function collectFiles(dir, prefix, ext) {
   /** @type {string[]} */
   const found = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    // Every caller passes a non-empty prefix ("docs" or "src"), and every
+    // recursive call inherits a non-empty prefix built from one, so the
+    // string is never empty here. No branch on an empty prefix: nothing can
+    // take it.
+    const rel = `${prefix}/${entry.name}`;
     if (entry.isDirectory()) {
       found.push(...collectFiles(join(dir, entry.name), rel, ext));
     } else if (entry.name.endsWith(ext)) {
@@ -694,8 +698,40 @@ function collectFiles(dir, prefix, ext) {
   return found.toSorted();
 }
 
-/** @returns {{ docs: StyleDoc[], missingFiles: string[] }} */
-function gatherStyleDocs() {
+/**
+ * The parts of the process a test must control to drive `main` without
+ * killing the vitest worker: the argv the entry point would read, the
+ * directory it resolves `docs/`, `src/`, and `package.json` against, a writer
+ * for each of standard out and standard error, and the exit function. A gate
+ * that calls `process.exit` directly makes `io.exit` load-bearing — the
+ * production call site's default keeps behavior unchanged.
+ * @typedef {{
+ *   argv: string[],
+ *   cwd: string,
+ *   out: (line: string) => void,
+ *   err: (line: string) => void,
+ *   exit: (code: number) => void,
+ * }} Io
+ */
+
+/**
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @type {Io}
+ */
+export const defaultIo = {
+  argv: process.argv,
+  cwd: repoRoot,
+  out: (line) => console.log(line),
+  err: (line) => console.error(line),
+  exit: (code) => process.exit(code),
+};
+
+/**
+ * @internal Exported for the entry-point spec. Not a public interface.
+ * @param {string} repoRoot
+ * @returns {{ docs: StyleDoc[], missingFiles: string[] }}
+ */
+export function gatherStyleDocs(repoRoot) {
   const roster = [
     ...STYLE_MARKDOWN_SOURCES.map((file) => ({
       file,
@@ -725,8 +761,10 @@ function gatherStyleDocs() {
   return { docs, missingFiles };
 }
 
-function main() {
-  const { docs, missingFiles } = gatherStyleDocs();
+/** @internal Exported for the entry-point spec. Not a public interface. */
+export function main(io = defaultIo) {
+  const repoRoot = io.cwd;
+  const { docs, missingFiles } = gatherStyleDocs(repoRoot);
   const byFile = new Map(docs.map((d) => [d.file, d.source]));
   const readmeSource = byFile.get(README_FILE) ?? "";
   const standardSource = byFile.get(WRITING_STANDARD_FILE) ?? "";
@@ -740,71 +778,64 @@ function main() {
     missingFiles,
   });
 
-  console.log(`check-doc-style: scanned ${docs.length} documentation sources`);
+  io.out(`check-doc-style: scanned ${docs.length} documentation sources`);
 
   if (verdict.missingFiles.length > 0) {
-    console.error(
-      `\ncheck-doc-style: ${verdict.missingFiles.length} documentation file(s) missing`,
-    );
-    for (const file of verdict.missingFiles) console.error(`  ${file}`);
+    io.err(`\ncheck-doc-style: ${verdict.missingFiles.length} documentation file(s) missing`);
+    for (const file of verdict.missingFiles) io.err(`  ${file}`);
   }
 
   if (verdict.relativeLinks.length > 0) {
-    console.error(
-      `\ncheck-doc-style: ${verdict.relativeLinks.length} relative link(s) in ${README_FILE}`,
-    );
+    io.err(`\ncheck-doc-style: ${verdict.relativeLinks.length} relative link(s) in ${README_FILE}`);
     for (const link of verdict.relativeLinks) {
-      console.error(`  ${README_FILE}:${link.line}  ${link.target}`);
+      io.err(`  ${README_FILE}:${link.line}  ${link.target}`);
     }
-    console.error(`  ${README_FILE} is the only document in the npm tarball. Use an absolute URL.`);
+    io.err(`  ${README_FILE} is the only document in the npm tarball. Use an absolute URL.`);
   }
 
   if (verdict.vocabulary.length > 0) {
-    console.error(
-      `\ncheck-doc-style: ${verdict.vocabulary.length} controlled-vocabulary violation(s)`,
-    );
+    io.err(`\ncheck-doc-style: ${verdict.vocabulary.length} controlled-vocabulary violation(s)`);
     const messages = new Map(VOCABULARY_RULES.map((rule) => [rule.id, rule.message]));
     for (const hit of verdict.vocabulary) {
-      console.error(`  ${hit.file}:${hit.line} [${hit.rule}] "${hit.match}"`);
-      console.error(`      ${messages.get(hit.rule)}`);
+      io.err(`  ${hit.file}:${hit.line} [${hit.rule}] "${hit.match}"`);
+      io.err(`      ${messages.get(hit.rule)}`);
     }
   }
 
   if (!termsAgree(verdict.terms)) {
-    console.error(
+    io.err(
       `\ncheck-doc-style: the ${README_FILE} Terms table does not match ${WRITING_STANDARD_FILE}`,
     );
     const { missing, extra, misordered, meaningDrift, unparsed } = verdict.terms;
-    if (unparsed.length > 0) console.error(`  no Terms table found in : ${unparsed.join(", ")}`);
-    if (missing.length > 0) console.error(`  missing from README    : ${missing.join(", ")}`);
-    if (extra.length > 0) console.error(`  not in the standard    : ${extra.join(", ")}`);
-    if (misordered) console.error("  the two tables carry the same terms in a different order");
+    if (unparsed.length > 0) io.err(`  no Terms table found in : ${unparsed.join(", ")}`);
+    if (missing.length > 0) io.err(`  missing from README    : ${missing.join(", ")}`);
+    if (extra.length > 0) io.err(`  not in the standard    : ${extra.join(", ")}`);
+    if (misordered) io.err("  the two tables carry the same terms in a different order");
     if (meaningDrift.length > 0) {
-      console.error(`  meaning has drifted    : ${meaningDrift.join(", ")}`);
-      console.error("  A README meaning must BEGIN WITH the standard's meaning.");
+      io.err(`  meaning has drifted    : ${meaningDrift.join(", ")}`);
+      io.err("  A README meaning must BEGIN WITH the standard's meaning.");
     }
   }
 
   if (verdict.nodeFloor.length > 0) {
-    console.error(`\ncheck-doc-style: ${verdict.nodeFloor.length} Node.js floor violation(s)`);
+    io.err(`\ncheck-doc-style: ${verdict.nodeFloor.length} Node.js floor violation(s)`);
     for (const hit of verdict.nodeFloor) {
       const location = hit.line === 0 ? hit.file : `${hit.file}:${hit.line}`;
       if (hit.rule === "missing-exact") {
-        console.error(`  ${location} [${hit.rule}] expected ${hit.expected}`);
+        io.err(`  ${location} [${hit.rule}] expected ${hit.expected}`);
         continue;
       }
-      console.error(`  ${location} [${hit.rule}] "${hit.match}" (expected ${hit.expected})`);
+      io.err(`  ${location} [${hit.rule}] "${hit.match}" (expected ${hit.expected})`);
     }
   }
 
   if (!verdict.ok) {
-    console.error("\nRead docs/writing-standard.md, then fix the documents.");
-    process.exit(1);
+    io.err("\nRead docs/writing-standard.md, then fix the documents.");
+    io.exit(1);
+    return;
   }
 
-  console.log(
-    "check-doc-style: OK — links, controlled vocabulary, Terms table, and Node floor agree.",
-  );
+  io.out("check-doc-style: OK — links, controlled vocabulary, Terms table, and Node floor agree.");
 }
 
 // Importing this module must do nothing at all. isMainModule resolves symlinks
