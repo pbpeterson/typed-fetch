@@ -434,6 +434,13 @@ const SINGLE_DOT_SEGMENTS = new Set([".", "%2e"]);
  * there can take a solidus and never a name. An ordinary region starts wherever
  * a mark sits in the path, with arbitrary text in front of it.
  *
+ * AND AN ORDINARY REGION CROSSES ONE ANYWAY, WITHOUT PASSING IT. That is round
+ * 16's separation and it is not a widening of the rule above: {@link pastOnePop}
+ * moves the cursor over a `..` and {@link userinfoSpans} CLOSES the span in front
+ * of it, so the `..` is still emitted and the rebuild still performs it. What the
+ * crossing buys is the pass COUNT — see {@link popsBefore} for the input, and for
+ * why the crossings are counted rather than allowed.
+ *
  * A SEGMENT ENDS AT A SOLIDUS OR AT THE END OF THE TEXT, which is why the walk
  * below is not {@link authorityEnd}. A `pathname` holds no literal `?` or `#` —
  * the path percent-encode set covers both — so for the seam's call that is the
@@ -452,6 +459,59 @@ function pastFiller(text: string, from: number, dropped: ReadonlySet<string>): n
     if (!dropped.has(text.slice(at, segment).toLowerCase())) return at;
     at = segment;
   }
+}
+
+/** The {@link DOT_SEGMENTS} spellings that POP: the ones a single dot is not. */
+const DOUBLE_DOT_SEGMENTS = new Set(
+  [...DOT_SEGMENTS].filter((segment) => !SINGLE_DOT_SEGMENTS.has(segment)),
+);
+
+/**
+ * `from`, advanced over ONE double-dot segment and the filler behind it, or
+ * `from` where the segment there is not a double dot.
+ *
+ * ONE, because each one costs a POP, and the caller has a budget of them. See
+ * {@link popsBefore}.
+ */
+function pastOnePop(text: string, from: number): number {
+  let segment = from;
+  while (segment < text.length && !isSolidus(text[segment])) segment += 1;
+  if (!DOUBLE_DOT_SEGMENTS.has(text.slice(from, segment).toLowerCase())) return from;
+  return pastFiller(text, segment, SINGLE_DOT_SEGMENTS);
+}
+
+/**
+ * How many pops the text in front of a region opening at `start` can PAY FOR
+ * without moving the region's own opening.
+ *
+ * THE COST FIX AND THE ANSWER ARE ONE QUESTION HERE, which is why this counts
+ * rather than answering yes or no. `pastFiller` stops the ordinary cursor in
+ * front of a `..` so that a span never swallows one, and the price round 16
+ * measured is that a path spelling one credential and one `..` per group drains
+ * ONE group a pass: the removal exposes the `..`, the rebuild pops the empty
+ * segment a solidus spells, and the next group's region opens only on the pass
+ * after that. `/x` + 2N solidi + N `@../` groups cost N + 1 passes over a text
+ * that stays Θ(N) long, and `response.url` after a redirect is a text the
+ * SERVER wrote.
+ *
+ * The cursor may CROSS such a `..` — leaving it in the emitted text, so the
+ * rebuild still performs it and round 15's rule is untouched — exactly as often
+ * as the slow spelling would have re-opened the region, and no more often, or
+ * the answer moves. A region that opens at a bare pair of solidi re-opens while
+ * the run in front of it still holds two, and each pop takes one of the empty
+ * segments that run spells. So a run of `run` solidi pays for `run - 2`
+ * crossings.
+ *
+ * NOTHING ELSE PAYS FOR ANY. A run under two solidi opens no region of its own,
+ * and a run behind a scheme colon opens one over ANY count including none — so
+ * the pop that shortens it does not close it, and the arithmetic above does not
+ * describe it. Both answer zero, which is the behaviour of every round before
+ * this one.
+ */
+function popsBefore(text: string, start: number): number {
+  let run = 0;
+  while (isSolidus(text[start - run - 1])) run += 1;
+  return run >= 2 && text[start - run - 1] !== ":" ? run - 2 : 0;
 }
 
 /**
@@ -990,10 +1050,16 @@ export function userinfoSpans(text: string, seam: Span | null = null): Span[] {
     // under-redaction by this module's own rule in the string every channel
     // carries.
     //
-    // Three answers at most, so this is a constant and the pass stays linear.
+    // Three answers at most per CROSSING, and the pass stays linear either way.
     // `lastAt` and `lastLoneAt` are each spent by the answer that returns them,
     // and an `@` at the cut itself is preceded by the `@` the previous answer
-    // ended on — which makes it a lone `@` and therefore the last one.
+    // ended on — which makes it a lone `@` and therefore the last one. A
+    // crossing resets that count, and it also consumes a `..` and an `@` that
+    // no later region can read again, because `cut` never moves backwards and
+    // `from` leaves each region at it. So the whole scan runs at most once per
+    // `@` in the text.
+    let open = start;
+    let pops = popsBefore(text, start);
     let cut = floor > start ? floor : start;
     floor = -1;
     for (;;) {
@@ -1023,6 +1089,37 @@ export function userinfoSpans(text: string, seam: Span | null = null): Span[] {
       // {@link pastFiller}, which names the input that turns the difference
       // into a password in the emitted path.
       cut = pastFiller(text, at + 1, SINGLE_DOT_SEGMENTS);
+      // AND THE `..` IS CROSSED RATHER THAN PASSED, which is round 16's finding
+      // and the one thing the cursor above still could not do. Stopping in front
+      // of a `..` is correct for the SPAN and wrong for the SCAN: the removal
+      // exposes the `..`, the rebuild pops the empty segment a solidus spells,
+      // and the group behind it only becomes a region on the pass after that. So
+      // `/x` + 2N solidi + N `@../` groups drained ONE group a pass — 1,601
+      // rebuilds and 143 ms for a 9.6 KB `Location` the SERVER chose, and
+      // `toJSON()` paid it again per log line.
+      //
+      // The span CLOSES here instead of stretching over the `..`, so the `..` is
+      // emitted, the rebuild performs it, and the paragraph above keeps every
+      // word. What moves is only where the scan looks next. `open` is the span's
+      // own start for exactly that reason: a region can now answer with SEVERAL
+      // spans, and the text between them is the dot segments it refused to eat.
+      //
+      // COUNTED, NOT ALLOWED, because the answer is a fact about the slow
+      // spelling and a cost fix may not move it. {@link popsBefore} holds the
+      // arithmetic and the input that shows the difference.
+      let resumed = cut;
+      for (; pops > 0; pops -= 1) {
+        const next = pastOnePop(text, resumed);
+        if (next === resumed) break;
+        resumed = next;
+      }
+      if (resumed > cut) {
+        // `cut` is past an `@` this region already answered for, and `open` is
+        // at or before that `@`, so the span closing here is never empty.
+        spans.push({ start: open, end: cut });
+        open = resumed;
+        cut = resumed;
+      }
       // AND THE END QUESTION IS RE-ASKED TOO, of the same text the `@` question
       // is re-asked of. A region is BOUNDED only where the parser reads a
       // complete authority at its start, and removing a credential MOVES that
@@ -1045,7 +1142,7 @@ export function userinfoSpans(text: string, seam: Span | null = null): Span[] {
         lastLoneAt = lastBelow(loneAts, end);
       }
     }
-    if (cut > start) spans.push({ start, end: cut });
+    if (cut > open) spans.push({ start: open, end: cut });
     // Past the `@` this region ended on: any region opening inside the span
     // just removed reads the same `@` and nests inside it.
     from = cut;
