@@ -783,9 +783,10 @@ Five findings; H1 returned clean.
   `RELATIVE_BASE`'s had its mark CONSUMED by the parser, so no mark was ever
   seen. Record the principle that closed both: when a parse the module leans
   on throws, the module removes the span anyway. A structure the parser
-  declines to read is not one it has ruled out, it is one nobody can bound. A
-  parse that SUCCEEDS and names no credential is a different answer and is
-  still believed, which is what keeps `file:///c:/Users/alice@corp/x` whole.
+  declines to read is not one it has ruled out, it is one nobody can bound.
+  No parse remains at this seam: what is believed now is an `@` with no
+  text in front of it, which names an empty userinfo and has nothing to
+  remove, and that is what keeps `file:///c:/Users/alice@corp/x` whole.
 - **`RELATIVE_BASE` was not changed, and why.** Its scheme's identity was
   silently load-bearing, but every special scheme collides with an input
   that spells it, and every non-special one gives up the second load-bearing
@@ -829,6 +830,67 @@ Five findings; H1 returned clean.
   entry under "The request path" was true of one branch only, and the
   `options.signal`-versus-bare-`fetch` read-order difference is recorded as
   a decision rather than a defect.
+
+### What round 14 settled
+
+Four findings; H1 returned clean for the third consecutive round.
+
+- **R14-H2-01 and R14-H3-01 (critical), and R14-H4-02 (medium) — one
+  class.** Three rounds have now found bugs in the gap between the text a
+  guard EXAMINED and the text EMITTED: round 13's fail-closed seam
+  re-created a seam when it removed an authority; round 14's dot segment
+  slid a second credential into a seam that had just been cleared, because
+  the rebuild is a parse and a parse removes dot segments; and a leading C0
+  control or space made the parser consume the scheme colon where the
+  module's skip set covered only tab, CR and LF. Record the invariant that
+  closed the class: every question this module asks is asked of the text it
+  emits — the scan re-runs on the pathname its own rebuild produced and
+  returns only from a pass that emits exactly what it scanned. Record
+  explicitly that re-asking `redactUrl` of its own answer is NOT that
+  property and does not imply it: a second call recomputes the origin and
+  re-reads the mark from a text that no longer holds it, and one of the
+  leaking shapes was already a fixed point of the whole redactor.
+- **The parser-normalisation enumeration.** The fixer enumerated all eleven
+  normalisations the basic URL parser performs, from the Standard's steps
+  rather than from this module's bug history, and recorded for each whether
+  the module mirrors it and why. Three were unmirrored and were exactly this
+  round's three findings: the leading C0-control-or-space strip, `file:`'s
+  own state, and dot-segment removal. Record the two that are deliberately
+  never mirrored and the reason: percent-encoding, which is the `%3A`/`%40`
+  residual; and host normalisation, which the module never needs because it
+  never computes a host — it takes `parsed.host` and asks the parser instead
+  of comparing host text.
+- **Two defects the fixer found in its own work.** The seam had believed the
+  parser's REPORT rather than its SPLIT POINT, so a `:@` cut kept a
+  password — the parser normalises an empty userinfo away in what
+  `username` and `password` report. And the fix moved the quadratic from the
+  relative branch to the ABSOLUTE branch, which a redirecting server can
+  choose, measured at 465 ms for 16 KB; a cursor rule closed it to 0.8 ms
+  with byte-identical answers. `cleaned`'s loop is the correctness
+  guarantee — it is what makes the scan re-run on the text the rebuild
+  produced — and the cursor is a cost optimization only, bounded to one
+  extra pass for the dot-segment shape that would otherwise be quadratic.
+  No earlier round recorded the loop as confined to the relative branch;
+  where that reading was possible it is corrected here. Note that this
+  invalidated H2's proof that the quadratic was unreachable from a real
+  `Response`, and that the fixer caught it before shipping.
+- **R14-H4-01 (medium).** A security sentence named the wrong member.
+  Record the rule it teaches: `error.url` and `toJSON().url` have opposite
+  contracts by design, so a sentence about redaction must name the exact
+  member.
+- **The fuzz.** 18,964 inputs over eight checks: zero throws, zero
+  idempotence failures, zero moved origins, zero subsequence violations,
+  zero query or fragment bytes, zero entry-point disagreements, and zero
+  path segments deleted from urls the parser calls ordinary path. 3,398
+  exposures closed against the previous commit; the 3 opened are the
+  `file:` correction itself, each verified on the platform.
+- **H1 clean, third round.** It closed the options-snapshot proxy
+  invariants over 288 generated objects, and settled round 13's recorded
+  divergence with measurement: `signal` is the only WebIDL member the setup
+  phase reads, and every one of the fifteen members is read exactly once
+  under both branches — the same count a bare `fetch` produces, so the
+  divergence is order only, never count. It judged `snapshotRequestInit`'s
+  fidelity by what a real HTTP server received for 31 init shapes.
 
 ## Adjudicated closed
 

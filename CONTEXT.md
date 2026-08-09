@@ -225,9 +225,9 @@ Words this codebase already uses, some of them only implicitly until now.
 - **Structure and value** — the rule that decides what a channel may carry.
   `headers` emits names, never values. A hierarchical `url` emits the origin and
   path, and only those: every emitted byte comes from the origin or from the
-  parsed `pathname`. It never emits userinfo, a query, or a fragment. A
-  relative url may resolve its own answer more than once, so the emitted path
-  comes from the FINAL parse's `pathname`, never an intermediate one. An opaque
+  parsed `pathname`. It never emits userinfo, a query, or a fragment. A url
+  may resolve its own answer more than once, so the emitted path comes from
+  the FINAL parse's `pathname`, never an intermediate one. An opaque
   URL emits only its scheme. Every redaction names the property that holds the
   full value. Read `error.headers`, `error.url`, `error.cause`, or
   `error.reason` for deliberate access.

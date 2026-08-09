@@ -53,6 +53,37 @@
   only the region's `@` question was re-asked of what the previous answer
   left behind. The region's END question is now re-asked at each new cut,
   too.
+- **`redactUrl` no longer misreads a scheme shifted by a leading space or
+  another C0 control character.** The basic URL parser strips a leading run
+  of C0 controls and spaces before it reads a scheme. This module skipped
+  only tab, CR, and LF at the same position, so a leading space in front of
+  a scheme that equals the internal resolution base's shifted the scheme by
+  one character for this module while the parser read it correctly, and the
+  credential behind it rode out unredacted. The head of the input is now
+  skipped with the parser's own wider set.
+- **`redactUrl` re-parses a cleaned url until a pass changes nothing,
+  instead of once.** The rebuild is a parse, and a parse removes a dot
+  segment (`.` or `..`, under any case or percent-encoded spelling).
+  Removing one credential could uncover a dot segment that collapses on the
+  next parse and slides a second credential into the seam the first removal
+  had just cleared. A cursor now skips a dot segment at the seam without a
+  second pass in the ordinary case, which keeps the cost of a hostile input
+  bounded instead of quadratic.
+- **`redactUrl` no longer opens a credential-hiding region for `file:`
+  under fewer than two solidi.** The URL Standard gives `file:` its own
+  state, which reads a reference under fewer than two solidi as a path with
+  an empty host, never an authority — exactly like `git:/svc:pw@host`. This
+  module had still listed `file:` among the schemes that open a region at
+  any solidus count, so it deleted a path segment a `file:` reference never
+  offered as a credential, such as the username in
+  `/go/file:/Users/alice@corp/report.pdf`.
+- **The seam between an emitted origin and its path now removes a
+  credential by the parser's split point, not by its `username` and
+  `password` report.** The parser normalizes an empty userinfo away —
+  `new URL("https://:@x/").href` is `https://x/` — so a userinfo of `:@` at
+  the seam reported no username and no password while the parser had still
+  read it as userinfo. That span kept its credential. The scan now reads
+  the split point directly and no longer parses to confirm it.
 
 ## [2.0.1] - 2026-08-03
 

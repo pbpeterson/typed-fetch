@@ -38,11 +38,15 @@ known limit rather than a surprise.
   with an empty host, exactly as `git:/svc:pw@host` is, and keeps its text.
 
   Where the parser CONSUMED the opening mark instead of leaving it in the
-  text, the removed span is the parser's own answer and nothing wider. Three
-  seams do this: a host-less origin's `scheme://` seam, the path a
-  protocol-relative reference leaves behind, and a reference whose scheme
-  equals the resolution base's scheme, which the URL Standard resolves as a
-  relative path with its scheme colon eaten.
+  text, the removed span is the parser's SPLIT POINT. That point is the last
+  `@` before the authority ends, never the `username` or `password` the
+  parser reports. The parser normalizes an empty userinfo away:
+  `new URL("https://:@x/").href` is `https://x/`. So a report of nothing is
+  not proof there was nothing to remove. Three seams reach this rule: a
+  host-less origin's `scheme://` seam, the path a protocol-relative
+  reference leaves behind, and a reference whose scheme equals the
+  resolution base's scheme, which the URL Standard resolves as a relative
+  path with its scheme colon eaten.
 
   A region ends where the parser ends an authority it can read. A region
   whose start is not an authority the parser can read does not end at all.
@@ -53,16 +57,20 @@ known limit rather than a surprise.
   independently. A non-special scheme under fewer than two solidi is an
   opaque path and keeps its text.
 
-  A relative answer never begins with two solidi. Redacting it re-asks three
-  questions of what the previous answer leaves behind — a region's `@`
-  question, its END question, and the seam's own span — so `redactUrl` is a
-  fixed point of itself: `redactUrl(redactUrl(u)) === redactUrl(u)`.
+  A relative answer never begins with two solidi. The rebuild is a parse,
+  and a parse removes a dot segment. Redacting an answer re-asks every
+  question of the text the rebuild produced, not of what the previous
+  answer left behind. The three questions are a region's `@` question, its
+  END question, and the seam's own span. So `redactUrl` is a fixed point of
+  itself: `redactUrl(redactUrl(u)) === redactUrl(u)`.
 
-  `error.url` never emits a byte the caller wrote after a `?` or a `#`,
-  under any spelling. Two residuals are left, and neither can be told apart
-  from an ordinary path by a structural rule. The first is a credential
-  whose LAST character is `/`. It stays open, because
-  `://host/users/@alice` and `://token/@host` spell the same three
+  Neither `error.message` nor `toJSON().url` emits a byte the caller wrote
+  after a `?` or a `#`, under any spelling. `error.url` keeps that byte,
+  because it is the raw href — see the escape-hatch bullet below. Two
+  residuals are left in what `error.message` and `toJSON().url` withhold,
+  and neither can be told apart from an ordinary path by a structural rule.
+  The first is a credential whose LAST character is `/`. It stays open,
+  because `://host/users/@alice` and `://token/@host` spell the same three
   characters. The second is a credential holding a `://` behind text the
   parser reads as a host, such as `/go/https://YWxpY2U/cGFzc3dvcmQ://x@host`.
   It stays open for the same reason: `://host1/x://u2:pw@host2/v1` spells
@@ -86,13 +94,14 @@ known limit rather than a surprise.
   under a different name: two texts the parser does not agree about. All
   three spellings THROW as a standalone url
   (`new URL("https%3A/svc:pw@i.test/v1")` is Invalid URL).
-- **A non-special scheme under fewer than two solidi keeps its text.**
-  `/go/git:/svc:pw@host` keeps `svc:pw@host` as an ordinary path, because the
-  URL Standard reads a non-special scheme under fewer than two solidi as an
-  opaque path with no authority: `new URL("git:/svc:pw@host").username` is
-  the empty string. This narrowing is deliberate. It stops `/a:/b` from
-  being read as an authority, and it also stops `/a:/b@c` from losing a path
-  segment it must keep.
+- **A non-special scheme, or `file:`, under fewer than two solidi keeps its
+  text.** `/go/git:/svc:pw@host` keeps `svc:pw@host` as an ordinary path,
+  because the URL Standard reads a non-special scheme under fewer than two
+  solidi as an opaque path with no authority: `new URL("git:/svc:pw@host").username`
+  is the empty string. `file:` is a special scheme that keeps the same shape
+  under the same count, for the reason residual 2 above states. This
+  narrowing is deliberate. It stops `/a:/b` from being read as an authority,
+  and it also stops `/a:/b@c` from losing a path segment it must keep.
 - **`error.url` and `error.headers` hold the raw values.** They are the escape
   hatches, non-enumerable so no structured logger reaches them by accident.
 - **A forged brand passes a type guard.** The guards answer "does this claim to
