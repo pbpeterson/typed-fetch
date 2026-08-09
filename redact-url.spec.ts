@@ -1263,6 +1263,39 @@ describe("R9 residual — a scheme colon and its solidi open an authority", () =
     expect(redactUrl(url)).toBe(expected);
   });
 
+  // CLOSED IN ROUND 12, and this shape was the residual round 9 recorded when
+  // it separated the two marks.
+  //
+  // A credential with no `@` of its own inside its region kept nothing to
+  // anchor on once the text after it spelled a `://`, so `svc:hunter2` read as
+  // a host and a port and survived. The mark is no longer what ends a region:
+  // `svc:hunter2` is not an authority the parser can read — `hunter2` is not a
+  // port — so the region does not end, the `@` on the other side of the `?` is
+  // asked, and the removal is still clipped to the pathname. What it cost is
+  // now paid only where the parser DOES read an authority, which is the row
+  // pinned as the new residual below.
+  test("CLOSED (round 12): a region a later mark cut short", () => {
+    expect(redactUrl("https://api.test/go/https://svc:hunter2?a=://b@c")).toBe(
+      "https://api.test/go/https://",
+    );
+  });
+
+  // RESIDUAL, NEW IN ROUND 12 and narrower than the one above. The cut only
+  // happens where the parser reads a COMPLETE authority at the region's start,
+  // so what survives is text the parser itself calls a host. It is not closable
+  // for the reason the trailing-solidus residual is not: the row below it
+  // spells the same characters in the same order and the suite requires `host1`
+  // to be kept, so no structural rule separates the two.
+  test("RESIDUAL: a base64 credential holding a `://` behind a readable host", () => {
+    expect(redactUrl("https://api.test/go/https://YWxpY2U/cGFzc3dvcmQ://x@host")).toBe(
+      "https://api.test/go/https://YWxpY2U/cGFzc3dvcmQ://host",
+    );
+    expect(redactUrl("://host1/x://u2:hunter2@host2/v1")).toBe("/://host1/x://host2/v1");
+    // And the parser calls neither of them a credential, which is why the
+    // heuristic is the only thing that could have reached the first.
+    expect(new URL("https://YWxpY2U/cGFzc3dvcmQ://x@host").username).toBe("");
+  });
+
   // CLOSED IN ROUND 10, and this row recorded the residual until then.
   //
   // Round 9 opened a region for ONE solidus after ANY colon, so `/a:/b@c` — an
@@ -1300,15 +1333,40 @@ describe("R9 residual — a scheme colon and its solidi open an authority", () =
     // path, and `c` is not one of the six SPECIAL schemes — so the URL Standard
     // sends it to the opaque path state and no region opens here either.
     ["a drive letter is still not an authority", "file:///c:/Users/alice@corp/x"],
-    // No colon before the solidi at all, and a percent-encoded one, which the
-    // `disclosure-channels.spec.ts` CONTROL rows record as residual 2.
-    ["a scheme-relative embedded url", "https://api.test/go//svc:pw@internal.test/v1"],
-    ["a percent-encoded scheme colon", "https://api.test/go/https%3A//svc:pw@i.test/v1"],
     // The paths the module is required to keep, unchanged by the new mark.
     ["an @-headed segment", "https://api.test/users/@alice"],
     ["a scoped package", "https://api.test/@scope/pkg"],
   ])("%s", (_label, url) => {
     expect(redactUrl(url)).toBe(url);
+  });
+
+  // CLOSED IN ROUND 12, and these two rows recorded the residual until then.
+  //
+  // Both were pinned on the reading that an authority follows a SCHEME COLON
+  // and the solidi after it. A scheme is one way to reach an authority and not
+  // the only one: a relative reference that begins with two solidi is
+  // protocol-relative, so the URL Standard reads everything up to the next `/`
+  // as userinfo, host and port with no scheme in sight. The parser says so
+  // directly, and it is asked here rather than restated.
+  //
+  // A percent-encoded scheme colon takes the SCHEME away and leaves the two
+  // solidi, which is the same shape wearing a disguise. `SECURITY.md` already
+  // said a region opens "at two or more solidi under any scheme"; the code is
+  // what disagreed with the document and with the parser at once.
+  test.each([
+    ["a scheme-relative embedded url", "https://api.test/go//svc:pw@internal.test/v1"],
+    ["a percent-encoded scheme colon", "https://api.test/go/https%3A//svc:pw@i.test/v1"],
+    ["a bare pair deeper in the path", "https://api.test/deep/x//svc:pw@internal.test/v1"],
+    ["a bare pair on the first segment", "https://api.test//svc:pw@internal.test/v1"],
+  ])("CLOSED (round 12): %s carries a credential the parser confirms", (_label, url) => {
+    // The oracle first: this is the platform's answer, not the module's.
+    const at = url.indexOf("//", url.indexOf("//") + 2);
+    expect(new URL(url.slice(at), "http://url.invalid").username).toBe("svc");
+
+    expect(redactUrl(url)).not.toContain("svc:pw@");
+    // The origin still cannot move, which is the invariant the widening is
+    // always measured against.
+    expect(new URL(redactUrl(url)).host).toBe("api.test");
   });
 
   // ROUND 10 — the mark that opens a region is now the URL Standard's own
@@ -1519,5 +1577,178 @@ describe("R11 — every `@` in a region is its own question", () => {
     redactUrl(hostile);
 
     expect(performance.now() - started).toBeLessThan(100);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 12 — the end of a region stopped being a mark.
+//
+// Five rounds of criticals in this module all took the same shape: a rule
+// decided where a credential's text BEGINS and ENDS, and the next round found
+// a credential that spells the deciding mark. Round 9 measured the wide end
+// mark and reverted it — a password spelling `:/` ends its own region and emits
+// the prefix, 5,241 leaking urls. Round 12 measured the narrow one — a password
+// spelling `://` ends its own region the same way. Both marks are text an
+// attacker writes, so the end is now a question asked of the URL parser: a
+// region ends at the next `://` only where the parser reads a complete
+// authority at its start, and where it reads none the region does not end.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("R12 — a credential that spells the mark that used to end its region", () => {
+  test.each([
+    [
+      "the authority mark in full",
+      "https://api.test/go/https://alice:s3cretPW://x@internal.test/v1",
+    ],
+    [
+      "the same mark the parser writes from backslashes",
+      "https://api.test/go/https://alice:s3cretPW:\\\\x@internal.test/v1",
+    ],
+    ["one solidus fewer", "https://api.test/go/https://alice:s3cretPW:/x@internal.test/v1"],
+    ["the mark twice", "https://api.test/go/https://alice:s3cretPW://y://x@internal.test/v1"],
+    [
+      "the mark under a single-solidus scheme",
+      "https://api.test/go/https:/alice:s3cretPW://x@internal.test/v1",
+    ],
+  ])("%s", (_label, url) => {
+    const redacted = redactUrl(url);
+
+    expect(redacted).not.toContain("s3cretPW");
+    // A redaction that lies is worse than one that leaks, so the origin is
+    // asserted beside the removal every time.
+    expect(new URL(redacted).host).toBe("api.test");
+    expect(redactUrlInMessage(`Failed to reach ${url}`, url)).not.toContain("s3cretPW");
+  });
+
+  // WHY THE MARK CAN COME BACK where the parser answers. `host1` is a host the
+  // parser reads, so its authority is complete and the `://` after it starts a
+  // url of its own — the region ends there and the segment survives. The row
+  // above has no complete authority to end, because `s3cretPW` is not a port.
+  test("a region whose authority the parser CAN read still ends at the next mark", () => {
+    expect(redactUrl("://host1/x://u2:hunter2@host2/v1")).toBe("/://host1/x://host2/v1");
+  });
+
+  test("the parser is what separates the two, and it is asked here", () => {
+    // Complete: the parser names a host, so the authority ends before the mark.
+    expect(new URL("https://host1/x://u2:pw@host2/v1").host).toBe("host1");
+    // Not an authority at all: `s3cretPW` is not a port, so there is no end for
+    // a mark to be.
+    expect(() => new URL("https://alice:s3cretPW://x@internal.test/v1")).toThrow();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 12 — the mark that OPENS a region, where the parser had already eaten
+// it or where no scheme ever wrote one.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("R12 — two solidi open an authority with no scheme in front of them", () => {
+  test.each([
+    [
+      "protocol-relative, the parser eats the embedded scheme",
+      "//https://svc:hunter2@internal.test/v1",
+    ],
+    ["three solidi", "///https://svc:hunter2@internal.test/v1"],
+    ["backslashes", "\\\\https://svc:hunter2@internal.test/v1"],
+    ["a non-special embedded scheme", "//foo://svc:hunter2@internal.test/v1"],
+    ["a bare pair, no scheme at all", "//svc:hunter2@internal.test/v1"],
+    ["a bare pair inside an absolute path", "https://api.test/go//svc:hunter2@internal.test/v1"],
+    [
+      "a bare pair at the head of an absolute path",
+      "https://api.test//svc:hunter2@internal.test/v1",
+    ],
+    ["the seam a host-less origin spells", "file:///svc:hunter2@internal.test/v1"],
+  ])("%s", (_label, url) => {
+    expect(redactUrl(url)).not.toContain("hunter2");
+    // ONE RULE, so the two entry points answer the same way about the same
+    // text. Two implementations disagreeing is the round-8 defect shape.
+    expect(redactUrlInMessage(`Failed to reach ${url}`, url)).not.toContain("hunter2");
+  });
+
+  // The emitted value is read back by the same parser that produced it, so a
+  // relative answer may not begin with two solidi: that spells an authority to
+  // the next reader and the module would disagree with its own output.
+  test.each([
+    "//https://svc:hunter2@internal.test/v1",
+    "\t//svc:hunter2://pw@api.test:8443/v1",
+    "//https://https://svc:hunter2@internal.test/v1",
+  ])("the relative answer is a fixed point of itself — %s", (url) => {
+    const once = redactUrl(url);
+
+    expect(redactUrl(once)).toBe(once);
+    expect(once.startsWith("//")).toBe(false);
+    expect(once).not.toContain("hunter2");
+  });
+
+  // THE SEAM, and the one place the parser decides a span alone. A host-less
+  // origin ends in the two solidi its own empty authority left behind, so the
+  // mark is written across the join between the origin and the path by two
+  // texts neither of which holds it. The heuristics are deliberately wider than
+  // the parser, and that width is wrong where the caller wrote no mark: it
+  // reads a Windows path as a credential ending at `alice@`.
+  test("the seam takes what the parser names, and only that", () => {
+    expect(redactUrl("file:///svc:hunter2@internal.test/v1")).toBe("file:///internal.test/v1");
+    expect(new URL("///svc:hunter2@internal.test/v1", "http://url.invalid").password).toBe(
+      "hunter2",
+    );
+
+    expect(redactUrl("file:///c:/Users/alice@corp/x")).toBe("file:///c:/Users/alice@corp/x");
+    expect(new URL("///c:/Users/alice@corp/x", "http://url.invalid").username).toBe("");
+  });
+
+  // The paths the widened opening must not cost. Each is a bare pair the
+  // parser reads as a HOST and a path, with no credential anywhere in it.
+  test.each([
+    ["an empty segment", "https://api.test/a//b/c"],
+    ["a trailing pair", "https://api.test/a//"],
+    ["an @-headed segment behind a pair", "https://api.test/a//cdn.test/@alice"],
+    ["a scoped package behind a pair", "https://api.test//registry.test/@scope/pkg"],
+  ])("%s survives", (_label, url) => {
+    expect(redactUrl(url)).toBe(url);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 12 — where a containment check reads a credential that is not there.
+//
+// The independent oracle judges by containment: it collects every credential
+// the parser reports for any url-shaped slice of the input, and fails when the
+// output spells one. Two populations spell one WITHOUT carrying it, and both
+// are recorded here rather than argued in prose, because a later round will
+// meet them again.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("R12 — a credential that the output spells but does not carry", () => {
+  test("the origin the redactor must keep spells a short credential", () => {
+    // `//http:U:P@inner.test` read as a relative reference makes `http` the
+    // USERNAME. The redaction removes the whole userinfo, and the four letters
+    // that are left are the outer scheme, which no redaction may drop.
+    const url = "https://api.test/proxy//http:INNERUSER:INNERPASS@inner.test";
+    expect(new URL("//http:INNERUSER:INNERPASS@inner.test", "http://url.invalid").username).toBe(
+      "http",
+    );
+
+    const redacted = redactUrl(url);
+
+    expect(redacted).toBe("https://api.test/proxy//inner.test");
+    // The credential is gone; only the origin spells the four letters.
+    expect(redacted.slice("https://api.test".length)).not.toContain("http");
+  });
+
+  test("a path segment residual 1 keeps can spell an embedded credential", () => {
+    // The same text in two roles: userinfo inside the embedded url, and an
+    // ordinary path segment of the outer relative reference. One solidus and
+    // no scheme reaches no authority, so the parser calls the second a path —
+    // which is residual 1, and closing it would delete `/@scope/pkg` and the
+    // Windows drive letter with it.
+    const url = "/USER:PASS@TOKEN@localhost:8443/redirect/https://TOKEN:INNERPASS@inner.test/x";
+
+    const redacted = redactUrl(url);
+
+    // The credential's OWN occurrence is gone.
+    expect(redacted).not.toContain("TOKEN:INNERPASS@");
+    expect(redacted).toBe("/USER:PASS@TOKEN@localhost:8443/redirect/https://inner.test/x");
+    // And the parser agrees the survivor is a path, not a credential.
+    expect(new URL(url, "http://url.invalid").username).toBe("");
   });
 });

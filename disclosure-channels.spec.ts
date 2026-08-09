@@ -1276,24 +1276,27 @@ describe("the pathname userinfo scan, in both directions", () => {
     expect(error.message).toContain("ops@corp.test");
   });
 
-  // Shapes the anchor does not read as an authority. Each is a secret in a PATH
-  // SEGMENT, which SECURITY.md records as residual 2 ("a secret in a URL PATH
-  // SEGMENT survives in error.url"), so each is pinned rather than reported.
+  // CLOSED IN ROUND 12, and these two rows recorded the residual until then.
   //
-  // Neither spells a scheme COLON before its solidi, which is what the anchor
-  // reads: one has no colon at all, and the other has it percent-encoded, so
-  // `%3A%2F%2F` spells an authority no parser reaches either.
+  // Both were pinned on the reading that "an authority only follows a scheme
+  // colon and its solidi." That reading was the defect, not the rule: the URL
+  // Standard also opens an authority at two or more solidi with NO scheme in
+  // front of them, and neither shape here has an actual scheme colon
+  // immediately before its `//` — the percent-encoded `%3A` is not a colon
+  // character, so it does not protect the pair of solidi that follows it any
+  // more than having no colon at all does.
+  // `new URL("//svc:SHAPE_SECRET@internal.test/v1", "https://api.test/")`
+  // answers with username `svc` and password `SHAPE_SECRET`, so the region
+  // rule now agrees with the parser for both shapes.
   test.each([
     ["a scheme-relative embedded URL", "https://api.test/go//svc:SHAPE_SECRET@internal.test/v1"],
     ["a percent-encoded scheme colon", "https://api.test/go/https%3A//svc:SHAPE_SECRET@i.test/v1"],
-  ])("CONTROL: %s is read as a path segment, not as an authority", (_label, url) => {
+  ])("the scan now reaches %s", (_label, url) => {
     const response = new Response(null, { status: 404 });
     Object.defineProperty(response, "url", { value: url });
     const error = new NotFoundError(response);
 
-    // Recorded, not asserted clean: this is residual 2, and the redactor's
-    // stated rule is that an authority follows a scheme colon and its solidi.
-    expect(error.toJSON().url).toContain("SHAPE_SECRET");
+    expect(error.toJSON().url).not.toContain("SHAPE_SECRET");
     // The query and the fragment are still dropped, which is what residual 2
     // says the redactor still guarantees.
     expect(redactedKeepsNoQuery(error.toJSON().url)).toBe(true);
