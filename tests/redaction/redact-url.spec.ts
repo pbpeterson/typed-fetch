@@ -2020,3 +2020,100 @@ describe("R15 — the loop's termination premise, over every rebuild it performs
     expect(rebuilds).toBeGreaterThan(HEADS.length * OPENERS.length * GROUPS.length * TAILS.length);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The rebuild's OWN catch — the arm no url reaches, measured through the arm
+// rather than through the population.
+//
+// NO INPUT REACHES IT, and that is an argument about the rebuild's two halves.
+// `new URL(origin + clean)` re-reads a host the parser itself serialized for one
+// of the six hierarchical schemes, all of them special; `clean` is that same
+// parse's `pathname` with spans cut out of index 1 and later, so index 0 stays
+// the `/` that terminates the host component and everything after it is path
+// state, which refuses nothing. The one host that could refuse is the empty
+// one, and `file:` — the one special scheme that produces it — accepts it back.
+// 3.8 million generated urls reach the arm zero times: every string over
+// `/ \ : @ . ? # a` up to six characters under six scheme/host heads, and two
+// million random ones drawn from this module's whole grammar.
+//
+// IT IS MEASURED ANYWAY, because deleting it is not free and the answer it
+// gives is not the obvious one. `cleaned` runs inside the `try` that means
+// "this url is not absolute", so a rebuild that threw with no catch of its own
+// would fall through to the RELATIVE branch, resolve an absolute url against
+// `RELATIVE_BASE`, and emit the path alone — silently dropping the origin this
+// module promises never to move. That is the TOTALITY hazard
+// `response-loop-bound.spec.ts` names, and the two tests below read it from the
+// arm that closes it: the answer is the origin, over-redacted, still naming its
+// host.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * `redactUrl(url)` with the rebuild inside `cleaned` refused, and the number of
+ * refusals that took.
+ *
+ * THE SAME PLATFORM SEAM {@link constructionsOf} READS, driven rather than
+ * watched. The module names `URL` as a global and resolves it on every call, so
+ * a subclass installed for the length of one synchronous call decides which
+ * parse fails — and the module grows no injection point for an arm that only a
+ * broken parser reaches.
+ *
+ * ONLY THE REBUILD, and the two exclusions are what make that exact. A
+ * single-argument construction here is one of three things: the input's own
+ * parse, which `text !== url` lets through; `parsesAsAuthority`'s probe in
+ * `./userinfo-spans`, which always spells `https://` and so cannot start with
+ * either origin below; and `new URL(origin + clean)`, which is what is left.
+ */
+function withRefusedRebuild(url: string, origin: string): { answer: string; refusals: number } {
+  const native = globalThis.URL;
+  let refusals = 0;
+  class Refusing extends native {
+    constructor(argument: string | URL, base?: string | URL) {
+      const text = String(argument);
+      if (base === undefined && text !== url && text.startsWith(`${origin}/`)) {
+        refusals += 1;
+        throw new TypeError("Invalid URL");
+      }
+      super(argument, base);
+    }
+  }
+  globalThis.URL = Refusing;
+  try {
+    return { answer: redactUrl(url), refusals };
+  } finally {
+    globalThis.URL = native;
+  }
+}
+
+describe("the rebuild's throw answers with the origin, never with a bare path", () => {
+  test("a host-bearing origin survives a rebuild that cannot parse", () => {
+    const url = "http://api.test/go/https://svc:hunter2@internal.test/v1";
+    // Non-vacuity, twice over: this url really does drive a rebuild, and its
+    // ordinary answer is the cleaned href rather than the origin.
+    expect(redactUrl(url)).toBe("http://api.test/go/https://internal.test/v1");
+
+    const { answer, refusals } = withRefusedRebuild(url, "http://api.test");
+    expect(refusals).toBe(1);
+    expect(answer).toBe("http://api.test");
+    expect(answer).not.toContain("hunter2");
+
+    // The hazard the arm closes, spelled out: this is what the relative branch
+    // answers for the same text, and it is a path with no host in front of it.
+    expect(redactUrl("/go/https://svc:hunter2@internal.test/v1")).toBe(
+      "/go/https://internal.test/v1",
+    );
+    expect(answer.startsWith("/")).toBe(false);
+  });
+
+  test("and the EMPTY host is an origin too, so `file:` keeps its two solidi", () => {
+    // `file:` is the one hierarchical scheme that reaches an empty host, and
+    // the origin it builds is the scheme and the solidi its own authority left
+    // empty. Over-redaction here still says which scheme the url named.
+    const url = "file:///go/https://svc:hunter2@internal.test/v1";
+    expect(redactUrl(url)).toBe("file:///go/https://internal.test/v1");
+
+    const { answer, refusals } = withRefusedRebuild(url, "file://");
+    expect(refusals).toBe(1);
+    expect(answer).toBe("file://");
+    expect(answer).not.toContain("hunter2");
+  });
+});

@@ -1,11 +1,8 @@
 import { describe, expect, test } from "vitest";
 import {
-  HIERARCHICAL_SCHEMES,
-  isIgnored,
-  isSchemeCharacter,
-  isSolidus,
-  isStripped,
-  parseProbe,
+  afterOwnAuthority,
+  bringsOwnAuthority,
+  leadsWithHierarchicalScheme,
   pathUserinfoSpans,
   seamSpan,
   type Span,
@@ -13,7 +10,7 @@ import {
 } from "../../src/errors/userinfo-spans";
 
 /**
- * THE SCANNER, ASSERTED AS SPANS.
+ * THE SCANNER, ASSERTED THROUGH ITS OWN INTERFACE.
  *
  * `src/errors/userinfo-spans.ts` answers one question — where does this text
  * spell a credential the URL parser did not report as one — and answers it with
@@ -22,6 +19,16 @@ import {
  * defect in the SCANNER: a span one character wide and a rebuild that moved the
  * text produce the same red line, and neither says which one moved. So each
  * test here names an index.
+ *
+ * SEVEN NAMES, AND NOTHING BEHIND THEM. This file imports exactly what
+ * `redact-url.ts` imports. The character classes — `isSolidus`, `isIgnored`,
+ * `isStripped`, `isSchemeCharacter` — and the scheme list were exported once,
+ * and each export was a place a second reader could spell a grammar answer for
+ * itself. They are private now, and every fact this file used to pin about them
+ * directly is pinned through the question that reads them:
+ * {@link bringsOwnAuthority} for the two removal steps and the solidus count,
+ * {@link leadsWithHierarchicalScheme} for the scheme list and the characters a
+ * scheme is spelled from, and {@link userinfoSpans} for where a region opens.
  *
  * The other suites keep their jobs. `redact-url.spec.ts` owns the emitted url,
  * `redaction-oracle.spec.ts` judges any output against the platform and the
@@ -79,6 +86,19 @@ describe("userinfoSpans — where a credential sits, as positions", () => {
     expect(spansOf("/go/file:/Users/alice@corp/x")).toEqual([]);
   });
 
+  test("a bare pair of solidi opens a region, under `\\` as under `/`", () => {
+    // No scheme in front of them at all: a relative reference beginning with
+    // two solidi is protocol-relative, so the parser reads an authority there.
+    expect(coveredBy("//svc:pw@host/x")).toEqual(["svc:pw@"]);
+    expect(coveredBy("\\\\svc:pw@host/x")).toEqual(["svc:pw@"]);
+    // Every solidus is consumed, whatever the count, so the span starts after
+    // the last of them.
+    expect(spansOf("/x/////svc:pw@host")).toEqual([[7, 14]]);
+    // One solidus is not a pair. `:?#. a` are not solidi either, so nothing
+    // opens here.
+    expect(spansOf("/x/svc:pw@host")).toEqual([]);
+  });
+
   test("a Windows drive letter opens no region at all", () => {
     expect(spansOf("/c:/Users/alice@corp/x")).toEqual([]);
   });
@@ -114,6 +134,14 @@ describe("userinfoSpans — where a credential sits, as positions", () => {
     expect(coveredBy("/go/https://alice:s3cret://x@internal.test/v1")).toEqual([
       "alice:s3cret://x@",
     ]);
+  });
+
+  test("a candidate authority the parse THROWS on is not an authority either", () => {
+    // A space is a forbidden host code point, so `https://a b:/` does not parse
+    // at all. A throw and a parse that names no host say the same thing here —
+    // this region has no end — so the `://` a later mark spells cannot cut it.
+    expect(() => new URL("https://a b:/")).toThrow();
+    expect(coveredBy("://a b://x@host/v1")).toEqual(["a b://x@"]);
   });
 
   test("`@` alone is a span of exactly one character", () => {
@@ -201,6 +229,9 @@ describe("seamSpan — the mark an origin and a path spell between them", () => 
     // A Windows path: the authority ends at the first solidus, so the `@` in
     // `alice@corp` is never even asked about.
     expect(seamSpan("/c:/Users/alice@corp/x")).toBeNull();
+    // A `?` and a `#` end an authority for the same reason a solidus does.
+    expect(seamSpan("/a?b@c")).toBeNull();
+    expect(seamSpan("/a#b@c")).toBeNull();
   });
 
   test("an `@` with nothing in front of it names no userinfo", () => {
@@ -273,62 +304,163 @@ describe("pathUserinfoSpans — the one state that reads past the path", () => {
   });
 });
 
-describe("parseProbe — one parse, read rather than discarded", () => {
-  test("a text the parser refuses answers `null`", () => {
-    expect(parseProbe("nope")).toBeNull();
-    expect(parseProbe("https://")).toBeNull();
-  });
+describe("leadsWithHierarchicalScheme — the six, and the one list they come from", () => {
+  const HIERARCHICAL = ["http", "https", "ws", "wss", "ftp", "file"];
 
-  test("a text that parses answers the URL, so a caller can read what it needs", () => {
-    expect(parseProbe("https://api.test/x")?.host).toBe("api.test");
-  });
-
-  test("a base resolves a relative reference", () => {
-    expect(parseProbe("/a", "http://b.test")?.href).toBe("http://b.test/a");
-    expect(parseProbe("//", "http://b.test")).toBeNull();
-  });
-});
-
-describe("the character classes both files read", () => {
-  test("a solidus is `/` or `\\`, and nothing else", () => {
-    expect([...`/\\`].every((character) => isSolidus(character))).toBe(true);
-    expect([...`:?#. a`].some((character) => isSolidus(character))).toBe(false);
-    expect(isSolidus(undefined)).toBe(false);
-  });
-
-  test("the parser removes tab, LF and CR from anywhere", () => {
-    expect([..."\t\n\r"].every((character) => isIgnored(character))).toBe(true);
-    expect(isIgnored(" ")).toBe(false);
-    expect(isIgnored(undefined)).toBe(false);
-  });
-
-  test("it strips a wider set from the two ENDS: every C0 control, and the space", () => {
-    // Wider than the ignored set, and a separate step of the URL Standard. One
-    // leading space moves nothing for the parser and moved a scheme for a
-    // reader that knew only the narrow set.
-    expect(isStripped(" ")).toBe(true);
-    expect(isStripped("\0")).toBe(true);
-    expect(isStripped("\v")).toBe(true);
-    expect(isStripped("\u001f")).toBe(true);
-    expect(isStripped("!")).toBe(false);
-    expect(isStripped(undefined)).toBe(false);
-  });
-
-  test("a scheme is spelled from ALPHA, DIGIT, `+`, `-` and `.`", () => {
-    expect([..."aZ9+-."].every((character) => isSchemeCharacter(character))).toBe(true);
-    expect([..."/:@ \\"].some((character) => isSchemeCharacter(character))).toBe(false);
-    expect(isSchemeCharacter(undefined)).toBe(false);
-  });
-});
-
-describe("HIERARCHICAL_SCHEMES is the one list both derivations read", () => {
   test("the six schemes whose path is structure rather than a value", () => {
-    expect([...HIERARCHICAL_SCHEMES]).toEqual(["http", "https", "ws", "wss", "ftp", "file"]);
+    for (const scheme of HIERARCHICAL) {
+      expect(leadsWithHierarchicalScheme(`${scheme}:`)).toBe(true);
+    }
   });
 
-  test("every one of them is a scheme the URL parser knows", () => {
-    for (const scheme of HIERARCHICAL_SCHEMES) {
-      expect(new URL(`${scheme}://host/x`).protocol).toBe(`${scheme}:`);
+  test("every one of them is a scheme the URL parser knows, in the same spelling", () => {
+    // `redactUrl` asks this of a `URL.protocol`, so the list has to hold the
+    // names the platform reports. It answered the opaque branch before, from a
+    // second set derived in `redact-url.ts`.
+    for (const scheme of HIERARCHICAL) {
+      const { protocol } = new URL(`${scheme}://host/x`);
+      expect(protocol).toBe(`${scheme}:`);
+      expect(leadsWithHierarchicalScheme(protocol)).toBe(true);
     }
+  });
+
+  test("an opaque scheme is not one of them, whatever its length", () => {
+    for (const protocol of ["data:", "blob:", "javascript:", "git:", "zz:", "chrome-extension:"]) {
+      expect(leadsWithHierarchicalScheme(protocol)).toBe(false);
+    }
+    // The walk is bounded at the longest of the six, which is derived from the
+    // list rather than written down. A longer token stops the walk instead of
+    // reading to the colon.
+    expect(leadsWithHierarchicalScheme("httpsx:")).toBe(false);
+    expect(leadsWithHierarchicalScheme("https:")).toBe(true);
+  });
+
+  test("ASCII case-insensitive, and a colon is required", () => {
+    expect(leadsWithHierarchicalScheme("HTTPS:")).toBe(true);
+    expect(leadsWithHierarchicalScheme("HtTp:")).toBe(true);
+    expect(leadsWithHierarchicalScheme("https")).toBe(false);
+    expect(leadsWithHierarchicalScheme("")).toBe(false);
+  });
+
+  test("a scheme is spelled from ALPHA, DIGIT, `+`, `-` and `.`, and nothing else", () => {
+    // The walk stops on the first character a scheme cannot hold, so a text
+    // that reaches a colon through one of them is not a scheme at all.
+    expect(leadsWithHierarchicalScheme("ht tp:")).toBe(false);
+    expect(leadsWithHierarchicalScheme("ht/tp:")).toBe(false);
+    expect(leadsWithHierarchicalScheme("ht@tp:")).toBe(false);
+    expect(leadsWithHierarchicalScheme("ht\\tp:")).toBe(false);
+    // `+`, `-` and `.` are scheme characters, so the walk carries on over them
+    // and the token that reaches the colon is the one the list is asked about.
+    expect(leadsWithHierarchicalScheme("h+t.p:")).toBe(false);
+  });
+
+  test("the tab, LF and CR the parser removes are skipped INSIDE the token", () => {
+    // The basic URL parser removes all three from anywhere before it reads the
+    // scheme, so a scheme broken by one is still that scheme.
+    expect(leadsWithHierarchicalScheme("ht\ttps:")).toBe(true);
+    expect(leadsWithHierarchicalScheme("h\nt\rtps:")).toBe(true);
+    // A `URL.protocol` never holds one, so the same walk serves both callers.
+    expect(leadsWithHierarchicalScheme("da\tta:")).toBe(false);
+  });
+
+  test("`from` reads a token that does not start the text", () => {
+    expect(leadsWithHierarchicalScheme("/go/https:", 4)).toBe(true);
+    expect(leadsWithHierarchicalScheme("/go/https:", 0)).toBe(false);
+  });
+});
+
+describe("bringsOwnAuthority — does the parser CONSUME the mark this text wrote", () => {
+  test("two solidi are protocol-relative, in either spelling", () => {
+    expect(bringsOwnAuthority("//svc:pw@host/v1")).toBe(true);
+    expect(bringsOwnAuthority("\\\\svc:pw@host/v1")).toBe(true);
+    expect(bringsOwnAuthority("/\\host")).toBe(true);
+    expect(bringsOwnAuthority("/v1/things")).toBe(false);
+    expect(bringsOwnAuthority("")).toBe(false);
+  });
+
+  test("a hierarchical scheme at the head, because the base's scheme is special", () => {
+    // `new URL("http:alice:pw@api.test:99999/v1", "http://url.invalid")` answers
+    // the path `/alice:pw@api.test:99999/v1`: the parser ate the scheme colon,
+    // and the mark that would have opened a region is gone.
+    expect(new URL("http:alice:pw@api.test:99999/v1", "http://url.invalid").pathname).toBe(
+      "/alice:pw@api.test:99999/v1",
+    );
+    for (const scheme of ["http", "https", "ws", "wss", "ftp", "file"]) {
+      expect(bringsOwnAuthority(`${scheme}:alice:pw@api.test/v1`)).toBe(true);
+    }
+    // `file:` belongs to this question and NOT to the one that opens a region
+    // at a colon inside a path. The two answers are the point of the two names.
+    expect(spansOf("/go/file:/Users/alice@corp/x")).toEqual([]);
+  });
+
+  test("a scheme the list has never heard of brings nothing", () => {
+    expect(bringsOwnAuthority("git:svc:pw@host")).toBe(false);
+    expect(bringsOwnAuthority("data:x")).toBe(false);
+    expect(bringsOwnAuthority("xhttps:x")).toBe(false);
+  });
+
+  test("what the parser strips from the HEAD is skipped: every C0 control, and the space", () => {
+    // A separate step of the URL Standard, and a wider set than the three the
+    // parser removes from anywhere. One leading space in front of
+    // `http:alice:pw@api.test/v1` moves nothing for the parser, and it moved
+    // the scheme out from under a reader that knew only the narrow set.
+    expect(bringsOwnAuthority(" http:alice:pw@api.test/v1")).toBe(true);
+    expect(bringsOwnAuthority("\0//host")).toBe(true);
+    expect(bringsOwnAuthority("\v//host")).toBe(true);
+    expect(bringsOwnAuthority("\u001f//host")).toBe(true);
+    // U+0021 is the first character the strip step leaves alone, and it is not
+    // a scheme character either, so the walk stops on it.
+    expect(bringsOwnAuthority("!//host")).toBe(false);
+  });
+
+  test("what the parser removes from ANYWHERE is skipped between the two solidi", () => {
+    // `/`, tab, `/` is one mark to the parser, because the tab is gone before
+    // it reads either solidus. This is the one solidus count in the module that
+    // reads an input the parser has not touched yet.
+    expect(bringsOwnAuthority("/\t/svc:pw@host")).toBe(true);
+    expect(bringsOwnAuthority("/\n/svc:pw@host")).toBe(true);
+    expect(bringsOwnAuthority("/\r/svc:pw@host")).toBe(true);
+    // A space is removed by neither step once it is off the head: it is a
+    // forbidden host code point, and in a path it is percent-encoded.
+    expect(bringsOwnAuthority("/ /svc:pw@host")).toBe(false);
+  });
+});
+
+describe("afterOwnAuthority — where a raw scan of a url that parsed may start", () => {
+  test("the outer authority is skipped, so its port is never read as a password", () => {
+    const url = "https://api.test:8443/go/https://svc:pw@internal.test/v1";
+    expect(url.slice(afterOwnAuthority(url))).toBe("/go/https://svc:pw@internal.test/v1");
+    // `api.test:8443` is a port. Scanning it would answer with a credential.
+    expect(coveredBy(url.slice(afterOwnAuthority(url)))).toEqual(["svc:pw@"]);
+  });
+
+  test("anchored on the SCHEME colon, never on the first `://`", () => {
+    // All three name the host `api.test`, and in each the first `://` belongs to
+    // an EMBEDDED url — so a cut made there starts after the credential.
+    for (const url of [
+      "https:/api.test/go/https://svc:pw@i.test/v1",
+      "https:api.test/go/https://svc:pw@i.test/v1",
+      "https:\\\\api.test/go/https://svc:pw@i.test/v1",
+    ]) {
+      expect(url.slice(afterOwnAuthority(url))).toBe("/go/https://svc:pw@i.test/v1");
+    }
+  });
+
+  test("an authority ends at the first `/`, `\\`, `?` or `#`", () => {
+    expect("https://a.test?q=1".slice(afterOwnAuthority("https://a.test?q=1"))).toBe("?q=1");
+    expect("https://a.test#f".slice(afterOwnAuthority("https://a.test#f"))).toBe("#f");
+    expect("https://a.test\\x".slice(afterOwnAuthority("https://a.test\\x"))).toBe("\\x");
+  });
+
+  test("a url that is nothing but an authority leaves no text to scan", () => {
+    expect(afterOwnAuthority("https://api.test")).toBe("https://api.test".length);
+    expect("https://api.test".slice(afterOwnAuthority("https://api.test"))).toBe("");
+  });
+
+  test("the tab, CR and LF the parser removes are skipped with the solidi", () => {
+    // A mark broken by one is still a mark, so the cut lands after the outer
+    // authority rather than inside it.
+    const url = "https:/\t/api.test/go/https://svc:pw@i.test/v1";
+    expect(url.slice(afterOwnAuthority(url))).toBe("/go/https://svc:pw@i.test/v1");
   });
 });

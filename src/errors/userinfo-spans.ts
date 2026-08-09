@@ -28,11 +28,22 @@
  * module answers what the span IS. The rule keeps every function here callable
  * from a test with a string literal.
  *
- * THE CHARACTER CLASSES LIVE HERE for the same reason. `isSolidus`,
- * `isIgnored`, `isStripped`, and `isSchemeCharacter` are readings of the URL
- * Standard's own grammar, which is what this module is made of, and both files
- * read them. One spelling of "a solidus is `/` or `\`" must serve both, or the
- * two files can disagree about the grammar they are both reading.
+ * EVERY GRAMMAR QUESTION IS ASKED HERE, and the character classes being private
+ * is what that means. `isSolidus`, `isIgnored`, `isStripped` and
+ * {@link isSchemeCharacter} are readings of the URL Standard's own grammar, and
+ * a second file holding them is a second file that can answer a grammar
+ * question for itself. It did: two functions said whether a scheme opens an
+ * authority at a colon, and the two disagreed about `file:`, about the tab the
+ * parser removes, and about which direction to read. So `./redact-url` asks
+ * WHOLE questions — {@link leadsWithHierarchicalScheme},
+ * {@link bringsOwnAuthority}, {@link afterOwnAuthority} — and reads no
+ * character of the grammar itself.
+ *
+ * THE SCHEME LIST IS ONE LIST. {@link HIERARCHICAL_SCHEMES} holds the six the
+ * URL Standard calls special. {@link SPECIAL_SCHEMES} and
+ * {@link LONGEST_HIERARCHICAL_SCHEME} are derived from it, and every question
+ * about a scheme reads one of the three, so a scheme cannot be known to one
+ * question and unknown to another.
  *
  * INTERNAL. Never export it from a barrel.
  */
@@ -48,12 +59,8 @@ export type Span = { start: number; end: number };
 /** ALPHA / DIGIT / `+` / `-` / `.` — the characters a scheme is spelled from. */
 const SCHEME_CHARACTER = /[a-z0-9+\-.]/i;
 
-/**
- * Is this one of the characters a scheme is spelled from?
- *
- * @internal
- */
-export function isSchemeCharacter(character: string | undefined): boolean {
+/** Is this one of the characters a scheme is spelled from? */
+function isSchemeCharacter(character: string | undefined): boolean {
   return character !== undefined && SCHEME_CHARACTER.test(character);
 }
 
@@ -65,20 +72,38 @@ export function isSchemeCharacter(character: string | undefined): boolean {
  * error and continues, and the special-authority-ignore-slashes state skips `\`
  * exactly as it skips `/`. So `https:/host`, `https:host`, and `https:\\host`
  * all name the host `https://host` names.
- *
- * @internal
  */
-export function isSolidus(character: string | undefined): boolean {
+function isSolidus(character: string | undefined): boolean {
   return character === "/" || character === "\\";
+}
+
+/**
+ * `from`, advanced over every solidus: where the authority those solidi open
+ * BEGINS.
+ *
+ * THE COUNT IS ANY, because the parser consumes every one of them — the
+ * special-authority-ignore-slashes state leaves for the authority state on the
+ * first character that is neither `/` nor `\`. {@link pastFiller},
+ * {@link nextAuthority} and {@link authorityAt} each used to spell this walk
+ * for themselves.
+ *
+ * READ OF TEXT A PARSE ALREADY PRODUCED, which is why nothing is skipped
+ * BETWEEN the solidi. Two questions here read a RAW input instead, where the
+ * tab, CR and LF the parser has not yet removed can still sit between two
+ * solidi, and each counts its own: {@link bringsOwnAuthority} and
+ * {@link afterOwnAuthority}.
+ */
+function pastSolidi(text: string, from: number): number {
+  let at = from;
+  while (isSolidus(text[at])) at += 1;
+  return at;
 }
 
 /**
  * The three characters the URL parser removes from ANYWHERE in its input before
  * parsing: ASCII tab, LF and CR.
- *
- * @internal
  */
-export function isIgnored(character: string | undefined): boolean {
+function isIgnored(character: string | undefined): boolean {
   return character === "\t" || character === "\n" || character === "\r";
 }
 
@@ -94,10 +119,8 @@ export function isIgnored(character: string | undefined): boolean {
  * space in front of `http:alice:pw@api.test:99999/v1` is enough to move the
  * scheme by one character for a reader that skips only the narrow set, while the
  * parser goes on reading the scheme exactly where it was.
- *
- * @internal
  */
-export function isStripped(character: string | undefined): boolean {
+function isStripped(character: string | undefined): boolean {
   return character !== undefined && character.charCodeAt(0) <= 0x20;
 }
 
@@ -106,14 +129,14 @@ export function isStripped(character: string | undefined): boolean {
  * is the spelling a path holds them in, and the spelling the URL grammar reads
  * them in.
  *
- * The BASE list of the three this module and `./redact-url` share.
- * {@link SPECIAL_SCHEMES} below and `HIERARCHICAL_PROTOCOLS` in `./redact-url`
- * are both derived from it rather than written again, so a scheme cannot be
- * hierarchical in one place and unknown in another.
- *
- * @internal
+ * The BASE list, and the only place a scheme is written down.
+ * {@link SPECIAL_SCHEMES} and {@link LONGEST_HIERARCHICAL_SCHEME} are derived
+ * from it rather than written again, and {@link leadsWithHierarchicalScheme}
+ * reads it whole, so a scheme cannot be hierarchical to one question and
+ * unknown to another. `HIERARCHICAL_PROTOCOLS` in `./redact-url` was a fourth
+ * expression of this list, and the `5` written into that file was a fifth.
  */
-export const HIERARCHICAL_SCHEMES = new Set(["http", "https", "ws", "wss", "ftp", "file"]);
+const HIERARCHICAL_SCHEMES = new Set(["http", "https", "ws", "wss", "ftp", "file"]);
 
 /**
  * The schemes that reach their authority over ANY number of solidi, INCLUDING
@@ -132,35 +155,224 @@ export const HIERARCHICAL_SCHEMES = new Set(["http", "https", "ws", "wss", "ftp"
  * or more solidi are a different state and are opened by their COUNT, in
  * {@link authorityAt}, under every scheme including this one.
  *
- * `file:` stays in `HIERARCHICAL_PROTOCOLS` (in `./redact-url`), because that
- * list answers a different question — is this path structure rather than a
- * value — and for a `file:` URL the path IS the structure.
+ * `file:` stays in {@link HIERARCHICAL_SCHEMES}, because
+ * {@link leadsWithHierarchicalScheme} answers a different question — is this
+ * path structure rather than a value — and for a `file:` URL the path IS the
+ * structure.
  */
 const SPECIAL_SCHEMES = new Set([...HIERARCHICAL_SCHEMES].filter((scheme) => scheme !== "file"));
 
 /**
- * `new URL(text)` — or `new URL(text, base)` where a base is given — and `null`
- * when the text does not parse.
+ * The length of the longest {@link HIERARCHICAL_SCHEMES} name, which BOUNDS the
+ * forward walk {@link leadsWithHierarchicalScheme} makes: the walk costs the
+ * same whatever follows the token it reads.
  *
- * THE RETURNED VALUE IS THE READ, and the read is what makes this a parse
- * rather than a discarded `new`. Three callers spelled the probe out
- * separately and two carried the same sentence over it: {@link parsesAsAuthority}
- * here, and `hasRedactableSlot` and `userinfosOf` in `./redact-url`. They ask
- * it for different answers — one reads the host the parse names, one asks only
- * whether the parse succeeded, one wants the parsed url itself — and none of
- * them owns the idiom, so it is written once.
+ * DERIVED, never written down. It was a `5` in `./redact-url`, a hand-kept fact
+ * about a list this file owns, and a seventh scheme added here would have left
+ * it silently wrong there.
+ */
+const LONGEST_HIERARCHICAL_SCHEME = Math.max(
+  ...[...HIERARCHICAL_SCHEMES].map((scheme) => scheme.length),
+);
+
+/**
+ * Does the token at `from` spell one of the six {@link HIERARCHICAL_SCHEMES},
+ * then a colon?
  *
- * `URL.canParse` would say the same thing and is not on every runtime this
- * module already supports through `try`/`catch`.
+ * TWO QUESTIONS ABOUT ONE LIST LIVE IN THIS FILE, AND THEY MUST ANSWER
+ * DIFFERENTLY. This one reads all SIX and asks whether a scheme names a
+ * hierarchy at all. {@link isSpecialScheme} reads FIVE and asks whether a colon
+ * already inside a text opens an authority under fewer than two solidi, which
+ * `file:` does not — its own comment holds the path a `file:` answer of `true`
+ * deleted. The two were one name in two files once, and they disagreed about
+ * `file:`, about the tab, and about which direction to read; they are two names
+ * in one file now, so the disagreement is a decision a reader meets rather than
+ * a drift.
+ *
+ * TWO CALLERS, and the six are right for both. {@link bringsOwnAuthority} asks
+ * it of a RAW reference, for the state where the parser eats the scheme colon.
+ * `redactUrl` in `./redact-url` asks it of a `URL.protocol` — which is a scheme
+ * and a colon, and nothing else — to tell a hierarchical url from an opaque one,
+ * because an opaque url carries its payload in the path and is reduced to its
+ * scheme.
+ *
+ * ASKED OF A RAW INPUT, so the three characters {@link isIgnored} names are
+ * skipped INSIDE the token: the parser removes them before it reads the scheme,
+ * so a scheme broken by one is still that scheme. A `URL.protocol` holds none of
+ * them, so the same walk serves the other caller unchanged.
+ *
+ * BOUNDED at {@link LONGEST_HIERARCHICAL_SCHEME}, so the walk costs the same
+ * whatever follows it — the same reason {@link isSpecialScheme} reads forward
+ * from an offset rather than backwards to a token start.
  *
  * @internal
  */
-export function parseProbe(text: string, base?: string): URL | null {
-  try {
-    return new URL(text, base);
-  } catch {
-    return null;
+export function leadsWithHierarchicalScheme(text: string, from = 0): boolean {
+  let scheme = "";
+  for (let at = from; at < text.length; at += 1) {
+    const character = text[at]!;
+    if (isIgnored(character)) continue;
+    if (character === ":") return HIERARCHICAL_SCHEMES.has(scheme.toLowerCase());
+    if (scheme.length === LONGEST_HIERARCHICAL_SCHEME || !isSchemeCharacter(character))
+      return false;
+    scheme += character;
   }
+  return false;
+}
+
+/**
+ * Is the text immediately before `colon` one of the five {@link SPECIAL_SCHEMES}?
+ *
+ * READ FORWARD FROM A BOUNDED OFFSET, never scanned backwards to the start of
+ * the token. A backward walk over scheme characters is linear in the token it
+ * walks, and a path can spell one token per colon; each candidate here is at
+ * most five characters long, so the whole question costs the same however long
+ * the text before the colon is.
+ *
+ * The character BEFORE the match decides it, because a scheme is a whole token:
+ * `xhttps:` is not `https:`, and `/go/https:` is. `text[-1]` is `undefined` when
+ * the scheme starts the string, which is not a scheme character, so the mark at
+ * index 0 of a raw url needs no separate case.
+ *
+ * NO TAB, CR OR LF IS SKIPPED, which is the second way this differs from
+ * {@link leadsWithHierarchicalScheme} and is a consequence of the first. That
+ * question reads a reference the parser has not touched yet; this one reads a
+ * text a parse already produced, where those three characters are gone. The one
+ * caller that hands raw text to {@link userinfoSpans} is the needle pass in
+ * `./redact-url`, and a scheme broken by a tab is a mark it does not open on.
+ * The cost is a needle, never an emitted url, and it is under-redaction of a
+ * message rather than of `url`.
+ */
+function isSpecialScheme(text: string, colon: number): boolean {
+  for (const scheme of SPECIAL_SCHEMES) {
+    const start = colon - scheme.length;
+    if (start < 0 || text.slice(start, colon).toLowerCase() !== scheme) continue;
+    return !isSchemeCharacter(text[start - 1]);
+  }
+  return false;
+}
+
+/**
+ * Does this relative reference bring its OWN authority, for the parser to
+ * CONSUME the mark that opens it?
+ *
+ * TWO SPELLINGS, and they are the two ways a resolution against a base whose
+ * scheme is SPECIAL — `RELATIVE_BASE` in `./redact-url` — can eat a mark the
+ * caller wrote:
+ *
+ *  - TWO SOLIDI. The reference is protocol-relative: the relative-slash state
+ *    hands it to the authority state, so the parser takes its host from the
+ *    reference and not from the base.
+ *  - A HIERARCHICAL SCHEME at the head. The base is special, so a reference
+ *    whose scheme EQUALS the base's goes to the special-relative-or-authority
+ *    state and then to the relative state: the parser drops the scheme colon and
+ *    reads the rest as a path against the base.
+ *    `new URL("http:alice:pw@api.test:99999/v1", RELATIVE_BASE)` answers the
+ *    path `/alice:pw@api.test:99999/v1` with the base's own host, and the mark
+ *    that would have opened a region is gone. Asked of ALL SIX rather than of
+ *    the base's own scheme: the other five reach this branch only when they
+ *    already failed to parse absolutely, and they fail here for the same reason,
+ *    so the answer never reaches a text — while a rule written around ONE scheme
+ *    is a rule that a change of base silently invalidates. `file:` belongs in it
+ *    for a reason of its own: the file state eats the colon too, and hands what
+ *    follows to the path state. See {@link SPECIAL_SCHEMES} for the question
+ *    where the same scheme must answer the other way.
+ *
+ * WHAT THE PARSER DISCARDS IS SKIPPED IN BOTH, and the two removals are
+ * DIFFERENT STEPS of the URL Standard rather than one set of characters. The
+ * basic URL parser first removes every LEADING and trailing C0 control or space
+ * — U+0000 to U+001F plus U+0020 — and then removes every ASCII tab and newline
+ * WHEREVER it sits. So the head of the input is skipped with {@link isStripped}
+ * and the inside with {@link isIgnored}, and one leading space no longer moves
+ * the scheme out from under this walk while leaving it exactly where the parser
+ * reads it. An interior space is removed by neither step: it is a forbidden host
+ * code point, and in a path it is percent-encoded.
+ *
+ * WHICH IS ALSO WHY THE SOLIDI ARE COUNTED HERE AND NOT BY {@link pastSolidi}.
+ * That walk reads text a parse produced, where a tab between two solidi cannot
+ * occur; this one reads the input the parser has not touched, where it can, and
+ * `/`, tab, `/` is one mark to the parser.
+ *
+ * `\` counts as a solidus because the base is special.
+ *
+ * ASKED OF THE INPUT, and it is one of the two questions this module asks there.
+ * It is a yes-or-no about the SHAPE of the parse, never a position in a text
+ * that gets emitted — which is the whole of round 9's rule. What the answer
+ * selects is `seamUserinfo` in `./redact-url`, and that span is the PARSER's,
+ * taken from the path the parser itself produced.
+ *
+ * THE REBUILD LOOP ASKS IT TOO, of the path it is about to emit. That is the
+ * same question rather than a second one: a path beginning with two solidi is a
+ * protocol-relative reference to whoever reads the emitted value next, so
+ * `redactUrl` resolves it again until it brings no authority of its own.
+ *
+ * @internal
+ */
+export function bringsOwnAuthority(text: string): boolean {
+  let at = 0;
+  while (isStripped(text[at])) at += 1;
+  if (isSolidus(text[at])) {
+    at += 1;
+    while (isIgnored(text[at])) at += 1;
+    return isSolidus(text[at]);
+  }
+  return leadsWithHierarchicalScheme(text, at);
+}
+
+/**
+ * Where the authority reading from `from` ENDS: the first `/`, `\`, `?` or `#`,
+ * or the end of the text.
+ *
+ * The bound the URL parser itself uses, and the one place this module states it.
+ * Three questions rest on it, and each walked the four characters for itself
+ * until this existed: where a consumed mark's userinfo can still sit
+ * ({@link seamUserinfoEnd}), what text a parse is offered
+ * ({@link parsesAsAuthority}), and where a url's own authority stops
+ * ({@link afterOwnAuthority}).
+ */
+function authorityEnd(text: string, from: number): number {
+  let at = from;
+  while (at < text.length && !isSolidus(text[at]) && text[at] !== "?" && text[at] !== "#") {
+    at += 1;
+  }
+  return at;
+}
+
+/**
+ * Where this url's OWN authority ends: the offset at which a raw scan of it may
+ * start.
+ *
+ * An embedded url can only hide past the outer authority, and the outer
+ * authority is the one thing a raw scan must not read — `host:8443` is a port,
+ * not a credential. Cutting at the first delimiter the URL grammar allows gives
+ * the scan the region where an embedded credential lives, in the spelling a
+ * message actually quotes.
+ *
+ * Anchored on the SCHEME, never on the first `://`. `https:/api.test/x`,
+ * `https:api.test/x`, and `https:\\api.test/x` all name the host `api.test`,
+ * and in each of them the first `://` belongs to an EMBEDDED url — so a cut
+ * made there starts after the credential this scan exists to find. The scheme's
+ * colon is the first colon a url that parsed can have, the solidi after it are
+ * optional, and the authority runs to the first `/`, `\`, `?`, or `#`.
+ *
+ * AN OFFSET, NOT THE TEXT. Nothing in this module emits text, and the caller
+ * that slices is the caller that emits.
+ *
+ * The three characters the parser removes before parsing — ASCII tab, CR, and
+ * LF — are skipped with the solidi, so a mark broken by one is still a mark.
+ * This is one of the two questions here that reads a RAW input;
+ * {@link bringsOwnAuthority} is the other, and neither can use
+ * {@link pastSolidi}, which reads text a parse produced.
+ *
+ * @internal
+ */
+export function afterOwnAuthority(url: string): number {
+  // TOTAL, with no guard for a missing colon: this only ever reads a url that
+  // PARSED, and a url that parsed has a scheme. `indexOf` answering -1 would
+  // start the scan at index 0, which is the same answer as an empty scheme.
+  let at = url.indexOf(":") + 1;
+  while (isSolidus(url[at]) || isIgnored(url[at])) at += 1;
+  return authorityEnd(url, at);
 }
 
 /**
@@ -222,18 +434,19 @@ const SINGLE_DOT_SEGMENTS = new Set([".", "%2e"]);
  * there can take a solidus and never a name. An ordinary region starts wherever
  * a mark sits in the path, with arbitrary text in front of it.
  *
- * A SEGMENT ENDS AT A SOLIDUS OR AT THE END OF THE TEXT. A `pathname` holds no
- * literal `?` or `#` — the path percent-encode set covers both — so for the
- * seam's call that is the whole story. The ordinary region's text can run past
- * `pathname` into the query, in the one state {@link endsInsideAuthority}
- * names, and there a `?` reads as an ordinary character: the segment holding it
- * matches no dot spelling, so the cursor stops in front of it. Stopping early
- * is the direction that costs a pass and never an answer.
+ * A SEGMENT ENDS AT A SOLIDUS OR AT THE END OF THE TEXT, which is why the walk
+ * below is not {@link authorityEnd}. A `pathname` holds no literal `?` or `#` —
+ * the path percent-encode set covers both — so for the seam's call that is the
+ * whole story. The ordinary region's text can run past `pathname` into the
+ * query, in the one state {@link endsInsideAuthority} names, and there a `?`
+ * reads as an ordinary character: the segment holding it matches no dot
+ * spelling, so the cursor stops in front of it. Stopping early is the direction
+ * that costs a pass and never an answer.
  */
 function pastFiller(text: string, from: number, dropped: ReadonlySet<string>): number {
   let at = from;
   for (;;) {
-    while (isSolidus(text[at])) at += 1;
+    at = pastSolidi(text, at);
     let segment = at;
     while (segment < text.length && !isSolidus(text[segment])) segment += 1;
     if (!dropped.has(text.slice(at, segment).toLowerCase())) return at;
@@ -246,10 +459,7 @@ function pastFiller(text: string, from: number, dropped: ReadonlySet<string>): n
  * none. One answer of {@link seamSpan}'s loop.
  */
 function seamUserinfoEnd(path: string, from: number): number {
-  let term = from;
-  while (term < path.length && !isSolidus(path[term]) && path[term] !== "?" && path[term] !== "#") {
-    term += 1;
-  }
+  const term = authorityEnd(path, from);
   // The last `@` before the authority ends is where the parser splits userinfo
   // from host, so it is where the span ends. Asked of the TEXT rather than of
   // the parsed values, which percent-encoding rewrites and which report an
@@ -306,9 +516,9 @@ function seamUserinfoEnd(path: string, from: number): number {
  * be determined at all.
  *
  * WHAT KEEPS AN ORDINARY PATH IS THE AUTHORITY'S END, not a verdict about the
- * text inside it. An authority ends at the first `/`, `\`, `?` or `#`, which is
- * the bound the URL parser itself uses, so `file:///c:/Users/alice@corp/x` has
- * no `@` before its end at all and the question is never even asked.
+ * text inside it. {@link authorityEnd} is that bound, so
+ * `file:///c:/Users/alice@corp/x` has no `@` before its end at all and the
+ * question is never even asked.
  *
  * AND IT IS ASKED AGAIN OF WHAT ITS OWN ANSWER LEAVES BEHIND, for the reason
  * {@link userinfoSpans} asks its two questions again: this span is removed from
@@ -322,8 +532,7 @@ function seamUserinfoEnd(path: string, from: number): number {
  * @internal
  */
 export function seamSpan(path: string): Span | null {
-  let start = 0;
-  while (isSolidus(path[start])) start += 1;
+  const start = pastSolidi(path, 0);
   let end = -1;
   for (let from = start; ; ) {
     const at = seamUserinfoEnd(path, from);
@@ -345,31 +554,34 @@ export function seamSpan(path: string): Span | null {
  * `://` does the same, three characters instead of two. A mark the attacker can
  * write is a terminator the attacker chooses.
  *
- * The parser cannot be written. It reads from `start` to the first `/`, `\`,
- * `?`, or `#` — the four characters that end an authority — and then either
- * finds a host there or fails. When it finds one, the authority is COMPLETE:
- * the parser itself said where it ends, so a later `://` starts a url of its
- * own and bounds the region. When it fails, there is no authority for a mark to
- * be the end of, and the region has no end: every `@` after it is a candidate.
- * `alice:s3cret://x@internal.test/v1` fails, because `s3cret` is not a port —
- * so the `@` the `://` used to hide behind is asked, and the whole credential
- * goes.
+ * The parser cannot be written. It reads to {@link authorityEnd} — the first
+ * `/`, `\`, `?`, or `#` — and then either finds a host there or fails. When it
+ * finds one, the authority is COMPLETE: the parser itself said where it ends, so
+ * a later `://` starts a url of its own and bounds the region. When it fails,
+ * there is no authority for a mark to be the end of, and the region has no end:
+ * every `@` after it is a candidate. `alice:s3cret://x@internal.test/v1` fails,
+ * because `s3cret` is not a port — so the `@` the `://` used to hide behind is
+ * asked, and the whole credential goes.
  *
  * UNDER A SPECIAL SCHEME, whatever scheme the region's own mark spelled. The
  * question this module asks is always "is this the authority a special-scheme
  * parse would produce", and a non-special scheme that answers `false` where its
  * own grammar would answer `true` only ever WIDENS the region. Over-redaction
  * is this module's safe direction.
+ *
+ * THE RETURNED VALUE IS THE READ, and the read is what makes this a parse rather
+ * than a discarded `new`. The answer is the HOST: a special scheme with no host
+ * is a parse failure on every runtime, and reading `host` says so without
+ * depending on that. A throw is the other way of saying the same thing, so it
+ * answers `false` by the same rule. `URL.canParse` would report only half of it,
+ * and it is not on every runtime this `try`/`catch` already supports.
  */
 function parsesAsAuthority(text: string, start: number): boolean {
-  let end = start;
-  while (end < text.length && !isSolidus(text[end]) && text[end] !== "?" && text[end] !== "#") {
-    end += 1;
+  try {
+    return new URL(`https://${text.slice(start, authorityEnd(text, start))}/`).host !== "";
+  } catch {
+    return false;
   }
-  // The answer is the HOST: a special scheme with no host is a parse failure on
-  // every runtime, and reading it says so without depending on that. See
-  // {@link parseProbe} for why the read is what makes this a parse at all.
-  return Boolean(parseProbe(`https://${text.slice(start, end)}/`)?.host);
 }
 
 /**
@@ -438,7 +650,7 @@ const AUTHORITY_MARK = "://";
  * scheme", and no scheme is one of the cases that phrase covers.
  *
  * EVERY solidus is consumed, in both openings, because the parser consumes
- * every one. See {@link isSolidus}.
+ * every one. See {@link pastSolidi}.
  *
  * ONE FORWARD WALK. The colon half used `indexOf` per mark, and a pair of
  * solidi is not a character `indexOf` can find, so both halves are read in the
@@ -453,9 +665,7 @@ function nextAuthority(text: string, from: number): number | null {
       continue;
     }
     if (!isSolidus(text[at]) || !isSolidus(text[at + 1])) continue;
-    let start = at;
-    while (isSolidus(text[start])) start += 1;
-    return start;
+    return pastSolidi(text, at);
   }
   return null;
 }
@@ -493,33 +703,9 @@ function nextAuthority(text: string, from: number): number | null {
  * by a separate carve-out in {@link looksLikeUserinfo}.
  */
 function authorityAt(text: string, colon: number): number | null {
-  let start = colon + 1;
-  while (isSolidus(text[start])) start += 1;
+  const start = pastSolidi(text, colon + 1);
   if (start > colon + 2) return start;
   return isSpecialScheme(text, colon) ? start : null;
-}
-
-/**
- * Is the text immediately before `colon` one of the five {@link SPECIAL_SCHEMES}?
- *
- * READ FORWARD FROM A BOUNDED OFFSET, never scanned backwards to the start of
- * the token. A backward walk over scheme characters is linear in the token it
- * walks, and a path can spell one token per colon; each candidate here is at
- * most five characters long, so the whole question costs the same however long
- * the text before the colon is.
- *
- * The character BEFORE the match decides it, because a scheme is a whole token:
- * `xhttps:` is not `https:`, and `/go/https:` is. `text[-1]` is `undefined` when
- * the scheme starts the string, which is not a scheme character, so the mark at
- * index 0 of a raw url needs no separate case.
- */
-function isSpecialScheme(text: string, colon: number): boolean {
-  for (const scheme of SPECIAL_SCHEMES) {
-    const start = colon - scheme.length;
-    if (start < 0 || text.slice(start, colon).toLowerCase() !== scheme) continue;
-    return !isSchemeCharacter(text[start - 1]);
-  }
-  return false;
 }
 
 /**

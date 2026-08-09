@@ -30,15 +30,21 @@
  * message. Both exports here reach the scan through that one interface. No
  * `URL` object crosses it — see {@link seamUserinfo} for the one question that
  * splits across the seam, and the scanner's own header for why.
+ *
+ * AND THE GRAMMAR LIVES THERE TOO. The scanner owns every question about what
+ * the URL Standard reads: which schemes name a hierarchy, where an authority
+ * opens, where one ends, and what a parse consumes before it answers. This file
+ * holds no character class and no scheme list. It asks WHOLE questions —
+ * {@link leadsWithHierarchicalScheme}, {@link bringsOwnAuthority},
+ * {@link afterOwnAuthority} — and spends the answers on **structure and value**.
+ * Two grammar answers written on both sides of the seam is what this replaced,
+ * and the two had drifted apart about `file:`.
  */
 
 import {
-  HIERARCHICAL_SCHEMES,
-  isIgnored,
-  isSchemeCharacter,
-  isSolidus,
-  isStripped,
-  parseProbe,
+  afterOwnAuthority,
+  bringsOwnAuthority,
+  leadsWithHierarchicalScheme,
   pathUserinfoSpans,
   seamSpan,
   type Span,
@@ -60,9 +66,9 @@ import {
  *  - The scheme is SPECIAL, and that decides how the parser reads the input:
  *    `\` is a solidus, two solidi are protocol-relative, and the emitted path
  *    can never hold a `\` the module would have to read differently from a `/`.
- *    {@link isSolidus} and the relative branch's loop both rest on it. A
- *    non-special base would leave a `\` in `pathname`, and the loop's own
- *    termination bound — leading solidi plus a non-empty host consumed every
+ *    `isSolidus` in `./userinfo-spans` and the relative branch's loop both rest
+ *    on it. A non-special base would leave a `\` in `pathname`, and the loop's
+ *    own termination bound — leading solidi plus a non-empty host consumed every
  *    pass — would no longer hold.
  *  - The scheme's IDENTITY decides which inputs the parser resolves rather than
  *    refuses. A reference whose scheme EQUALS a special base's goes to the
@@ -76,11 +82,38 @@ import {
  * The identity is no longer load-bearing, and the constant is unchanged because
  * changing it is what could not fix this: every special scheme collides with
  * the input that spells it, and every non-special one gives up the second
- * property above. {@link bringsOwnAuthority} answers for all six schemes
- * instead, so the state where the parser consumes the mark is handled wherever
- * the base's scheme happens to sit.
+ * property above. `bringsOwnAuthority` in `./userinfo-spans` answers for all six
+ * schemes instead, so the state where the parser consumes the mark is handled
+ * wherever the base's scheme happens to sit.
  */
 const RELATIVE_BASE = "http://url.invalid";
+
+/**
+ * `new URL(url)` — or `new URL(url, base)` where a base is given — and `null`
+ * when the text does not parse.
+ *
+ * THE RETURNED VALUE IS THE READ, and the read is what makes this a parse rather
+ * than a discarded `new`. Three callers here ask it for three different answers
+ * — {@link redactUrl} wants the parsed url, {@link hasRedactableSlot} wants only
+ * whether the parse succeeded, and {@link userinfosOf} wants both plus a second
+ * parse against a base — so none of them owns the idiom and it is written once.
+ *
+ * IT IS THE EMITTER'S PARSE, not the scanner's. `./userinfo-spans` parses too,
+ * in `parsesAsAuthority`, and that is one call site asking one thing about a
+ * candidate authority. Two modules that each parse in one place do not share an
+ * idiom; they share `URL`, and a shared wrapper would be a third name for it on
+ * a seam whose whole rule is that no `URL` crosses.
+ *
+ * `URL.canParse` would say the same thing and is not on every runtime this
+ * `try`/`catch` already supports.
+ */
+function parseProbe(url: string, base?: string): URL | null {
+  try {
+    return new URL(url, base);
+  } catch {
+    return null;
+  }
+}
 
 /** Clears every value slot in place and returns the same `URL`. */
 function stripValues(parsed: URL): URL {
@@ -92,25 +125,6 @@ function stripValues(parsed: URL): URL {
 }
 
 /**
- * The schemes whose PATH is structure rather than a value.
- *
- * These are the WHATWG "special" schemes, and the "path is structure" rule
- * above is a statement about them: the path names a resource on a host, and the
- * value slots are the separate ones this module clears.
- *
- * `fetch` also accepts OPAQUE schemes, and there the whole payload lives in the
- * path. A `data:` URL carries its bytes there, and a `blob:` URL carries an
- * unguessable handle to them. Emitting either verbatim would put the thing this
- * module exists to remove into `message` and into the `toJSON()` record, so an
- * the redactor reduces an opaque URL to its scheme.
- *
- * The same six schemes as {@link HIERARCHICAL_SCHEMES}, in the spelling
- * `URL.protocol` reports them. Derived rather than written twice, so a scheme
- * cannot be hierarchical here and unknown there.
- */
-const HIERARCHICAL_PROTOCOLS = new Set([...HIERARCHICAL_SCHEMES].map((scheme) => `${scheme}:`));
-
-/**
  * The href with every value slot removed: no userinfo, no query, no fragment.
  *
  * Total by construction. An empty string stays empty (the documented "no URL
@@ -118,20 +132,47 @@ const HIERARCHICAL_PROTOCOLS = new Set([...HIERARCHICAL_SCHEMES].map((scheme) =>
  * parses as neither is emitted as a percent-encoded PATH — never as the raw
  * string, so a query or fragment hidden in it is still dropped. A userinfo
  * hidden in it is dropped too: the path is kept as structure, and userinfo is
- * unconditionally a value. See {@link userinfoSpans}.
+ * unconditionally a value. See `userinfoSpans` in `./userinfo-spans`.
  *
- * The redactor reduces an opaque URL to its scheme alone. See
- * {@link HIERARCHICAL_PROTOCOLS}.
+ * AN OPAQUE URL IS REDUCED TO ITS SCHEME. A hierarchical scheme names a resource
+ * on a host, so its path is structure and the value slots are the separate ones
+ * this module clears. `fetch` also accepts opaque schemes, and there the whole
+ * payload lives in the path: a `data:` URL carries its bytes there, and a
+ * `blob:` URL carries an unguessable handle to them. Emitting either verbatim
+ * would put the thing this module exists to remove into `message` and into the
+ * error record. The six hierarchical schemes are the scanner's own list, and
+ * `URL.protocol` reports a scheme and a colon, which is what
+ * `leadsWithHierarchicalScheme` in `./userinfo-spans` reads.
  */
 export function redactUrl(url: string): string {
   if (!url) return "";
-  try {
-    const parsed = new URL(url);
-    if (!HIERARCHICAL_PROTOCOLS.has(parsed.protocol)) return parsed.protocol;
-    return cleaned(parsed, `${parsed.protocol}//${parsed.host}`).href;
-  } catch {
-    // Not absolute. Fall through rather than nest: the relative case is
-    // ordinary, not exceptional.
+  const absolute = parseProbe(url);
+  if (absolute !== null) {
+    if (!leadsWithHierarchicalScheme(absolute.protocol)) return absolute.protocol;
+    const origin = `${absolute.protocol}//${absolute.host}`;
+    try {
+      return cleaned(absolute, origin).href;
+    } catch {
+      // THE REBUILD'S THROW IS NOT A PARSE FAILURE, and holding both under one
+      // `catch` is what made this worth its own line. The absolute parse used to
+      // sit inside this block, so a rebuild that could not parse fell through to
+      // the RELATIVE branch — which resolves an absolute url against
+      // {@link RELATIVE_BASE} and emits the path alone, silently dropping the
+      // origin this module promises never to move. The rebuild is the one step
+      // that can lose text, and the origin is the part it cannot touch, so the
+      // origin is the answer. Over-redaction, and the url still names its host.
+      //
+      // NO INPUT IS KNOWN TO REACH IT, and the arm stays because the argument
+      // that says so is spread across three functions and no one of them
+      // states it. {@link cleaned} rebuilds on a host the parser itself
+      // serialized for a scheme that is always special; `clean` keeps index
+      // 0's `/`, because the earliest span starts at index 1; and everything
+      // the parser reads past that `/` is path state, which refuses nothing.
+      // Move any one of the three and this arm is live. `redact-url.spec.ts`
+      // drives it through the `URL` global rather than through an input, so
+      // what it answers is pinned instead of argued.
+      return origin;
+    }
   }
   try {
     // The RAW input decides whether this resolves at all, and it is asked
@@ -150,10 +191,16 @@ export function redactUrl(url: string): string {
     // carries a credential in the authority the emitted text spells. The value
     // this function returns is handed to a logger, quoted into a message, and
     // read back by the same parser, so it has to mean the same thing on the
-    // second read as on the first. Each pass resolves the authority the leading
-    // solidi open and emits what is left, which is strictly shorter, so the
-    // loop ends. An input that reduces to bare solidi resolves to no url at all
-    // and falls to the documented empty answer below.
+    // second read as on the first. Each pass resolves the authority the text
+    // brings and emits what is left, which is strictly shorter, so the loop
+    // ends. An input that reduces to bare solidi resolves to no url at all and
+    // falls to the documented empty answer below.
+    //
+    // THE CONDITION IS THE PARSE'S OWN QUESTION, asked of the text about to be
+    // emitted rather than of two characters read here. `bringsOwnAuthority` is
+    // what the NEXT pass hands the parser, so the loop runs exactly while a pass
+    // would consume a mark. Reading `path[0]` and `path[1]` for it was a second
+    // spelling of a rule the scanner owns.
     //
     // ONE AUTHORITY PER PASS, AND THAT IS THE PARSER'S ARITHMETIC RATHER THAN A
     // CURSOR'S. `new URL("//a//b//c/x", base)` names the host `a` and answers
@@ -169,7 +216,7 @@ export function redactUrl(url: string): string {
     // exact class rounds 13, 14 and 15 each found a defect in. The bound that
     // matters is stated on {@link cleaned}, and it holds here: each pass is a
     // `cleaned` of its own, and each runs a constant number of times.
-    while (isSolidus(path[0]) && isSolidus(path[1])) {
+    while (bringsOwnAuthority(path)) {
       path = resolvedPath(path);
     }
     return path;
@@ -178,88 +225,18 @@ export function redactUrl(url: string): string {
   }
 }
 
-/** One pass of the relative branch: resolve, clean, emit the path. */
+/**
+ * One pass of the relative branch: resolve, clean, emit the path.
+ *
+ * THE PARSE IS RAW, AND ITS THROW IS THE ANSWER. Both throws this line can raise
+ * — a reference the base cannot resolve, and a rebuild inside {@link cleaned}
+ * that cannot parse — land in {@link redactUrl}'s relative `catch`, which is the
+ * documented "no URL could be resolved" value. They mean the same thing there,
+ * so neither is swallowed into a different answer. The ABSOLUTE branch cannot
+ * say that, which is why its rebuild has a `catch` of its own.
+ */
 function resolvedPath(text: string): string {
   return cleaned(new URL(text, RELATIVE_BASE), RELATIVE_BASE, bringsOwnAuthority(text)).pathname;
-}
-
-/**
- * Does this relative reference bring its OWN authority, for the parser to
- * CONSUME the mark that opens it?
- *
- * TWO SPELLINGS, and they are the two ways the resolution against
- * {@link RELATIVE_BASE} can eat a mark the caller wrote:
- *
- *  - TWO SOLIDI. The reference is protocol-relative: the relative-slash state
- *    hands it to the authority state, so the parser takes its host from the
- *    reference and not from the base.
- *  - A HIERARCHICAL SCHEME at the head. `RELATIVE_BASE` is special, so a
- *    reference whose scheme EQUALS the base's goes to the
- *    special-relative-or-authority state and then to the relative state: the
- *    parser drops the scheme colon and reads the rest as a path against the
- *    base. `new URL("http:alice:pw@api.test:99999/v1", RELATIVE_BASE)` answers
- *    the path `/alice:pw@api.test:99999/v1` with the base's own host, and the
- *    mark that would have opened a region is gone. Asked of ALL SIX rather than
- *    of the base's own scheme: the other five reach this branch only when they
- *    already failed to parse absolutely, and they fail here for the same
- *    reason, so the answer never reaches a text — while a rule written around
- *    ONE scheme is a rule that a change of base silently invalidates. This is
- *    the one question in this module that reads all six, and `file:` belongs in
- *    it for a reason of its own: the file state eats the colon too, and hands
- *    what follows to the path state. See `SPECIAL_SCHEMES` in
- *    `./userinfo-spans` for the question where the same scheme must answer the
- *    other way.
- *
- * WHAT THE PARSER DISCARDS IS SKIPPED IN BOTH, and the two removals are
- * DIFFERENT STEPS of the URL Standard rather than one set of characters. The
- * basic URL parser first removes every LEADING and trailing C0 control or space
- * — U+0000 to U+001F plus U+0020 — and then removes every ASCII tab and newline
- * WHEREVER it sits. So the head of the input is skipped with
- * {@link isStripped} and the inside with {@link isIgnored}, and one leading
- * space no longer moves the scheme out from under this walk while leaving it
- * exactly where the parser reads it. An interior space is removed by neither
- * step: it is a forbidden host code point, and in a path it is percent-encoded.
- *
- * `\` counts as a solidus because the base is special.
- *
- * ASKED OF THE INPUT, and it is the one question this module asks there. It is
- * a yes-or-no about the SHAPE of the parse, never a position in a text that
- * gets emitted — which is the whole of round 9's rule. What the answer selects
- * is {@link seamUserinfo}, and that span is the PARSER's, taken from the path
- * the parser itself produced.
- */
-function bringsOwnAuthority(text: string): boolean {
-  let at = 0;
-  while (isStripped(text[at])) at += 1;
-  if (isSolidus(text[at])) {
-    at += 1;
-    while (isIgnored(text[at])) at += 1;
-    return isSolidus(text[at]);
-  }
-  return leadsWithHierarchicalScheme(text, at);
-}
-
-/**
- * Is the token at `from` one of the six {@link HIERARCHICAL_SCHEMES}, then a
- * colon?
- *
- * BOUNDED at the longest of them, so the walk costs the same whatever follows
- * it — the same reason `isSpecialScheme` in `./userinfo-spans` reads forward
- * from an offset rather than backwards to a token start.
- */
-const LONGEST_HIERARCHICAL_SCHEME = 5;
-
-function leadsWithHierarchicalScheme(text: string, from: number): boolean {
-  let scheme = "";
-  for (let at = from; at < text.length; at += 1) {
-    const character = text[at]!;
-    if (isIgnored(character)) continue;
-    if (character === ":") return HIERARCHICAL_SCHEMES.has(scheme.toLowerCase());
-    if (scheme.length === LONGEST_HIERARCHICAL_SCHEME || !isSchemeCharacter(character))
-      return false;
-    scheme += character;
-  }
-  return false;
 }
 
 /**
@@ -322,10 +299,11 @@ function leadsWithHierarchicalScheme(text: string, from: number): boolean {
  *
  * RE-ASKING `redactUrl` OF ITS OWN ANSWER DOES NOT CLOSE THIS, and that is the
  * distinction worth keeping. A second call recomputes the origin and re-reads
- * `bringsOwnAuthority` from a text that no longer holds the mark, so it asks
- * DIFFERENT questions — and `//https:/x@./alice:pw@internal.test/v1` emits a
- * value that is already a fixed point of the whole redactor and still carries
- * the password. The loop asks the SAME questions, of the text that came out.
+ * `bringsOwnAuthority` (in `./userinfo-spans`) from a text that no longer holds
+ * the mark, so it asks DIFFERENT questions — and
+ * `//https:/x@./alice:pw@internal.test/v1` emits a value that is already a fixed
+ * point of the whole redactor and still carries the password. The loop asks the
+ * SAME questions, of the text that came out.
  *
  * IT ENDS, AND THE MEASURE IS `parsed.pathname.length`. Three steps, each of
  * which is a fact about one line below:
@@ -384,11 +362,11 @@ function cleaned(parsed: URL, origin: string, consumed = false): URL {
  *
  * TWO STATES REACH IT, and they are the two with no authority of this url's own
  * to protect. `api.test:8443` is a port, and reading it as a password is the
- * mistake {@link rawAfterAuthority} exists to prevent — but neither state has
- * an authority to make that mistake about.
+ * mistake `afterOwnAuthority` in `./userinfo-spans` exists to prevent — but
+ * neither state has an authority to make that mistake about.
  *
  *  - AN EMPTY HOST. The origin is then `scheme://` and the solidi are its.
- *    Among the six {@link HIERARCHICAL_PROTOCOLS} only `file:` reaches one.
+ *    Among the six hierarchical schemes only `file:` reaches one.
  *  - AN AUTHORITY THE PARSER TOOK FROM A REFERENCE THAT BROUGHT ITS OWN MARK,
  *    which this branch DISCARDS: it emits the path alone. `//https:/svc:pw@host/v1`
  *    is the ordinary slash-collapsed spelling of a forward, and the parser
@@ -398,7 +376,8 @@ function cleaned(parsed: URL, origin: string, consumed = false): URL {
  *    solidi fewer and `nextAuthority` in `./userinfo-spans` would have found
  *    it; one solidus fewer and the parser would have reported the credential
  *    itself. This is the state between them, and the seam is where it shows.
- *    {@link bringsOwnAuthority} names both spellings that reach it.
+ *    `bringsOwnAuthority` in `./userinfo-spans` names both spellings that reach
+ *    it.
  *
  * THE `URL` IS READ HERE AND NOWHERE BELOW, which is the one deliberate split
  * in this seam. `host` is the whole of the question this function answers, and
@@ -499,40 +478,6 @@ function hiddenUserinfos(text: string, seam: Span | null = null): string[] {
 }
 
 /**
- * The raw text after this URL's OWN authority.
- *
- * An embedded url can only hide past the outer authority, and the outer
- * authority is the one thing a raw scan must not read — `host:8443` is a port,
- * not a credential. Cutting at the first delimiter the URL grammar allows
- * gives the scan the region where an embedded credential lives, in the
- * spelling a message actually quotes.
- *
- * Anchored on the SCHEME, never on the first `://`. `https:/api.test/x`,
- * `https:api.test/x`, and `https:\\api.test/x` all name the host `api.test`,
- * and in each of them the first `://` belongs to an EMBEDDED url — so a cut
- * made there starts after the credential this scan exists to find. The scheme's
- * colon is the first colon a url that parsed can have, the solidi after it are
- * optional, and the authority runs to the first `/`, `\`, `?`, or `#`.
- *
- * The three characters the parser removes before parsing — ASCII tab, CR, and
- * LF — are skipped with the solidi, so a mark broken by one is still a mark.
- * They cannot appear in {@link cleaned}'s text at all, which is why this is the
- * one place that says so.
- */
-function rawAfterAuthority(url: string): string {
-  // TOTAL, with no guard for a missing colon: this only ever reads a url that
-  // PARSED, and a url that parsed has a scheme. `indexOf` answering -1 would
-  // start the scan at index 0, which is the same answer as an empty scheme.
-  let at = url.indexOf(":") + 1;
-  while (isSolidus(url[at]) || isIgnored(url[at])) at += 1;
-  for (; at < url.length; at += 1) {
-    const character = url[at];
-    if (isSolidus(character) || character === "?" || character === "#") return url.slice(at);
-  }
-  return "";
-}
-
-/**
  * Every userinfo the FOUR SLOTS of one parsed url spell: its own credential,
  * and the ones hidden in the path, the query, and the fragment.
  *
@@ -613,12 +558,15 @@ function userinfosOf(url: string): string[] {
   // what it reads, so a password holding a backslash, a tab, a CR, or an LF
   // becomes a needle that no longer matches the text a platform quoted. The cut
   // is what keeps `host:8443` from being read as a credential — the same
-  // guarantee "pathname, never href" buys.
+  // guarantee "pathname, never href" buys. `afterOwnAuthority` answers WHERE the
+  // cut is, and the slice is made here, because the scanner answers positions
+  // and never text.
   const absolute = parseProbe(url);
   // `null` when the text is unresolvable even against the base. The raw needles
   // are then all there are.
   const parsed = absolute ?? parseProbe(url, RELATIVE_BASE);
-  const needles = new Set(hiddenUserinfos(absolute === null ? url : rawAfterAuthority(url)));
+  const raw = absolute === null ? url : url.slice(afterOwnAuthority(url));
+  const needles = new Set(hiddenUserinfos(raw));
   if (parsed !== null) {
     for (const needle of slotUserinfos(parsed, absolute === null && bringsOwnAuthority(url))) {
       needles.add(needle);
@@ -639,8 +587,8 @@ function userinfosOf(url: string): string[] {
 function hasRedactableSlot(url: string): boolean {
   // THE PARSE ITSELF IS THE ANSWER for the absolute half: a url that parsed has
   // a scheme, so a protocol read could only ever say `true` again. See
-  // `parseProbe` in `./userinfo-spans` for why the parse is a read rather than
-  // a discarded `new`.
+  // {@link parseProbe} for why the parse is a read rather than a discarded
+  // `new`.
   if (parseProbe(url) !== null) return true;
   return url.includes("@") || url.includes("?") || url.includes("#");
 }
