@@ -1,3 +1,5 @@
+import { isObjectLike, textOf } from "./untrusted-read";
+
 /**
  * The four identity fields of one `Response`, with each successful read
  * recorded at most ONCE per response.
@@ -88,21 +90,14 @@
  *   have a dedicated class, and it is a projection of the roster rather than a
  *   second source of truth. A range check here would be that second source.
  *
- * `statusText` and `url` are the value when it is a string, and the empty string
- * otherwise.
+ * `statusText` and `url` take `textOf` from `./untrusted-read`: the value when
+ * it is a string, and the empty string otherwise. That module states why the
+ * normalizer is total, and what the rule costs a double that answers with a
+ * `URL` object.
  *
- * - Both are string attributes in WebIDL, so a real `Response` always answers
- *   with a string. A non-string reaches this code only from an injected
- *   implementation.
- * - The empty string is already the documented "not available" value for both:
- *   the message line drops the reason phrase for an empty `statusText` and drops
- *   the URL for an empty `url`.
- * - `String(raw)` is NOT used, because it can throw — for a `Symbol`, and for
- *   any object with a hostile `toString`. A throw there would convert a
- *   well-formed HTTP error into a `NetworkError`, which is the exact class of
- *   surprise this module exists to remove. The `typeof` test is total.
- * - The cost to accept: a test double that answers `url` with a `URL` OBJECT
- *   loses it. A double must answer with a string, as the platform does.
+ * The decision this module makes is that both fields take it. An HTTP error
+ * keeps the normalized value, and a success must not, which is what
+ * {@link hasTypedResponseIdentityScalars} reports on.
  *
  * The first successful `headers` read passes through UNTOUCHED. The record must
  * not hold a copy. A shared copy would let one error edit another error's
@@ -220,63 +215,6 @@ function hasRecordedIdentityField(response: object): boolean {
  */
 const lentByResponse = new WeakMap<object, ResponseIdentity>();
 
-/**
- * Can this value be a `WeakMap` key?
- *
- * `typedFetch` rejects a resolved primitive before this module. The guard
- * remains defensive for an internal caller that violates the `Response` type.
- * A `WeakMap` refuses such a value, so it is read directly.
- */
-function keyable(value: unknown): value is object {
-  return value !== null && (typeof value === "object" || typeof value === "function");
-}
-
-/**
- * The normalizer for `statusText` and `url`: the value when it is a string, and
- * the empty string otherwise. Total by construction — it never throws, which
- * `String()` cannot promise for a `Symbol` or a hostile `toString`.
- *
- * Exported because the three pre-response classes take a `url` from a CALLER
- * rather than from a response, and TypeScript's `url?: string` is a compile-time
- * claim. They are public API a consumer constructs directly, so the value must
- * be normalized at runtime for the same reason this function exists here: it is
- * what keeps a `readonly string` slot holding a string, and what keeps a
- * non-string out of `redactUrl`.
- */
-export function textOf(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
-/**
- * One own slot of a value a CALLER supplied: whether it is there, and what it
- * holds. Total by construction — it never throws.
- *
- * Exported for the same reason {@link textOf} is: the three pre-response
- * classes take their `cause`, `reason`, and `url` from a caller, and they are
- * public API a consumer constructs directly. Neither half of the read is inert.
- * `Object.hasOwn` runs `[[GetOwnProperty]]`, which a `Proxy` trap answers, and
- * the read that follows it runs an ordinary getter, which needs no `Proxy` at
- * all. Either one can throw, and a constructor that throws is the one outcome a
- * library whose premise is errors-as-values must not produce.
- *
- * A slot that refuses to answer is ABSENT. That is the honest report: the
- * constructors define an own `cause` or `reason` only for a value they hold, so
- * a refusal keeps `"cause" in error` false rather than filing `undefined`.
- *
- * OWN, never inherited. A bare `options?.url` walks the prototype chain, so a
- * single `Object.prototype.url` write anywhere in the process puts a URL this
- * request never touched into the record a logger ships off-box.
- */
-export function ownSlot(source: unknown, key: string): { present: boolean; value: unknown } {
-  if (source === null || source === undefined) return { present: false, value: undefined };
-  try {
-    if (!Object.hasOwn(source, key)) return { present: false, value: undefined };
-    return { present: true, value: (source as Record<string, unknown>)[key] };
-  } catch {
-    return { present: false, value: undefined };
-  }
-}
-
 /** Read and record one field only after its getter and normalization succeed. */
 function recordedField<T>(table: WeakMap<object, T>, key: object, read: () => T): T {
   if (table.has(key)) return table.get(key) as T;
@@ -303,7 +241,7 @@ function recordedField<T>(table: WeakMap<object, T>, key: object, read: () => T)
  * `undefined` and a recorded status can never be mistaken for a missing one.
  */
 export function statusOf(response: Response): number {
-  if (!keyable(response)) return Number((response as Response).status);
+  if (!isObjectLike(response)) return Number((response as Response).status);
 
   const recorded = statusByResponse.get(response);
   if (recorded !== undefined) return recorded;
@@ -433,7 +371,7 @@ function urlOf(response: Response, key: object | undefined): string {
  * @internal
  */
 export function headersOf(response: Response): Headers {
-  if (!keyable(response)) return (response as Response).headers;
+  if (!isObjectLike(response)) return (response as Response).headers;
   return recordedField(headersByResponse, response, () => response.headers);
 }
 
@@ -450,7 +388,7 @@ export function headersOf(response: Response): Headers {
  * @internal
  */
 export function hasTypedResponseIdentityScalars(response: Response): boolean {
-  if (!keyable(response)) return false;
+  if (!isObjectLike(response)) return false;
 
   statusOf(response);
   statusTextOf(response, response);
@@ -483,7 +421,7 @@ export function hasTypedResponseIdentityScalars(response: Response): boolean {
  * when that construction ends, so every later caller reads the response.
  */
 export function identityOf(response: Response): ResponseIdentity {
-  const key = keyable(response) ? response : undefined;
+  const key = isObjectLike(response) ? response : undefined;
   if (key !== undefined) {
     // The loan first. It is read MANY times inside one construction —
     // `BaseHttpError` reads it, then `UnknownHttpError` reads it again — so it
@@ -555,7 +493,7 @@ const IDENTITY_TABLES: readonly {
  * an earlier accepted call is that response's identity and stays.
  */
 export function stageIdentity(response: Response): () => void {
-  if (!keyable(response)) return noRevoke;
+  if (!isObjectLike(response)) return noRevoke;
 
   const key: object = response;
   const held = IDENTITY_TABLES.map((table) => table.has(key));
@@ -665,7 +603,7 @@ export function stageIdentity(response: Response): () => void {
  * loan replaced this one on the same response, does nothing.
  */
 export function lendIdentity(response: Response, identity: ResponseIdentity): () => void {
-  if (!keyable(response)) return noRevoke;
+  if (!isObjectLike(response)) return noRevoke;
   if (hasRecordedIdentityField(response)) return noRevoke;
 
   lentByResponse.set(response, identity);

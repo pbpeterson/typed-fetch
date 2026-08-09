@@ -1,3 +1,5 @@
+import { descriptorBelowObject, isObjectLike, objectPrototypeCarries } from "./untrusted-read";
+
 /**
  * Cross-copy brand symbols for this library's root error classes.
  *
@@ -87,60 +89,21 @@ export const timeoutErrorBrand: unique symbol = Symbol.for("@pbpeterson/typed-fe
  * copy. `Object.prototype` is not that trade: it is a source no real error uses.
  */
 export function hasBrand(value: unknown, brandSymbol: symbol): boolean {
-  if (value == null || (typeof value !== "object" && typeof value !== "function")) {
-    return false;
-  }
+  if (!isObjectLike(value)) return false;
   try {
-    // PRESENCE, not value. A read has a RECEIVER, and an accessor installed on
-    // `Object.prototype` can answer `undefined` for `this === Object.prototype`
-    // and the payload for every other receiver — so a value question walked
-    // straight past this guard while the very next line resolved the polluted
-    // member through the chain, and every brand guard became a constant `true`.
-    // A descriptor lookup takes no receiver and cannot be answered selectively.
-    if (Object.getOwnPropertyDescriptor(Object.prototype, brandSymbol) !== undefined) {
+    // A polluted `Object.prototype` made every brand guard a constant `true`,
+    // because the read below walks the chain. `objectPrototypeCarries` states
+    // why the test is a descriptor lookup and not a read.
+    if (objectPrototypeCarries(brandSymbol)) {
       // Polluted. Fall back to the one question pollution cannot answer: does
-      // some prototype OTHER than `Object.prototype` own the brand?
-      return ownsBrandBelowObject(value, brandSymbol);
+      // some prototype OTHER than `Object.prototype` own the brand? The BRAND
+      // is the literal `true`, so an accessor found on the chain is not one.
+      return descriptorBelowObject(value, brandSymbol)?.value === true;
     }
     return (value as Record<symbol, unknown>)[brandSymbol] === true;
   } catch {
     return false;
   }
-}
-
-/**
- * The longest prototype chain {@link ownsBrandBelowObject} will walk.
- *
- * The longest chain this library builds is eight links — instance,
- * `NotFoundError`, `KnownHttpError`, `BaseHttpError`, `Error`,
- * `Object.prototype` — and a consumer subclass adds one each. Thirty-two leaves
- * room for any real hierarchy and stops a fabricated one immediately.
- */
-const PROTOTYPE_WALK_LIMIT = 32;
-
-/**
- * Does a prototype other than `Object.prototype` own this brand?
- *
- * Only reached when `Object.prototype` carries the brand, which never happens
- * without pollution — so the walk costs nothing in the ordinary case.
- *
- * BOUNDED, because the walk is over a chain the caller supplies. The engine
- * refuses a cyclic prototype chain on ordinary objects, but `[[GetPrototypeOf]]`
- * on a `Proxy` over an extensible target is checked against no invariant at
- * all: the trap can answer with the proxy itself forever. Nothing throws, so no
- * `try` catches it, and `isHttpError` — the function the README puts in every
- * catch block — never returns. Trading a wrong answer for a stalled process is
- * not a fix.
- */
-function ownsBrandBelowObject(value: object, brandSymbol: symbol): boolean {
-  let link: object | null = value;
-  for (let steps = 0; steps < PROTOTYPE_WALK_LIMIT; steps += 1) {
-    if (link === null || link === Object.prototype) return false;
-    const descriptor = Object.getOwnPropertyDescriptor(link, brandSymbol);
-    if (descriptor) return descriptor.value === true;
-    link = Object.getPrototypeOf(link) as object | null;
-  }
-  return false;
 }
 
 /**
@@ -251,26 +214,8 @@ export function stampOwnsResponse(prototype: object, owns: OwnsResponse): void {
  * conservative outcome is "did not confirm", which also leads to a rejection.
  * Both fail toward refusing the clone.
  */
-/**
- * Does a prototype other than `Object.prototype` own the ownership member?
- *
- * The sibling of {@link ownsBrandBelowObject}, bounded for the same reason: the
- * chain belongs to the caller.
- */
-function ownsMemberBelowObject(value: object): boolean {
-  let link: object | null = value;
-  for (let steps = 0; steps < PROTOTYPE_WALK_LIMIT; steps += 1) {
-    if (link === null || link === Object.prototype) return false;
-    if (Object.getOwnPropertyDescriptor(link, ownsResponseSymbol)) return true;
-    link = Object.getPrototypeOf(link) as object | null;
-  }
-  return false;
-}
-
 export function asksOwnsResponse(value: unknown, candidate: Response): boolean | undefined {
-  if (value == null || (typeof value !== "object" && typeof value !== "function")) {
-    return undefined;
-  }
+  if (!isObjectLike(value)) return undefined;
   let member: unknown;
   try {
     member = (value as Record<symbol, unknown>)[ownsResponseSymbol];
@@ -281,15 +226,12 @@ export function asksOwnsResponse(value: unknown, candidate: Response): boolean |
     // can cancel it, and `error.cancel()` on the original never settles, which
     // is the stranded connection this module exists to prevent.
     //
-    // `stampOwnsResponse` puts the member on `BaseHttpError.prototype`, so no
-    // real error inherits it from `Object.prototype` and refusing that one
-    // source costs the cross-copy question nothing.
-    // PRESENCE, not value, for the reason {@link hasBrand} states: an accessor
-    // on `Object.prototype` answers selectively by receiver, and a non-owner
-    // accepted here orphans a teed branch.
+    // ANY descriptor below `Object.prototype` counts, where a brand counts only
+    // as the literal `true`: this member is called, and the call's own result is
+    // what the answer rests on.
     if (
-      Object.getOwnPropertyDescriptor(Object.prototype, ownsResponseSymbol) !== undefined &&
-      !ownsMemberBelowObject(value)
+      objectPrototypeCarries(ownsResponseSymbol) &&
+      descriptorBelowObject(value, ownsResponseSymbol) === undefined
     ) {
       return undefined;
     }

@@ -10,8 +10,8 @@ import {
   TimeoutError,
   UnknownHttpError,
 } from "../../src/errors";
-import { inspectCustom } from "../../src/errors/inspect";
-import { ownSlot } from "../../src/errors/response-identity";
+import { inspectRendersOf, type InspectRenders } from "../../src/errors/inspect";
+import { ownSlot } from "../../src/errors/untrusted-read";
 import {
   isAbortError,
   isHttpError,
@@ -555,13 +555,9 @@ describe("D4 — the same hasOwn/read pair in the public error constructors", ()
         throw new TypeError("no");
       },
     });
-    const render = (error as unknown as Record<symbol, unknown>)[inspectCustom] as (
-      this: unknown,
-      depth: number,
-      options: object,
-      inspect?: unknown,
-    ) => string;
-    expect(() => render.call(wrapped, 2, {})).not.toThrow();
+    // `inspectRendersOf` looks the hook up on the value it is given, so the
+    // Proxy is the receiver every gated runtime would render through.
+    expect(() => inspectRendersOf(wrapped)).not.toThrow();
   });
 
   test("an options object with a throwing `url` getter makes the constructor throw", () => {
@@ -777,22 +773,21 @@ describe("a slot that refuses to answer is absent, not present-with-undefined", 
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("the inspect hook survives its own renderer", () => {
-  function renderWith(callback: unknown): string {
+  // Both gated runtimes, from one call. The renderer is a runtime's own
+  // callback, so a hostile one reaches Deno's hook exactly as it reaches
+  // Node's, and a case that asked only Node's invites the drift CONTEXT.md's
+  // channel-set rule forbids.
+  function renderWith(callback: () => unknown): InspectRenders {
     const error = new NetworkError("boom", { url: "https://api.test/x" });
-    const hook = (error as unknown as Record<symbol, unknown>)[inspectCustom] as (
-      this: unknown,
-      depth: number,
-      options: object,
-      inspect?: unknown,
-    ) => string;
-    return hook.call(error, 2, {}, callback);
+    return inspectRendersOf(error, callback);
   }
 
   test("a renderer that answers with a non-string still produces a line", () => {
-    const line = renderWith(() => 42);
+    const { node, deno } = renderWith(() => 42);
 
-    expect(typeof line).toBe("string");
-    expect(line).toContain("42");
+    expect(typeof node).toBe("string");
+    expect(node).toContain("42");
+    expect(deno).toBe(node);
   });
 
   test("a renderer whose answer refuses string conversion is reported, not thrown", () => {
@@ -803,6 +798,8 @@ describe("the inspect hook survives its own renderer", () => {
     };
 
     expect(() => renderWith(() => hostile)).not.toThrow();
-    expect(renderWith(() => hostile)).toContain("[record not renderable]");
+    const { node, deno } = renderWith(() => hostile);
+    expect(node).toContain("[record not renderable]");
+    expect(deno).toContain("[record not renderable]");
   });
 });

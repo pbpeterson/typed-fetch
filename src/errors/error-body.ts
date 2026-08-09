@@ -1,3 +1,5 @@
+import { isObjectLike } from "./untrusted-read";
+
 /**
  * Custody of the single-use body of a failed `Response`.
  *
@@ -217,7 +219,7 @@ function tryCancelBody(body: ReleasableBody, cancelMethod: unknown): boolean {
   }
 
   try {
-    if (pending !== null && (typeof pending === "object" || typeof pending === "function")) {
+    if (isObjectLike(pending)) {
       const catchMethod = Reflect.get(pending, "catch", pending) as unknown;
       if (typeof catchMethod === "function") {
         void Reflect.apply(catchMethod, pending, [() => {}]);

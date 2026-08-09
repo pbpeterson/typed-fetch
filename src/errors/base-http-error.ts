@@ -1,8 +1,14 @@
 import { asksOwnsResponse, brand, httpErrorBrand, stampOwnsResponse } from "./brand";
-import { errorBodyOf, type ErrorBody } from "./error-body";
+import { errorBodyOf, type ErrorBody, type TeedErrorBody } from "./error-body";
 import { installInspect } from "./inspect";
+// `define` is the one descriptor every own member of every error class in this
+// library is defined with. It lives beside the five members that use it — the
+// `cause`, `reason`, and `url` of the three pre-response classes — so the two
+// defined here answer to the same definition.
+import { define } from "./pre-response-error";
 import { redactUrl } from "./redact-url";
 import { identityOf, lendIdentity, type ResponseIdentity } from "./response-identity";
+import { isObjectLike } from "./untrusted-read";
 
 /**
  * Per-instance body custody, held OUTSIDE the class.
@@ -68,21 +74,6 @@ function bodyOf(error: BaseHttpError): ErrorBody {
 }
 
 /**
- * Define an own property with the descriptor the platform uses for
- * `Error.cause`: readable and writable, but NOT enumerable, so it stays out of
- * `{ ...error }`, `Object.keys(error)`, `for...in`, and any printer that walks
- * own enumerable properties.
- */
-function define(target: object, key: string, value: unknown): void {
-  Object.defineProperty(target, key, {
-    value,
-    writable: true,
-    enumerable: false,
-    configurable: true,
-  });
-}
-
-/**
  * Was this object built by THIS copy of the library?
  *
  * Guarded: `instanceof` consults the constructor's `Symbol.hasInstance` and the
@@ -110,6 +101,34 @@ function claimsThisCopy(value: unknown): boolean {
  */
 function ownsResponse(this: unknown, candidate: Response): boolean {
   return bodies.get(this as BaseHttpError)?.owns(candidate) === true;
+}
+
+/**
+ * Refuse a clone: release the branch nobody took, then throw.
+ *
+ * Written ONCE, for the reason `claimable()` in `./error-body` is written once.
+ * Every refusal in {@link BaseHttpError.clone} is the same triad and differs
+ * only in the sentence it raises, and the release is the half a copy of the
+ * triad can silently omit: an orphaned branch leaves `cancel()` on the original
+ * waiting forever for an owner that never existed, which surfaces as connection
+ * exhaustion far from the call. ADR 0002 decides that the branch is released
+ * first; this is what makes it structural rather than remembered.
+ *
+ * `never`, so a call site reads as an end of the path and the compiler treats
+ * what follows it as unreachable — the same reading `throw` gave it.
+ *
+ * `error.name` is read HERE, AFTER the release, and deliberately not built into
+ * `detail` by the caller: a consumer subclass can define a `name` getter that
+ * throws, and such a getter must be able to replace the thrown VALUE without
+ * ever changing the release ORDER.
+ *
+ * The two `catch` blocks inside the tee window keep their own release, because
+ * neither is a refusal of a copy: one rethrows a subclass constructor's error
+ * verbatim, and the other wraps the callback's failure with a `cause`.
+ */
+function refuseClone(teed: TeedErrorBody, error: BaseHttpError, detail: string): never {
+  teed.release();
+  throw new TypeError(`Cannot clone ${error.name}: ${detail}`);
 }
 
 /**
@@ -486,23 +505,16 @@ export abstract class BaseHttpError extends Error {
     // A missing entry is the structural impostor `bodyOf` refused on the line
     // above, so there is nothing to hand over and nothing to do.
     //
-    // LENT, not recorded, and revoked in the `finally` below. `teed.branch` is
-    // whatever `response.clone()` answered with, and a custom Fetch
-    // implementation can answer with a `Response` it did not create — a real one
-    // that a later, unrelated request will resolve. A permanent record would
-    // bind that `Response` to THIS error's identity in a module-scoped table for
-    // as long as it lives, so the later request would report this error's status
-    // instead of its own. The loan lasts exactly as long as its reason: the
-    // constructor reads it, `UnknownHttpError` reads it again, and nothing in
-    // this library reads a branch's identity after that. See
-    // `./response-identity`, which also records the three rejected alternatives.
+    // LENT, not recorded, and revoked in the `finally` below, because a
+    // permanent record would bind a `Response` a custom Fetch implementation
+    // CHOSE to this error's identity for as long as that response lives.
+    // `./response-identity` owns that argument, the window the loan lasts, and
+    // the three rejected alternatives.
     //
-    // Neither `lendIdentity` nor the revoke can throw — both ignore a non-object
-    // key, and the `WeakMap` operations they perform do not throw for one they
-    // accept. That matters HERE specifically: the branch is already teed, so a
-    // throw between the tee and the construction would orphan it, leaving
-    // `cancel()` on this error waiting forever for an owner that never existed.
-    // The BRANCH has to be a `Response` before anything is built from it.
+    // Load-bearing HERE, and stated as a contract there: neither `lendIdentity`
+    // nor the revoke can throw. The branch is already teed, and the revoke runs
+    // in that `finally`. So the BRANCH has to be a `Response` before anything is
+    // built from it.
     //
     // `teed.branch` is whatever `response.clone()` answered with, and an
     // injected implementation can answer with a primitive. Nothing downstream
@@ -516,13 +528,11 @@ export abstract class BaseHttpError extends Error {
     // Release and throw, the policy ADR 0002 sets for a refused clone. Nothing
     // is stranded — a primitive branch means nothing was really teed — but the
     // release keeps that true whatever the implementation did.
-    if (
-      teed.branch === null ||
-      (typeof teed.branch !== "object" && typeof teed.branch !== "function")
-    ) {
-      teed.release();
-      throw new TypeError(
-        `Cannot clone ${this.name}: the response's clone() returned ` +
+    if (!isObjectLike(teed.branch)) {
+      refuseClone(
+        teed,
+        this,
+        "the response's clone() returned " +
           `${teed.branch === null ? "null" : typeof teed.branch} instead of a Response.`,
       );
     }
@@ -579,9 +589,10 @@ export abstract class BaseHttpError extends Error {
     // One instance cannot own two branches: releasing it would release only
     // one, and the source would stay pinned.
     if (copy === (this as unknown)) {
-      teed.release();
-      throw new TypeError(
-        `Cannot clone ${this.name}: the recreate callback returned the same error instead of a ` +
+      refuseClone(
+        teed,
+        this,
+        "the recreate callback returned the same error instead of a " +
           "new one. Build a new instance from the response it receives.",
       );
     }
@@ -595,10 +606,11 @@ export abstract class BaseHttpError extends Error {
     // original never settled. Checked here, beside the same-instance check,
     // because it is the same kind of failure (the callback returned the wrong
     // THING) rather than the wrong provenance.
-    if (copy === null || (typeof copy !== "object" && typeof copy !== "function")) {
-      teed.release();
-      throw new TypeError(
-        `Cannot clone ${this.name}: the recreate callback returned ` +
+    if (!isObjectLike(copy)) {
+      refuseClone(
+        teed,
+        this,
+        "the recreate callback returned " +
           `${copy === null ? "null" : typeof copy} instead of an error, so the cloned body branch ` +
           "has no owner. Build a new instance from the response it receives.",
       );
@@ -625,9 +637,10 @@ export abstract class BaseHttpError extends Error {
     // this error waited forever, and the branch could not be released through
     // the copy either, because `this` inside `cancel` is the wrapper.
     if (claimsThisCopy(copy) && bodies.get(copy) === undefined) {
-      teed.release();
-      throw new TypeError(
-        `Cannot clone ${this.name}: the new error claims this copy of the library but carries no ` +
+      refuseClone(
+        teed,
+        this,
+        "the new error claims this copy of the library but carries no " +
           "body, so the cloned body branch has no owner. A Proxy or delegate wrapped around the " +
           "error cannot own one — return the instance itself.",
       );
@@ -653,9 +666,10 @@ export abstract class BaseHttpError extends Error {
     if (owner === undefined) {
       const answer = asksOwnsResponse(copy, teed.branch);
       if (answer === undefined) {
-        teed.release();
-        throw new TypeError(
-          `Cannot clone ${this.name}: the new error cannot confirm that it took the cloned body ` +
+        refuseClone(
+          teed,
+          this,
+          "the new error cannot confirm that it took the cloned body " +
             "branch, so the branch has no owner. A copy of @pbpeterson/typed-fetch older than this " +
             "one cannot answer that question. Upgrade that copy, or build the new error with this " +
             "one.",
@@ -665,9 +679,10 @@ export abstract class BaseHttpError extends Error {
       // message below. The two states are the same state — the callback ignored
       // the branch — and the consumer's fix is the same sentence.
       if (!answer) {
-        teed.release();
-        throw new TypeError(
-          `Cannot clone ${this.name}: the new error was built from a different response, so the ` +
+        refuseClone(
+          teed,
+          this,
+          "the new error was built from a different response, so the " +
             "cloned body branch has no owner. Build a new instance from the response it receives.",
         );
       }
@@ -677,9 +692,10 @@ export abstract class BaseHttpError extends Error {
     // cannot see: the branch HAS an owner, this copy only cannot mark it. It is
     // no longer the only thing that happens on that path.
     if (!teed.adopt(owner)) {
-      teed.release();
-      throw new TypeError(
-        `Cannot clone ${this.name}: the new error was built from a different response, so the ` +
+      refuseClone(
+        teed,
+        this,
+        "the new error was built from a different response, so the " +
           "cloned body branch has no owner. Build a new instance from the response it receives.",
       );
     }

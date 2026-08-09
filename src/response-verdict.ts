@@ -7,6 +7,7 @@ import {
   stageIdentity,
   statusOf,
 } from "./errors/response-identity";
+import { isObjectLike } from "./errors/untrusted-read";
 import { releaseResponseBody } from "./errors/error-body";
 
 /**
@@ -103,10 +104,6 @@ const FOREIGN_RESPONSE_TYPES = new Set([
 /** Values whose full operational baseline `isResponse` already checked. */
 const validatedResponseStructures = new WeakSet<object>();
 
-function isObjectLike(value: unknown): value is object {
-  return value !== null && (typeof value === "object" || typeof value === "function");
-}
-
 function hasCallableMethods(value: unknown, methods: readonly PropertyKey[]): boolean {
   if (!isObjectLike(value)) return false;
   return methods.every((method) => typeof Reflect.get(value, method, value) === "function");
@@ -166,9 +163,7 @@ function hasCompatibleSuccessSurface(response: Response): boolean {
  * polyfills from another implementation while rejecting partial test doubles.
  */
 function isResponse(value: unknown): value is Response {
-  if (value === null || (typeof value !== "object" && typeof value !== "function")) {
-    return false;
-  }
+  if (!isObjectLike(value)) return false;
 
   let hasPlatformSlots = false;
   try {

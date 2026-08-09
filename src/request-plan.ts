@@ -1,5 +1,5 @@
 import { networkFailure } from "./request-failure";
-import { textOf } from "./errors/response-identity";
+import { textOf } from "./errors/untrusted-read";
 import type { NetworkError } from "./errors/network-error";
 import type { TypedHeaders } from "./headers";
 import type { HttpMethods } from "./methods";
