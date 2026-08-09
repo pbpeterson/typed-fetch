@@ -162,6 +162,21 @@ export function redactUrl(url: string): string {
     // solidi open and emits what is left, which is strictly shorter, so the
     // loop ends. An input that reduces to bare solidi resolves to no url at all
     // and falls to the documented empty answer below.
+    //
+    // ONE AUTHORITY PER PASS, AND THAT IS THE PARSER'S ARITHMETIC RATHER THAN A
+    // CURSOR'S. `new URL("//a//b//c/x", base)` names the host `a` and answers
+    // the path `//b//c/x`: a parse consumes exactly one authority, so a
+    // reference spelling N of them costs N parses of a text that shrinks by one
+    // group each time. Recorded rather than closed, and the two halves of that
+    // decision are: 16 KB of `//a//` took 606 ms before round 15's cursor fix
+    // and 682 ms after, so it is neither caused by that fix nor helped by it;
+    // and the value is the CALLER's own relative url, never a redirect target,
+    // because `response.url` is absolute and reaches the branch above. Closing
+    // it means deciding where the last authority ends WITHOUT parsing to it,
+    // which is a guard reading a different text from the one emitted — the
+    // exact class rounds 13, 14 and 15 each found a defect in. The bound that
+    // matters is stated on {@link cleaned}, and it holds here: each pass is a
+    // `cleaned` of its own, and each runs a constant number of times.
     while (isSolidus(path[0]) && isSolidus(path[1])) {
       path = resolvedPath(path);
     }
@@ -318,9 +333,37 @@ function leadsWithHierarchicalScheme(text: string, from: number): boolean {
  * DIFFERENT questions — and `//https:/x@./alice:pw@internal.test/v1` emits a
  * value that is already a fixed point of the whole redactor and still carries
  * the password. The loop asks the SAME questions, of the text that came out.
- * It ends because a pass either emits what it scanned or removes at least one
- * character, and the rebuild of a path a parser already produced is never
- * longer than that path.
+ *
+ * IT ENDS, AND THE MEASURE IS `parsed.pathname.length`. Three steps, each of
+ * which is a fact about one line below:
+ *
+ *  - `clean` is `scanned` with zero or more spans removed and everything past
+ *    `path.length` clipped, so `clean.length <= path.length` — the scan only
+ *    ever deletes, and the clip only ever deletes.
+ *  - `clean === path` is the ONE case that returns, so a pass that continues has
+ *    `clean.length < path.length` strictly.
+ *  - `new URL(origin + clean).pathname` is never longer than `clean`. `clean` is
+ *    a parser's own `pathname` with spans cut out of it, so the path
+ *    percent-encode set is already a fixed point of it — a byte that needed
+ *    encoding was encoded on the way in, and cutting a span encodes nothing new.
+ *    The one rewrite the rebuild can still perform is dot-segment removal, and
+ *    that only deletes. `clean` keeps index 0's `/`, which no span can reach, so
+ *    the empty path the rebuild would answer with `/` never arises.
+ *
+ * So each pass that does not return strictly shortens a non-negative integer,
+ * and the loop runs at most `pathname.length` times. `redact-url.spec.ts` pins
+ * the third step directly, over every rebuild every url in its corpora performs.
+ *
+ * AND THAT BOUND IS REACHABLE, which is the sentence this comment used to stop
+ * one step short of and the reason a tight case shipped twice. Termination needs
+ * one character per pass; COST needs a constant number of passes, and nothing in
+ * the three steps above supplies one. What supplies one is every cursor in this
+ * module advancing past everything the next parse will delete — {@link pastFiller}
+ * is that rule, and a cursor that stops one character short of it turns the
+ * bound from an argument into a measurement: `/x//@./@./…` at 8 KB ran 2,731
+ * passes and 204 ms in one error construction, and `toJSON()` paid it again per
+ * log line. The pass count is a fact about the input's SHAPE, so it belongs to a
+ * remote server whenever `url` came from a redirect.
  */
 function cleaned(parsed: URL, origin: string, consumed = false): URL {
   for (;;) {
@@ -424,21 +467,41 @@ function seamUserinfo(parsed: URL, consumed: boolean): { start: number; end: num
     const at = seamUserinfoEnd(path, from);
     if (at < 0) break;
     end = at + 1;
-    from = pastSeamFiller(path, end);
+    from = pastFiller(path, end, DOT_SEGMENTS);
   }
   return end < 0 ? null : { start, end };
 }
 
 /**
- * `from`, advanced over everything the parser will DROP from the front of what
- * a removal leaves behind: solidi, and the dot segments the path state removes.
+ * THE SPELLINGS ARE THE URL STANDARD'S OWN CLOSED LIST, and they are two lists
+ * because the two deletions are not the same deletion. A single-dot path segment
+ * is `.` or `%2e` and deletes ITSELF. A double-dot path segment is `..`, `.%2e`,
+ * `%2e.`, or `%2e%2e` and deletes itself AND ONE SEGMENT IN FRONT OF IT. Each is
+ * ASCII case-insensitive.
+ *
+ * {@link pastFiller} holds why the difference decides which list a cursor may
+ * use.
+ */
+const DOT_SEGMENTS = new Set([".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]);
+const SINGLE_DOT_SEGMENTS = new Set([".", "%2e"]);
+
+/**
+ * `from`, advanced over everything the next parse will DROP from the front of
+ * what a removal leaves behind: solidi, and the `dropped` dot segments.
+ *
+ * ONE RULE FOR BOTH CURSORS, and it is the last class this audit named. The seam
+ * and the ordinary region are two walks over one text; round 14 taught this to
+ * the seam's walk and left the ordinary one advancing over solidi alone, so the
+ * same shape spelled where no seam exists stayed quadratic for one more round.
+ * See {@link malformedUserinfoSpans}.
  *
  * THE SOLIDI GO because the parser consumes every one of them, which is the same
- * rule {@link malformedUserinfoSpans} states for an ordinary region. THE DOT
- * SEGMENTS GO for the same reason one step later: a removed span is rejoined to
- * the leading solidi, so what follows it starts a segment, and a segment the
- * path state removes leaves the text after it at the seam. `file:///a@./b:pw@h`
- * is that shape — take away `a@` and the parser reads `/./b:pw@h` as `/b:pw@h`.
+ * rule {@link nextAuthority} states for an authority's opening. THE DOT SEGMENTS
+ * GO for the same reason one step later: a removed span is rejoined to the text
+ * in front of it, so what follows the span starts a segment, and a segment the
+ * path state removes leaves the text after it at the cursor.
+ * `file:///a@./b:pw@h` is that shape — take away `a@` and the parser reads
+ * `/./b:pw@h` as `/b:pw@h`.
  *
  * COST, NOT CORRECTNESS, and the difference is worth stating because it decides
  * how much this rule has to be right. {@link cleaned} re-asks every question of
@@ -449,24 +512,40 @@ function seamUserinfo(parsed: URL, consumed: boolean): { start: number; end: num
  * value a redirecting server chooses. Measured: 16 KB of them took 465 ms in one
  * error construction, against 0.9 ms with this.
  *
- * THE SPELLINGS ARE THE URL STANDARD'S OWN CLOSED LIST, and they are a closed
- * list: a single-dot path segment is `.` or `%2e`, and a double-dot path segment
- * is `..`, `.%2e`, `%2e.`, or `%2e%2e`, each ASCII case-insensitive. A `..` at
- * this position pops nothing, because the span starts at the first character
- * after the leading solidi and there is no earlier segment to shorten.
+ * WHICH IS WHY `dropped` IS A PARAMETER AND NOT THE WHOLE LIST. Advancing this
+ * cursor WIDENS the span the caller removes, and a `..` swallowed by the span is
+ * a `..` the rebuild will never perform — so the segment it would have popped
+ * survives instead. That is the one direction this module calls unsafe, and it
+ * is reachable: `/svc:PW@http:/@bob//tok@internal.testsvc:PW@..` answers `/`
+ * today, because the trailing `..` pops the segment the residual on
+ * {@link authorityAt} leaves standing, and it answers `/svc:PW@http:/` — the
+ * password in the emitted path — the moment the span eats the `..` instead.
+ * Six inputs in 200,000 generated ones showed it, and the round-12 oracle judged
+ * every one of them a credential that survived.
  *
- * A `pathname` holds no literal `?` or `#` — the path percent-encode set covers
- * both — so a segment here ends at a solidus or at the end of the text.
+ * So a cursor passes {@link DOT_SEGMENTS} only where NOTHING a pop could shorten
+ * lies in front of it, and {@link SINGLE_DOT_SEGMENTS} everywhere else.
+ * {@link seamUserinfo} is the one caller that qualifies: its span starts at the
+ * first character after the path's leading solidi, so the segment list in front
+ * of it is empty or holds only the empty segments those solidi spell, and a pop
+ * there can take a solidus and never a name. An ordinary region starts wherever
+ * a mark sits in the path, with arbitrary text in front of it.
+ *
+ * A SEGMENT ENDS AT A SOLIDUS OR AT THE END OF THE TEXT. A `pathname` holds no
+ * literal `?` or `#` — the path percent-encode set covers both — so for the
+ * seam's call that is the whole story. The ordinary region's text can run past
+ * `pathname` into the query, in the one state {@link endsInsideAuthority}
+ * names, and there a `?` reads as an ordinary character: the segment holding it
+ * matches no dot spelling, so the cursor stops in front of it. Stopping early
+ * is the direction that costs a pass and never an answer.
  */
-const DOT_SEGMENTS = new Set([".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"]);
-
-function pastSeamFiller(path: string, from: number): number {
+function pastFiller(text: string, from: number, dropped: ReadonlySet<string>): number {
   let at = from;
   for (;;) {
-    while (isSolidus(path[at])) at += 1;
+    while (isSolidus(text[at])) at += 1;
     let segment = at;
-    while (segment < path.length && !isSolidus(path[segment])) segment += 1;
-    if (!DOT_SEGMENTS.has(path.slice(at, segment).toLowerCase())) return at;
+    while (segment < text.length && !isSolidus(text[segment])) segment += 1;
+    if (!dropped.has(text.slice(at, segment).toLowerCase())) return at;
     at = segment;
   }
 }
@@ -735,13 +814,30 @@ function malformedUserinfoSpans(
     for (;;) {
       const at = userinfoEnd(text, cut, lastAt, lastLoneAt);
       if (at < 0) break;
-      // THE SOLIDI THE ANSWER EXPOSES GO WITH IT, and that is the same rule as
-      // the re-ask rather than a second one: what the removal leaves behind at
-      // `start` is read by {@link authorityAt}, which consumes every solidus.
-      // Leaving them made `redactUrl` fall short of being a fixed point of
-      // itself — the second pass consumed them and reached one more `@`.
-      cut = at + 1;
-      while (isSolidus(text[cut])) cut += 1;
+      // WHAT THE ANSWER EXPOSES GOES WITH IT, and that is the same rule as the
+      // re-ask rather than a second one: what the removal leaves behind at
+      // `start` is read by {@link authorityAt}, which consumes every solidus,
+      // and then by the REBUILD's parse, which deletes the dot segments the
+      // removal has just moved to the head of a segment. Leaving the solidi
+      // made `redactUrl` fall short of being a fixed point of itself — the
+      // second pass consumed them and reached one more `@`. Leaving the dot
+      // segments cost the PASS COUNT, which is the same defect round 14 fixed
+      // at the seam's cursor and left standing here: `/x//@./@./@./…` spells one
+      // empty userinfo per dot segment, the cursor stopped on the `.` that the
+      // `@`'s own removal had just turned into a dot segment, and the pass
+      // drained one group. 8 KB of them took 204 ms inside one error
+      // construction, against 0.6 ms with this, and `toJSON()` paid it again
+      // per log line. The two cursors are one rule now — {@link pastFiller} —
+      // asked of one text.
+      //
+      // SINGLE DOTS ONLY HERE, and that is not a narrowing of the rule but the
+      // rule read at this position. Advancing this cursor WIDENS the span, so a
+      // `..` swallowed here is a `..` the rebuild never performs, and the
+      // segment it would have popped survives — text in front of a region is
+      // arbitrary path, where in front of the seam it is solidi. See
+      // {@link pastFiller}, which names the input that turns the difference
+      // into a password in the emitted path.
+      cut = pastFiller(text, at + 1, SINGLE_DOT_SEGMENTS);
       // AND THE END QUESTION IS RE-ASKED TOO, of the same text the `@` question
       // is re-asked of. A region is BOUNDED only where the parser reads a
       // complete authority at its start, and removing a credential MOVES that

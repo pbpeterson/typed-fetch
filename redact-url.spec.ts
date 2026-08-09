@@ -1840,3 +1840,183 @@ describe("R14 — every question is asked of the text the redactor emits", () =>
     );
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 15 — the other cursor, and the bound that makes the loop safe.
+//
+// Round 14 closed the class "every question is asked of the text the module
+// emits" at ONE of the two cursors that walk that text. The seam's cursor
+// learned that the rebuild's parse deletes dot segments; the ordinary region's
+// cursor went on advancing over solidi alone, so the same input class spelled
+// where no seam exists still drained one group per pass — 2,731 passes and
+// 204 ms for an 8 KB redirect target, paid again by every `toJSON()` line.
+//
+// The three tests below pin the three things that were assumptions until now:
+// what the cursor may swallow, how many passes the loop runs, and the
+// inequality the loop's termination rests on.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Every single-argument `new URL(…)` the redactor performs for `url`, with the
+ * pathname the platform answered.
+ *
+ * NO NEW MODULE SURFACE, AND NONE IS NEEDED. `cleaned`'s loop has no output but
+ * its answer, which is why every cost defect in this module — rounds 9, 10, 12,
+ * 14 and 15 — was found by instrumenting a private copy and none by a test. The
+ * seam that makes the loop observable already exists and belongs to the
+ * platform: the module names `URL` as a global and resolves it on every call,
+ * so replacing the global for the length of one synchronous call reads the
+ * loop's own steps without the module holding a counter for anyone.
+ *
+ * SINGLE-ARGUMENT ONLY, because that is what the rebuild is. `new URL(text,
+ * RELATIVE_BASE)` is the relative branch resolving, and `new URL(origin + clean)`
+ * is a pass of the loop.
+ */
+function constructionsOf(url: string): { argument: string; pathname: string }[] {
+  const seen: { argument: string; pathname: string }[] = [];
+  const native = globalThis.URL;
+  class Watched extends native {
+    constructor(argument: string | URL, base?: string | URL) {
+      super(argument, base);
+      if (base === undefined) seen.push({ argument: String(argument), pathname: this.pathname });
+    }
+  }
+  globalThis.URL = Watched;
+  try {
+    redactUrl(url);
+  } finally {
+    globalThis.URL = native;
+  }
+  return seen;
+}
+
+/** A path of `groups` repetitions of `unit`, opening a region at its head. */
+function groupsOf(unit: string, groups: number): string {
+  return `/x//${unit.repeat(groups)}v1`;
+}
+
+describe("R15 — the pass count is a constant, and never a number the input picks", () => {
+  // The units are the spellings that put a dot segment where the removal of an
+  // empty userinfo exposes it. `@../` is here because the rule that bounds
+  // `@./` must not be the rule that swallows a `..`; see the test below.
+  const UNITS = ["@./", "@%2e/", "@%2E/", ":@./", "@../", "@%2e%2e/", "x@.%2e/"] as const;
+  const HEADS = ["https://api.test", "file://", ""] as const;
+
+  test("a path of N groups costs the same number of passes as a path of four", () => {
+    const grew: string[] = [];
+    let observed = 0;
+
+    for (const head of HEADS) {
+      for (const unit of UNITS) {
+        const few = constructionsOf(head + groupsOf(unit, 4)).length;
+        const many = constructionsOf(head + groupsOf(unit, 400)).length;
+        observed += 1;
+        // EQUAL, not merely bounded: a count that answers 4 and 5 is a count
+        // the input still moves, and 400 groups is 100 times the work of four.
+        if (few !== many) grew.push(`${head + groupsOf(unit, 4)} — ${few} then ${many}`);
+      }
+    }
+
+    expect(grew).toEqual([]);
+    expect(observed).toBe(HEADS.length * UNITS.length);
+    // And the constant is small. Four parses covers the input parse, the loop's
+    // rebuilds, and the relative branch's own resolution.
+    for (const head of HEADS) {
+      for (const unit of UNITS) {
+        expect(constructionsOf(head + groupsOf(unit, 400)).length, unit).toBeLessThanOrEqual(6);
+      }
+    }
+  });
+
+  test("the answer is the one the slow spelling gave, at every group count", () => {
+    // NON-VACUITY, and it is what separates a bound from a shortcut. The
+    // control spells one character more per group, so `looksLikeUserinfo`
+    // admits the region's last `@` and one span takes the whole path — the
+    // shape that always cost three passes. Both answers must be the same text.
+    expect(redactUrl(`https://api.test${groupsOf("@./", 400)}`)).toBe("https://api.test/x//v1");
+    expect(redactUrl(`https://api.test${groupsOf("a@./", 400)}`)).toBe("https://api.test/x//v1");
+    expect(redactUrl(groupsOf("@./", 400))).toBe("/x//v1");
+  });
+});
+
+describe("R15 — the cursor swallows what deletes itself, never what pops a name", () => {
+  test("a `..` the span would eat is a `..` the rebuild never performs", () => {
+    // A single-dot segment deletes ITSELF, so a span that eats it emits exactly
+    // what the rebuild would have emitted. A double-dot segment deletes itself
+    // AND one segment in front of it — so a span that eats it cancels a
+    // deletion, and the segment that would have been popped survives instead.
+    //
+    // That is under-redaction, and it is reachable. The credential below is the
+    // residual `authorityAt` documents: `svc:` is not a special scheme, so no
+    // region opens over it and the text stays a path segment. Today the
+    // trailing `..` pops that segment away. A cursor that swallowed the `..`
+    // would emit the password in the path instead.
+    const url = "/svc:hunter2@http:/@bob//tok@internal.testsvc:hunter2@..";
+    expect(redactUrl(url)).toBe("/");
+    expect(redactUrl(url)).not.toContain("hunter2");
+    expect(redactUrl(`https://api.test${url}`)).toBe("https://api.test/");
+    expect(redactUrl("ftp://f.test\\tok@x:@alice:hunter2@http:/tok@:@../@../")).toBe(
+      "ftp://f.test/",
+    );
+  });
+
+  test("and the single-dot spelling is still drained in one pass", () => {
+    // The pair: the same shape with the spelling that deletes only itself. One
+    // span takes every group, and the answer is unchanged from the spelling
+    // that used to cost one pass each.
+    expect(redactUrl("https://api.test/x//@./@./@./v1")).toBe("https://api.test/x//v1");
+    expect(redactUrl("https://api.test/x//@%2e/@%2E/@./v1")).toBe("https://api.test/x//v1");
+    // The `..` spelling keeps the answer it has always had, which is what the
+    // pop leaves behind rather than what a span removed.
+    expect(redactUrl("https://api.test/x//@../@../@../v1")).toBe("https://api.test/x/@../@../v1");
+  });
+});
+
+describe("R15 — the loop's termination premise, over every rebuild it performs", () => {
+  /**
+   * The loop's measure is `parsed.pathname.length`, and it decreases only if
+   * the rebuild cannot GROW the path it is handed. Two hunters flagged that
+   * inequality as the one step no test covered: `clean` is a parser's own
+   * pathname with spans cut out of it, so the path percent-encode set is
+   * already a fixed point of it and the only rewrite left — dot-segment removal
+   * — deletes. This reads it off every rebuild the corpus actually performs
+   * rather than restating the argument.
+   */
+  const HEADS = ["https://api.test", "http://h.test:8443", "file://", "ftp://f.test", ""] as const;
+  const OPENERS = ["/", "//", "/x//", "/go/https:/", "/go/https://", "/./", "/%2e//"] as const;
+  const GROUPS = ["@./", "@../", "@%2e/", "@%2e%2e/", "@/", "a:b@./", ":@./", "x@.%2e/"] as const;
+  const TAILS = ["", "/v1", "alice:hunter2@internal.test/v1", "?t=hunter2", "#hunter2"] as const;
+
+  test("no rebuild answers with a pathname longer than the path it was given", () => {
+    const grew: string[] = [];
+    let rebuilds = 0;
+
+    for (const head of HEADS) {
+      for (const opener of OPENERS) {
+        for (const group of GROUPS) {
+          for (const tail of TAILS) {
+            const url = head + opener + group.repeat(3) + tail;
+            // The module's own base for a relative reference; its identity is
+            // documented on `RELATIVE_BASE`, and the answer never carries it.
+            const origin = head === "" ? "http://url.invalid" : head;
+            for (const { argument, pathname } of constructionsOf(url)) {
+              if (!argument.startsWith(origin)) continue;
+              // A SUPERSET of the rebuilds — the input's own parse and any
+              // authority probe that happens to share the prefix are counted
+              // too, and the inequality is claimed of all of them.
+              const built = argument.slice(origin.length);
+              rebuilds += 1;
+              if (pathname.length > built.length) {
+                grew.push(`${url}: ${JSON.stringify(built)} -> ${JSON.stringify(pathname)}`);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    expect(grew.slice(0, 5)).toEqual([]);
+    // Non-vacuity: the corpus really does drive the loop, more than once per url.
+    expect(rebuilds).toBeGreaterThan(HEADS.length * OPENERS.length * GROUPS.length * TAILS.length);
+  });
+});

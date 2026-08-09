@@ -273,7 +273,7 @@ describe("round 14 / H2 — error construction over a generated url population",
 // THERE ARE NOW TWO LOOPS, and only one of them is quadratic. The fix for
 // R14-H2-01 gave `cleaned` a loop of its own, so the ABSOLUTE branch — the one
 // a real `Response` reaches — re-scans the pathname each rebuild produces. The
-// pass count that loop runs is what `pastSeamFiller` holds down: it advances the
+// pass count that loop runs is what `pastFiller` holds down: it advances the
 // seam cursor over the solidi AND the dot segments the parser will drop, so a
 // path spelling one credential and one dot segment per group drains in one pass
 // instead of one group per pass.
