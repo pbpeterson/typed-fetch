@@ -36,8 +36,8 @@
  * authority at a colon, and the two disagreed about `file:`, about the tab the
  * parser removes, and about which direction to read. So `./redact-url` asks
  * WHOLE questions — {@link leadsWithHierarchicalScheme},
- * {@link bringsOwnAuthority}, {@link afterOwnAuthority} — and reads no
- * character of the grammar itself.
+ * {@link bringsOwnAuthority}, {@link afterOwnAuthority}, {@link pathEnd},
+ * {@link segmentUserinfos} — and reads no character of the grammar itself.
  *
  * THE SCHEME LIST IS ONE LIST. {@link HIERARCHICAL_SCHEMES} holds the six the
  * URL Standard calls special. {@link SPECIAL_SCHEMES} and
@@ -96,6 +96,24 @@ function isSolidus(character: string | undefined): boolean {
 function pastSolidi(text: string, from: number): number {
   let at = from;
   while (isSolidus(text[at])) at += 1;
+  return at;
+}
+
+/**
+ * The index of the character IN FRONT of the solidus run that ends at `from`,
+ * and `-1` where the run reaches the start of the text.
+ *
+ * The mirror of {@link pastSolidi}, and the one place this module reads
+ * backwards. Two questions ask it, and both are about the MARK that opened a
+ * region rather than about the region's own text: {@link popsBefore} needs the
+ * run's length, and {@link readsAsHostAndPort} needs the character the run
+ * hangs off. Neither walks over anything but solidi, so a text with N solidi
+ * pays N for all of them together — the runs a forward cursor lands past are
+ * disjoint.
+ */
+function beforeSolidi(text: string, from: number): number {
+  let at = from - 1;
+  while (isSolidus(text[at])) at -= 1;
   return at;
 }
 
@@ -339,6 +357,30 @@ function authorityEnd(text: string, from: number): number {
 }
 
 /**
+ * Where the caller's own spelling of the PATH ends: the first `?` or `#`, or
+ * the end of the text.
+ *
+ * The path state hands everything from the first `?` to the query state and
+ * everything from the first `#` to the fragment state, and it does so for a
+ * reference exactly as for an absolute url. So this offset is where the text
+ * `redactUrl` KEEPS stops and the two slots it drops whole begin, read in the
+ * caller's spelling rather than in the parser's.
+ *
+ * `@internal`, and exported for one caller: `userinfosOf` in `./redact-url`
+ * scans the caller's own text for needles, and a needle from a dropped slot is
+ * a rewrite the url pass never makes. See its own comment for what that cost.
+ * The grammar question stays here, where every other one is.
+ *
+ * @internal
+ */
+export function pathEnd(text: string): number {
+  const query = text.indexOf("?");
+  const fragment = text.indexOf("#");
+  if (query < 0) return fragment < 0 ? text.length : fragment;
+  return fragment < 0 || query < fragment ? query : fragment;
+}
+
+/**
  * Where this url's OWN authority ends: the offset at which a raw scan of it may
  * start.
  *
@@ -497,21 +539,40 @@ function pastOnePop(text: string, from: number): number {
  * The cursor may CROSS such a `..` — leaving it in the emitted text, so the
  * rebuild still performs it and round 15's rule is untouched — exactly as often
  * as the slow spelling would have re-opened the region, and no more often, or
- * the answer moves. A region that opens at a bare pair of solidi re-opens while
- * the run in front of it still holds two, and each pop takes one of the empty
- * segments that run spells. So a run of `run` solidi pays for `run - 2`
- * crossings.
+ * the answer moves. Each pop eats one segment in front of the region, and a run
+ * of `run` solidi spells `run - 1` empty ones before the segment that wrote it.
+ * So the question is only ever: how many of those segments can go before the
+ * region stops opening where it opened?
  *
- * NOTHING ELSE PAYS FOR ANY. A run under two solidi opens no region of its own,
- * and a run behind a scheme colon opens one over ANY count including none — so
- * the pop that shortens it does not close it, and the arithmetic above does not
- * describe it. Both answer zero, which is the behaviour of every round before
- * this one.
+ * TWO FLOORS, AND THEY ARE {@link authorityAt}'s OWN TWO. A region needs two
+ * solidi to open, EXCEPT behind a special scheme's colon, which opens one over
+ * any count including none. So:
+ *
+ *  - A bare run, or one behind a colon the grammar does not read as a special
+ *    scheme, re-opens while it still holds two solidi: `run - 2` crossings.
+ *  - A run behind a SPECIAL scheme's colon re-opens at any length, so what ends
+ *    the re-opening is the pop that takes the scheme's own segment. That pop is
+ *    the one made when the run is down to a single solidus, so the segments
+ *    before it pay for `run - 1` crossings, and `/x/https:/@../@../v1` — a run
+ *    of one — still pays for none.
+ *
+ * THE COLON WAS READ AS A CHARACTER, AND THAT IS ROUND 17'S FINDING. The
+ * previous form answered ZERO for every run behind a `:`, on the argument that
+ * the pop which shortens such a run does not close the region. The argument is
+ * true and it is a reason for a LARGER budget, not for none: the spelling every
+ * slash-collapsing proxy writes — `/x/https:` and 2N solidi and N `@../` groups
+ * — drained one group per whole-string pass, 2,401 rebuilds for a 14.4 KB
+ * `Location` the SERVER chose, and `toJSON()` paid the count again per log line.
+ * Reading the grammar instead of the character also gives the two spellings the
+ * character hid — a colon under an unknown scheme and the empty scheme a
+ * template leaves — the `run - 2` they always had: neither opens a region under
+ * fewer than two solidi, so neither was ever the case the argument described.
  */
 function popsBefore(text: string, start: number): number {
-  let run = 0;
-  while (isSolidus(text[start - run - 1])) run += 1;
-  return run >= 2 && text[start - run - 1] !== ":" ? run - 2 : 0;
+  const before = beforeSolidi(text, start);
+  const run = start - before - 1;
+  const floor = text[before] === ":" && isSpecialScheme(text, before) ? 1 : 2;
+  return run > floor ? run - floor : 0;
 }
 
 /**
@@ -642,6 +703,102 @@ function parsesAsAuthority(text: string, start: number): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Does a region opening at `start` spell `host:port` — a colon that belongs to
+ * an AUTHORITY the parser reads, rather than to `user:password`?
+ *
+ * The one question {@link looksLikeUserinfo}'s colon rule cannot answer for
+ * itself, and round 17's finding is what it costs to leave it unasked.
+ * `https://api.test/go/https://cdn.test:8443/users/@alice` is a forward to a
+ * host on a non-default port; the port supplies a colon before the region's
+ * first solidus, so the colon rule fired before the `@`-at-a-segment-head rule
+ * was consulted, and the record named the handle `alice` as the host while
+ * `cdn.test:8443` — the authority the url did name — went. The url is well
+ * formed at every level, so the cost is a record that LIES, and the ambiguity
+ * the colon rule is built on is not there to be paid: the parser reads the
+ * authority, so the colon is its.
+ *
+ * THREE CONDITIONS, AND NOT ONE OF THEM IS SPARE.
+ *
+ *  - THE MARK SPELLS A SCHEME. {@link parsesAsAuthority} asks what a
+ *    special-scheme parse would read, and the module's rule for that answer is
+ *    that a `false` only ever WIDENS a region — over-redaction, the safe
+ *    direction. Using its `true` to NARROW one is the other direction, and it
+ *    is sound only where the text invoked a parse at all: behind `https://`,
+ *    `https:/`, or `git://`, `cdn.test:8443` is an authority someone wrote.
+ *    Behind a bare pair of solidi, or behind the empty scheme a template leaves
+ *    (`://a:1234/x/@bob`), no scheme wrote a port and the reading is the
+ *    module's own assumption. `redact-url.spec.ts` pins that shape's
+ *    over-redaction as a residual in those words — it cannot be resolved "once
+ *    a malformed scheme has taken away where the authority ends" — and this
+ *    condition is what leaves that pin exactly where it is.
+ *  - NO `@` IN FRONT OF THE FIRST SOLIDUS. `host:port` is what this asks
+ *    about, and a text holding an `@` before its authority ends is one the
+ *    parser reads as userinfo AND host: `svc:PW@i.test` parses, and its colon
+ *    is a password's. Read of the TEXT rather than of the parse's report, for
+ *    the reason {@link seamSpan} states: `:@` normalises away, and a report of
+ *    two empty strings does not tell an absent userinfo from a consumed one.
+ *  - THE AUTHORITY READS. A port the parser refuses (`://a:99999/x/@bob`) is
+ *    not a port, and the region is back to the ambiguity residual 1 records.
+ *
+ * WHAT IT CAN COST is a span whose every `@` follows a solidus, since
+ * {@link userinfoEnd} asks the last `@` first and then the last `@` no solidus
+ * precedes. That is the under-redaction residual {@link looksLikeUserinfo}
+ * records as open — a credential whose last character is `/` — and over the
+ * 97,344 urls of round 17's structured and credential populations it costs no
+ * planted credential at all.
+ *
+ * The cheap questions are asked first: the backward walk and the `@` search
+ * read the text, and only what survives both is handed a parse.
+ */
+function readsAsHostAndPort(text: string, start: number): boolean {
+  const mark = beforeSolidi(text, start);
+  if (text[mark] !== ":" || !isSchemeCharacter(text[mark - 1])) return false;
+  if (text.lastIndexOf("@", authorityEnd(text, start) - 1) >= start) return false;
+  return parsesAsAuthority(text, start);
+}
+
+/**
+ * `span`, read as the userinfos the URL GRAMMAR could read inside it: every
+ * `@` it holds, back to the segment that `@` ends.
+ *
+ * A SPAN CAN HOLD A HOST, and that is the whole of why one caller needs this. A
+ * region opens at a mark, and {@link looksLikeUserinfo} may reach an `@` in a
+ * segment past the authority's end — RES-6 — so the span then covers a host,
+ * the path behind it, and the `@`. In the url that is one documented residual,
+ * because `redactUrl` removes the same text from what it emits. In a MESSAGE,
+ * for a slot the emitted url drops whole, it is a rewrite nothing balances:
+ * removing `cdn.test/u/alice@` from a message leaves the `https://` in front of
+ * it joined to `example.com`, and the record names a host the request never
+ * contacted. `hiddenUserinfos` in `./redact-url` is the one caller, and its own
+ * comment holds the input and what this costs.
+ *
+ * A SOLIDUS ENDS THE AUTHORITY A USERINFO LIVES IN, so a userinfo any parse can
+ * read is exactly one segment: this answers the span itself wherever the span
+ * is one, which is every ordinary `svc:hunter2@`. Where it is not, it answers
+ * the segments that END at an `@` and never the ones that end at a solidus —
+ * the second kind is a host, and a host is what may not go.
+ *
+ * EVERY `@`, not the last: one region can cover several credentials, and a
+ * fragment holding `svc:pw@h.test\\@bob/svc:pw@` is one span with three. Taking
+ * the last segment alone left the first credential in the message, measured at
+ * 50 rows of round 17's credential population.
+ *
+ * @internal
+ */
+export function segmentUserinfos(text: string, span: Span): Span[] {
+  const found: Span[] = [];
+  let start = span.start;
+  for (let at = span.start; at < span.end; at += 1) {
+    if (isSolidus(text[at])) start = at + 1;
+    else if (text[at] === "@") {
+      found.push({ start, end: at + 1 });
+      start = at + 1;
+    }
+  }
+  return found;
 }
 
 /**
@@ -787,16 +944,28 @@ function authorityAt(text: string, colon: number): number | null {
  *
  *  - NO `/` at all. `://token@host/x` is the username-only credential a bearer
  *    URL carries, and there is nothing else it could be.
- *  - A `:` BEFORE the first `/`. A credential is `user:password`, and the
- *    password is the part that can contain the delimiter that used to end the
- *    scan early — `svc:hun\ter2`, `svc:hun?ter2`.
  *  - The `@` does NOT follow a `/`. A path spells an `@` at the head of a
  *    segment — `/users/@alice`, `/@scope/pkg` — while a credential runs right
  *    up to it. This is what catches a standard-base64 token, whose alphabet
  *    includes `/`: `YWxpY2U/cGFzc3dvcmQ@host` has a slash and no colon, so the
- *    first two rules read it as a path and the whole credential survived.
+ *    other two rules read it as a path and the whole credential survived.
+ *  - A `:` BEFORE the first `/`, WHERE THE REGION DOES NOT SPELL `host:port`.
+ *    A credential is `user:password`, and the password is the part that can
+ *    contain the delimiter that used to end the scan early — `svc:hun\ter2`,
+ *    `svc:hun?ter2`. A PORT spells the same colon, and
+ *    {@link readsAsHostAndPort} is the module's own question about which of the
+ *    two this is.
  *
- * So `://api.test/users/@alice` keeps every segment it names.
+ * So `https://api.test/go/https://cdn.test/users/@alice` keeps every segment it
+ * names, and round 17 found the same url with a PORT on the embedded host
+ * losing them: the colon rule fired before the `@`-at-a-segment-head rule was
+ * consulted, and the record named the handle `alice` as a host.
+ *
+ * THE THIRD RULE IS READ FIRST, and the order is what keeps the parse off the
+ * ordinary path. The three rules are a disjunction, so their order cannot move
+ * an answer; but the colon rule is the only one that parses, and it can only
+ * decide a candidate the `@`-at-a-segment-head rule already reads as a path. So
+ * that rule answers first and the parse is paid on nothing else.
  *
  * THE THREE RULES DO NOT COUNT SOLIDI, and round 10 removed the count they used
  * to carry. Round 9 gated the third rule on two solidi for ONE reason: a Windows
@@ -816,8 +985,13 @@ function authorityAt(text: string, colon: number): number | null {
  * once a malformed scheme has taken away where the authority ends. The first
  * two are over-redaction:
  *
- *  - An authority with a PORT, followed by a path `@` (`://a:1234/x/@bob`).
- *    The colon rule cannot tell `a:1234` from `user:password`.
+ *  - An authority the colon rule cannot hand to {@link readsAsHostAndPort},
+ *    followed by a path `@`. Three shapes reach it: a port the parser refuses
+ *    (`://a:99999/x/@bob`), a region whose mark spells no scheme at all
+ *    (`://a:1234/x/@bob`, the empty scheme a template leaves), and a region
+ *    whose own text already holds an `@` (`://svc:PW@i.test/users/@bob`). In
+ *    each of them nothing separates `a:1234` from `user:password`, which is the
+ *    sentence this residual has always carried.
  *  - An `@` INSIDE a path segment rather than at its head (`://host/a/b@c/d`,
  *    an e-mail-shaped path).
  *
@@ -844,9 +1018,9 @@ function looksLikeUserinfo(text: string, start: number, end: number): boolean {
   if (end === start) return true;
   const slash = text.indexOf("/", start);
   if (slash < 0 || slash >= end) return true;
+  if (text[end - 1] !== "/") return true;
   const colon = text.indexOf(":", start);
-  if (colon >= 0 && colon < slash) return true;
-  return text[end - 1] !== "/";
+  return colon >= 0 && colon < slash && !readsAsHostAndPort(text, start);
 }
 
 /**

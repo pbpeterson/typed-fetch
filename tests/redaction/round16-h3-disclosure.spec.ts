@@ -90,6 +90,9 @@ function parseRelative(text: string): URL | null {
 const SCHEME_TOKEN = /[a-zA-Z][a-zA-Z0-9+.-]*:/g;
 const SOLIDUS_PAIR = /[/\\][/\\]/g;
 
+/** Text that ends in a scheme token's colon, so the solidus pair after it is that scheme's. */
+const SCHEME_COLON_BEFORE = /[a-zA-Z][a-zA-Z0-9+.-]*:$/;
+
 function matchIndexes(text: string, pattern: RegExp): number[] {
   const found: number[] = [];
   pattern.lastIndex = 0;
@@ -120,7 +123,26 @@ function urlShapedSlices(text: string): Set<string> {
   for (const view of views) {
     slices.add(view);
     for (const at of matchIndexes(view, SCHEME_TOKEN)) slices.add(view.slice(at));
-    for (const at of matchIndexes(view, SOLIDUS_PAIR)) slices.add(view.slice(at));
+    for (const at of matchIndexes(view, SOLIDUS_PAIR)) {
+      // R17-H3-03. A solidus pair that a scheme token in the same text already
+      // consumed is NOT a second place to begin reading an authority: it is the
+      // one the scheme-token slice above already reads, and that slice reads it
+      // with its own scheme. Slicing here instead re-reads it as a
+      // scheme-relative reference against the judge's base, so the judge
+      // invents a host from the first path segment.
+      //
+      // The measured symptom: the judge read `svc` out of `file:///svc:` and
+      // nothing out of `file:svc:`, which are one url under two spellings, and
+      // it then condemned `redactUrl("file:svc:")`, whose answer is the input's
+      // own href. 321 of its 475 verdicts on the credential population were
+      // this reading and not the module.
+      //
+      // Nothing is lost by skipping it. An embedded `https://cdn.test/...`
+      // still reaches the judge through its own scheme-token slice, which
+      // parses as absolute and names the host the text really carries.
+      if (SCHEME_COLON_BEFORE.test(view.slice(0, at))) continue;
+      slices.add(view.slice(at));
+    }
   }
   return slices;
 }

@@ -45,8 +45,10 @@ import {
   afterOwnAuthority,
   bringsOwnAuthority,
   leadsWithHierarchicalScheme,
+  pathEnd,
   pathUserinfoSpans,
   seamSpan,
+  segmentUserinfos,
   type Span,
   userinfoSpans,
 } from "./userinfo-spans";
@@ -464,17 +466,58 @@ function withoutMalformedUserinfo(path: string, tail: string, seam: Span | null)
 }
 
 /**
- * Every userinfo an authority the parser did not read hides inside `text`.
+ * Every userinfo an authority the parser did not read hides inside `text`, as
+ * far as `kept` for the needles that can move a HOST.
  *
  * `"@"` ALONE is not a credential, and it is the one needle that must never
  * reach `replaceAll`. `://@host/x` yields a span of exactly one character, and
  * stripping every `@` from a message deletes e-mail addresses, handles, and
  * anything else the diagnostic was carrying.
+ *
+ * `kept` IS WHERE THIS TEXT STOPS BEING TEXT THE EMITTED URL KEEPS, and past it
+ * a span is read as {@link segmentUserinfos}. That is round 17's R17-H3-02. A
+ * span can cover a HOST — RES-6 — and removing one from a message joins the
+ * mark in front of it to text that was a path:
+ * `https://api.test/v1?next=https://cdn.test/u/alice@example.com` is an
+ * ordinary callback url, its query yields the needle `cdn.test/u/alice@`, and a
+ * message quoting the callback TARGET read `…contacting https://example.com/…`.
+ * So `toJSON().url` named `api.test` and `toJSON().message` named
+ * `example.com` — a host neither the caller's url nor the platform's own
+ * message ever named as one, and two records of one failure naming different
+ * hosts.
+ *
+ * WHERE THE SPAN COMES FROM THE PATH IT IS WHOLE, whatever it covers, and that
+ * is why this is a boundary rather than a rule: `redactUrl` removes the same
+ * text from the url it emits, so both records move together and RES-6 stays one
+ * residual instead of becoming two answers. A slot `redactUrl` drops WHOLE —
+ * the query, the fragment — is the one place the url pass makes no answer for
+ * the message to agree with.
+ *
+ * RE-READ, NOT REFUSED, and the difference is a credential. Refusing the needle
+ * leaves the whole of it in the message; the re-read keeps every part of it
+ * that a parse could call a userinfo. Measured three ways over round 17's
+ * structured and credential populations and over every slot of each url a
+ * platform could quote: refusing the span left a planted credential in 84
+ * messages, keeping its last segment alone left one in 50, and this leaves
+ * none.
+ *
+ * WHAT IT COSTS is a credential that spells a solidus AND hides in a query or a
+ * fragment AND is quoted by a message that does not quote the whole url: the
+ * segments in front of its last solidus stay. `redactUrl` still drops the slot
+ * from `url`, and the first line of {@link redactUrlInMessage} still removes
+ * the whole url wherever it is quoted.
+ *
+ * The default keeps everything, which is the answer for a `pathname`.
  */
-function hiddenUserinfos(text: string, seam: Span | null = null): string[] {
-  return userinfoSpans(text, seam)
-    .map((span) => text.slice(span.start, span.end))
-    .filter((userinfo) => userinfo.length > 1);
+function hiddenUserinfos(text: string, seam: Span | null = null, kept = text.length): string[] {
+  const found: string[] = [];
+  for (const span of userinfoSpans(text, seam)) {
+    for (const one of span.start < kept ? [span] : segmentUserinfos(text, span)) {
+      const userinfo = text.slice(one.start, one.end);
+      if (userinfo.length > 1) found.push(userinfo);
+    }
+  }
+  return found;
 }
 
 /**
@@ -483,10 +526,8 @@ function hiddenUserinfos(text: string, seam: Span | null = null): string[] {
  *
  * ONE READING FOR BOTH BRANCHES OF {@link userinfosOf}, and it was two until
  * this became a function. The two copies were written a round apart and never
- * composed. The resolved branch read only the path, and lost a credential the
- * parser had normalized into a QUERY; when the query and the fragment were
- * added there, the comment over them still said "the SAME three slots" and left
- * `username`/`password` out.
+ * composed: one of them read only the path, and the comment over the other said
+ * "the SAME three slots" while leaving `username`/`password` out.
  *
  * FOUR SLOTS, NOT THREE. A protocol-relative form — `\\alice:pw@host/v1` and
  * every tab/CR/LF variant the parser strips — hides a credential the parser
@@ -502,13 +543,14 @@ function hiddenUserinfos(text: string, seam: Span | null = null): string[] {
  * The PATHNAME, never the href: the authority this URL really has is
  * `host:8443`, and a scan over the href would read that port as userinfo.
  *
- * The QUERY and the FRAGMENT are scanned for the same reason and carry none
- * of that risk. That argument is about THIS url's authority, which cannot
- * appear in either slot, and `redactUrl` drops both outright — so the only
- * place a credential hidden there can still surface is a message, which is
- * exactly what this pass exists to clean. A callback url carries its
- * redirect target in `?next=`, credential and all, more often than in a path
- * segment.
+ * THE QUERY AND THE FRAGMENT ARE SCANNED AT `kept = 0`, and round 17 is why.
+ * They are scanned because a callback url carries its redirect target in
+ * `?next=`, credential and all, more often than in a path segment, and
+ * `redactUrl` drops both slots outright — so a message is the only place a
+ * credential hidden there can still be removed. And dropping them outright is
+ * exactly why a needle from either one may not spell a SOLIDUS: the url pass
+ * removes nothing there, so a span that eats a host moves the message alone.
+ * See {@link hiddenUserinfos}, which holds the rule and the input.
  *
  * The seam between the origin and the path carries a needle of its own, for
  * the reason {@link seamUserinfo} states, and a message quotes it in the same
@@ -522,8 +564,8 @@ function slotUserinfos(parsed: URL, consumed: boolean): string[] {
   return [
     ...own,
     ...hiddenUserinfos(parsed.pathname, seamUserinfo(parsed, consumed)),
-    ...hiddenUserinfos(parsed.search),
-    ...hiddenUserinfos(parsed.hash),
+    ...hiddenUserinfos(parsed.search, null, 0),
+    ...hiddenUserinfos(parsed.hash, null, 0),
   ];
 }
 
@@ -536,9 +578,9 @@ function slotUserinfos(parsed: URL, consumed: boolean): string[] {
  * See {@link userinfoSpans}.
  *
  * A URL THE PARSER REFUSED AND ONE IT READ DIFFER IN THREE THINGS, and in
- * nothing else. Which parse supplies the four slots, which text the RAW scan
- * reads, and whether the parser consumed the mark that opens the seam. The
- * three are the three lines below; the slots are {@link slotUserinfos}.
+ * nothing else. Which parse supplies the slots, which text the RAW scan reads,
+ * and whether the parser consumed the mark that opens the seam. The three are
+ * the three lines below; the slots are {@link slotUserinfos}.
  *
  * A SET, because the answer is one. {@link withoutUserinfos} buckets the
  * needles by length and matches them by position, so neither the order of this
@@ -561,12 +603,24 @@ function userinfosOf(url: string): string[] {
   // guarantee "pathname, never href" buys. `afterOwnAuthority` answers WHERE the
   // cut is, and the slice is made here, because the scanner answers positions
   // and never text.
+  //
+  // AND IT IS ONE STRING WITH THE SLOT BOUNDARY INSIDE IT, which is why the
+  // raw scan carries `pathEnd` where {@link slotUserinfos} carries a slot. The
+  // text runs from the path on into the query and the fragment, and a span may
+  // legitimately cross the boundary — a credential the `?` cut in half is found
+  // here and nowhere else. So the scan stays whole and the BOUNDARY is passed
+  // instead: past it, a needle that spells a solidus is refused, exactly as it
+  // is for the two slots. Without that the callback url in
+  // {@link slotUserinfos} yields `cdn.test/u/alice@` here instead of there, and
+  // one fix would close one route out of two.
   const absolute = parseProbe(url);
   // `null` when the text is unresolvable even against the base. The raw needles
-  // are then all there are.
+  // are then all there are, and `redactUrl` answers with the empty string — so
+  // there is no emitted url for a message to disagree with, and no slot of it to
+  // draw the boundary at. The scan keeps every needle in that one state.
   const parsed = absolute ?? parseProbe(url, RELATIVE_BASE);
   const raw = absolute === null ? url : url.slice(afterOwnAuthority(url));
-  const needles = new Set(hiddenUserinfos(raw));
+  const needles = new Set(hiddenUserinfos(raw, null, parsed === null ? raw.length : pathEnd(raw)));
   if (parsed !== null) {
     for (const needle of slotUserinfos(parsed, absolute === null && bringsOwnAuthority(url))) {
       needles.add(needle);
