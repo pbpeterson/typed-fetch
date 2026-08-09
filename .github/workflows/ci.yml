@@ -48,6 +48,11 @@ jobs:
       # (public API surface snapshots, cross-copy guard tests) that hard-fail in
       # CI when dist/ is absent. Do not reorder build/test.
       - run: pnpm test
+      # Enforce the 100 percent statements/branches/functions/lines thresholds
+      # over src, scripts, and fixtures. Runs the whole suite again under v8
+      # coverage instrumentation, so it needs the built dist/ the same as the
+      # gates below it.
+      - run: pnpm coverage
       # Typecheck every fenced TS block in the docs against the BUILT package
       # (dist/). Must run AFTER build — dist/ is the compile target, and the
       # guard fails loudly if it is absent. Catches doc examples that no longer

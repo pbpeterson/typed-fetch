@@ -160,7 +160,11 @@ function jobRunSteps(workflow, jobName) {
 }
 
 describe("the gate roster reaches CI", () => {
-  test("CONTRIBUTING lists exactly the eleven gates this lane audited", () => {
+  test("CONTRIBUTING lists exactly the twelve gates this lane audited", () => {
+    // `pnpm coverage` joined the roster in round 17, finding R17-H4-03: the
+    // repository holds 100 percent on src, scripts and fixtures with a
+    // threshold that enforces it, and no workflow ran that threshold, so a
+    // commit that lowered coverage passed every check and published.
     expect(contributingGates()).toEqual([
       "pnpm lint",
       "pnpm format:check",
@@ -168,6 +172,7 @@ describe("the gate roster reaches CI", () => {
       "pnpm typecheck",
       "pnpm build",
       "pnpm test",
+      "pnpm coverage",
       "pnpm check-docs",
       "pnpm verify-pack",
       "pnpm check-consumer",

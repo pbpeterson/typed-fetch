@@ -46,6 +46,7 @@ pnpm check-doc-style # links, vocabulary, Terms table, Node floor (no build need
 pnpm typecheck       # tsc --noEmit -p tsconfig.test.json
 pnpm build           # tsup — confirm the package actually builds
 pnpm test            # vitest run — includes checks against the built dist/
+pnpm coverage        # 100% on src/, scripts/ and fixtures/ — the threshold is enforced
 pnpm check-docs      # typecheck every fenced TS block in the docs (run AFTER build)
 pnpm verify-pack     # assert the published tarball's file manifest (run AFTER build)
 pnpm check-consumer  # pack + install the tarball, exercise it as a real consumer (run AFTER build)

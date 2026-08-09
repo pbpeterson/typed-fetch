@@ -444,18 +444,34 @@ describe.skipIf(!distExists)("the README's opaque-scheme enumeration against dis
 describe("the coverage configuration", () => {
   const config = (): string => documentText("vitest.config.ts");
 
-  test("the exclusion list holds exactly the two cross-runtime smokes", () => {
-    const listed = [...config().matchAll(/"(scripts\/smoke\/[^"]+)"/g)].map((match) => match[1]);
+  /**
+   * The strings of one named array in the config, read as an ARRAY.
+   *
+   * R17-H4-02. Both pins below used to match the config's whole text with a
+   * regular expression anchored on what they expected to find: the exclusion
+   * pin looked for `"scripts/smoke/…"` and the include pin for
+   * `"src|scripts|fixtures/**"`. A pattern that names what it expects cannot
+   * see what it does not expect, so adding `"fixtures/http-server.ts"` to the
+   * exclusion list left the pin green, and a file the round had just brought
+   * under measurement could be dropped from the 100 percent gate in silence.
+   * That is the same defect as R16-ORCH-01 one layer up: a test that reads
+   * something other than what it claims to guard.
+   *
+   * Reading the array itself is what makes the pin able to fail. Any entry,
+   * named or not, appears in the answer.
+   */
+  const stringsOf = (field: "include" | "exclude"): string[] => {
+    const block = new RegExp(`${field}:\\s*\\[([^\\]]*)\\]`).exec(config());
+    expect(block, `vitest.config.ts declares no ${field} array`).not.toBeNull();
+    return [...(block?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1] ?? "").toSorted();
+  };
 
-    expect(listed.toSorted()).toEqual(["scripts/smoke/bun.mjs", "scripts/smoke/deno.ts"]);
+  test("the exclusion list holds exactly the two cross-runtime smokes", () => {
+    expect(stringsOf("exclude")).toEqual(["scripts/smoke/bun.mjs", "scripts/smoke/deno.ts"]);
   });
 
   test("the include list names `scripts/**` and `fixtures/**` beside `src/**`", () => {
-    const listed = [...config().matchAll(/"((?:src|scripts|fixtures)\/\*\*)"/g)].map(
-      (match) => match[1],
-    );
-
-    expect(listed.toSorted()).toEqual(["fixtures/**", "scripts/**", "src/**"]);
+    expect(stringsOf("include")).toEqual(["fixtures/**", "scripts/**", "src/**"]);
   });
 
   test("the `coverage` script does not override the include the config declares", () => {
