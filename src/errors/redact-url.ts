@@ -260,7 +260,13 @@ const AUTHORITY_MARK = "://";
  * clip lives in {@link withoutMalformedUserinfo} rather than in this scan.
  *
  * Which leaves ONE question per `@`: is the text before it an authority, or a
- * path that happens to contain an `@`? {@link looksLikeUserinfo} answers it.
+ * path that happens to contain an `@`? {@link looksLikeUserinfo} answers it,
+ * and it is asked of EVERY `@` in the region rather than of the last one. Round
+ * 11 found the difference: `/go/https://TOKEN@cdn.test/img/@alice` ends in an
+ * ordinary user handle, so the region's last `@` is `/@alice`'s, and the text
+ * before it — `TOKEN@cdn.test/img/` — reads as a path because it ends in `/`.
+ * One answer for the whole region meant the `@` that closes the real credential
+ * was never asked about at all. See {@link userinfoEnd}.
  *
  * SPANS are returned rather than text: the same bytes can appear earlier in the
  * string (`svc:pw@x://svc:pw@host/`), and removing the wrong copy leaves the
@@ -283,25 +289,83 @@ function malformedUserinfoSpans(text: string): { start: number; end: number }[] 
   let stop = text.indexOf(AUTHORITY_MARK);
   let scanned = 0;
   let lastAt = -1;
+  let lastLoneAt = -1;
   for (;;) {
     const start = nextAuthority(text, from);
     if (start === null) break;
     if (stop >= 0 && stop < start) stop = text.indexOf(AUTHORITY_MARK, start);
     const end = stop < 0 ? text.length : stop;
     while (scanned < end) {
-      if (text[scanned] === "@") lastAt = scanned;
+      if (text[scanned] === "@") {
+        lastAt = scanned;
+        // The ONLY thing {@link looksLikeUserinfo} asks about an `@` itself is
+        // the character before it, so these two cursors summarize every
+        // candidate any region can hold. See {@link userinfoEnd}.
+        if (text[scanned - 1] !== "/") lastLoneAt = scanned;
+      }
       scanned += 1;
     }
-    if (lastAt >= start && looksLikeUserinfo(text, start, lastAt)) {
-      spans.push({ start, end: lastAt + 1 });
-      // Past the `@` this region ended on: any region opening inside the span
-      // just removed reads the same `@` and nests inside it.
-      from = lastAt + 1;
-    } else {
-      from = start;
+    // ASKED AGAIN OF WHAT THE ANSWER LEAVES BEHIND. Removing a credential moves
+    // the region's first `/` and first `:`, and {@link looksLikeUserinfo} reads
+    // both, so what is left can answer differently from how it answered as part
+    // of a longer candidate. One pass that stopped at the first answer was NOT
+    // this module applied to its own output: round 11 measured 1,925 urls where
+    // `redactUrl(redactUrl(u))` removed more than `redactUrl(u)` did, which is
+    // under-redaction by this module's own rule in the string every channel
+    // carries.
+    //
+    // Three answers at most, so this is a constant and the pass stays linear.
+    // `lastAt` and `lastLoneAt` are each spent by the answer that returns them,
+    // and an `@` at the cut itself is preceded by the `@` the previous answer
+    // ended on — which makes it a lone `@` and therefore the last one.
+    let cut = start;
+    for (;;) {
+      const at = userinfoEnd(text, cut, lastAt, lastLoneAt);
+      if (at < 0) break;
+      cut = at + 1;
     }
+    if (cut > start) spans.push({ start, end: cut });
+    // Past the `@` this region ended on: any region opening inside the span
+    // just removed reads the same `@` and nests inside it.
+    from = cut;
   }
   return spans;
+}
+
+/**
+ * Where the userinfo a region reading from `start` ends, or `-1` when the text
+ * from `start` holds none.
+ *
+ * THE UNION OF EVERY CANDIDATE, not one reading of the region. Each `@` in the
+ * region is its own question — "is `text[start, at)` a credential?" — and every
+ * candidate that answers yes is removed. All of them share `start`, so their
+ * union is the span reaching the LAST one that answers yes, and that is what
+ * this returns. Over-redaction is this module's safe direction, and asking
+ * about one `@` per region is what let a credential ride out under a later `@`
+ * that reads as a path.
+ *
+ * TWO CURSORS ANSWER FOR EVERY `@`, which is what keeps this one forward pass.
+ * Testing each `@` in each region is quadratic on overlapping regions, and a
+ * backward search from `lastAt` is the same cost wearing a different mark — the
+ * shape whose 855 ms {@link malformedUserinfoSpans} records. It is also
+ * unnecessary. Only the THIRD rule of {@link looksLikeUserinfo} reads the
+ * candidate's own end, and it reads exactly one character: whether a `/`
+ * precedes the `@`. So:
+ *
+ *  - When the last `@` answers yes, it is the union by itself.
+ *  - When it answers no, the region has a `/` after `start` with no `:` before
+ *    it, and every `@` a `/` precedes answers no for the same reason. What is
+ *    left is the last `@` that NO `/` precedes — `lastLoneAt` — plus the `@` at
+ *    `start` itself, which is the empty userinfo rule 1 admits.
+ *
+ * An `@` before the region's first `/` needs no case of its own: nothing but
+ * `start` can put a `/` immediately before it, so it is already a lone `@`.
+ */
+function userinfoEnd(text: string, start: number, lastAt: number, lastLoneAt: number): number {
+  if (lastAt < start) return -1;
+  if (looksLikeUserinfo(text, start, lastAt)) return lastAt;
+  if (lastLoneAt >= start) return lastLoneAt;
+  return text[start] === "@" ? start : -1;
 }
 
 /**
@@ -405,6 +469,12 @@ function isSolidus(character: string | undefined): boolean {
 /**
  * Is `text[start, end)` — an authority mark, then everything up to an `@` — a
  * credential, or a path?
+ *
+ * ONE `@`, ASKED INDEPENDENTLY. This decides a single candidate, and
+ * {@link userinfoEnd} asks it about every `@` a region holds — the union of the
+ * yes answers is the span. Round 11 widened WHICH `@`s are asked; it did not
+ * change what any of them is asked, so the three residuals below are exactly
+ * the ones round 10 left.
  *
  * BOUNDS rather than a substring, and that is not a micro-optimization. The
  * regions overlap now, so one `@` is tested once per mark before it, and

@@ -1390,3 +1390,134 @@ describe("R9 residual — a scheme colon and its solidi open an authority", () =
     );
   });
 });
+
+// ROUND 11 — a region asks EVERY `@` it holds, and asks again after each answer.
+//
+// Rounds 5, 8, 9 and 10 each fixed where a region STARTS or ENDS. This one is
+// about how many candidates a region tests. `malformedUserinfoSpans` read the
+// LAST `@` before the region's closing mark and asked one question about it, so
+// a later `@` that reads as a path answered for the whole region and a real
+// credential at an earlier `@` was never asked about at all. An embedded url
+// whose own path ends in `/@alice` — an npm scope, a Mastodon handle, a user
+// page — is all it took, and that segment is one the redactor is REQUIRED to
+// keep.
+//
+// The rule now: every `@` is its own question, and the span is the union of the
+// yes answers. The union can only ever remove MORE than one answer per region
+// did, which is this module's safe direction.
+describe("R11 — every `@` in a region is its own question", () => {
+  /** Round 10's emission invariant, in the one line that decides it. */
+  function isSubsequence(needle: string, haystack: string): boolean {
+    let at = 0;
+    for (let index = 0; index < haystack.length && at < needle.length; index += 1) {
+      if (needle[at] === haystack[index]) at += 1;
+    }
+    return at === needle.length;
+  }
+
+  test("a later path `@` no longer answers for the credential before it", () => {
+    expect(redactUrl("https://api.test/go/https://TOKEN@cdn.test/img/@alice")).toBe(
+      "https://api.test/go/https://cdn.test/img/@alice",
+    );
+  });
+
+  // THE CLASS, not the case: the embedded url's own trailing path must not
+  // decide whether its credential is removed. Every tail here answers the same
+  // way for the same credential, which is the property the defect broke.
+  test.each([
+    ["no tail", ""],
+    ["a bare solidus", "/"],
+    ["a plain segment", "/img"],
+    ["a segment and a solidus", "/img/"],
+    ["an @-headed last segment", "/img/@alice"],
+    ["an @-headed only segment", "/@alice"],
+    ["an @ inside a segment", "/a@b"],
+    ["two @-headed segments", "/img/@a/@b"],
+    ["a bare @ segment", "/@"],
+    ["a run of @", "/@@@"],
+    ["an e-mail-shaped segment", "/img/alice@example.com"],
+    ["a scoped package path", "/v1/@scope/pkg"],
+  ])("the credential goes whatever the target path ends in — %s", (_label, tail) => {
+    const url = `https://api.test/go/https://TOKEN@cdn.test${tail}`;
+
+    const redacted = redactUrl(url);
+
+    expect(redacted).not.toContain("TOKEN");
+    // And the redaction still names the server the url named, and still emits
+    // nothing the parser did not put in the origin or the path.
+    expect(new URL(redacted).host).toBe("api.test");
+    const parsed = new URL(url);
+    expect(isSubsequence(redacted, `${parsed.protocol}//${parsed.host}${parsed.pathname}`)).toBe(
+      true,
+    );
+  });
+
+  // What the rule keeps, and what it does not, for a tail whose OWN `@` reads
+  // as a credential. Both answers predate round 11 and are unchanged by it:
+  // only an `@` at the head of a segment names something, and the second `@` of
+  // a run is inside a segment rather than at its head.
+  test.each([
+    ["an @-headed tail keeps it", "/img/@alice", "https://api.test/go/https://cdn.test/img/@alice"],
+    ["an @ inside a segment does not", "/a@b", "https://api.test/go/https://b"],
+    ["a run of @ does not", "/@@@", "https://api.test/go/https://"],
+  ])("%s", (_label, tail, expected) => {
+    expect(redactUrl(`https://api.test/go/https://TOKEN@cdn.test${tail}`)).toBe(expected);
+  });
+
+  // The same question asked of the message pass, which reads the same spans.
+  test("a message quoting the url loses the credential too", () => {
+    const url = "https://api.test/go/https://TOKEN@cdn.test/img/@alice";
+
+    expect(redactUrlInMessage(`Failed to fetch ${url}`, url)).toBe(
+      "Failed to fetch https://api.test/go/https://cdn.test/img/@alice",
+    );
+  });
+
+  // The paths this rule must not cost. An `@`-headed segment names something,
+  // and asking about every `@` must not turn a run of them into a credential.
+  test.each([
+    ["an @-headed segment", "https://api.test/users/@alice"],
+    ["two of them", "https://api.test/users/@alice/@bob"],
+    ["a scoped package", "https://api.test/@scope/pkg/-/pkg-1.0.0.tgz"],
+    ["an embedded url whose path is one", "https://api.test/go/https://cdn.test/users/@alice"],
+    ["two @-headed segments in a row", "https://api.test/go/https://cdn.test/@a/@b"],
+  ])("%s survives", (_label, url) => {
+    expect(redactUrl(url)).toBe(url);
+  });
+
+  // ASKED AGAIN OF WHAT THE ANSWER LEAVES BEHIND. Removing a credential moves
+  // the region's first `/` and its first `:`, and both are read by the rule
+  // that decides the next candidate — so a single answer per region left text
+  // the module's own rule calls userinfo. Round 11's fuzz measured that as a
+  // fixed-point failure over 604,204 urls: 1,925 where a second pass removed
+  // what the first emitted. A host with a colon is the ordinary way to reach
+  // it, because the colon rule then answers for every `@` after the first `/`.
+  test.each([
+    ["an IPv6 host", "https://api.test/go/https:TOK/x@[::1]/img/@alice"],
+    ["a port", "https://api.test/go/https:TOK/x@cdn.test:8443/img/@alice"],
+    ["a chain of credentials", "https://api.test/go/https://a:b@h1/x/c:d@h2/img/@alice"],
+    ["a bare @ after the credential", "https://api.test/go/https:TOK/x@[::1]/@"],
+  ])("the redaction is its own fixed point — %s", (_label, url) => {
+    const once = redactUrl(url);
+
+    expect(redactUrl(once)).toBe(once);
+    expect(once).not.toContain("TOK");
+  });
+
+  // The cost of asking every `@` is a constant per region, not a scan per
+  // candidate: `lastAt` and the last `@` no solidus precedes summarize the whole
+  // candidate set, and at most three answers come back before a region is spent.
+  // Measured on the committed tree in the same shape as the round-10 rows above.
+  test.each([
+    ["a run of 60,000 @", `://${"@".repeat(60_000)}`],
+    ["an @ per segment", `://h${"/x/@".repeat(20_000)}`],
+    ["a mark and an @ per region", "://x@".repeat(20_000)],
+    ["a credential per region", `://${"u:p@".repeat(20_000)}h`],
+  ])("the scan stays linear on %s", (_label, hostile) => {
+    const started = performance.now();
+
+    redactUrl(hostile);
+
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+});
