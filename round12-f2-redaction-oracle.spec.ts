@@ -277,10 +277,24 @@ function withoutMandatedOrigin(input: string, output: string): string {
  * CREDENTIAL — no credential the platform reports for `input` survives in
  * `output`, under any spelling, anywhere the contract did not compel the bytes.
  */
-function judgeCredentials(property: string, input: string, output: string): Violation[] {
+function judgeCredentials(
+  property: string,
+  input: string,
+  output: string,
+  planted: readonly string[] = [],
+): Violation[] {
   const haystack = normalized(withoutMandatedOrigin(input, output));
   const found: Violation[] = [];
-  for (const credential of judgedCredentialsOf(input)) {
+  // The parser's answer, UNION what the generator planted in a userinfo slot the
+  // URL Standard opens a region over. The second term is what keeps this half
+  // from being vacuous on a refused authority, where the parser answers nothing.
+  // It is still not the judge's own opinion: `opensRegion` is SECURITY.md's
+  // sentence, and `withoutMandatedOrigin` excuses a planted token the parser
+  // turned into the host, so a token the contract compels is never counted.
+  for (const credential of new Set([
+    ...judgedCredentialsOf(input),
+    ...planted.filter(isDistinctive),
+  ])) {
     if (haystack.includes(normalized(credential))) {
       found.push(
         violation(property, input, output, `credential ${JSON.stringify(credential)} survived`),
@@ -434,7 +448,12 @@ const USERINFO = [
   `${USER}:${PASS}@${OUTER_TAIL}@`,
 ] as const;
 
-/** Host form: registrable, IPv4, IPv6, IDN in both spellings, and empty. */
+/**
+ * Host form: registrable, IPv4, IPv6, IDN in both spellings, empty, and four the
+ * parser REFUSES. A refused authority is not an exotic input — it is the state
+ * in which every parse the module can lean on returns nothing, so whatever guard
+ * stands there stands alone. Round 13 found that guard failing open.
+ */
 const HOSTS = [
   "api.test",
   "127.0.0.1",
@@ -443,10 +462,16 @@ const HOSTS = [
   "ünïcode.test",
   "localhost",
   "",
+  "in ternal.test",
+  "[not-ipv6]",
+  "in|ternal.test",
 ] as const;
 
-/** Port: absent, present, and the empty port the Standard permits. */
-const PORTS = ["", ":8443", ":"] as const;
+/**
+ * Port: absent, present, the empty port the Standard permits, and two the parser
+ * refuses — out of range, and not a number.
+ */
+const PORTS = ["", ":8443", ":", ":99999", ":abc"] as const;
 
 /**
  * Path shape, including nesting. The last four values nest a whole credentialed
@@ -514,6 +539,106 @@ function pick<T>(list: readonly T[], random: () => number): T {
   return item;
 }
 
+/**
+ * One corpus entry: the text, and what the GENERATOR knows it planted.
+ *
+ * `planted` exists because the platform half goes silent exactly where round 13
+ * found leaks. `new URL("https://alice:pw@/v1")` throws — an empty host is a
+ * refused authority — and `new URL("file:///alice:pw@/v1")` succeeds but reports
+ * `username === ""`, because the parser split the solidus run into an empty
+ * authority and a path. Either way it names no credential, so a judge that asks
+ * only the parser is VACUOUS on the whole refused-authority family.
+ */
+interface Case {
+  input: string;
+  /** Sentinels written into a userinfo slot the URL Standard opens a region over. */
+  planted: readonly string[];
+}
+
+/**
+ * Whether the URL Standard opens an authority here, decided from the SPELLING.
+ *
+ * DERIVED FROM THE PLATFORM, not from the contract. `SECURITY.md` says "at two
+ * or more solidi under any scheme, and at a SPECIAL scheme (`http`, `https`,
+ * `ws`, `wss`, `ftp`, `file`) over any number of solidi, including none", and
+ * that sentence is WRONG about `file:`. Measured:
+ *
+ *     file:svc:pw@api.test/v1     -> username ""    host ""
+ *     file:/svc:pw@api.test/v1    -> username ""    host ""
+ *     file://svc:pw@api.test/v1   -> THROWS
+ *     file:///svc:pw@api.test/v1  -> username ""    host ""
+ *     git:/svc:pw@api.test/v1     -> username ""    host ""     (identical)
+ *     http:svc:pw@api.test/v1     -> username "svc" host "api.test"
+ *     http:/svc:pw@api.test/v1    -> username "svc" host "api.test"
+ *
+ * The URL Standard routes `file:` to the file state BEFORE the
+ * special-authority-slashes state, so a `file:` reference reaches an authority
+ * only over exactly two solidi, and a userinfo makes even that parse fail. Under
+ * fewer than two it is a path with an empty host — exactly like `git:`, which
+ * residual 2 already treats as a non-opener. Quoting a contract makes a judge
+ * exactly as correct as the contract, and this one cost 14 false rows.
+ *
+ * So the question is put to the parser instead, with a canary userinfo at the
+ * scheme and solidus spelling actually written. Three answers, and the middle
+ * one matters: a REFUSED authority is still an opened one — `https://u:p@/v1`
+ * throws on the empty host, and the credential in it is real. Only "none" means
+ * no region.
+ */
+type Opening = "userinfo" | "refused" | "none";
+
+const CANARY_USER = "CANARYUSERZZ";
+const OPENING_CACHE = new Map<string, Opening>();
+
+function authorityOpening(scheme: string, solidi: string): Opening {
+  const key = `${scheme}|${solidi}`;
+  const remembered = OPENING_CACHE.get(key);
+  if (remembered !== undefined) return remembered;
+  const probe = `${scheme === "" ? "" : `${scheme}:`}${solidi}${CANARY_USER}:CANARYPASSZZ@canary.test/v1`;
+  let answer: Opening;
+  try {
+    // A base is passed ONLY for a scheme-less reference. Handing one to an
+    // absolute reference changes the answer: when the reference's scheme equals
+    // the base's, the Standard reads it as relative and eats the mark, so
+    // `new URL("http:u:p@h/v1", "http://…")` reports no username while
+    // `new URL("http:u:p@h/v1")` reports `u`. `redactUrl` tries the input on its
+    // own first, so the un-based reading is the one that decides the slot.
+    const parsed = scheme === "" ? new URL(probe, ORACLE_BASE) : new URL(probe);
+    answer = parsed.username === CANARY_USER ? "userinfo" : "none";
+  } catch {
+    answer = "refused";
+  }
+  OPENING_CACHE.set(key, answer);
+  return answer;
+}
+
+function opensRegion(scheme: string, solidi: string): boolean {
+  return authorityOpening(scheme, solidi) !== "none";
+}
+
+/**
+ * Which planted tokens sit in the AUTHORITY, given the solidi actually written.
+ *
+ * Two narrowings, and both matter. A region has to open at all — that is
+ * {@link opensRegion}, and it is now the parser's answer rather than the
+ * document's. And the authority ends where the URL Standard ends it: at the
+ * first `/`, `\`, `?` or `#` after the solidus run. Only text before that is
+ * unambiguously userinfo under every reading of the contract.
+ *
+ * The second narrowing is what keeps this half honest. Without it the axis value
+ * `USER:/PASS@` claims BOTH tokens behind any special scheme — but the Standard
+ * closed the authority at that interior solidus, so `PASS@…` is path text, and
+ * whether a region re-opens over it is the question residuals 1 and 3 are about.
+ * Claiming it here would have this half assert an answer the round has not
+ * adjudicated, on 250-odd inputs, in a judge whose whole worth is that it does
+ * not do that. Those rows are left to the parser half, which reads them without
+ * an opinion, and to the residual pins.
+ */
+function plantedIn(scheme: string, solidi: string, userinfo: string): readonly string[] {
+  if (!opensRegion(scheme, solidi)) return [];
+  const authority = userinfo.split(/[/\\?#]/)[0] ?? "";
+  return SENTINELS.filter((sentinel) => authority.includes(sentinel));
+}
+
 function compose(
   scheme: string,
   solidi: string,
@@ -523,9 +648,35 @@ function compose(
   path: string,
   query: string,
   fragment: string,
-): string {
-  return `${scheme === "" ? "" : `${scheme}:`}${solidi}${userinfo}${host}${port}${path}${query}${fragment}`;
+): Case {
+  return {
+    input: `${scheme === "" ? "" : `${scheme}:`}${solidi}${userinfo}${host}${port}${path}${query}${fragment}`,
+    planted: plantedIn(scheme, solidi, userinfo),
+  };
 }
+
+/**
+ * Userinfo text that carries a SOLIDUS-COLON run, an embedded `://`, or both.
+ * Slice E crosses these with a trailing `@` segment; see the slice for why.
+ */
+const COMPOUND = [`x:/a@`, `${USER}:/`, `${USER}://`, `${USER}%3A/`, `x:/a@${USER}:`] as const;
+
+/** What follows the embedded host in slice E. `/@name` is the deciding one. */
+const TAILS = ["/@bob", "/@", "/x/@bob", ""] as const;
+
+/**
+ * Authorities `new URL` refuses, as `[host, port]`. Empty host, port out of
+ * range, port not a number, a space in the host, a bracket form that is not an
+ * IPv6 address, and a forbidden host code point.
+ */
+const REFUSED_AUTHORITIES = [
+  ["", ""],
+  ["internal.test", ":99999"],
+  ["internal.test", ":abc"],
+  ["in ternal.test", ""],
+  ["[not-ipv6]", ""],
+  ["in|ternal.test", ""],
+] as const;
 
 const SEED = 20_261_212;
 const SAMPLE_SIZE = 3000;
@@ -535,9 +686,14 @@ const SAMPLE_SIZE = 3000;
  * three two-dimensional slices whose interaction the axes above cannot be
  * trusted to reach by sampling alone.
  */
-function buildCorpus(): string[] {
+function buildCorpus(): Case[] {
   const random = mulberry(SEED);
-  const corpus = new Set<string>();
+  const seen = new Map<string, Case>();
+  const corpus = {
+    add(one: Case): void {
+      if (!seen.has(one.input)) seen.set(one.input, one);
+    },
+  };
 
   for (let taken = 0; taken < SAMPLE_SIZE; taken += 1) {
     corpus.add(
@@ -583,20 +739,58 @@ function buildCorpus(): string[] {
   // different question from "is there a url later in the path".
   for (const solidi of SOLIDI) {
     for (const embedded of EMBEDDED) {
-      corpus.add(`${solidi}${embedded}`);
-      corpus.add(`https://api.test/proxy/${solidi}${embedded}`);
+      corpus.add({ input: `${solidi}${embedded}`, planted: [] });
+      corpus.add({ input: `https://api.test/proxy/${solidi}${embedded}`, planted: [] });
+    }
+  }
+  // Slice E — COMPOUND userinfo x trailing `/@name`, behind a solidus run.
+  // A userinfo whose own text carries both a solidus-colon run and an embedded
+  // `://`, with an `@` segment after it. Every axis above varies ONE feature of
+  // a userinfo at a time; this varies two at once, which is what it takes for
+  // one pass to end a region where the next pass ends it somewhere else. The
+  // parser reports no credential in any of these — IDEMPOTENCE is the property
+  // that reads them, and it only reads what the corpus spells.
+  for (const prefix of COMPOUND) {
+    for (const tail of TAILS) {
+      for (const solidi of ["", "/", "//", "///", "\\\\"]) {
+        corpus.add({
+          input: `https://api.test${solidi}${prefix}${PASS}://h.test${tail}`,
+          planted: [],
+        });
+        corpus.add({ input: `${solidi}${prefix}${PASS}://h.test${tail}`, planted: [] });
+      }
+    }
+  }
+  // Slice F — scheme x solidus x REFUSED AUTHORITY. Where every parse returns
+  // nothing and the module's guard is the only thing standing. Crossing the
+  // scheme axis in full also guarantees the row where the reference's scheme
+  // EQUALS the scheme of whatever base a relative resolution uses, so a scheme
+  // collision is always in the corpus rather than left to the sample.
+  for (const scheme of SCHEMES) {
+    for (const solidi of ["", "/", "//", "///"]) {
+      for (const [host, port] of REFUSED_AUTHORITIES) {
+        corpus.add(compose(scheme, solidi, `${USER}:${PASS}@`, host, port, "/v1", "", ""));
+      }
+    }
+  }
+  // Slice G — scheme x solidus, with the credential's colon PERCENT-ENCODED.
+  // `%3A` at zero, one and two solidi are three different questions, and a
+  // corpus that samples them reaches one.
+  for (const scheme of SCHEMES) {
+    for (const solidi of SOLIDI) {
+      corpus.add(compose(scheme, solidi, `${USER}%3A${PASS}@`, "api.test", "", "/v1", "", ""));
     }
   }
 
-  return [...corpus];
+  return [...seen.values()];
 }
 
 const CORPUS = buildCorpus();
 
 /** Sweep the corpus with one judgement, collecting every acceptable-failure. */
-function sweep(judge: (input: string) => Violation[]): Violation[] {
+function sweep(judge: (one: Case) => Violation[]): Violation[] {
   const found: Violation[] = [];
-  for (const input of CORPUS) found.push(...judge(input));
+  for (const one of CORPUS) found.push(...judge(one));
   return found;
 }
 
@@ -606,10 +800,10 @@ function sweep(judge: (input: string) => Violation[]): Violation[] {
 
 describe("the oracle checks itself before it grades anything", () => {
   test("the corpus is the size it claims, from a fixed seed", () => {
-    expect(CROSS_PRODUCT_SIZE).toBe(3_259_872);
+    expect(CROSS_PRODUCT_SIZE).toBe(7_761_600);
     // Pinned exactly, not bounded: the seed and the axes are both fixed, so a
     // different number means an axis moved, which is a deliberate act.
-    expect(CORPUS.length).toBe(3576);
+    expect(CORPUS.length).toBe(4163);
     // The seed decides the sample, so two builds are the same corpus.
     expect(buildCorpus()).toEqual(CORPUS);
   });
@@ -617,8 +811,75 @@ describe("the oracle checks itself before it grades anything", () => {
   test("the generator plants credentials the PARSER confirms, not ones it names itself", () => {
     // If this ever went to zero the credential half would be vacuous: it would
     // be judging inputs the platform sees no credential in.
-    const confirmed = CORPUS.filter((input) => judgedCredentialsOf(input).length > 0);
+    const confirmed = CORPUS.filter(({ input }) => judgedCredentialsOf(input).length > 0);
     expect(confirmed.length).toBeGreaterThan(1500);
+  });
+
+  test("the PLANTED half is not vacuous, and never fires where a residual lives", () => {
+    // It must reach the refused-authority family, where the parser is silent.
+    const silentButPlanted = CORPUS.filter(
+      ({ input, planted }) => planted.length > 0 && judgedCredentialsOf(input).length === 0,
+    );
+    expect(silentButPlanted.length).toBeGreaterThan(100);
+    // And it must never fire on a non-special scheme under fewer than two
+    // solidi, which is residual 2 — `plantedIn` returns nothing there.
+    expect(plantedIn("git", "/", `${USER}:${PASS}@`)).toEqual([]);
+    expect(plantedIn("svn+ssh", "", `${USER}:${PASS}@`)).toEqual([]);
+    expect(plantedIn("", "/", `${USER}:${PASS}@`)).toEqual([]);
+    // It fires where the PARSER opens an authority, and nowhere else.
+    expect(plantedIn("git", "//", `${USER}:${PASS}@`)).toEqual([USER, PASS]);
+    expect(plantedIn("http", "", `${USER}:${PASS}@`)).toEqual([USER, PASS]);
+    expect(plantedIn("http", "/", `${USER}:${PASS}@`)).toEqual([USER, PASS]);
+  });
+
+  test("`file:` is NOT a region-opener, and the platform is what says so", () => {
+    // SECURITY.md lists `file` among the schemes that reach an authority "over
+    // any number of solidi, including none". That sentence is wrong, and the
+    // judge believed it for 14 rows. Pinned from the platform so that if the
+    // document is ever "corrected" back, this file fails instead of agreeing.
+    //
+    // The URL Standard routes `file:` to the file state BEFORE the
+    // special-authority-slashes state.
+    for (const solidi of ["", "/", "///", "////"]) {
+      expect(new URL(`file:${solidi}svc:pw@api.test/v1`).username).toBe("");
+      expect(authorityOpening("file", solidi)).toBe("none");
+      expect(plantedIn("file", solidi, `${USER}:${PASS}@`)).toEqual([]);
+    }
+    // Exactly two solidi is the only spelling that reaches an authority at all,
+    // and a userinfo makes even that parse fail — so it never carries one.
+    expect(() => new URL("file://svc:pw@api.test/v1")).toThrow();
+    expect(new URL("file://api.test/v1").host).toBe("api.test");
+    // `file:` under fewer than two solidi is `git:` under fewer than two solidi.
+    // Residual 2 already calls that a non-opener; the two now agree.
+    expect(new URL("git:/svc:pw@api.test/v1").username).toBe("");
+    expect(authorityOpening("git", "/")).toBe("none");
+    // The other five special schemes DO open over no solidi at all. The
+    // correction is about `file:` alone and must not have widened past it.
+    for (const scheme of ["http", "https", "ws", "wss", "ftp"]) {
+      expect(new URL(`${scheme}:svc:pw@api.test/v1`).username).toBe("svc");
+      expect(authorityOpening(scheme, "")).toBe("userinfo");
+      expect(plantedIn(scheme, "", `${USER}:${PASS}@`)).toEqual([USER, PASS]);
+    }
+  });
+
+  test("a REFUSED authority is still an opened one — the planted half must fire", () => {
+    // This is the round-13 family the fix closed, and the correction above must
+    // not have taken it with it. The parser throws on every one of these, so
+    // `judgedCredentialsOf` is silent and `planted` is the only thing carrying
+    // the row. If these ever return "none", the half has been softened.
+    expect(authorityOpening("https", "//")).toBe("userinfo");
+    expect(authorityOpening("http", "")).toBe("userinfo");
+    for (const [input, scheme, solidi] of [
+      [`https://${USER}:${PASS}@/v1`, "https", "//"],
+      [`https://${USER}:${PASS}@internal.test:99999/v1`, "https", "//"],
+      [`http:${USER}:${PASS}@internal.test:99999/v1`, "http", ""],
+      [`https://${USER}:${PASS}@[not-ipv6]/v1`, "https", "//"],
+    ] as const) {
+      expect(judgedCredentialsOf(input)).toEqual([]);
+      const planted = plantedIn(scheme, solidi, `${USER}:${PASS}@`);
+      expect(planted).toEqual([USER, PASS]);
+      expect(judgeCredentials("SELFTEST", input, input, planted).length).toBeGreaterThan(0);
+    }
   });
 
   test("the judge's containment rule sees through encoding, case, and a stripped tab", () => {
@@ -694,12 +955,95 @@ describe("the oracle checks itself before it grades anything", () => {
     }
   });
 
+  test("the corpus REACHES each of the four shapes round 13 found", () => {
+    // The gap round 13 exposed was in the generator, not the judge: IDEMPOTENCE
+    // was green because no input spelled the shape. Presence is therefore the
+    // thing to pin. If an axis edit ever drops one of these, this fails loudly
+    // instead of the corpus going quietly blind again.
+    const spelled = new Set(CORPUS.map((one) => one.input));
+    for (const shape of [
+      // 1 — compound userinfo behind a bare `//`, with a trailing `/@name`.
+      `https://api.test//x:/a@${PASS}://h.test/@bob`,
+      // 2 — a refused authority: empty host, and a port out of range.
+      `file:///${USER}:${PASS}@/v1`,
+      `file:///${USER}:${PASS}@internal.test:99999/v1`,
+      // 3 — a reference whose scheme equals the resolution base's scheme.
+      `http:${USER}:${PASS}@internal.test:99999/v1`,
+      // 4 — `%3A` at zero, one and two solidi.
+      `http:${USER}%3A${PASS}@api.test/v1`,
+      `http:/${USER}%3A${PASS}@api.test/v1`,
+      `http://${USER}%3A${PASS}@api.test/v1`,
+    ]) {
+      expect(spelled.has(shape)).toBe(true);
+    }
+  });
+
+  test("the judge CATCHES each round-13 leak, given the answer that leaked it", () => {
+    // Paired with the pre-fix answer, the way the round-12 classes are pinned
+    // above. A future change that re-opens one of these fails here rather than
+    // passing silently.
+    //
+    // The last flag records WHICH HALF has to carry the row, and the four are
+    // not alike. On the three refused-or-split authorities the parser names no
+    // credential at all, and only `planted` makes them judgeable. On the `%3A`
+    // row the parser DOES answer — it reports the percent-encoded username — so
+    // that row was never a judge gap at all, only a corpus gap. Pinning the
+    // difference stops a later reader from believing `planted` is load-bearing
+    // where it is not.
+    const caught: [string, string, readonly string[], boolean][] = [
+      // A refused authority, guard failing open — the credential rode out whole.
+      [
+        `https://${USER}:${PASS}@/v1`,
+        `https://${USER}:${PASS}@/v1`,
+        plantedIn("https", "//", `${USER}:${PASS}@`),
+        true,
+      ],
+      [
+        `https://${USER}:${PASS}@internal.test:99999/v1`,
+        `https://${USER}:${PASS}@internal.test:99999/v1`,
+        plantedIn("https", "//", `${USER}:${PASS}@`),
+        true,
+      ],
+      // The reference's scheme matched the base's, so the mark was consumed.
+      [
+        `http:${USER}:${PASS}@internal.test:99999/v1`,
+        `/${USER}:${PASS}@internal.test:99999/v1`,
+        plantedIn("http", "", `${USER}:${PASS}@`),
+        true,
+      ],
+      // `%3A` at zero and one solidus kept the credential.
+      [
+        `http:${USER}%3A${PASS}@api.test/v1`,
+        `/${USER}%3A${PASS}@api.test/v1`,
+        plantedIn("http", "", `${USER}%3A${PASS}@`),
+        false,
+      ],
+    ];
+    for (const [input, leaked, planted, parserSilent] of caught) {
+      expect(judgedCredentialsOf(input).length === 0).toBe(parserSilent);
+      expect(planted.length).toBeGreaterThan(0);
+      expect(judgeCredentials("SELFTEST", input, leaked, planted).length).toBeGreaterThan(0);
+    }
+
+    // NEGATIVE pin, and it replaces two rows this test used to carry. Round 13
+    // reported `file:///alice:hunter2@/v1` as a leak, but that report rested on
+    // the same SECURITY.md sentence this oracle used to quote: no authority
+    // opens there, so nothing in it is a credential and the module is right to
+    // keep it as a path. The judge must NOT claim these, and saying so here is
+    // the guard against re-deriving the document's error a third time.
+    for (const input of [`file:///${USER}:${PASS}@/v1`, `file:/${USER}:${PASS}@localhost/v1`]) {
+      expect(judgedCredentialsOf(input)).toEqual([]);
+      expect(plantedIn("file", "///", `${USER}:${PASS}@`)).toEqual([]);
+      expect(judgeCredentials("SELFTEST", input, input, [])).toEqual([]);
+    }
+  });
+
   test("ONE SENTINEL, ONE ROLE — no generated input holds a token in two slots", () => {
     // The corpus bug this rule closes: a token planted in both an outer userinfo
     // and a nested url is removed in one place and kept in the other, and the
     // judge cannot say which occurrence it found.
     const doubled: string[] = [];
-    for (const input of CORPUS) {
+    for (const { input } of CORPUS) {
       for (const sentinel of SENTINELS) {
         if (input.split(sentinel).length > 2) doubled.push(`${sentinel} in ${input}`);
       }
@@ -714,7 +1058,7 @@ describe("the oracle checks itself before it grades anything", () => {
 
 describe("the oracle grades redactUrl over the generated corpus", () => {
   test("TOTALITY — nothing throws, for any input", () => {
-    const found = sweep((input) => {
+    const found = sweep(({ input }) => {
       const result = attempt(input);
       return result.threw ? [violation("TOTALITY", input, "<threw>", String(result.error))] : [];
     });
@@ -722,15 +1066,15 @@ describe("the oracle grades redactUrl over the generated corpus", () => {
   });
 
   test("CREDENTIAL — no credential the platform reports survives the redaction", () => {
-    const found = sweep((input) => {
+    const found = sweep(({ input, planted }) => {
       const result = attempt(input);
-      return result.threw ? [] : judgeCredentials("CREDENTIAL", input, result.output);
+      return result.threw ? [] : judgeCredentials("CREDENTIAL", input, result.output, planted);
     });
     expect(report(found)).toEqual([]);
   });
 
   test("STRUCTURE — same origin, path from the parsed pathname, no value slot", () => {
-    const found = sweep((input) => {
+    const found = sweep(({ input }) => {
       const result = attempt(input);
       return result.threw ? [] : judgeStructure(input, result.output);
     });
@@ -738,7 +1082,7 @@ describe("the oracle grades redactUrl over the generated corpus", () => {
   });
 
   test("SENTINEL — no byte the caller wrote after a ? or a # is emitted", () => {
-    const found = sweep((input) => {
+    const found = sweep(({ input }) => {
       const result = attempt(input);
       if (result.threw) return [];
       const haystack = normalized(result.output);
@@ -751,7 +1095,7 @@ describe("the oracle grades redactUrl over the generated corpus", () => {
   });
 
   test("IDEMPOTENCE — f(f(u)) === f(u)", () => {
-    const found = sweep((input) => {
+    const found = sweep(({ input }) => {
       const first = attempt(input);
       if (first.threw) return [];
       const second = attempt(first.output);
@@ -773,7 +1117,7 @@ describe("the oracle grades redactUrl over the generated corpus", () => {
   });
 
   test("AGREEMENT — redactUrlInMessage(u, u) === redactUrl(u) wherever the parser accepts u", () => {
-    const found = sweep((input) => {
+    const found = sweep(({ input }) => {
       // Gated on an ABSOLUTE parse. A relative url differs from its redacted
       // form through normalization alone, and the message pass is documented as
       // a replacement of a value the error already holds, not a normalizer.
@@ -803,12 +1147,12 @@ describe("the oracle grades redactUrl over the generated corpus", () => {
   });
 
   test("MESSAGE — the message channel drops every credential the url channel drops", () => {
-    const found = sweep((input) => {
+    const found = sweep(({ input, planted }) => {
       // The platform quotes the url it refused back verbatim. This is that
       // message, built the way undici builds it.
       const message = `Request cannot be constructed from a URL that includes credentials: ${input}`;
       try {
-        return judgeCredentials("MESSAGE", input, redactUrlInMessage(message, input));
+        return judgeCredentials("MESSAGE", input, redactUrlInMessage(message, input), planted);
       } catch (error) {
         return [violation("MESSAGE", input, "<threw>", String(error))];
       }
@@ -834,7 +1178,9 @@ describe("the oracle grades redactUrl over the generated corpus", () => {
  * after it, which is exactly how round 9 and round 12 were spelled.
  */
 describe("the oracle grades monotonicity", () => {
-  const withoutMarks = CORPUS.filter((input) => !input.includes("?") && !input.includes("#"));
+  const withoutMarks = CORPUS.map((one) => one.input).filter(
+    (input) => !input.includes("?") && !input.includes("#"),
+  );
 
   test("the guarded populations are not empty", () => {
     expect(withoutMarks.length).toBeGreaterThan(500);
