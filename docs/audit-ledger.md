@@ -1106,6 +1106,101 @@ one workstream: the gate scripts and the fixtures under test.
   fixer may not edit a hunter's spec, so this repair belongs to the
   orchestrator.
 
+### What round 17 settled
+
+Round 17 pointed every lane at what round 16 CHANGED, and that is the whole
+reason it found anything. Two lanes had returned clean in round 16. Seven
+distinct findings came back, and four of them are defects in round 16's own
+work: a false sentence, a fix that closed one spelling of two, a pin that
+cannot fail, and a threshold no workflow runs.
+
+- **The conflict round 16 opened is DECIDED, and the answer is that no rule of
+  this module's shape can close it.** `redactUrl`'s answer for `://A/B@C/D` is
+  a function of the SHAPE alone: all 1,296 label substitutions answer `://C/D`.
+  The RES-6 proxy url and the pinned base64 url are two substitutions of that
+  one shape, and `https://api.test/go/https://cdn.test/img/alice@internal.test/v1`
+  is a single string that carries both requirements at once. Any separating
+  predicate must read the LABELS, and the only one exhibited — "the first label
+  holds a dot" — is the deny list `redact-url.ts`'s own header rejects, because
+  one dot before the first solidus turns the rule into a credential shield.
+  Deciding it needs an input the text does not carry, such as a caller-supplied
+  policy or the host that was actually contacted. Measured corollary: a
+  credential the PARSER reports never spells a solidus, 0 of 5,683 rows, so the
+  judge can only ever condemn removals the heuristic made. The judge's rule and
+  the suite's requirement are one predicate with opposite signs.
+- **A colon in front of the solidus run kept the pass count remote.**
+  R17-H2-01. Round 16 closed the double-dot drain for the spelling with no
+  colon and left six spellings open, because `popsBefore` answered zero for
+  every region whose run sits behind a `:`. A 302 whose `Location` is `/x/https:`
+  plus 2N solidi plus N `@../` groups cost 2,401 rebuild passes and 333 ms at
+  14.4 KB. `popsBefore` reads the grammar now, with two floors that are
+  `authorityAt`'s own: `run - 1` behind a special scheme's colon, `run - 2`
+  everywhere else. Same answer, 2 passes, 1.3 ms. All six spellings covered.
+  The helper's own comment had justified the colon case on SAFETY, which was
+  true and bounded no cost.
+- **An embedded authority with a port lost its host to a handle.** R17-H3-01.
+  `https://api.test/go/https://cdn.test:8443/users/@alice` emitted
+  `https://api.test/go/https://alice`, naming the handle as a host. The colon
+  rule fired before the third rule was consulted, so the `@`-at-segment-head
+  spelling RES-6's corpus ACQUITS lost its host too. The colon rule is now
+  suppressed where `parsesAsAuthority` reads the region's pre-solidus text as
+  host and port. Three conditions keep six pinned answers green: the region's
+  mark must spell a scheme, its authority text must hold no `@`, and the
+  authority must read. A bare `//` region fails the first condition and keeps
+  the old answer; that gap is pinned with its reason, and its residue is 504
+  rows of 97,344 with no credential lost, so a later round can widen it one
+  condition at a time.
+- **The message channel named a host the url channel did not.** R17-H3-02. A
+  needle harvested from the query or fragment slot — which `redactUrl` drops
+  whole — rewrote a host in `error.message`, so the two records of one failure
+  disagreed. All three routes into the needle set are closed. The cost, stated:
+  a credential that spells a solidus AND hides in a query or fragment AND is
+  quoted by a message that does not quote the whole url keeps the segments
+  before its last solidus.
+- **A sentence round 16 wrote was false, and two lanes found it independently.**
+  R17-H1-01 and R17-H4-01. `CONTEXT.md` and `src/request-plan.ts` claimed the
+  init a transport receives carries no `fetch` extension under any of the three
+  reads. `snapshotRequestInit` sanitizes only when
+  `Object.hasOwn(options, "fetch")`, so an INHERITED `fetch` — a polluted
+  `Object.prototype`, or an ordinary `Object.create(defaults)` config — answers
+  the caller's function for a property get and `true` for `in`. It fails with no
+  options object at all. The REMEDY IS THE SENTENCE: the inherited value runs
+  zero times at two levels of re-entry, and `request-plan.spec.ts` already pins
+  that it is neither used nor stripped. The sentence now separates the three
+  reads that inspect the init's own shape from the two that walk the prototype
+  chain. This is the third time this audit produced a false sentence while
+  CORRECTING a document. A claim quantified over "any read" must be measured
+  against an inherited value too.
+- **No workflow ran the coverage gate.** R17-H4-03. Round 16 brought 541
+  statements under measurement and set a 100 percent threshold on `src/`,
+  `scripts/` and `fixtures/`, and neither `ci.yml` nor `release.yml` ever ran
+  `pnpm coverage`. A commit that lowered coverage passed every check and
+  published. Both workflows run it now, after `pnpm test`, and
+  `CONTRIBUTING.md`'s roster holds twelve gates instead of eleven. The pinned
+  count in `gate-properties.spec.mjs` blocked the fixer, which is the pin
+  working: the roster change is a reviewable diff and not a silent widening.
+- **Two of round 16's own instruments were defective.** R17-H3-03: the
+  over-redaction judge sliced at solidus pairs a scheme in the same text had
+  already consumed, so it read a host out of `file:///svc:` and none out of
+  `file:svc:` — one url under two spellings — and condemned an answer that is
+  the input's own `href`. 321 of its 475 verdicts on the credential population
+  were that reading and not the module. R17-H4-02: the coverage exclusion pin
+  matched the config's text with a pattern anchored on `scripts/smoke/`, so
+  adding `fixtures/http-server.ts` to the exclusion list left it green. Both
+  live in spec files, which no fixer may edit, so the orchestrator owns them.
+  An audit that builds instruments needs an owner for the instruments, and an
+  instrument built in one round must be judged in the next.
+- **Two ledger numbers were narrower than this file stated.** Round 16 recorded
+  zero answer differences over 519,070 urls for the R16-H2-01 fix; round 17 ran
+  2.6 million urls in three grammars against the pre-fix tree and found four,
+  all over-redaction, none keeping a secret the old tree removed. And round
+  16's 119,070-url sweep is not reproducible: it was a fix lane's scratch and
+  nothing committed redraws it. A differential's headline number is a property
+  of its corpus, so state the corpus with the number, and commit the generator.
+- **Coverage held at 100 on all four axes** across `src/`, `scripts/` and
+  `fixtures/` through every change, and the suite grew from 3,050 to 3,142
+  tests.
+
 ## The audit files, renamed by subject
 
 The audit closed at round 15. Each round-numbered spec file above still holds
