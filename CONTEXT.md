@@ -287,6 +287,15 @@ src/errors/error-body         the response-body lifecycle: claim, cancel, tee.
                               ReadableStream operations when own properties or
                               replaced prototypes hide a native live body.
                               INTERNAL — never export it from a barrel.
+src/errors/redact-url         applies **structure and value** to a URL and to a
+                              library-authored message. Total: it answers the
+                              empty string rather than throwing. INTERNAL —
+                              never export it from a barrel.
+src/errors/userinfo-spans     finds every span of a text the URL Standard reads
+                              as userinfo, and answers spans rather than a
+                              redacted string. It sits UNDER redact-url's
+                              rebuild loop, never inside it. INTERNAL — never
+                              export it from a barrel.
 src/errors/known-http-error   the branded base the 40 dedicated classes
                               extend. INTERNAL — it is what isKnownHttpError
                               requires, and what a consumer subclass cannot
