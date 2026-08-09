@@ -695,6 +695,70 @@ Request`, so the branch applied the prototype accessor, which throws when
   `redactUrl(redactUrl(u)) === redactUrl(u)`, over 80,021 urls. That property
   is what caught the fix's own regression above.
 
+### What round 12 settled
+
+Four lanes: request setup and classification, response and error
+construction, URL redaction, and disclosure channels — plus an independent
+parser-derived oracle built against the redactor from scratch. H2 returned
+clean for the fifth consecutive round.
+
+- **R12-H4-01 and R12-H3-01 (critical), and R12-F2-01 (critical), one defect
+  seen three ways.** A password can spell `://` and end its own region. A
+  protocol-relative input let the parser eat the opening mark, so no region
+  opened and the credential rode out in the path. And a bare `//` inside the
+  path opened no region at all, because the rule required a scheme in front
+  of the solidi. Record the reasoning that mattered: round 9 had REFUSED to
+  widen the end mark, measuring that a password spelling `:/` would end its
+  own region — so the wide mark leaks and the narrow mark leaks, and that is
+  the evidence that the end of a region cannot be a textual mark at all.
+  State the invariant that replaced it: a region opens where the URL
+  Standard opens an authority — at a scheme colon with its solidi, at two or
+  more solidi with no scheme, and at the seam where the parser consumed the
+  mark — and it ends only where `new URL` reads a complete authority at its
+  start. Record why it cannot be spelled past: to shorten a region an
+  attacker must make the parser read a complete authority there, which means
+  the parser found the host, so everything before it is the userinfo the
+  parser reports and is removed.
+- **R12-F2-02 (medium).** The relative branch emitted a path beginning with
+  two solidi, which a second pass read as protocol-relative and reduced
+  again, so the redactor was not a fixed point of itself. The answer is now
+  resolved until re-reading it changes nothing.
+- **The fuzz.** 124,355 inputs over fifteen checks, zero failures, plus
+  26,250 structured urls for the fixed point alone.
+- **The oracle, and why this round is different.** Round 12 built an
+  independent judge, `round12-f2-redaction-oracle.spec.ts`, derived from the
+  URL Standard rather than from this module's bug history — every credential
+  is whatever `new URL` reports for the input and for every url-shaped
+  substring of it. It found the third region-opening class that both
+  hunters had missed. Record the reason it worked: five previous fuzz
+  harnesses were each written from the shapes the previous rounds had taught
+  them, and each time the next round found the shape that harness could not
+  generate.
+- **The oracle judged against itself.** It stayed red on 13 of 3,576 inputs.
+  The fixer claimed both classes were faults in the judge; the orchestrator
+  verified the platform's answers, and the judge's author confirmed 0 of 13
+  were disclosures — 11 were a derived credential colliding with the origin
+  the output must keep, 2 were a corpus that spelled one sentinel into two
+  roles. The judge now excises one occurrence of the input's own origin
+  before searching, and the corpus follows a stated rule: one sentinel, one
+  role. Record that the fix fails OPEN — a moved origin excises nothing —
+  and that a self-check pins the three region-opening classes of this round
+  so a later softening of the judge fails loudly.
+- **Two CONTROL rows inverted.** `disclosure-channels.spec.ts` recorded both
+  the scheme-relative and the percent-encoded-colon shape as residuals that
+  keep the secret. Both are closed now; measurement contradicted the
+  expectation that the encoded colon would still leak, and the rows were
+  inverted to match what the module does. Record the recurring lesson in one
+  sentence: a control that pins bytes can pin a defect.
+- **H1 clean.** It verified the eight-read inventory of the setup phase is
+  complete, including the two reads that sit outside a phase `try` and are
+  total by construction, and added 18 pins.
+- **H2 clean, fifth round.** It pinned the response phase's read inventory as
+  a CLOSED SET — twelve members refuse a mapped 404, three are never
+  reached — identity as a function over 512 generated read schedules, and
+  the error body releasing its source exactly once, measured by counting the
+  source's own cancel algorithm rather than inferred.
+
 ## Adjudicated closed
 
 Correct about the code. Not defects.

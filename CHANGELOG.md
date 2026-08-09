@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Security
+
+- **`redactUrl` now opens a credential-hiding region everywhere the URL
+  Standard opens an authority, and closes one only where `new URL` reads a
+  complete authority at its start.** A region used to close at a fixed
+  textual mark, and a credential can spell almost any mark a fixed rule
+  chooses — including the mark that used to close a region and the scheme
+  colon that used to open one — so the parser's own read of the text is now
+  the only authority for both. This closes several shapes that previously
+  carried a credential through `error.message`, `toJSON()`, and every other
+  redacted channel unredacted: a credential that spells `://` inside itself,
+  a protocol-relative url (`//host/…`), and a bare `//` with no scheme in
+  front of it anywhere in the path. See `SECURITY.md` for the shapes that
+  remain open.
+- **`redactUrl` is a fixed point of itself for every url, including a
+  relative one.** Redacting an already-redacted relative url could change it
+  again, because the relative branch could emit a path beginning with `//`,
+  and reading that value a second time resolved it as protocol-relative. The
+  relative branch now resolves until re-reading it changes nothing.
+- **`console.log`, `util.inspect`, and `Deno.inspect` no longer print an
+  error's raw, unredacted properties on Deno when `Object.prototype` carries
+  a polluted `Symbol.for("Deno.customInspect")`.** The inspect hook stamped
+  only Node's inspect key. Deno resolves its own key first, so a polluted
+  prototype rendered the built-in error's own properties instead of the
+  redacted `toJSON()` record. Both keys are stamped now.
+
 ## [2.0.1] - 2026-08-03
 
 ### Security
