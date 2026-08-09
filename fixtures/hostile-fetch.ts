@@ -1,4 +1,5 @@
 import { typedFetch, type TypedFetchOptions } from "../src/index";
+import { foreignResponses } from "./responses";
 
 /**
  * The conformance corpus for ADR 0003 — one entry per IN-SCOPE row of the
@@ -68,36 +69,13 @@ function rejecting(value: unknown): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-/** A response-shaped foreign object that passes every structural check. */
-function foreignResponse(overrides: Record<string, unknown> = {}): Response {
-  const base: Record<string, unknown> = {
-    [Symbol.toStringTag]: "Response",
-    body: null,
-    bodyUsed: false,
-    headers: new Headers(),
-    ok: true,
-    redirected: false,
-    status: 200,
-    statusText: "OK",
-    type: "basic",
-    url: URL_UNDER_TEST,
-    arrayBuffer: async () => new ArrayBuffer(0),
-    blob: async () => new Blob(),
-    clone: () => foreignResponse(overrides),
-    formData: async () => new FormData(),
-    json: async () => ({}),
-    text: async () => "",
-  };
-  const response = { ...base };
-  for (const [key, value] of Object.entries(overrides)) {
-    if (typeof value === "object" && value !== null && "get" in value) {
-      Object.defineProperty(response, key, value as PropertyDescriptor);
-    } else {
-      response[key] = value;
-    }
-  }
-  return response as unknown as Response;
-}
+/**
+ * A response-shaped foreign object that passes every structural check.
+ *
+ * The accessor-descriptor arm this corpus needs is now the shared builder's, so
+ * the four hand-written copies are one. See `fixtures/responses.ts`.
+ */
+const foreignResponse = foreignResponses(URL_UNDER_TEST);
 
 /** A real `Response` with one own accessor shadowing the platform's. */
 function shadowed(field: string, descriptor: PropertyDescriptor, init?: ResponseInit): Response {

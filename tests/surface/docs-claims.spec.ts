@@ -134,6 +134,36 @@ describe("a request failure's message", () => {
   });
 });
 
+// Audit finding D3. It arrived in the envelope suite, which is where the JSDoc
+// it names lives — but the claim is a DOCUMENT's, not the envelope's, and this
+// file owns exactly that contract: a claim a document makes is a claim the
+// library keeps.
+describe("the forwarding idiom is never named without its warning", () => {
+  const IDIOM = "new Response(r.body, { headers: r.headers })";
+
+  test("CONTROL — the JSDoc names it only beside the warning", () => {
+    const source = readFileSync(new URL("../../src/index.ts", import.meta.url), "utf8");
+    expect(source).toContain(IDIOM);
+    expect(source).toContain("content-encoding");
+  });
+
+  test("the README does not name it without the warning", () => {
+    // The idiom is the line every proxy reaches for, and it is wrong: the
+    // platform hands back a DECODED body while `content-encoding`, the wire
+    // `content-length`, and the hop-by-hop names stay on `headers`, so the
+    // response you emit declares framing its bytes contradict.
+    //
+    // The claim under test: if the tarball's one document still names the
+    // idiom, it must also name the framing headers that make it wrong.
+    const namesTheIdiom = README.indexOf(IDIOM) >= 0;
+
+    expect({ namesTheIdiom, warnsAboutFraming: README.includes("content-encoding") }).toEqual({
+      namesTheIdiom,
+      warnsAboutFraming: namesTheIdiom,
+    });
+  });
+});
+
 describe("the printed error record", () => {
   const RECORD_HEAD = '{"name":"NotFoundError"';
 

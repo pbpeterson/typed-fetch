@@ -1,6 +1,7 @@
 import { describe, test, expect, afterEach } from "vitest";
 import { recordingTransport } from "../../fixtures/recording-transport";
-import { isHttpError, isKnownHttpError, isNetworkError } from "../../src/index";
+import { useTestServer } from "../../fixtures/http-server";
+import { isHttpError, isKnownHttpError, isNetworkError, typedFetch } from "../../src/index";
 import { planFailure, planRequest } from "../../src/request-plan";
 import { httpErrorBrand, knownHttpErrorBrand } from "../../src/errors/brand";
 
@@ -216,5 +217,105 @@ describe("which transport runs decides whether a tagged input is a request", () 
     expect(plan.ambientTransport).toBe(false);
     expect(plan.transportInput).toBe(tagged);
     expect(plan.requestUrl).toBe("https://never-requested.invalid/tagged-url");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROUND 4 — COVERAGE LANE: the hypothesis that did NOT reproduce.
+//
+// Reaching `nativeRequestUrl`'s fallback arm needs a `globalThis.Request` this
+// library did not ship with the transport that will run. That state is worth a
+// second look on its own: `isPlatformRequest` reads `globalThis.Request` while
+// the AMBIENT `fetch` resolves `RequestInfo` against its own internal class, so
+// a MISMATCHED pair is the one shape where the two could disagree about what
+// the transport takes as a request — ADR 0003 row H-26.
+//
+// They do not disagree in a way a caller can observe. Both cases below are
+// pinned so the next pass reads the outcome instead of rebuilding it, and they
+// need the AMBIENT transport and a real server to say so: the claim is that the
+// request reached the same host the error names.
+//
+// This block came from `tests/envelope/typed-fetch.spec.ts`, which called
+// `useTestServer()` a fourth time to host it. Its subject is input
+// classification, so it belongs beside the other three answers to "which
+// transport runs decides whether a tagged input is a request".
+// ═══════════════════════════════════════════════════════════════════════════
+
+const { url: serverUrl } = useTestServer();
+
+describe("a polyfilled Request global paired with the ambient fetch", () => {
+  test("a polyfill that stringifies to its url reaches the same server the error names", async () => {
+    const saved = globalThis.Request;
+    const target = serverUrl({ status: 404 });
+    class PolyfillRequest {
+      constructor(readonly url: string) {}
+      toString(): string {
+        return this.url;
+      }
+    }
+    globalThis.Request = PolyfillRequest as unknown as typeof Request;
+    try {
+      const { response, error } = await typedFetch(
+        new PolyfillRequest(target) as unknown as Request,
+      );
+
+      // The request WAS made, and it was made against the URL the error names:
+      // the transport serialized the input with the same `toString` the library
+      // recorded the URL from. No split.
+      expect(response).toBeNull();
+      expect(isKnownHttpError(error)).toBe(true);
+      if (!isHttpError(error)) throw new Error("expected an HTTP error");
+      expect(error.status).toBe(404);
+      expect(error.url.startsWith(new URL(target).origin)).toBe(true);
+      await error.cancel();
+    } finally {
+      globalThis.Request = saved;
+    }
+  });
+
+  test("a polyfill the transport cannot serialize fails loudly and names the requested URL", async () => {
+    const saved = globalThis.Request;
+    const target = serverUrl({ status: 404 });
+    class PolyfillRequest {
+      constructor(readonly url: string) {}
+    }
+    globalThis.Request = PolyfillRequest as unknown as typeof Request;
+    try {
+      const { response, error } = await typedFetch(
+        new PolyfillRequest(target) as unknown as Request,
+      );
+
+      // No request left the process, the failure carries the platform's own
+      // exception on `cause`, and `url` is the URL the CALLER asked for — which
+      // is what `RequestPlan.requestUrl` is documented to hold.
+      expect(response).toBeNull();
+      expect(isNetworkError(error)).toBe(true);
+      expect((error as unknown as { url: string }).url).toBe(target);
+      expect(error?.cause).toBeInstanceOf(TypeError);
+    } finally {
+      globalThis.Request = saved;
+    }
+  });
+
+  test("a Request whose url is a data property on the prototype is read plainly", () => {
+    // `nativeRequestUrl` finds no accessor and falls back to the plain read.
+    const saved = globalThis.Request;
+    const PLAIN_URL = "https://round4.test/resource";
+    class PolyfillRequest {
+      readonly signal: AbortSignal | undefined = undefined;
+    }
+    Object.defineProperty(PolyfillRequest.prototype, "url", {
+      configurable: true,
+      writable: true,
+      value: PLAIN_URL,
+    });
+    globalThis.Request = PolyfillRequest as unknown as typeof Request;
+    try {
+      const plan = planRequest(new PolyfillRequest() as unknown as Request, {});
+
+      expect(plan.requestUrl).toBe(PLAIN_URL);
+    } finally {
+      globalThis.Request = saved;
+    }
   });
 });

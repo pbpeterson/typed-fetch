@@ -3,6 +3,7 @@ import { isKnownHttpError, isNetworkError, typedFetch } from "../../src/index";
 import { classifyResolvedValue } from "../../src/response-verdict";
 import { NotFoundError } from "../../src/errors/not-found-error";
 import { UnknownHttpError } from "../../src/errors/unknown-http-error";
+import { foreignResponses } from "../../fixtures/responses";
 
 // The response phase's own interface.
 //
@@ -17,28 +18,7 @@ import { UnknownHttpError } from "../../src/errors/unknown-http-error";
 // caller receives; this file is about the decision they all run through.
 
 /** A structurally complete foreign `Response`, as a Fetch polyfill ships one. */
-function foreignResponse(overrides: Record<string, unknown> = {}): unknown {
-  const value: Record<PropertyKey, unknown> = {
-    [Symbol.toStringTag]: "Response",
-    body: null,
-    bodyUsed: false,
-    headers: new Headers({ "content-type": "application/json" }),
-    ok: true,
-    redirected: false,
-    status: 200,
-    statusText: "OK",
-    type: "basic",
-    url: "https://verdict.test/resource",
-    arrayBuffer: async () => new ArrayBuffer(0),
-    blob: async () => new Blob(),
-    clone: () => value,
-    formData: async () => new FormData(),
-    json: async () => ({}),
-    text: async () => "",
-    ...overrides,
-  };
-  return value;
-}
+const foreignResponse = foreignResponses("https://verdict.test/resource");
 
 describe("what a resolved value becomes", () => {
   test("a platform Response below 400 is a success, and the same object", () => {

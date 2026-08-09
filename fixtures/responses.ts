@@ -82,9 +82,41 @@ export function releaseTrackedResponse(status = 500): {
  * Builds a `foreignResponse(overrides)` for one url: a plain object that
  * satisfies the `TypedResponse` baseline without being a platform `Response`.
  *
- * The url is bound once, by the caller, because the two suites that use this
- * plant different urls and each one's assertions name its own.
+ * The url is bound once, by the caller, because the suites that use this plant
+ * different urls and each one's assertions name its own.
+ *
+ * FOUR independent builders had written this out — here, in
+ * `fixtures/hostile-fetch.ts`, in `tests/envelope/typed-fetch.spec.ts`, and in
+ * `tests/response/resolved-value-verdict.spec.ts` — and only one of them
+ * handled an ACCESSOR override. That is the whole reason a suite needing a
+ * getter had to build a fifth copy rather than use one of the four. So the
+ * accessor arm is the shared behavior now: an override that is a plain object
+ * with a callable own `get` is installed as a property DESCRIPTOR, and anything
+ * else is assigned as a value.
+ *
+ * The PLAIN-OBJECT test is load-bearing, and the copy this was merged from did
+ * not have it: `"get" in value` is true of a `Headers` instance, so
+ * `foreignResponse({ headers: new Headers() })` would have installed
+ * `Headers.prototype.get` as the response's `headers` accessor and every read
+ * of it would throw. A descriptor is written as an object literal; almost
+ * nothing this builder is handed as a VALUE is.
+ *
+ * ALMOST, and that is this builder's one limit, stated rather than left to be
+ * discovered: an override that is ITSELF an object literal with a callable
+ * `get` — `{ headers: { get: () => null } }`, a headers double that answers
+ * every lookup with nothing — cannot be passed as a value here. It is why
+ * `tests/request/request-cross-call-isolation.spec.ts` keeps a builder of its
+ * own; that file's comment names this one.
  */
+function isAccessorDescriptor(value: unknown): value is PropertyDescriptor {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    typeof (value as PropertyDescriptor).get === "function"
+  );
+}
+
 export function foreignResponses(url: string): (overrides?: Record<string, unknown>) => Response {
   return function foreignResponse(overrides: Record<string, unknown> = {}): Response {
     const base: Record<string, unknown> = {
@@ -105,7 +137,15 @@ export function foreignResponses(url: string): (overrides?: Record<string, unkno
       json: async () => ({}),
       text: async () => "",
     };
-    return { ...base, ...overrides } as unknown as Response;
+    const response: Record<string, unknown> = { ...base };
+    for (const [key, value] of Object.entries(overrides)) {
+      if (isAccessorDescriptor(value)) {
+        Object.defineProperty(response, key, { configurable: true, ...value });
+      } else {
+        response[key] = value;
+      }
+    }
+    return response as unknown as Response;
   };
 }
 

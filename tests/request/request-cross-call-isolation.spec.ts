@@ -54,6 +54,13 @@ interface MutableForeignResponse {
 /**
  * A structurally complete foreign `Response` whose members are own data
  * properties, so a test can break one after the value has been accepted.
+ *
+ * NOT `fixtures/responses.ts`'s `foreignResponses`, and the reason is one line
+ * below: this file plants `{ headers: { get: () => null } }`, a headers double
+ * that answers every lookup with nothing. The shared builder reads an object
+ * literal with a callable `get` as a property DESCRIPTOR, so that override
+ * would silently become an accessor and the test would stop asking its
+ * question. The shared builder's JSDoc names this limit.
  */
 function foreignResponse(overrides: Record<string, unknown> = {}): MutableForeignResponse {
   const value: MutableForeignResponse = {
