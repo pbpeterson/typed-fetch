@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+Every released version at or below `2.0.1` carries at least one of the
+defects this section fixes. A URL that carries userinfo can reach
+`error.message` and `toJSON()` with a credential intact. The same is true
+when the userinfo sits inside an embedded URL: a path segment, a
+protocol-relative reference, or a bare `//` with no scheme. Upgrade past
+this release to close every shape below. `SECURITY.md` lists what remains
+open after the fixes land.
+
 ### Security
 
 - **`redactUrl` now opens a credential-hiding region everywhere the URL
@@ -33,12 +41,13 @@
   inside `new URL` — and a thrown scan answered null, so the credential in
   front of it never entered a region and reached `error.message`,
   `toJSON()`, and every other redacted channel unredacted. 112 of a
-  200-url seam population leaked this way. The removed span is now the
-  parser's own answer whether the parse SUCCEEDS with a credential or
-  THROWS; only a parse that succeeds and reports no credential is believed,
-  which is what keeps a `file:` drive letter
-  (`file:///c:/Users/alice@corp/x`) whole. See `SECURITY.md` for the shapes
-  that remain open.
+  200-url seam population leaked this way. The scan no longer asks a parse
+  to confirm a credential at all. It reads the parser's own SPLIT POINT
+  directly — the last `@` before the authority ends. A `file:` drive
+  letter (`file:///c:/Users/alice@corp/x`) stays whole because `file:`
+  opens no region under fewer than two solidi, not because a parse
+  reported no credential. See `SECURITY.md` for the shapes that remain
+  open.
 - **`redactUrl` no longer loses a credential behind a scheme that matches
   its own internal resolution base.** A relative reference whose scheme
   equals the internal base's resolves to a path with its scheme colon eaten
@@ -84,6 +93,18 @@
   the seam reported no username and no password while the parser had still
   read it as userinfo. That span kept its credential. The scan now reads
   the split point directly and no longer parses to confirm it.
+
+### Changed
+
+- **`redactUrl`'s output moved in both directions for an ordinary input,
+  not only for an attack shape.** An embedded credential in an ordinary
+  path segment is now removed where it used to survive — see the region
+  rules above. A `file:` path segment is now kept where it used to be
+  deleted, because `file:` opens no region under fewer than two solidi.
+  See the `file:` bullet above. Anything that greps or alerts on
+  `error.message` or `toJSON().url` sees a different string after this
+  upgrade. That is true even for a url that carried no credential at all
+  before this release.
 
 ## [2.0.1] - 2026-08-03
 

@@ -1057,7 +1057,8 @@ its scheme. `error.url` still holds the full href.
 
 A hierarchical path is kept, so a secret in a path segment reaches the record.
 Dropping the path would reduce `url` to the origin and prevent request
-correlation.
+correlation. Read [Known residuals](https://github.com/pbpeterson/typed-fetch/blob/main/SECURITY.md#known-residuals)
+for the exact shapes that still reach the record.
 
 A repeated `set-cookie` appears once per arrival, so `["set-cookie", "set-cookie"]` tells you the server sent two. Every other repeated name is combined into one entry by the platform, and its values are joined with a comma. Two `warning` headers therefore produce one `"warning"` entry. Read `error.headers` for the values, and `error.headers.getSetCookie()` for the cookies.
 

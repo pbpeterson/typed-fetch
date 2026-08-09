@@ -64,11 +64,28 @@ known limit rather than a surprise.
   END question, and the seam's own span. So `redactUrl` is a fixed point of
   itself: `redactUrl(redactUrl(u)) === redactUrl(u)`.
 
-  Neither `error.message` nor `toJSON().url` emits a byte the caller wrote
-  after a `?` or a `#`, under any spelling. `error.url` keeps that byte,
-  because it is the raw href — see the escape-hatch bullet below. Two
-  residuals are left in what `error.message` and `toJSON().url` withhold,
-  and neither can be told apart from an ordinary path by a structural rule.
+  `toJSON().url` never emits a byte the caller wrote after a `?` or a `#`,
+  under any spelling. It is `redactUrl(this.url)`, and `redactUrl` never
+  reads a query or a fragment.
+
+  `error.message` holds that property only for a message this library
+  writes. `classifyRequestFailure` is the single construction site, and it
+  passes a library constant built from `redactUrl`. `NetworkError`'s
+  message is public API, and a caller can pass a platform's own text
+  instead. The constructor cleans that text with `redactUrlInMessage`, an
+  exact-string replacement of the url the caller also supplied. The
+  replacement is best effort: a message that quotes a different spelling of
+  the same url finds no match. A stripped fragment, a normalized default
+  port, and a case-folded host are three such spellings. The query or
+  fragment byte in that spelling survives in `error.message`, and in
+  `toJSON().message`, which is the record a structured logger writes. See
+  `redactUrlInMessage`'s own comment for the full best-effort contract.
+
+  `error.url` keeps every byte regardless, because it is the raw href — see
+  the escape-hatch bullet below. Two residuals are left in what `redactUrl`
+  itself withholds, reachable through `toJSON().url` and through any
+  message this library writes. Neither can be told apart from an ordinary
+  path by a structural rule.
   The first is a credential whose LAST character is `/`. It stays open,
   because `://host/users/@alice` and `://token/@host` spell the same three
   characters. The second is a credential holding a `://` behind text the

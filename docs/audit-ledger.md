@@ -892,6 +892,128 @@ Four findings; H1 returned clean for the third consecutive round.
   divergence is order only, never count. It judged `snapshotRequestInit`'s
   fidelity by what a real HTTP server received for 31 init shapes.
 
+### What round 15 settled
+
+Three findings; H1 and H3 both returned clean — H3 for the first time in
+eight rounds. Round 15 is the protocol's cap: see the closing entry below.
+
+- **R15-H2-01 (medium).** Round 14 taught the redaction loop's SEAM cursor
+  to skip a dot segment its own removal exposes. The ORDINARY region's
+  cursor, in `malformedUserinfoSpans`, kept advancing over solidi alone, so
+  the same input shape — one credential per dot segment — still drained
+  one group per pass wherever no seam existed. A remote server chooses that
+  shape through a 302 `Location` header: measured at 204 ms against 0.2 ms
+  for a same-length, same-character control that differs only in where the
+  `@` sits, because the ordinary cursor had not learned to advance past the
+  dot segments its own removal creates.
+- **The cursor rule that closed R15-H2-01, and the fix that was rejected.**
+  One cursor rule, with a set parameter, closes the class: a cursor may
+  advance past a `..` dot segment only where nothing a pop could shorten
+  lies in front of it, which is the seam's position and no other. The
+  hunter's proposed one-line fix applied round 14's seam rule to the
+  ordinary cursor too, swallowing every `..` there. A `..` inside a removed
+  span is a `..` the rebuild never performs, so the segment it would have
+  popped survives instead — under-redaction, not over-redaction. Six
+  inputs in 200,000 generated ones lost a credential that way. The
+  hunter's claim that every changed answer removed MORE text was false:
+  run over every changed row with the round-12 oracle, rather than by
+  inspection, 1,622 systematic rows removed less. The shipped fix is
+  narrower — the seam's cursor takes the full dot-segment set, the
+  ordinary region's cursor takes only the single-dot spellings.
+- **The twelfth parser normalisation, absorbed rather than mirrored.** The
+  URL Standard's file path state normalises a Windows drive letter — an
+  ASCII alpha followed by `:` or `|` in the FIRST path position has its
+  second code point replaced with `:` — and it is the only normalisation
+  that can CREATE an authority mark from text that held none, because
+  `c|//` is not a colon and `c://` is. A removal can promote a later
+  segment into first position, so the mark appears in the rebuild rather
+  than in the text that was scanned. The module mirrors it nowhere, and
+  needs no mirror: `file:///a@c|//svc:PW@internal.test/v1` answers
+  `file:///c://internal.test/v1`, because the pass that emits an answer is
+  a pass that scanned that exact answer.
+- **A correction to round 14's recorded reason for not mirroring host
+  normalisation.** "The module never computes a host, it takes
+  `parsed.host` and asks the parser" is true but not sufficient:
+  `cleaned` glues that host text back onto a path and re-parses it once
+  per pass, so the claim that must hold is that a host the parser
+  emitted is a fixed point of the parser. It is, verified across fourteen
+  forms — IPv4 and IPv6 spellings, percent-encoding, case, a trailing dot,
+  a normalized port, and Punycode among them.
+- **A residual recorded, not closed.** `redactUrl`'s relative branch
+  resolves one protocol-relative authority per parse, so a caller-written
+  relative reference of N `//host` groups costs N parses: 16 KB of `//a//`
+  measured 606 ms before this round's fix and 682 ms after it. The url is
+  always caller-chosen, never a redirect target, because `response.url` is
+  absolute. Closing it means deciding where the last authority ends
+  without parsing to it, which reopens the class rounds 13 through 15 each
+  found a defect in.
+- **R15-H4-01 and R15-H4-02 — the document, not the module.** Two lanes
+  independently falsified `SECURITY.md`'s claim that neither
+  `error.message` nor `toJSON().url` emits a query or fragment byte under
+  any spelling. `toJSON().url` holds that property by construction, but
+  `error.message` holds it only for a message this library writes:
+  `NetworkError`'s message is public API, and its constructor cleans a
+  caller-supplied platform message with an exact-string replacement of
+  `url` — best effort, and defeated by a message that quotes a different
+  spelling of the same url, such as a stripped fragment or a normalized
+  default port. Separately, `CHANGELOG.md`'s `[Unreleased]` section still
+  stated round 12's believed-parse rule for the seam — "only a parse that
+  succeeds and reports no credential is believed" — a rule round 14
+  replaced with a direct read of the parser's split point. `RELEASING.md`
+  step 1 moves `[Unreleased]` verbatim into an immutable dated section, so
+  the stale sentence would have shipped as a permanent record of a
+  mechanism the package no longer has. Both are fixed in `SECURITY.md` and
+  `CHANGELOG.md`.
+- **Termination is now pinned, not assumed.** A test replaces
+  `globalThis.URL` with a subclass for the length of one synchronous call,
+  which reads the loop's own steps without the module holding a counter
+  for anyone. Over 1,400 constructions, no rebuild ever answers with a
+  pathname longer than the path it was given. The pass-count bound is
+  asserted as an EQUALITY, not a ceiling: four groups and four hundred
+  groups cost the same number of parses. That equality fails on the
+  pre-fix tree.
+- **The four lane handovers.** Each round-15 lane file states, in its own
+  comments, what it leaves PROVEN, what it leaves ASSUMED, and what to
+  attack first. The full text lives in `round15-h1-request-input.spec.ts`,
+  `round15-h2-response-error.spec.ts`, `round15-h3-disclosure.spec.ts`, and
+  `round15-h4-surface.spec.ts`. The load-bearing items:
+  - **H1.** The module's cross-call state is exactly one `WeakSet`, pinned
+    executably against the module's own declaration list. Phases 1 and 3
+    of `typedFetch` contain no `await`, which is the structural reason two
+    calls cannot interleave inside either one. Attack first: phase 3's
+    catch releases the body of a `Response` an earlier call already
+    returned as a success. Not reachable today through an honest
+    `Response` — it needs a value that answers `type` differently on a
+    second presentation, which ADR 0003 puts permanently out of scope as
+    item 3 — but it is a real cross-call coupling with no ADR sentence
+    naming it, and it needs one, or a custody check, rather than a guard.
+  - **H2.** The loop's termination bound, and the fact that the bound is
+    TIGHT. Attack first: for every cursor that advances past a removal,
+    does it advance past everything the next parse deletes.
+  - **H3.** The absolute branch is a pure function of the parsed URL,
+    which closes eight of the twelve normalisations by unreachability
+    rather than by mirroring. It believes the class is closed
+    structurally, and names what would change its mind: a fixed-point
+    violation, a reader-credential witness, a `cleaned` pass that returns
+    text it did not scan, or a third `bringsOwnAuthority` spelling.
+  - **H4.** The residual list above, and the release assessment recorded
+    in `CHANGELOG.md`'s `[Unreleased]` lead paragraph and `### Changed`
+    section.
+- **The Node floor, now measured.** For seven rounds every gate was green
+  without ever executing the declared `engines` floor, because
+  `smoke:node-min` only WARNS on a newer runtime and CI's
+  `node-version: 20` resolves to the latest 20.x. The orchestrator ran
+  `scripts/smoke/node-min.mjs` on a real Node 20.13.0 against a freshly
+  built `dist` after the final round: OK, exit 0. Bun stays unexercised
+  locally. `smoke:deno` and `check-deno-consumer` ran green in the
+  round-13 and round-14 gates.
+- **The loop hit the cap.** The protocol stops at round 15 whether or not
+  two consecutive clean rounds occurred, and they did not: no round from
+  8 through 15 produced zero findings. Eight rounds ran, and every one of
+  them found at least one defect: 5, 4, 3, 4, 4, 5, 4, and 3 findings,
+  fifteen of them critical. The audit did not converge. A human should
+  read the four handovers above before deciding this module is done.
+
 ## Adjudicated closed
 
 Correct about the code. Not defects.
