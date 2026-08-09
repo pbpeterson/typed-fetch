@@ -72,6 +72,23 @@ The smoke script performs both the direct `deno check` and runtime probe.
 If `pnpm format:check` fails, run `pnpm format` to fix it in place, then
 re-check.
 
+### Where a spec file goes
+
+The suites live in `tests/`, one folder per subject: `redaction`, `request`,
+`response`, `errors`, `surface`, and `envelope`. Put a new spec in the folder
+that names its subject. Read a repository path with `../../` from there, or —
+for anything under `dist/` — with `builtEntryUrl` from `fixtures/built-package`,
+which states its argument from the repository root and is the ONE place that
+resolves a built path.
+
+Do not put a spec anywhere else. Vitest globs the whole repository, so a spec
+outside `tests/` still runs; `tsconfig.test.json` globs only `tests/`, so the
+same file leaves `pnpm typecheck`. The gate keeps reporting success while it
+stops reading the file, and the `expectTypeOf` assertions in it stop meaning
+anything. `tests/errors/base-http-error.spec.ts` guards the same shape from the
+other side: it walks every spec under `tests/` and fails if it finds fewer than
+the folders hold.
+
 ### The public surface is frozen — both axes (`pnpm test`)
 
 `public-surface.spec.ts` snapshots the exact public export surface of the **built**
@@ -103,7 +120,7 @@ _or_ type — is a deliberate, reviewed act. After you change the code, rebuild
 and update the snapshots:
 
 ```bash
-pnpm build && pnpm test -u   # rewrites __snapshots__/public-surface.spec.ts.snap
+pnpm build && pnpm test -u   # rewrites tests/surface/__snapshots__/public-surface.spec.ts.snap
 ```
 
 Commit the snapshot diff alongside the code change so the reviewer sees exactly
@@ -257,7 +274,7 @@ owns the wrapping of every document in the roster. Both misses are review items.
 
 `scripts/check-consumer.mjs` covers a case no other test reaches: **every
 other test runs against `src/` or a single built entry point.** The root
-`*.spec.ts` suites import `./src/index`; the bun/deno smokes import
+`tests/**/*.spec.ts` suites import `../../src/index`; the bun/deno smokes import
 `dist/index.mjs` (the main
 entry only); the API-surface snapshot checks export _names_; `verify-pack`
 checks file _paths_. None of them installs the artifact and runs it the
