@@ -39,7 +39,10 @@ defined term is correct here.
   Needing to test _past_ an interface means the module is the wrong shape. The
   body-lifecycle extraction happened because a large group of tests constructed
   a `NotFoundError` to reach behavior that was not about `NotFoundError`.
-  Those tests now call `errorBodyOf` directly.
+  Those tests now call `errorBodyOf` directly. The inspect module took the same
+  turn: the specs named a platform symbol to reach the hook and invoked whatever
+  they found, so a key rename broke files that were about rendering. They now
+  call `inspectRendersOf`, which answers for every gated runtime at once.
 
 ## Domain vocabulary
 
@@ -93,6 +96,14 @@ Words this codebase already uses, some of them only implicitly until now.
 - **Copy** — one instance of this library's classes in a process. Two entry
   points (`.`, `./errors`) × two formats (ESM, CJS) means a consumer can hold
   several. `instanceof` is per-copy and unreliable across them.
+- **Pre-response** — the three classes a request produces when no response is in
+  hand: `NetworkError`, `AbortedError`, and `TimeoutError`. They take `cause`,
+  `reason`, and `url` from a CALLER rather than from a `Response`, so every slot
+  is read as an own property and normalized. The own-property read and the
+  string normalizer are `untrusted-read`'s, shared with the `Response` path. One
+  module owns that construction,
+  and a disclosure decision about a request failure lands there once instead of
+  in three files.
 - **Brand** — a `Symbol.for`-keyed marker stamped on a root error prototype so
   the guards recognize a value across copies. The authority on "did this library
   make this?" — not `instanceof`, and not assignability.
@@ -161,7 +172,10 @@ Words this codebase already uses, some of them only implicitly until now.
     `unique symbol` into both declaration files and reintroduces the `#private`
     cross-format assignability hazard (`TS2741`). Five members are stamped
     this way: the brands, the inspect hook under Node's key, the same hook
-    under Deno's key, the ownership query, and the string-conversion hook. One
+    under Deno's key, the ownership query, and the string-conversion hook.
+    `BaseHttpError` stamps its own; the three pre-response classes stamp theirs
+    through one call in `pre-response-error`, so a class cannot receive the
+    brand without the hooks. One
     key per gated runtime, not one key: Bun resolves Node's key, and Deno
     resolves `Symbol.for("Deno.customInspect")` first. The brands and the
     query are stamped `writable: false, configurable: false`, because a
@@ -301,28 +315,85 @@ src/http-status-codes.ts      statusCodeErrorMap — a ReadonlyMap DERIVED from
 src/errors/base-http-error    HTTP error IDENTITY: status, statusText, url,
                               headers, message. Delegates the body.
 src/errors/response-identity  records the first successful read of each
-                              Response identity field. INTERNAL — never export
-                              it from a barrel.
+                              Response identity field, and nothing else: the two
+                              reads that never touch a `Response` moved to
+                              `untrusted-read`. INTERNAL — never export it from
+                              a barrel.
 src/errors/error-body         the response-body lifecycle: claim, cancel, tee.
                               Rejection cleanup can use captured Response and
                               ReadableStream operations when own properties or
                               replaced prototypes hide a native live body.
                               INTERNAL — never export it from a barrel.
 src/errors/redact-url         applies **structure and value** to a URL and to a
-                              library-authored message. Total: it answers the
-                              empty string rather than throwing. INTERNAL —
+                              library-authored message. It holds the emission
+                              policy alone, and asks the scanner every grammar
+                              question. Total: an unresolvable url answers the
+                              empty string, and a rebuild that cannot parse
+                              answers the ORIGIN — never a throw, and never a
+                              path that has lost the host it named. INTERNAL —
                               never export it from a barrel.
-src/errors/userinfo-spans     finds every span of a text the URL Standard reads
-                              as userinfo, and answers spans rather than a
-                              redacted string. It sits UNDER redact-url's
-                              rebuild loop, never inside it. INTERNAL — never
-                              export it from a barrel.
+src/errors/userinfo-spans     the URL grammar, and the one module that reads it.
+                              It finds every span of a text the URL Standard
+                              reads as userinfo, and answers spans rather than a
+                              redacted string. It also owns every other grammar
+                              question its caller has: which schemes name a
+                              hierarchy, where an authority opens, and where one
+                              ends. The character classes and the scheme list
+                              are PRIVATE. A second file that holds them is a
+                              second file that can answer a grammar question for
+                              itself, and two answers to "is this scheme special
+                              at this colon" had already drifted apart about
+                              `file:`. It sits UNDER redact-url's rebuild loop,
+                              never inside it. INTERNAL — never export it from
+                              a barrel.
 src/errors/known-http-error   the branded base the 40 dedicated classes
                               extend. INTERNAL — it is what isKnownHttpError
                               requires, and what a consumer subclass cannot
                               obtain.
 src/errors/brand              cross-copy identity: the brands, and the
                               ownership query one copy asks another
+src/errors/inspect            the two channels `toJSON` does not cover: the
+                              inspect hook under the key of every gated runtime,
+                              and the string-conversion hook. `installInspect`
+                              stamps all of them from ONE call, on the four root
+                              prototypes — `BaseHttpError` directly, and the
+                              three pre-response classes through
+                              `pre-response-error`. `inspectRendersOf` answers with the
+                              render of EVERY gated runtime, so a caller cannot
+                              ask one key and leave the other unasked. The keys
+                              themselves are PRIVATE. INTERNAL — never export it
+                              from a barrel.
+src/errors/pre-response-error the construction the three PRE-RESPONSE classes
+                              share — NetworkError, AbortedError, TimeoutError.
+                              One read of the caller's options answers with the
+                              cleaned message AND the members, because a second
+                              read lets a getter make `message` and `url` name
+                              two different servers. It owns `define`, the one
+                              descriptor every own member of every error class
+                              in this library gets, so `base-http-error`'s two
+                              members and these five answer to one definition.
+                              It stamps rather than inherits: a shared base
+                              class would add a link to the published prototype
+                              chain of three released classes. INTERNAL — never
+                              export it from a barrel.
+src/errors/untrusted-read     every read this library performs against a value
+                              it does not trust, behind five total calls: is it
+                              an object, its text, ONE own slot of it, whether
+                              `Object.prototype` carries a key, and the bounded
+                              prototype walk that answers the one question
+                              pollution cannot. The object-likeness test was
+                              spelled EIGHT times across five files, and two of
+                              the copies had already drifted in their null test.
+                              `brand` held the walk and the pollution test twice
+                              each. `ownSlot` and `textOf` came from
+                              `response-identity`, which is named for a
+                              `Response` and never read one for either of them.
+                              The walk answers with the DESCRIPTOR, because a
+                              brand counts only as the literal `true` while the
+                              ownership query accepts any member under its key.
+                              A read that carries a POLICY stays with the module
+                              that owns the policy. INTERNAL — never export it
+                              from a barrel.
 src/errors/helpers            the roster and the public unions
 ```
 
@@ -358,3 +429,19 @@ them, in the way `bodies` already works. That would also close vitest's
 assertion-message channel, which reads non-enumerable own property names. It is
 rejected for now. It refactors two released public properties for the
 lowest-value sink in the inventory.
+
+A second one is closed rather than open. Branch custody — the tee, the identity
+loan, the cross-copy question, and the five refusals `clone()` decides between —
+was considered as a **module** of its own and refused. It has ONE caller and can
+never have a second: every refusal is phrased in terms of `this`, and two of them
+(`copy === this`, and the raw `instanceof` that catches a Proxy claiming this
+copy) are about the error class itself. The **deletion test** answers the same
+way — deleting it makes complexity reappear in one method, not across callers —
+and the smallest honest interface for it, `cloneWithCustody(error, build)`, is
+congruent to `clone(recreate)` rather than smaller than it. **The interface is
+the test surface** settles it: the observable that separates a released branch
+from an **orphan** is `branch.bodyUsed` plus a `cancel()` that settles, so the
+decision is testable only through a real error holding a real teed body. That is
+the opposite of why `error-body` was extracted. The reasoning in `clone()` is
+long because the decision is long; another file would make it a long file
+elsewhere.
