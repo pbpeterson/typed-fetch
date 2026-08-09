@@ -720,18 +720,59 @@ function nativeRequestUrl(request: Request): unknown {
 }
 
 /**
- * `Request.prototype`'s own `signal` getter, applied to a platform `Request`.
+ * The signal a handed-over `Request` contributes, or nothing when no read of it
+ * can answer.
  *
- * Called only for a value {@link isPlatformRequest} accepted, so the accessor
- * always has its slot to report. Falls back to a plain read when the accessor
- * cannot be found — a runtime where `signal` is a data property still answers
- * correctly.
+ * TOTAL, and that is the whole of the design. This read DESCRIBES the request;
+ * it does not make one. The transport applies its own signal to the request it
+ * sends — the platform reads an internal slot that no getter of the caller's
+ * stands in front of — and this module reads one only so
+ * `classifyRequestFailure` knows which authority to consult. A read that cannot
+ * answer therefore means "no signal I can see", which is the state every call
+ * that carries no signal is already in, and never "refuse the request".
+ * {@link classifyRequestInput} says exactly that about the sibling `url` read
+ * one slot up; for three rounds this one said the opposite, and a `Request` the
+ * transport could have sent came back as a `NetworkError` with no request
+ * behind it.
+ *
+ * The accessor FIRST, the plain read SECOND, and no predicate choosing between
+ * them. `Request.prototype.signal` is a read-only accessor over the slot the
+ * platform aborts on, so an own data property shadows it for every plain read —
+ * the decoy a decorating middleware writes, exactly as an own `url` is, which
+ * is why the accessor is tried first. Whether that accessor can REPORT the slot
+ * is a fact about how the value was allocated, and no predicate here can decide
+ * it: `instanceof Request` asks about a prototype CHAIN, so a `Proxy` over a
+ * `Request` and an `Object.create(Request.prototype)` both pass it while the
+ * accessor applied to either one throws. Three rounds of predicates named three
+ * different cases and each missed the next. Applying the accessor asks the
+ * question itself, and its failure is the answer.
+ *
+ * The lookup is inside the `try` for the same reason: a runtime with no
+ * `Request` global at all falls through to the plain read instead of needing a
+ * guard that no test can take the other arm of.
  */
-function nativeRequestSignal(request: Request): AbortSignal | undefined {
-  const getter = Object.getOwnPropertyDescriptor(Request.prototype, "signal")?.get;
-  const raw: unknown =
-    typeof getter === "function" ? Reflect.apply(getter, request, []) : request.signal;
-  return raw as AbortSignal | undefined;
+function handedOverSignal(request: Request | null): AbortSignal | null | undefined {
+  // Nothing was handed over — phase 1 serialized the input instead — so nothing
+  // contributes a signal.
+  if (request === null) return undefined;
+
+  try {
+    const getter = Object.getOwnPropertyDescriptor(Request.prototype, "signal")?.get;
+    if (typeof getter === "function") {
+      return Reflect.apply(getter, request, []) as AbortSignal | null;
+    }
+  } catch {
+    // No slot for the accessor to report: an exotic object over a `Request`, or
+    // a value {@link transportTakesRequest} admitted on the wider tag check.
+    // The plain read below is the whole of such a value's signal.
+  }
+
+  try {
+    return request.signal;
+  } catch {
+    // A signal that cannot be read governs nothing.
+    return undefined;
+  }
 }
 
 /**
@@ -931,19 +972,14 @@ export async function typedFetch<JsonReturnType>(
       signal = initSignal ?? undefined;
     } else {
       // THE RULE, for both fields the setup phase takes off a handed-over
-      // `Request`: read it through `Request.prototype`'s accessor whenever the
-      // input is a platform `Request`, and as a plain own property only when it
-      // is not one — because only then is there no slot for the accessor to
-      // report. `classifyRequestInput` already reads `url` this way, one slot
-      // further up, and this is the same read for the same reason.
+      // `Request`: try `Request.prototype`'s accessor, fall back to the plain
+      // read, and answer with nothing when neither can answer.
+      // `classifyRequestInput` already reads `url` that way, one slot further
+      // up, and this is the same read for the same reason.
+      // {@link handedOverSignal} holds the reasoning for the order and for the
+      // absence of a predicate in front of it.
       //
-      // The slot behind the accessor is what a platform `fetch` aborts on. That
-      // accessor is read-only, so `Object.defineProperty(request, "signal",
-      // { value })` shadows it for every plain read — the decoy an own `url`
-      // already was, written by the middleware that decorates a `Request`
-      // rather than by the call site.
-      //
-      // WHICH TRANSPORT RUNS cannot decide this, and that was the previous
+      // WHICH TRANSPORT RUNS cannot decide this, and that was one earlier
       // spelling. A `Request` reaches the platform under caller code as much as
       // under the ambient transport: `{ fetch: (input, init) =>
       // globalThis.fetch(input, init) }` — the wrapper that logs, retries, or
@@ -951,25 +987,13 @@ export async function typedFetch<JsonReturnType>(
       // on the slot while the library read the shadow, and a request that WAS
       // aborted came back as a `NetworkError`. A consumer's retry policy reads
       // that class. This module cannot see what caller code does with a
-      // `Request`, so it must not branch on it; whether the accessor APPLIES is
-      // a fact about the INPUT, which it already decided for itself.
-      //
-      // A tagged non-platform input keeps the plain read for the only reason
-      // there ever was: `transportTakesRequest` admitted it on the wider tag
-      // check, it carries no slot, and the accessor would throw on it. Its own
-      // property is the whole of its signal.
+      // `Request`, so it must not branch on it.
       //
       // One case is under-reported: caller code that reads the own property
       // AND aborts on it, over a platform `Request` whose slot signal is not
       // aborted. It resolves to `NetworkError`, the safe direction the
       // transport phase below already documents for an untrustworthy signal.
-      //
-      // `requestInput` is never null on the accessor arm: a platform `Request`
-      // is also tagged, so BOTH arms of `transportTakesRequest` hand it over.
-      const handedOver = input.platformRequest
-        ? nativeRequestSignal(requestInput as Request)
-        : requestInput?.signal;
-      signal = handedOver ?? undefined;
+      signal = handedOverSignal(requestInput) ?? undefined;
     }
 
     // Fetch reads RequestInit as a WebIDL dictionary, so inherited properties
