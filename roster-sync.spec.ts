@@ -115,6 +115,35 @@ describe("roster sync", () => {
     expectTypeOf<InstanceType<HttpErrors>>().toEqualTypeOf<ClientErrors | ServerErrors>();
   });
 
+  // 1b. Per-group exhaustiveness, derived from each class's own status
+  // (compile-time). Check 1 only proves the UNION of ClientErrors and
+  // ServerErrors matches the array-derived instance union — a class moved
+  // from one hand-written union to the other leaves that union unchanged,
+  // so check 1 stays green while the class sits in the wrong group. This
+  // test computes each group independently: it reads every class's own
+  // static `status` literal off HttpErrors and sorts it by its status's
+  // first digit, then compares that computed split against the
+  // hand-written ClientErrors/ServerErrors unions. Nothing here is a
+  // hand-written class list — the split comes from `status` alone, so a
+  // class that moves between the two hand-written unions without its
+  // status changing now fails on the group it left as well as the group
+  // it wrongly joined.
+  test("ClientErrors holds exactly the classes whose own status is 4xx, and ServerErrors exactly the classes whose own status is 5xx", () => {
+    type ClassesWithStatusPrefix<Ctor, Prefix extends string> = Ctor extends {
+      status: infer Status extends number;
+    }
+      ? `${Status}` extends `${Prefix}${string}`
+        ? Ctor
+        : never
+      : never;
+
+    type DerivedClientErrors = InstanceType<ClassesWithStatusPrefix<HttpErrors, "4">>;
+    type DerivedServerErrors = InstanceType<ClassesWithStatusPrefix<HttpErrors, "5">>;
+
+    expectTypeOf<DerivedClientErrors>().toEqualTypeOf<ClientErrors>();
+    expectTypeOf<DerivedServerErrors>().toEqualTypeOf<ServerErrors>();
+  });
+
   // 2. Cardinality + map<->array agreement (runtime). Guards against a
   // class present in one artifact but not the other, or a status code
   // whose map entry disagrees with the class's own static `status`.
