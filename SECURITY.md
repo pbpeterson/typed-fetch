@@ -13,19 +13,29 @@ known limit rather than a surprise.
 - **A credential can reach a crash dump through `error.cause`.** A platform
   quotes the URL it refused back in its own message, credentials included.
   Every channel this library controls redacts that value: `error.message`,
-  `toJSON()`, `toString()`, and the `util.inspect` hook. Node's
-  fatal-exception printer renders `[cause]` on a crashing error and ignores
-  every inspect hook, so an unhandled rejection or a `throw error` can print a
-  password. Handle request failures as values, which is what this library
-  returns them as, and do not copy `error.cause` into a log line.
+  `toJSON()`, `toString()`, and the `util.inspect` hook. Two channels carry
+  `error.cause` out unredacted, because both are platform algorithms with no
+  hook. Node's fatal-exception printer renders `[cause]` on a crashing error
+  and ignores every inspect hook, so an unhandled rejection or a `throw error`
+  can print a password. `structuredClone` copies `error.cause` unchanged.
+  `postMessage` uses the same algorithm, so passing an error to either one
+  sends the password into another realm. Handle request failures as values,
+  which is what this library returns them as. Do not copy `error.cause` into
+  a log line. Do not pass an error to `structuredClone` or `postMessage`
+  without removing `cause` first.
 - **A secret in a URL PATH SEGMENT survives in `error.url`.** The redactor
   drops userinfo, the query, and the fragment, and keeps the origin and path.
   Dropping the path would leave `url` unable to tell concurrent failures
   apart. An embedded url inside that path is not a path segment. A region
   opens where the URL Standard opens an authority: at two or more solidi
   under any scheme, and at a SPECIAL scheme (`http`, `https`, `ws`, `wss`,
-  `ftp`, `file`) over any number of solidi, including none. A non-special
-  scheme under fewer than two solidi is an opaque path and keeps its text.
+  `ftp`, `file`) over any number of solidi, including none. A region ends at
+  every `@` inside it. Each `@` is asked, on its own, whether the text before
+  it is userinfo. The removed span is the union of the `@` marks that answer
+  yes. The target path's trailing segments cannot decide whether the
+  credential before them is removed, because each `@` is asked
+  independently. A non-special scheme under fewer than two solidi is an
+  opaque path and keeps its text.
   `error.url` never emits a byte the caller wrote after a `?` or a `#`, under
   any spelling. The one residual left is a credential whose LAST character is
   `/`. It stays open, because `://host/users/@alice` and `://token/@host`

@@ -629,6 +629,72 @@ the third consecutive round.
   Proved by moving `NotFoundError` in a scratch copy outside the repository
   and watching `typecheck` fail.
 
+### What round 11 settled
+
+Four lanes: request setup and classification, URL redaction, disclosure
+channels, and the documents against the built package. H2 returned clean for
+the fourth consecutive round.
+
+- **R11-H1-01 (high) and R11-H1-02 (medium), one defect.** Round 10 branched
+  the `signal` read on `input.platformRequest` and stated there was no third
+  case. There were two. A `Proxy` over a platform `Request` is `instanceof
+Request`, so the branch applied the prototype accessor, which throws when
+  applied to a proxy — and the request was never sent at all, resolving
+  `NetworkError` with an empty url. Any input whose `signal` read throws
+  refused the whole request, while the sibling `url` read had caught its own
+  throw since round 8. The branch is gone: the read tries the accessor, falls
+  back to a plain read, then to no signal, because the accessor's own failure
+  answers the question no predicate over a prototype chain can. Record the
+  invariant: no read the setup phase performs to DESCRIBE a request can stop
+  the transport from running; only the reads that PRODUCE what the transport
+  receives may end a call. Record also that round 9's three-read inventory
+  was incomplete when written — `value instanceof Request` runs a prototype
+  walk a `Proxy` trap can hijack, and it was hardened by accident rather than
+  by inventory.
+- **R11-H3-01 (critical).** A region tested one `@`, the last one before its
+  closing mark, so `https://api.test/go/https://BEARER_SECRET@cdn.test/img/@alice`
+  read `BEARER_SECRET@cdn.test/img/` as a path because it ends in `/` and
+  shipped the credential through all seven channels. The rule is now one
+  question per `@` and the union of the yes answers, re-asked of what each
+  answer leaves behind.
+- **The defect the fix found in itself.** The first form of the fix removed a
+  credential and left text its own rule calls userinfo, because removing a
+  span moves the region's first `/` and first `:`, which both rules read — a
+  colon-bearing host like `[::1]` or `host:8443` triggered it. Measured as
+  1,925 fixed-point failures over 604,204 urls where the previous commit had
+  none. Asking again after each answer closed it, bounded at three answers
+  per region, and the scan stays linear.
+- **The class measure.** Tail-independence over 249,480 urls: the previous
+  commit had 4,524 rows where the target path's tail decided the credential's
+  verdict; the fix leaves 1,740, every one of them the trailing-`/`
+  credential, which is recorded residual 4.
+- **The fuzz.** 853,684 urls with multiple `@` per region at every position,
+  crossed with 0-4 solidi, backslash and tab and newline spellings, special
+  and non-special schemes, percent-encoded delimiters, nesting depth 1-3,
+  IPv6 and IDN hosts, and `file:` drive letters. Zero throws, zero subsequence
+  violations, zero moved origins, zero emitted query or fragment bytes, zero
+  fixed-point failures, zero new leaks against the previous commit, 15,393
+  leaks closed.
+- **Why the parser was not called.** Once every `@` is asked, the heuristic
+  set strictly contains what `new URL` answers: the parser's userinfo ends at
+  the last `@` before the region's first `/`, and the heuristics also catch
+  `svc:hun/ter2@host` and `YWxpY2U/cGFzc3dvcmQ@host`, which the parser reads
+  as hosts and paths and the suite pins as redacted.
+- **R11-H4-01 (low).** The residual-1 advice named one of the two channels
+  that keep what `error.cause` quotes, so a consumer who followed it exactly
+  still shipped the quoted credential to another realm. Record that the
+  finding came from testing a document sentence against the built package,
+  which is the method that also produced round 9's Deno key and round 10's
+  zero-solidus credential.
+- **H2 clean, fourth round.** It pinned the redactor's totality over 120,000
+  hostile strings and a 34,200-url structured corpus, real-socket body
+  failures against a local server rather than hand-made streams,
+  `errorBodyOf` against a stream that errors mid-read, ADR 0003 row H-14
+  through two identity getters that fail earlier than the pinned one, and a
+  property no round had stated: a hierarchical redaction is a FIXED POINT,
+  `redactUrl(redactUrl(u)) === redactUrl(u)`, over 80,021 urls. That property
+  is what caught the fix's own regression above.
+
 ## Adjudicated closed
 
 Correct about the code. Not defects.

@@ -239,7 +239,10 @@ Words this codebase already uses, some of them only implicitly until now.
   catch: SETUP (reading the options, building the init), TRANSPORT (the awaited
   `fetch` call), and RESPONSE (inspecting the resolved value). Only the
   transport phase can produce an `AbortedError` or a `TimeoutError`, because it
-  is the only phase whose failure the governing signal can have caused.
+  is the only phase whose failure the governing signal can have caused. The
+  setup phase can end a call only for a read that PRODUCES what the
+  transport receives — the input serialization, the transport selection, the
+  init — never for a read that only describes the request.
 
 ## The modules
 
@@ -250,11 +253,11 @@ src/index.ts                  typedFetch + the guards; owns the envelope and
                               as an OWN property, never through the prototype
                               chain. `typedFetch` captures the governing signal
                               once — a handed-over `Request` contributes that
-                              signal through `Request.prototype`'s accessor
-                              when the AMBIENT transport runs, and through its
-                              own property when caller code runs as the
-                              transport — and serializes the request input
-                              once. It
+                              signal through `Request.prototype`'s accessor,
+                              falling back to a plain read and then to no
+                              signal at all, because a read that cannot
+                              answer never refuses the request — and
+                              serializes the request input once. It
                               never reads `headers`; the transport does. It runs
                               in THREE PHASES with a catch each — setup,
                               transport, response — and only the transport can
