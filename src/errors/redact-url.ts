@@ -29,6 +29,36 @@
  * Base for a RELATIVE request URL. `fetch("/v1/thing?token=…")` is ordinary in
  * a browser or a worker, and it resolves against a document base this library
  * never sees. `.invalid` is reserved by RFC 2606 and can never be a real host.
+ *
+ * THREE OF ITS PROPERTIES ARE LOAD-BEARING, and round 13 found the third by
+ * being bitten by it. They are written down so the next reader does not have to
+ * discover them the same way.
+ *
+ *  - The HOST never reaches an answer: this branch emits `pathname` alone, and
+ *    {@link cleaned} only rebuilds on the base to re-parse. It must merely be
+ *    unresolvable, which `.invalid` is.
+ *  - The scheme is SPECIAL, and that decides how the parser reads the input:
+ *    `\` is a solidus, two solidi are protocol-relative, and the emitted path
+ *    can never hold a `\` the module would have to read differently from a `/`.
+ *    {@link isSolidus} and the relative branch's loop both rest on it. A
+ *    non-special base would leave a `\` in `pathname`, and the loop's own
+ *    termination bound — leading solidi plus a non-empty host consumed every
+ *    pass — would no longer hold.
+ *  - The scheme's IDENTITY decides which inputs the parser resolves rather than
+ *    refuses. A reference whose scheme EQUALS a special base's goes to the
+ *    special-relative-or-authority state and then to the relative state, so the
+ *    parser eats the scheme colon and answers with a path; every other scheme
+ *    reaches the authority state and fails here exactly as it failed absolutely.
+ *    So `http:alice:pw@api.test:99999/v1` resolved to a path holding its own
+ *    credential with no mark in front of it, while `https:`, `ws:` and `ftp:`
+ *    spelling the same thing collapsed to the empty answer.
+ *
+ * The identity is no longer load-bearing, and the constant is unchanged because
+ * changing it is what could not fix this: every special scheme collides with
+ * the input that spells it, and every non-special one gives up the second
+ * property above. {@link bringsOwnAuthority} answers for all six schemes
+ * instead, so the state where the parser consumes the mark is handled wherever
+ * the base's scheme happens to sit.
  */
 const RELATIVE_BASE = "http://url.invalid";
 
@@ -122,17 +152,33 @@ export function redactUrl(url: string): string {
 
 /** One pass of the relative branch: resolve, clean, emit the path. */
 function resolvedPath(text: string): string {
-  return cleaned(new URL(text, RELATIVE_BASE), RELATIVE_BASE, protocolRelative(text)).pathname;
+  return cleaned(new URL(text, RELATIVE_BASE), RELATIVE_BASE, bringsOwnAuthority(text)).pathname;
 }
 
 /**
- * Does this relative reference bring its OWN authority?
+ * Does this relative reference bring its OWN authority, for the parser to
+ * CONSUME the mark that opens it?
  *
- * A reference that begins with two solidi is protocol-relative: the
- * relative-slash state hands it to the authority state, so the parser takes its
- * host from the reference and not from the base. The tab, CR and LF the parser
- * removes before it reads anything are skipped here for the same reason, and
- * `\` counts because the base is special.
+ * TWO SPELLINGS, and they are the two ways the resolution against
+ * {@link RELATIVE_BASE} can eat a mark the caller wrote:
+ *
+ *  - TWO SOLIDI. The reference is protocol-relative: the relative-slash state
+ *    hands it to the authority state, so the parser takes its host from the
+ *    reference and not from the base.
+ *  - A SPECIAL SCHEME at the head. `RELATIVE_BASE` is special, so a reference
+ *    whose scheme EQUALS the base's goes to the special-relative-or-authority
+ *    state and then to the relative state: the parser drops the scheme colon
+ *    and reads the rest as a path against the base.
+ *    `new URL("http:alice:pw@api.test:99999/v1", RELATIVE_BASE)` answers the
+ *    path `/alice:pw@api.test:99999/v1` with the base's own host, and the mark
+ *    that would have opened a region is gone. Asked of ALL SIX rather than of
+ *    the base's own scheme: the other five reach this branch only when they
+ *    already failed to parse absolutely, and they fail here for the same
+ *    reason, so the answer never reaches a text — while a rule written around
+ *    ONE scheme is a rule that a change of base silently invalidates.
+ *
+ * The tab, CR and LF the parser removes before it reads anything are skipped in
+ * both, and `\` counts as a solidus because the base is special.
  *
  * ASKED OF THE INPUT, and it is the one question this module asks there. It is
  * a yes-or-no about the SHAPE of the parse, never a position in a text that
@@ -140,13 +186,36 @@ function resolvedPath(text: string): string {
  * is {@link seamUserinfo}, and that span is the PARSER's, taken from the path
  * the parser itself produced.
  */
-function protocolRelative(text: string): boolean {
+function bringsOwnAuthority(text: string): boolean {
   let at = 0;
   while (isIgnored(text[at])) at += 1;
-  if (!isSolidus(text[at])) return false;
-  at += 1;
-  while (isIgnored(text[at])) at += 1;
-  return isSolidus(text[at]);
+  if (isSolidus(text[at])) {
+    at += 1;
+    while (isIgnored(text[at])) at += 1;
+    return isSolidus(text[at]);
+  }
+  return leadsWithSpecialScheme(text, at);
+}
+
+/**
+ * Is the token at `from` one of the six {@link SPECIAL_SCHEMES}, then a colon?
+ *
+ * BOUNDED at the longest special scheme, so the walk costs the same whatever
+ * follows it — the same reason {@link isSpecialScheme} reads forward from an
+ * offset rather than backwards to a token start.
+ */
+const LONGEST_SPECIAL_SCHEME = 5;
+
+function leadsWithSpecialScheme(text: string, from: number): boolean {
+  let scheme = "";
+  for (let at = from; at < text.length; at += 1) {
+    const character = text[at]!;
+    if (isIgnored(character)) continue;
+    if (character === ":") return SPECIAL_SCHEMES.has(scheme.toLowerCase());
+    if (scheme.length === LONGEST_SPECIAL_SCHEME || !isSchemeCharacter(character)) return false;
+    scheme += character;
+  }
+  return false;
 }
 
 /**
@@ -236,8 +305,8 @@ function cleaned(parsed: URL, origin: string, consumed = false): URL {
  *
  *  - AN EMPTY HOST. The origin is then `scheme://` and the solidi are its.
  *    Among the six {@link HIERARCHICAL_PROTOCOLS} only `file:` reaches one.
- *  - AN AUTHORITY THE PARSER TOOK FROM A PROTOCOL-RELATIVE REFERENCE, which
- *    this branch DISCARDS: it emits the path alone. `//https:/svc:pw@host/v1`
+ *  - AN AUTHORITY THE PARSER TOOK FROM A REFERENCE THAT BROUGHT ITS OWN MARK,
+ *    which this branch DISCARDS: it emits the path alone. `//https:/svc:pw@host/v1`
  *    is the ordinary slash-collapsed spelling of a forward, and the parser
  *    reads `https` as the HOST and `:` as its port delimiter — so the embedded
  *    url's scheme, its solidus, and the mark they spell are all consumed, and
@@ -245,13 +314,58 @@ function cleaned(parsed: URL, origin: string, consumed = false): URL {
  *    solidi fewer and {@link nextAuthority} would have found it; one solidus
  *    fewer and the parser would have reported the credential itself. This is
  *    the state between them, and the seam is where it shows.
+ *    {@link bringsOwnAuthority} names both spellings that reach it.
+ *
+ * AND IT FAILS CLOSED WHEN IT CANNOT ANSWER, which is the rule the rest of this
+ * module already follows and this seam did not. The confirming parse THROWS for
+ * an authority the caller got wrong — an empty host, a port out of range, a
+ * space, a bracketed host that is not an address, a forbidden code point — and
+ * a credential is exactly where a caller gets one wrong. Reading a throw as
+ * "no credential here" inverted the module's own answer about one text:
+ * `file:///alice:pw@internal.test/v1` lost its password and
+ * `file:///alice:pw@/v1` emitted it whole, so two digits of HOST, written after
+ * the credential, decided whether the credential went. What the parser declines
+ * to read is not an authority it has ruled out; it is an authority nobody can
+ * bound, and the same reasoning {@link parsesAsAuthority} states for the END of
+ * a region governs the start of this one. Over-redaction is this module's safe
+ * direction, and it is the only direction available where the structure cannot
+ * be determined at all. A parse that SUCCEEDS and names no credential is a
+ * different answer and is still believed: the parser read the authority and
+ * said there is none, which is what keeps `file:///c:/Users/alice@corp/x`
+ * whole — the drive letter is followed by a solidus, so no `@` precedes the
+ * authority's end and the question is never even asked.
+ *
+ * AND IT IS ASKED AGAIN OF WHAT ITS OWN ANSWER LEAVES BEHIND, for the reason
+ * {@link malformedUserinfoSpans} asks its two questions again: this span is
+ * removed from a text that is REJOINED to the origin's solidi, so what follows
+ * the span becomes the new seam. `file://\hunter2-:@/file..@` emits
+ * `file:` plus `///hunter2-:@/file..@`; removing the first authority leaves
+ * `file:////file..@`, whose `//file..@` is a consumed mark all over again, and
+ * a second call removed what the first had not. The loop ends because each
+ * answer consumes an `@` and the cursor only moves forward.
  */
 function seamUserinfo(parsed: URL, consumed: boolean): { start: number; end: number } | null {
   if (parsed.host !== "" && !consumed) return null;
   const path = parsed.pathname;
   let start = 0;
   while (isSolidus(path[start])) start += 1;
-  let term = start;
+  let end = -1;
+  for (let from = start; ; ) {
+    const at = seamUserinfoEnd(path, from);
+    if (at < 0) break;
+    end = at + 1;
+    from = end;
+    while (isSolidus(path[from])) from += 1;
+  }
+  return end < 0 ? null : { start, end };
+}
+
+/**
+ * Where the userinfo of the authority at `from` ends, or `-1` when it holds
+ * none. One answer of {@link seamUserinfo}'s loop.
+ */
+function seamUserinfoEnd(path: string, from: number): number {
+  let term = from;
   while (term < path.length && !isSolidus(path[term]) && path[term] !== "?" && path[term] !== "#") {
     term += 1;
   }
@@ -259,14 +373,15 @@ function seamUserinfo(parsed: URL, consumed: boolean): { start: number; end: num
   // from host, so it is where the span ends. Asked of the text rather than of
   // the parsed values, which percent-encoding rewrites.
   const at = path.lastIndexOf("@", term - 1);
-  if (at < start) return null;
+  if (at < from) return -1;
   try {
-    const authority = new URL(`https://${path.slice(start, term)}/`);
-    if (!authority.username && !authority.password) return null;
+    const authority = new URL(`https://${path.slice(from, term)}/`);
+    if (!authority.username && !authority.password) return -1;
   } catch {
-    return null;
+    // The parser DECLINED. Fall through to the answer: an authority nobody can
+    // read is an authority nobody can bound. See the note above.
   }
-  return { start, end: at + 1 };
+  return at;
 }
 
 /**
@@ -492,9 +607,9 @@ function malformedUserinfoSpans(
     // bounded and the unbounded region hold the same candidates, so the parse
     // is skipped — which is what keeps a path of nothing but marks linear.
     const bounded = stop >= 0 && (lastAtOfText <= stop || parsesAsAuthority(text, start));
-    const end = bounded ? stop : text.length;
-    const lastAt = lastBelow(ats, end);
-    const lastLoneAt = lastBelow(loneAts, end);
+    let end = bounded ? stop : text.length;
+    let lastAt = lastBelow(ats, end);
+    let lastLoneAt = lastBelow(loneAts, end);
     // ASKED AGAIN OF WHAT THE ANSWER LEAVES BEHIND. Removing a credential moves
     // the region's first `/` and first `:`, and {@link looksLikeUserinfo} reads
     // both, so what is left can answer differently from how it answered as part
@@ -520,6 +635,27 @@ function malformedUserinfoSpans(
       // itself — the second pass consumed them and reached one more `@`.
       cut = at + 1;
       while (isSolidus(text[cut])) cut += 1;
+      // AND THE END QUESTION IS RE-ASKED TOO, of the same text the `@` question
+      // is re-asked of. A region is BOUNDED only where the parser reads a
+      // complete authority at its start, and removing a credential MOVES that
+      // start — so the text now at `cut` can be an authority the parser cannot
+      // read where the text at `start` was one it could. `//x:/a@b:PW://h.test/@bob`
+      // is that shape: `x:` is a host, so the region ends at the `://` and only
+      // `x:/a@` goes; `b:PW` is not, so the region that remains has no end and
+      // reaches `@bob`. A SECOND CALL found that and the first did not, which is
+      // this module failing to be a fixed point of itself — the property round
+      // 11 measured and round 12 recorded as a defect.
+      //
+      // ONE WAY ONLY, and that is what keeps this constant rather than one pass
+      // per `@`. A region can lose its bound and can never regain one, so `end`
+      // moves at most once, and the three-answers-at-most argument above holds
+      // on each side of the move. The parse is skipped where the answer cannot
+      // matter: with no `@` past `end`, a wider region holds the same candidates.
+      if (end < text.length && lastAtOfText >= end && !parsesAsAuthority(text, cut)) {
+        end = text.length;
+        lastAt = lastBelow(ats, end);
+        lastLoneAt = lastBelow(loneAts, end);
+      }
     }
     if (cut > start) spans.push({ start, end: cut });
     // Past the `@` this region ended on: any region opening inside the span
@@ -921,7 +1057,7 @@ function userinfosOf(url: string): string[] {
       // {@link seamUserinfo} states: a protocol-relative reference hands its
       // authority to the parser, and `redactUrl` emits the path alone.
       const slots: [string, { start: number; end: number } | null][] = [
-        [resolved.pathname, seamUserinfo(resolved, protocolRelative(url))],
+        [resolved.pathname, seamUserinfo(resolved, bringsOwnAuthority(url))],
         [resolved.search, null],
         [resolved.hash, null],
       ];
