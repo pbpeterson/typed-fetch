@@ -30,6 +30,23 @@ Each one costs a detail a reader wants. None of them emits a value an attacker
 wants. So an absence from this list is a decision, and a reader can test any
 limit found in the source against the rule above.
 
+- **A protocol-relative forward loses the authority it names.** A url whose
+  embedded authority sits behind a bare pair of solidi, with an ordinary `@` in
+  a later path segment, loses that authority:
+  `https://api.test/proxy///cdn.test:8443/img/@alice` emits
+  `https://api.test/proxy///alice`, which names `alice` and drops
+  `cdn.test:8443`. The colon rule fires because no scheme wrote the mark, so
+  the suppression that keeps the authority behind `https://` does not apply.
+  The cost is over-redaction and never a leaked credential: over 97,344
+  generated urls the shape covers 504 rows, of which 414 emit a misleading
+  record and none loses a secret. A rule that separates it exists — a region no
+  colon opened can buy the parser's reading — and it moves five pinned answers,
+  one of them a behavior this repository pinned deliberately, on a row where the
+  authority the parser reads is a scheme token with an empty port. The trade was
+  weighed in round 18 and refused: this module's history is three consecutive
+  rounds in which a new condition became the next round's defect.
+  `round18-h3-disclosure.spec.ts` pins the limit in both directions.
+
 - **A credential can reach a crash dump through `error.cause`.** A platform
   quotes the URL it refused back in its own message, credentials included.
   Every channel this library controls redacts that value: `error.message`,
@@ -171,9 +188,14 @@ limit found in the source against the rule above.
 
 ## Reporting a Vulnerability
 
-Please report vulnerabilities privately via
-[GitHub Security Advisories](https://github.com/pbpeterson/typed-fetch/security/advisories/new)
-or by email to petersonbozza7@gmail.com.
+Report a vulnerability privately through
+[GitHub Security Advisories](https://github.com/pbpeterson/typed-fetch/security/advisories/new),
+or by email to petersonbozza7@gmail.com. Use whichever channel you can reach.
 
-Do not open a public issue for security reports. You can expect an initial
+A report through GitHub Security Advisories creates a private draft advisory,
+and release-checklist step 9 adds the fixed version to that draft. A report by
+email creates no draft, so step 9 opens one before it publishes. Neither
+channel is preferred, and neither changes what you can expect.
+
+Do not open a public issue for a security report. You can expect an initial
 response within a few days.

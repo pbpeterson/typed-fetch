@@ -620,10 +620,36 @@ describe("the coverage gate's reach", () => {
   const RUNS_COVERAGE = /- run: pnpm (?:run )?coverage\b/;
 
   test("EVIDENCE: `coverage` is a real script, and its thresholds are the four at 100", () => {
+    // R18-H4-04. This test's name promised the four at 100 and its whole
+    // reading of them was `toContain("thresholds: {")`. The numbers behind that
+    // brace were read by no test in the repository, so changing
+    // `branches: 100` to `branches: 0` left this pin green, left
+    // `pnpm coverage` green — a zero floor is met by any tree — and left both
+    // workflow steps round 17 added green, while their own comments and
+    // CONTRIBUTING's roster line promised the four at 100.
+    //
+    // That is R16-ORCH-01's shape for the third time: a check whose assertion
+    // reads something other than what it guards. It appeared here in a pin
+    // written by the round that found the first two, which is the reason the
+    // ledger now says every gate this audit adds must be tested by BREAKING
+    // what it guards.
+    //
+    // The values are read as VALUES now. All four, by name, each equal to 100.
     const manifest = JSON.parse(repoText("package.json")) as { scripts: Record<string, string> };
 
     expect(manifest.scripts.coverage).toMatch(/^vitest run /);
-    expect(repoText("vitest.config.ts")).toContain("thresholds: {");
+
+    const block = /thresholds:\s*\{([^}]*)\}/.exec(repoText("vitest.config.ts"));
+    expect(block, "vitest.config.ts declares no thresholds block").not.toBeNull();
+
+    const declared = Object.fromEntries(
+      [...(block?.[1] ?? "").matchAll(/(\w+)\s*:\s*(\d+)/g)].map((match) => [
+        match[1] ?? "",
+        Number(match[2]),
+      ]),
+    );
+
+    expect(declared).toEqual({ branches: 100, functions: 100, lines: 100, statements: 100 });
   });
 
   test("a workflow runs the coverage gate", () => {

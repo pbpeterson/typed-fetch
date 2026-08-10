@@ -263,13 +263,18 @@ Words this codebase already uses, some of them only implicitly until now.
   selected it. The init a transport receives carries no `fetch` extension under
   any of the three reads that inspect its own shape: an own-property descriptor
   answers absent, `Object.keys`/`ownKeys` omit the name, and a spread copy
-  carries none. A plain property get and the `in` operator read the prototype
-  chain too, and an INHERITED `fetch` answers both of them: the property get
-  returns the caller's value and `in` answers `true`. Neither read selects a
-  transport — `Object.hasOwn` decides that, never a plain get or an `in` check —
-  so a transport that calls `typedFetch` again with that init re-enters on the
-  AMBIENT transport. It never re-enters on itself, and a forwarding transport
-  that spreads its init cannot build an infinite loop out of one option.
+  carries none. When the caller passed no own `fetch`, a plain property get and
+  the `in` operator read the prototype chain too, and an INHERITED `fetch`
+  answers both of them: the property get returns the caller's value and `in`
+  answers `true`. When the caller also passed an own `fetch` — the only way
+  caller code becomes the transport through the option — the sanitizing proxy
+  answers `undefined` and `false` for both reads instead, without consulting
+  the chain, even while an inherited `fetch` is still on it. Neither read
+  selects a transport — `Object.hasOwn` decides that, never a plain get or an
+  `in` check — so a transport that calls `typedFetch` again with that init
+  re-enters on the AMBIENT transport. It never re-enters on itself, and a
+  forwarding transport that spreads its init cannot build an infinite loop out
+  of one option.
 
 ## The modules
 

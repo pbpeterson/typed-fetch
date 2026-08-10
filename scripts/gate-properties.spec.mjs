@@ -132,11 +132,16 @@ describe("importing a gate is silent on stdout AND stderr", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. The gates CONTRIBUTING lists are the gates CI runs, in that order.
+// 4. The gates CONTRIBUTING lists are the gates CI runs, in that order — and
+//    the gates RELEASING.md tells a maintainer to run, in the same order.
 //
-// Nothing else reads the three lists together. A gate deleted from a workflow,
-// or reordered so it runs before the build it needs, is invisible to every
-// spec in this repository.
+// Four rosters name the package-job gates: CONTRIBUTING.md, ci.yml,
+// release.yml, and RELEASING.md. RELEASING.md carries the roster twice — once
+// as "the package job … then runs:" and once as release-checklist step 2,
+// "Run the exact package-job gates locally, in order". Nothing else reads all
+// four together. A gate deleted from a workflow, or reordered so it runs
+// before the build it needs, is invisible to every spec in this repository —
+// and so is a gate RELEASING.md's rosters forgot to add.
 // ---------------------------------------------------------------------------
 
 /** The `pnpm …` lines of CONTRIBUTING's "The gates" block, in order. */
@@ -157,6 +162,29 @@ function jobRunSteps(workflow, jobName) {
   const end = rest.search(/\n {2}[A-Za-z][\w-]*:\n/);
   const job = end === -1 ? rest : rest.slice(0, end);
   return [...job.matchAll(/- run: (.+)/g)].map((m) => m[1].trim());
+}
+
+/**
+ * The numbered roster of RELEASING.md's "How publishing actually works" —
+ * its description of what the release workflow's package job runs.
+ */
+function releasingNumberedGates() {
+  return [...readRepoFile("RELEASING.md").matchAll(/^\s*\d+\. `(pnpm[^`]*)`\s*$/gm)].map(
+    (m) => m[1],
+  );
+}
+
+/** The bash block of RELEASING.md's release-checklist step 2, the one a maintainer types. */
+function releasingLocalGates() {
+  const doc = readRepoFile("RELEASING.md");
+  const anchor = doc.indexOf("Run the exact package-job gates locally, in order:");
+  expect(anchor, "RELEASING.md must keep the step-2 local-gate instruction").not.toBe(-1);
+  const block = /```bash\n([\s\S]*?)```/.exec(doc.slice(anchor));
+  expect(block, "RELEASING.md step 2 must keep a bash block").not.toBe(null);
+  return block[1]
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 describe("the gate roster reaches CI", () => {
@@ -199,6 +227,19 @@ describe("the gate roster reaches CI", () => {
     const steps = jobRunSteps(readRepoFile(".github/workflows/ci.yml"), "deno-smoke");
     expect(steps.indexOf("pnpm build")).toBeLessThan(steps.indexOf("pnpm check-deno-consumer"));
     expect(steps).toContain("pnpm smoke:deno");
+  });
+
+  test("RELEASING's two rosters carry the same twelve gates, in the same order", () => {
+    // R18-H4-01, second half. `scripts/gate-properties.spec.mjs` reads
+    // CONTRIBUTING.md, ci.yml, and release.yml together, and its own section
+    // header said "the three lists" — but RELEASING.md is a FOURTH roster,
+    // read nowhere. Round 17 added `pnpm coverage` to the other three and left
+    // both of RELEASING.md's lists a gate short, so this test alone would have
+    // caught it.
+    const roster = contributingGates();
+
+    expect(releasingNumberedGates()).toEqual(roster);
+    expect(releasingLocalGates()).toEqual(roster);
   });
 
   test("every gate CI invokes is a real package script", () => {

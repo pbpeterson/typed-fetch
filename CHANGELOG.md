@@ -101,7 +101,13 @@ open after the fixes land.
   path segment is now removed where it used to survive — see the region
   rules above. A `file:` path segment is now kept where it used to be
   deleted, because `file:` opens no region under fewer than two solidi.
-  See the `file:` bullet above. Anything that greps or alerts on
+  See the `file:` bullet above. A credential-free proxy url shows the
+  direction an ordinary input actually took: `redactUrl` turns
+  `https://api.test/relay/https://media.test/photos/mia@example.com/pic.png`
+  into `https://api.test/relay/https://example.com/pic.png`. The record
+  drops `media.test`, the host the request contacted, and names
+  `example.com`, a host it never reached. See `SECURITY.md` for the
+  residual this shape leaves open. Anything that greps or alerts on
   `error.message` or `toJSON().url` sees a different string after this
   upgrade. That is true even for a url that carried no credential at all
   before this release.

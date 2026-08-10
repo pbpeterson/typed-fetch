@@ -52,11 +52,12 @@ attestation.
   4. `pnpm typecheck`
   5. `pnpm build`
   6. `pnpm test`
-  7. `pnpm check-docs`
-  8. `pnpm verify-pack`
-  9. `pnpm check-consumer`
-  10. `pnpm audit:prod`
-  11. `pnpm run audit:ci`
+  7. `pnpm coverage`
+  8. `pnpm check-docs`
+  9. `pnpm verify-pack`
+  10. `pnpm check-consumer`
+  11. `pnpm audit:prod`
+  12. `pnpm run audit:ci`
 - After the gates pass, the package job creates the package tarball. It also
   downloads the pinned npm `11.18.0` CLI as a tarball. A SHA-256 manifest covers
   both files before they enter one immutable workflow artifact.
@@ -172,6 +173,7 @@ Run every step, in order, for every release:
    pnpm typecheck
    pnpm build
    pnpm test
+   pnpm coverage
    pnpm check-docs
    pnpm verify-pack
    pnpm check-consumer
@@ -224,10 +226,13 @@ Run every step, in order, for every release:
    `pnpm verify-pack` is the authoritative dry-run manifest check; the release
    workflow executes it before staging the immutable publication artifact.
 9. **Publish the security advisory.** If the release fixes no reported
-   vulnerability, skip this step. `SECURITY.md` sends every reporter to
-   [GitHub Security Advisories](https://github.com/pbpeterson/typed-fetch/security/advisories),
-   so a reported fix already has a private draft there. Add the fixed version
-   to that draft. Credit the reporter. Request a CVE from the same page.
+   vulnerability, skip this step. `SECURITY.md` offers a reporter two channels,
+   and only one of them creates a draft.
+   [GitHub Security Advisories](https://github.com/pbpeterson/typed-fetch/security/advisories)
+   creates a private draft, so a report through it already has one. A report by
+   email creates none: open the draft yourself from the same page before you
+   continue. Then add the fixed version to the draft. Credit the reporter.
+   Request a CVE from the same page.
    Publish the draft after step 8 confirms the version is live on npm. A
    shipped fix with a private advisory leaves no public record that a consumer
    scanner can read.
