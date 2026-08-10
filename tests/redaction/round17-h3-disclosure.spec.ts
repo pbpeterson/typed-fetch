@@ -570,8 +570,8 @@ describe("the judge over the populations the module is measured against", () => 
     expect(sweep(randomUrls(0xc0ffee, 400_000), false)).toEqual({
       size: 400_000,
       round16: 0,
-      calibrated: 671,
-      dropped: 135,
+      calibrated: 675,
+      dropped: 139,
       created: 536,
     });
   });

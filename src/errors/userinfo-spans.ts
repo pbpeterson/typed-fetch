@@ -29,8 +29,9 @@
  * from a test with a string literal.
  *
  * EVERY GRAMMAR QUESTION IS ASKED HERE, and the character classes being private
- * is what that means. `isSolidus`, `isIgnored`, `isStripped` and
- * {@link isSchemeCharacter} are readings of the URL Standard's own grammar, and
+ * is what that means. `isSolidus`, `isIgnored`, `isStripped`,
+ * {@link isSchemeCharacter} and the narrower {@link SCHEME_HEAD} a scheme must
+ * begin with are readings of the URL Standard's own grammar, and
  * a second file holding them is a second file that can answer a grammar
  * question for itself. It did: two functions said whether a scheme opens an
  * authority at a colon, and the two disagreed about `file:`, about the tab the
@@ -58,6 +59,18 @@ export type Span = { start: number; end: number };
 
 /** ALPHA / DIGIT / `+` / `-` / `.` — the characters a scheme is spelled from. */
 const SCHEME_CHARACTER = /[a-z0-9+\-.]/i;
+
+/**
+ * ALPHA — the characters a scheme may BEGIN with, which is a strictly narrower
+ * set than {@link SCHEME_CHARACTER} and the whole of the difference between a
+ * scheme and a token that looks like one.
+ *
+ * The URL Standard's scheme start state accepts an ASCII alpha and nothing
+ * else, so `9x:`, `9:`, `.:` and `-:` are tokens no parser reads as a scheme
+ * anywhere. {@link schemeWroteTheMark} is the one reader of this, and its own
+ * comment holds what reading a single character instead had cost.
+ */
+const SCHEME_HEAD = /[a-z]/i;
 
 /** Is this one of the characters a scheme is spelled from? */
 function isSchemeCharacter(character: string | undefined): boolean {
@@ -103,13 +116,14 @@ function pastSolidi(text: string, from: number): number {
  * The index of the character IN FRONT of the solidus run that ends at `from`,
  * and `-1` where the run reaches the start of the text.
  *
- * The mirror of {@link pastSolidi}, and the one place this module reads
+ * The mirror of {@link pastSolidi}, and one of the two places this module reads
  * backwards. Two questions ask it, and both are about the MARK that opened a
  * region rather than about the region's own text: {@link popsBefore} needs the
- * run's length, and {@link readsAsHostAndPort} needs the character the run
+ * run's length, and {@link schemeWroteTheMark} needs the character the run
  * hangs off. Neither walks over anything but solidi, so a text with N solidi
  * pays N for all of them together — the runs a forward cursor lands past are
- * disjoint.
+ * disjoint. Both are asked ONCE per region, where the region opens, which is
+ * what makes that disjointness a bound rather than an observation.
  */
 function beforeSolidi(text: string, from: number): number {
   let at = from - 1;
@@ -706,8 +720,62 @@ function parsesAsAuthority(text: string, start: number): boolean {
 }
 
 /**
- * Does a region opening at `start` spell `host:port` — a colon that belongs to
- * an AUTHORITY the parser reads, rather than to `user:password`?
+ * Did a SCHEME write the mark the region opening at `region` hangs off?
+ *
+ * Condition 1 of {@link readsAsHostAndPort}, and a fact about the region's
+ * OPENING rather than about any cursor inside it — which is why it is asked
+ * here, once, and carried to every question the cursor goes on to ask. Round
+ * 16's crossing is the reason it cannot be re-read later: it advances the
+ * cursor over a `..` WITHOUT moving the text, so a backward read taken from the
+ * cursor lands on the `.` of a double dot the rebuild has not performed yet and
+ * finds no mark at all. `/go/https://@../cdn.test:8443/users/@alice` is that
+ * input — round 17's own pinned url with an empty userinfo and a dot segment in
+ * front of it — and the answer named the handle `alice` as the host of the
+ * forward, which is the exact harm round 17 fixed. The crossing is a COST fix
+ * and may not move an answer; anchoring the question here is what keeps that
+ * true.
+ *
+ * A SCHEME BEGINS WITH ALPHA, and one character in front of the colon is not
+ * that question. The condition's sentence names the empty scheme a template
+ * leaves as a case where no scheme wrote a port, and `isSchemeCharacter` alone
+ * admitted `9:`, `.:`, `-:` and `9x:` — tokens no URL parser reads as a scheme
+ * anywhere — while refusing the `://` the sentence names. So the token is read
+ * whole: the run of scheme characters in front of the colon spells a scheme
+ * when it is not empty and its first character is {@link SCHEME_HEAD}.
+ *
+ * A MARK THAT IS NOT A COLON ANSWERS NO, and round 18 left that standing rather
+ * than settled. Two or more solidi with no scheme slot in front of them are the
+ * grammar's own protocol-relative authority — `new URL("//cdn.test:8443/x", base)`
+ * answers the host `cdn.test:8443` — so the bare-`//` region is separable from
+ * the empty scheme a template leaves by the MARK, and not only by the LABEL the
+ * deny list this module's header rejects. Landing that separation closes
+ * R18-H3-02: 738 of round 17's 97,344 rows move, no planted credential newly
+ * survives, and residual 1's `://a:1234/x/@bob` holds. What stopped it is not
+ * the shape. `round17-h3-disclosure.spec.ts` pins
+ * `//https:/cdn.test/img/@alice` at the gap's own answer, and the bare-`//`
+ * residue is a measured number in three more places — so the separation moves
+ * five pinned answers across three spec files, which is an adjudication and not
+ * a fix. It is written here so the next reader meets the decision instead of
+ * rediscovering the shape.
+ *
+ * THE WALK IS BOUNDED BY DISJOINTNESS, not by a length. A token stops at the
+ * first character that cannot spell a scheme, and a colon is one of those, so
+ * no two marks in one text walk the same characters. That is the argument
+ * {@link beforeSolidi} makes for its solidus runs, and it holds here only
+ * because the question is asked at the opening rather than once per candidate
+ * `@`.
+ */
+function schemeWroteTheMark(text: string, region: number): boolean {
+  const mark = beforeSolidi(text, region);
+  if (text[mark] !== ":") return false;
+  let at = mark - 1;
+  while (isSchemeCharacter(text[at])) at -= 1;
+  return at < mark - 1 && SCHEME_HEAD.test(text[at + 1]!);
+}
+
+/**
+ * Does the text from `start` read as an AUTHORITY the parser can name — a
+ * colon that belongs to `host:port`, rather than to `user:password`?
  *
  * The one question {@link looksLikeUserinfo}'s colon rule cannot answer for
  * itself, and round 17's finding is what it costs to leave it unasked.
@@ -722,7 +790,7 @@ function parsesAsAuthority(text: string, start: number): boolean {
  *
  * THREE CONDITIONS, AND NOT ONE OF THEM IS SPARE.
  *
- *  - THE MARK SPELLS A SCHEME. {@link parsesAsAuthority} asks what a
+ *  - A SCHEME WROTE THE MARK. {@link parsesAsAuthority} asks what a
  *    special-scheme parse would read, and the module's rule for that answer is
  *    that a `false` only ever WIDENS a region — over-redaction, the safe
  *    direction. Using its `true` to NARROW one is the other direction, and it
@@ -734,14 +802,46 @@ function parsesAsAuthority(text: string, start: number): boolean {
  *    over-redaction as a residual in those words — it cannot be resolved "once
  *    a malformed scheme has taken away where the authority ends" — and this
  *    condition is what leaves that pin exactly where it is.
- *  - NO `@` IN FRONT OF THE FIRST SOLIDUS. `host:port` is what this asks
- *    about, and a text holding an `@` before its authority ends is one the
- *    parser reads as userinfo AND host: `svc:PW@i.test` parses, and its colon
- *    is a password's. Read of the TEXT rather than of the parse's report, for
- *    the reason {@link seamSpan} states: `:@` normalises away, and a report of
- *    two empty strings does not tell an absent userinfo from a consumed one.
- *  - THE AUTHORITY READS. A port the parser refuses (`://a:99999/x/@bob`) is
- *    not a port, and the region is back to the ambiguity residual 1 records.
+ *    {@link schemeWroteTheMark} answers it, of the REGION, and the parameter
+ *    is that answer rather than a position because the cursor cannot re-derive
+ *    it.
+ *  - THE AUTHORITY'S COLON IS NOT A PASSWORD'S. `svc:PW@i.test` parses, and
+ *    its colon delimits a credential — so an `@` inside the authority refuses
+ *    this. It refuses only a colon that DELIMITS something: one with text in
+ *    front of it, in front of the authority's last `@`. `:@` has none and
+ *    `u@cdn.test:8443` keeps its colon on the far side of the `@` entirely, and
+ *    reading every `@` as a refusal is what let one erased character choose the
+ *    answer — `https://:@cdn.test/users/@alice` IS `https://cdn.test/users/@alice`
+ *    to the platform, and the module answered the two differently. Read of the
+ *    TEXT rather than of the parse's report, for the reason {@link seamSpan}
+ *    states: an empty userinfo normalises away, and a report of two empty
+ *    strings does not tell an absent userinfo from a consumed one.
+ *  - THE AUTHORITY READS, from AFTER the userinfo the parser would consume. A
+ *    port the parser refuses (`://a:99999/x/@bob`) is not a port, and the
+ *    region is back to the ambiguity residual 1 records.
+ *
+ * A DOT SEGMENT IS NOT A HOST, whatever a parse of it alone answers.
+ * `new URL("https://../")` reports the host `..`, and the path state deletes
+ * that same text before any reader of the emitted url sees it — so a region
+ * whose host is one is not an authority anybody wrote. It is the crossing's own
+ * input that reaches this: `/go/https://@../cdn.test:8443/users/@alice` opens
+ * its region at the `@`, and reading `@..` as an authority with an empty
+ * userinfo would keep the `@`, leave the `..` unexposed, and stop the rebuild
+ * from ever reaching the authority the url does name. {@link pastFiller} states
+ * the same fact for a cursor: what the next parse drops is not text this module
+ * may read as structure.
+ *
+ * BOTH SEARCHES ARE CLIPPED TO THE AUTHORITY, and that is round 18's cost
+ * finding rather than a tidying. The `@` search was
+ * `text.lastIndexOf("@", authorityEnd(text, start) - 1)`, a backward scan with
+ * no floor: where nothing in front of the region holds an `@` it reads back to
+ * index 0. A `Location` of `/x` plus `/ws:a:1` repeated plus `/@b` opens one
+ * region per unit, every one of them reaches the colon rule, and no `://`
+ * anywhere leaves every region unbounded — so one `redactUrl` of 14,021
+ * characters walked 14,011,000 of them backwards and emitted its own input.
+ * {@link userinfoSpans} names that exact shape as the reason it indexes every
+ * `@` in one forward pass. The slice is the authority {@link authorityEnd}
+ * already measured, so both reads now cost what that walk costs and no more.
  *
  * WHAT IT CAN COST is a span whose every `@` follows a solidus, since
  * {@link userinfoEnd} asks the last `@` first and then the last `@` no solidus
@@ -750,14 +850,18 @@ function parsesAsAuthority(text: string, start: number): boolean {
  * 97,344 urls of round 17's structured and credential populations it costs no
  * planted credential at all.
  *
- * The cheap questions are asked first: the backward walk and the `@` search
- * read the text, and only what survives both is handed a parse.
+ * The cheap questions are asked first: the mark is a boolean the region already
+ * settled, the two searches read the authority, and only what survives all
+ * three is handed a parse.
  */
-function readsAsHostAndPort(text: string, start: number): boolean {
-  const mark = beforeSolidi(text, start);
-  if (text[mark] !== ":" || !isSchemeCharacter(text[mark - 1])) return false;
-  if (text.lastIndexOf("@", authorityEnd(text, start) - 1) >= start) return false;
-  return parsesAsAuthority(text, start);
+function readsAsHostAndPort(text: string, scheme: boolean, start: number): boolean {
+  if (!scheme) return false;
+  const authority = text.slice(start, authorityEnd(text, start));
+  const at = authority.lastIndexOf("@");
+  const colon = authority.indexOf(":");
+  if (at >= 0 && colon > 0 && colon < at) return false;
+  if (DOT_SEGMENTS.has(authority.slice(at + 1).toLowerCase())) return false;
+  return parsesAsAuthority(text, at < 0 ? start : start + at + 1);
 }
 
 /**
@@ -988,10 +1092,14 @@ function authorityAt(text: string, colon: number): number | null {
  *  - An authority the colon rule cannot hand to {@link readsAsHostAndPort},
  *    followed by a path `@`. Three shapes reach it: a port the parser refuses
  *    (`://a:99999/x/@bob`), a region whose mark spells no scheme at all
- *    (`://a:1234/x/@bob`, the empty scheme a template leaves), and a region
- *    whose own text already holds an `@` (`://svc:PW@i.test/users/@bob`). In
- *    each of them nothing separates `a:1234` from `user:password`, which is the
- *    sentence this residual has always carried.
+ *    (`://a:1234/x/@bob`, the empty scheme a template leaves, and `//a:1234/…`,
+ *    which spells no mark whatever), and a region whose authority holds a colon
+ *    that DELIMITS something in front of an `@` (`://svc:PW@i.test/users/@bob`).
+ *    In each of them nothing separates `a:1234` from `user:password`, which is
+ *    the sentence this residual has always carried. An `@` with no delimiting
+ *    colon in front of it is NOT one of them any more — `:@` and `u@` are
+ *    userinfo the parser reads and erases or reports, and neither leaves the
+ *    port behind them ambiguous.
  *  - An `@` INSIDE a path segment rather than at its head (`://host/a/b@c/d`,
  *    an e-mail-shaped path).
  *
@@ -1014,13 +1122,13 @@ function authorityAt(text: string, colon: number): number | null {
  * full href stays on `error.url` — this rule only decides where a MALFORMED
  * authority ends.
  */
-function looksLikeUserinfo(text: string, start: number, end: number): boolean {
+function looksLikeUserinfo(text: string, scheme: boolean, start: number, end: number): boolean {
   if (end === start) return true;
   const slash = text.indexOf("/", start);
   if (slash < 0 || slash >= end) return true;
   if (text[end - 1] !== "/") return true;
   const colon = text.indexOf(":", start);
-  return colon >= 0 && colon < slash && !readsAsHostAndPort(text, start);
+  return colon >= 0 && colon < slash && !readsAsHostAndPort(text, scheme, start);
 }
 
 /**
@@ -1050,12 +1158,41 @@ function looksLikeUserinfo(text: string, start: number, end: number): boolean {
  *
  * An `@` before the region's first `/` needs no case of its own: nothing but
  * `start` can put a `/` immediately before it, so it is already a lone `@`.
+ *
+ * AND A FALLBACK LOOKS FOR A CREDENTIAL THE LAST `@` HID, so where there is
+ * none to find it may not answer. Both fallbacks reach the head of the region,
+ * and the head of a region can be an EMPTY userinfo — `@`, or the `:@` the URL
+ * Standard erases. Empty is exactly what the parser calls it:
+ * `new URL("https://:@cdn.test/users/@alice").href` IS
+ * `https://cdn.test/users/@alice`, so those two are ONE url and this module has
+ * to answer them alike. It did not. The `:` of `:@` is also a colon the third
+ * rule reads, so a region that spelled no colon at all suddenly spelled one,
+ * {@link readsAsHostAndPort} refused it on the `@` of the same two characters,
+ * and the span ran to a handle at a segment head — R17-H3-01 restored by a
+ * character the platform throws away.
+ *
+ * SO THE FALLBACK STOPS WHERE THE PARSER HAS ALREADY NAMED THE USERINFO, and
+ * nowhere else. The region has to read as an authority for that, which is the
+ * one question {@link readsAsHostAndPort} answers; where it does not, an empty
+ * userinfo goes exactly as it always did — `://@host/x` still yields a span of
+ * one character, `redact-url.spec.ts` pins that row, and the crossing in
+ * {@link userinfoSpans} needs it to. The PRIMARY answer is untouched either
+ * way: an `@` that is the region's own last one is rule 1's, and rule 1 has
+ * always read it as a credential.
  */
-function userinfoEnd(text: string, start: number, lastAt: number, lastLoneAt: number): number {
+function userinfoEnd(
+  text: string,
+  scheme: boolean,
+  start: number,
+  lastAt: number,
+  lastLoneAt: number,
+): number {
   if (lastAt < start) return -1;
-  if (looksLikeUserinfo(text, start, lastAt)) return lastAt;
-  if (lastLoneAt >= start) return lastLoneAt;
-  return text[start] === "@" ? start : -1;
+  if (looksLikeUserinfo(text, scheme, start, lastAt)) return lastAt;
+  const fallback = lastLoneAt >= start ? lastLoneAt : text[start] === "@" ? start : -1;
+  if (fallback < 0) return -1;
+  const empty = fallback === start || (fallback === start + 1 && text[start] === ":");
+  return empty && readsAsHostAndPort(text, scheme, start) ? -1 : fallback;
 }
 
 /** The last position in the ascending `positions` below `limit`, or `-1`. */
@@ -1207,6 +1344,14 @@ export function userinfoSpans(text: string, seam: Span | null = null): Span[] {
   for (;;) {
     const start = nextAuthority(text, from);
     if (start === null) break;
+    // THE MARK IS THE REGION'S, AND IT IS SETTLED HERE. Every other question
+    // below reads forward from a cursor; this one reads BEHIND the region's
+    // opening, and the crossing moves the cursor over text the rebuild has not
+    // performed yet. Asked from the cursor it answered about a `..`; asked once,
+    // here, it answers about the scheme that opened the region. See
+    // {@link schemeWroteTheMark}, and {@link popsBefore} for the other question
+    // this opening settles.
+    const scheme = schemeWroteTheMark(text, start);
     if (stop >= 0 && stop < start) stop = text.indexOf(AUTHORITY_MARK, start);
     // ASKED ONLY WHERE THE ANSWER CAN MATTER. With no `@` past `stop` the
     // bounded and the unbounded region hold the same candidates, so the parse
@@ -1237,7 +1382,7 @@ export function userinfoSpans(text: string, seam: Span | null = null): Span[] {
     let cut = floor > start ? floor : start;
     floor = -1;
     for (;;) {
-      const at = userinfoEnd(text, cut, lastAt, lastLoneAt);
+      const at = userinfoEnd(text, scheme, cut, lastAt, lastLoneAt);
       if (at < 0) break;
       // WHAT THE ANSWER EXPOSES GOES WITH IT, and that is the same rule as the
       // re-ask rather than a second one: what the removal leaves behind at
