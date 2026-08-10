@@ -41,12 +41,17 @@ import type { HttpMethods } from "./methods";
  * - The init a transport receives carries no `fetch` extension under any of the
  *   three reads that inspect its own shape: an own-property descriptor answers
  *   absent, `Object.keys`/`ownKeys` omit the name, and a spread copy carries
- *   none. A plain property get and the `in` operator read the prototype chain
- *   too, and an INHERITED `fetch` answers both of them: the property get
- *   returns the caller's value and `in` answers `true`. Neither read selects a
- *   transport — `Object.hasOwn` decides that, never a plain get or an `in`
- *   check — so a transport that calls `typedFetch` again with that init
- *   re-enters on the AMBIENT transport. It never re-enters on itself.
+ *   none. When the caller passed no own `fetch`, a plain property get and the
+ *   `in` operator read the prototype chain too, and an INHERITED `fetch`
+ *   answers both of them: the property get returns the caller's value and `in`
+ *   answers `true`. When the caller also passed an own `fetch` — the only way
+ *   caller code becomes the transport through the option — the sanitizing
+ *   proxy answers `undefined` and `false` for both reads instead, without
+ *   consulting the chain, even while an inherited `fetch` is still on it.
+ *   Neither read selects a transport — `Object.hasOwn` decides that, never a
+ *   plain get or an `in` check — so a transport that calls `typedFetch` again
+ *   with that init re-enters on the AMBIENT transport. It never re-enters on
+ *   itself.
  * - Every failure this module raises is a plan refusal, and
  *   {@link planFailure} turns any of them into a `NetworkError`. The setup
  *   phase never produces an `AbortedError` or a `TimeoutError`, because no
@@ -164,10 +169,19 @@ function snapshotRequestInit(
   signal: AbortSignal | null | undefined,
   removeFetchOverride: boolean,
 ): RequestInit {
-  if (!removeFetchOverride) {
-    // No extension must be hidden, so the original object can remain the proxy
-    // target. This preserves reflection and avoids inspecting every descriptor
-    // on a potentially exotic RequestInit.
+  // An INHERITED signal is not an own key of the caller's object, and the
+  // descriptor below is the only thing that makes it one. Which object the
+  // proxy sits on therefore cannot be decided by the `fetch` extension alone:
+  // the caller's object can be the target only while every entry the init owes
+  // a spread is already an own key of it.
+  const inheritedSignal = signal !== undefined && !Object.hasOwn(options, "signal");
+
+  if (!removeFetchOverride && !inheritedSignal) {
+    // Nothing has to be hidden and nothing has to be added, so the original
+    // object can remain the proxy target. This preserves reflection and avoids
+    // inspecting every descriptor on a potentially exotic RequestInit. A
+    // `signal` the caller wrote as its OWN key is already spread by this
+    // target, and the trap answers each read with the captured value.
     return new Proxy(options, {
       get(target, property) {
         if (property === "signal") return signal;
@@ -177,7 +191,11 @@ function snapshotRequestInit(
   }
 
   const descriptors = Object.getOwnPropertyDescriptors(options);
-  delete descriptors.fetch;
+  // Only the caller's OWN extension is stripped, and only on the branch that
+  // read it. An inherited `fetch` is neither used nor stripped — the decision
+  // `planRequest` states at the `Object.hasOwn` that selects the transport —
+  // and this path is now reached with that read answering `false` too.
+  if (removeFetchOverride) delete descriptors.fetch;
 
   // A WebIDL dictionary is normally read by the transport. `typedFetch` also
   // needs the signal to classify a rejection, so letting the getter run once
@@ -200,6 +218,14 @@ function snapshotRequestInit(
   // ran UNGOVERNED while `classifyRequestFailure` went on treating that signal
   // as the authority: `controller.abort()` cancelled nothing, and a later
   // network failure was reported as an `AbortedError`.
+  //
+  // That was written while this path was the only one an inherited signal could
+  // reach, and it was reachable only through an own `fetch` option. A
+  // forwarding transport installed on `globalThis.fetch` carries no such
+  // option, and it spread an init with no signal for two rounds: the server
+  // wrote the whole response and the envelope reported a SUCCESS for a request
+  // the caller had aborted. `inheritedSignal` above is what brings that shape
+  // here.
   if (descriptors.signal || signal !== undefined) {
     descriptors.signal = {
       value: signal,
@@ -210,8 +236,9 @@ function snapshotRequestInit(
   }
   const sanitizedTarget = Object.create(Object.getPrototypeOf(options), descriptors) as RequestInit;
 
-  // The proxy target exposes the same descriptors/prototype for reflection but
-  // omits the extension. Ordinary reads delegate to the original object with
+  // The proxy target exposes the same descriptors/prototype for reflection,
+  // omitting the extension on the branch that read it and carrying the signal
+  // entry. Ordinary reads delegate to the original object with
   // the original receiver: prototype getters backed by WebIDL internal slots or
   // JavaScript private fields would reject a descriptor-only clone because that
   // clone does not carry those slots. `signal` is the one snapshotted
@@ -221,11 +248,11 @@ function snapshotRequestInit(
   return new Proxy(sanitizedTarget, {
     get(_target, property) {
       if (property === "signal") return signal;
-      if (property === "fetch") return undefined;
+      if (removeFetchOverride && property === "fetch") return undefined;
       return Reflect.get(options, property, options);
     },
     has(_target, property) {
-      return property === "fetch" ? false : Reflect.has(options, property);
+      return removeFetchOverride && property === "fetch" ? false : Reflect.has(options, property);
     },
   });
 }
