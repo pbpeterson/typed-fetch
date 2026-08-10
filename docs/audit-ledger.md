@@ -1201,6 +1201,98 @@ cannot fail, and a threshold no workflow runs.
   `fixtures/` through every change, and the suite grew from 3,050 to 3,142
   tests.
 
+### What round 18 settled
+
+Round 18 pointed every lane at what round 17 changed, for the third round
+running, and it returned the highest-severity result of the whole audit: eleven
+findings, three of them high. Four are defects in round 17's own work and two
+are defects in the instruments the audit itself built.
+
+- **An inherited `options.signal` never reached a forwarding transport.**
+  R18-H1-01, high. `snapshotRequestInit` wrote the own `signal` descriptor that
+  keeps `{ ...init }` governed only on the branch `Object.hasOwn(options,
+"fetch")` selects. With no own `fetch`, the caller's object IS the proxy
+  target, so an inherited `signal` was not an own key and a transport installed
+  on `globalThis.fetch` spread an init with no signal: `abort()` cancelled
+  nothing, the server wrote the whole response, and the envelope reported
+  SUCCESS for a request the caller aborted. The branch now turns on whether the
+  init owes a spread an entry the target does not own, not on the `fetch`
+  extension alone. The sentence this contradicted was `snapshotRequestInit`'s
+  own, and the pin that should have caught it passes a `fetch` option, so it
+  selected the working branch one line before it asserted.
+- **Round 16's crossing and round 17's suppression were each correct alone and
+  wrong together.** R18-H2-01, high. The crossing advances a region's START
+  over a `..` without moving the text; the suppression reads BEHIND that start,
+  lands on the `.` of a double dot the rebuild has not performed, and lets the
+  colon rule fire. `https://api.test/go/https://@../cdn.test:8443/users/@alice`
+  emitted `https://api.test/go/https:/alice`, which is the harm R17-H3-01 was
+  fixed for, on a url four characters longer than round 17's own pinned input.
+  640 of 1,200 protected rows lost their authority. 111 of the 131 answer
+  differences a differential found belonged to the interaction and to neither
+  fix. A fix verified against the suite and against its own corpus is not
+  verified against the previous fix.
+- **An empty userinfo restored the same harm by a second route.** R18-H3-01,
+  high. `:@` defeats both conditions of the suppression IN TURN as the cursor
+  steps, and `new URL("https://:@cdn.test/users/@alice").href` is
+  `https://cdn.test/users/@alice`, so the module answered one url two ways. One
+  anchor change closed this and R18-H2-01 together: the mark is asked once,
+  where the region OPENS, and condition 2 reads a colon that has text in front
+  of it and precedes the authority's last `@`. A 9,450-row grid crossing the
+  two earlier fixes now runs with no non-fixed-point, no cost growth and no
+  credential surviving.
+- **The host-and-port question walked the whole prefix backwards.** R18-H2-02.
+  A `Location` of `/x` plus `/ws:a:1` repeated opened N unbounded regions, and
+  one `redactUrl` walked 14,011,000 characters for a 14 KB input whose answer is
+  the input. `userinfoSpans` names that exact shape in its own comment as the
+  reason it uses `lastBelow`, so the module had already learned this and round
+  17 reintroduced it. The search is clipped to the authority slice now. It was
+  invisible to both instruments the previous rounds built: rebuild counts stayed
+  at 1 and probe counts at N.
+- **The scheme test read one character.** R18-H2-03. `9:`, `.:` and `-:`
+  suppressed the colon rule while `://` did not, and a scheme must begin with
+  ALPHA.
+- **RES-7, and a reversed ruling.** R18-H3-02 reported that the bare-`//` gap's
+  504-row residue was measured only on the under-redaction axis, and that 414 of
+  those rows emit a record naming a host the request never contacted. The hunter
+  called it inseparable; the fixer disproved that and built the separation — a
+  region no colon opened buys the parser's reading — and measured it clean at
+  738 moved rows with no credential lost. The orchestrator first ruled to land
+  it, then reversed on the scope the fixer reported next: it moves five pinned
+  answers across three spec files, one of them behavioural and written
+  deliberately as this gap's definition, on a row where the authority the parser
+  reads is a scheme token with an empty port. The cost is over-redaction and
+  never a leak, and three consecutive rounds have shown a new condition becoming
+  the next round's defect. The limit is written down as RES-7 and pinned in both
+  directions.
+- **The coverage threshold pin could not see the thresholds.** R18-H4-04. Its
+  whole reading was `toContain("thresholds: {")`, so `branches: 0` left the pin,
+  `pnpm coverage` and both workflow steps green. That is R16-ORCH-01's shape a
+  third time, in a pin written by the round that found the first two. Every gate
+  this audit adds must now be tested by BREAKING what it guards, and this one
+  was.
+- **The release surface, again.** R18-H4-01: `RELEASING.md` carries two rosters
+  that round 17 left a gate short, and `gate-properties.spec.mjs` read three of
+  the repository's four rosters — the unread one being the release procedure. It
+  reads all four now. R18-H4-02: the `[Unreleased]` block named no ordinary
+  input whose record moves; a rebuild of the 2.0.1 tree over 23,040 urls found
+  11,736 that moved, all in the removes-more direction, and the direction the
+  block named did not move at all. R18-H4-03: `SECURITY.md` offers a second
+  reporting channel that creates no advisory draft, and step 9 assumed one
+  existed. The first fix narrowed the policy to one channel; the maintainer
+  reversed that, because a security policy is the public contract with a
+  reporter and step 9 is internal procedure. Step 9 opens the draft now.
+  R18-H4-05: the sentence round 17 wrote is false in its fourth configuration,
+  which is the fourth false sentence this audit has produced while correcting a
+  document.
+- **Every removal count in this audit carries a blind spot.** Round 18's third
+  judge found 9,258 rows where the secret is absent verbatim and present in the
+  spelling the URL parser writes for it, so a raw-substring judge reports it
+  removed. Every `leakingChannels` sentinel here is a raw-substring judge. No
+  leak follows, because the plain spelling survives on none of those rows, but
+  the instrument class is weaker than its numbers read.
+- **Coverage held at 100 on all four axes** through every change, and the suite
+  grew from 3,142 to 3,224 tests.
+
 ## The audit files, renamed by subject
 
 The audit closed at round 15. Each round-numbered spec file above still holds
