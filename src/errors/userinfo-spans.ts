@@ -240,12 +240,15 @@ const LONGEST_HIERARCHICAL_SCHEME = Math.max(
  * in one file now, so the disagreement is a decision a reader meets rather than
  * a drift.
  *
- * TWO CALLERS, and the six are right for both. {@link bringsOwnAuthority} asks
- * it of a RAW reference, for the state where the parser eats the scheme colon.
- * `redactUrl` in `./redact-url` asks it of a `URL.protocol` — which is a scheme
- * and a colon, and nothing else — to tell a hierarchical url from an opaque one,
- * because an opaque url carries its payload in the path and is reduced to its
- * scheme.
+ * FOUR CALLERS, and the six are right for all of them. Two ask it of a RAW
+ * reference: {@link bringsOwnAuthority}, for the state where the parser eats
+ * the scheme colon, and {@link foldsReverseSolidus}, for whether this url's own
+ * authority reads a `\` as a solidus. Two more, both in `./redact-url`, ask it
+ * of a `URL.protocol` — which is a scheme and a colon, and nothing else.
+ * `redactUrl` asks it to tell a hierarchical url from an opaque one, because an
+ * opaque url carries its payload in the path and is reduced to its scheme;
+ * `seamUserinfo` asks it because a seam exists only where the emitted origin
+ * spells solidi of its own, which is round 21's R21-H2-02.
  *
  * ASKED OF A RAW INPUT, so the three characters {@link isIgnored} names are
  * skipped INSIDE the token: the parser removes them before it reads the scheme,
@@ -570,15 +573,28 @@ function ownAuthorityStart(url: string): number {
  * WHICH IS THE WHOLE REASON IT EXISTS. `userinfosOf` in `./redact-url` used to
  * ask {@link userinfoSpans} of this same text, and a region opens at a scheme
  * colon under fewer than two solidi only where {@link isSpecialScheme} accepts
- * the token. That question answers `false` for `file:` — correctly, because
- * `file:` has no authority state at all — and it does not skip the tab, CR and
- * LF the parser removes before it reads anything. Both answers are right for a
- * colon found INSIDE a path and wrong for the url's own scheme colon, so
- * `file:/svc:pw@api.test/v1` and `htt<TAB>ps:/svc:pw@api.test/v1` opened no
- * region, the caller's own spelling of the password was never a needle, and it
- * rode out through every channel. R20-H3-01 and R20-H3-02. The head question
- * and the embedded-authority question are different questions, and this is the
- * head one.
+ * the token. That question answers `false` for `file:` — correctly, because a
+ * `file:` colon under fewer than two solidi opens no authority: the file state
+ * reads a path with an EMPTY host instead, which is what
+ * {@link SPECIAL_SCHEMES} leaves it out for. `file:` is not a scheme without an
+ * authority state; the `///` and the `\` spellings DO reach the file host
+ * state, and reach it with that same empty host. And that question does not
+ * skip the tab, CR and LF the parser removes before it reads anything. Both
+ * answers are right for a colon found INSIDE a path and wrong for the url's own
+ * scheme colon, so `file:/svc:pw@api.test/v1` and
+ * `htt<TAB>ps:/svc:pw@api.test/v1` opened no region, the caller's own spelling
+ * of the password was never a needle, and it rode out through every channel.
+ * R20-H3-01 and R20-H3-02. The head question and the embedded-authority
+ * question are different questions, and this is the head one.
+ *
+ * WHAT `file:` STILL COSTS THIS QUESTION is one character, and round 21's H3
+ * lane is what states it. `file:` is one of the URL Standard's SPECIAL schemes,
+ * so {@link foldsReverseSolidus} answers `true` for it and
+ * {@link authorityEnd} folds a `\` the caller wrote inside the password into a
+ * solidus. The bound the backward search below starts from then lands INSIDE
+ * that password, the `@` behind it is never read, and
+ * `file:///svc:hun\ter2@api.test/v1` answers `null` here. `SECURITY.md` carries
+ * that scope on its qualified password claim.
  *
  * THE PORT IS SAFE FOR THE REASON THE PARSER MAKES IT SAFE: an authority's
  * userinfo ends at its LAST `@`, so `https://api.test:8443/v1` holds no `@`
