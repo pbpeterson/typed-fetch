@@ -391,8 +391,28 @@ function cleaned(parsed: URL, origin: string, spilled = false): URL {
  * instead would put a parse's own report on both sides of a seam whose whole
  * subject is what that parse did NOT report, and it would cost every function
  * below the ability to be called from a test with a string literal.
+ *
+ * AND THE FIRST QUESTION IS WHETHER THE URL HAS AN AUTHORITY SLOT AT ALL, which
+ * is round 21's R21-H2-02. `host` reports the empty string for two states, and
+ * only one of them is the empty HOST this seam is about: an OPAQUE url has no
+ * authority component, so there are no origin solidi for a mark to be written
+ * across and no seam for {@link seamSpan} to read. Asked anyway, it read the
+ * pathname of `mailto:alice@example.com` as a credential and answered the span
+ * `alice@` — a needle {@link withoutUserinfos} then deleted from the message
+ * wherever it appeared, so `…; alice@example.com was refused` became
+ * `…; example.com was refused` and the record named a recipient the caller
+ * never wrote. `sip:`, `xmpp:`, `urn:` and `im:` are the same url.
+ *
+ * THE SCHEME IS THE WHOLE OF IT, and it is the question {@link seamSpan} was
+ * already written assuming: a seam exists only where the emitted origin spells
+ * solidi of its own, which is the six hierarchical schemes and nothing else.
+ * `redactUrl` reduces an opaque url to its scheme and never reaches
+ * {@link cleaned}, so this arm is the message route's alone —
+ * {@link slotUserinfos} asks every parsed url. `file:` is hierarchical and
+ * keeps its answer, which is the one state the guard below is written for.
  */
 function seamUserinfo(parsed: URL, spilled: boolean): Span | null {
+  if (!leadsWithHierarchicalScheme(parsed.protocol)) return null;
   if (parsed.host !== "" && !spilled) return null;
   return seamSpan(parsed.pathname);
 }
@@ -539,12 +559,33 @@ function withoutMalformedUserinfo(path: string, tail: string, seam: Span | null)
  * the whole url wherever it is quoted.
  *
  * The default keeps everything, which is the answer for a `pathname`.
+ *
+ * AND THE NEEDLE ENDS AT THE `@`, WHERE THE SPAN NEED NOT. That is round 21's
+ * R21-H2-01 and R21-H3-01, found from the cost side and from the disclosure
+ * side with the same three characters between them. A span is a POSITION to
+ * `redactUrl`, so `pastFiller` in `./userinfo-spans` closes it past everything
+ * the next parse would delete — a solidus, a single-dot segment — and removing
+ * that filler is free there and buys the pass count that comment argues for. A
+ * needle is TEXT, and {@link withoutUserinfos} can only ever match a slice that
+ * ends at an `@` in the message. So the span `svc:hunter2@/` that
+ * `https://api.test/go/https://svc:hunter2@/cdn.test/v1` answers is a needle no
+ * `@` anywhere can terminate: it removed nothing, on any input, ever, while
+ * `redactUrl` dropped the same credential from `url` — the record clean and the
+ * message holding the password, on 104 of 156 forwarding rows.
+ *
+ * The span is left exactly as the scanner drew it and the SLICE is cut back to
+ * the last `@` the span holds, because the width is right for the one route and
+ * wrong for the other. Every span holds one: {@link seamSpan} ends AT an `@`,
+ * {@link segmentUserinfos} answers only segments that do, and `userinfoSpans`
+ * closes each span at `pastFiller` of an `@` it just read. Where the search
+ * finds none the slice is empty and the length guard below refuses it, which is
+ * the same answer it already gives `@` alone — so this needs no arm of its own.
  */
 function hiddenUserinfos(text: string, seam: Span | null = null, kept = text.length): string[] {
   const found: string[] = [];
   for (const span of userinfoSpans(text, seam)) {
     for (const one of span.start < kept ? [span] : segmentUserinfos(text, span)) {
-      const userinfo = text.slice(one.start, one.end);
+      const userinfo = text.slice(one.start, text.lastIndexOf("@", one.end - 1) + 1);
       if (userinfo.length > 1) found.push(userinfo);
     }
   }
@@ -727,6 +768,33 @@ function userinfosOf(url: string): string[] {
   // is for the two slots. Without that the callback url in
   // {@link slotUserinfos} yields `cdn.test/u/alice@` here instead of there, and
   // one fix would close one route out of two.
+  //
+  // AND THE HEAD IS ASKED ONLY WHERE THERE IS AN AUTHORITY TO BE THE HEAD OF,
+  // which is the other half of round 21's R21-H2-02. `ownUserinfo`'s own comment
+  // opens "ASKED WHERE THE PARSER HAS ALREADY COMMITTED", and for an OPAQUE url
+  // it never committed to anything: `mailto:alice@example.com` has no authority
+  // component, so {@link ownAuthorityStart} lands on the local part, the last
+  // `@` before the text ends is the address's own, and the head answered
+  // `alice@` — a needle {@link withoutUserinfos} then deleted from the message
+  // wherever it appeared. `sip:`, `xmpp:`, `urn:` and `im:` are the same url.
+  //
+  // THE SERIALIZER IS THE READ, and it is the parse's own report rather than a
+  // second grammar written here. The URL Standard writes the two solidi after
+  // the scheme colon exactly where the url HAS a host, so `href` starting with
+  // `protocol` and `//` is the authority state having run and nothing else. It
+  // is NOT the hierarchical-scheme question {@link seamUserinfo} asks: a
+  // non-special scheme spelling `//` reaches the authority state too, and
+  // `git://svc:hun\ter2@api.test/v1` is a userinfo the parser READS — the head
+  // is the only place the caller's spelling of that password is a needle, and
+  // the qualifier grid in `round21-h3-disclosure.spec.ts` measures 2,550 rows of
+  // it. `file:` keeps its answer under any solidus count, because the file state
+  // serializes an empty host and writes the solidi anyway; that is R20-H3-01's
+  // row, and it is why this is not `parsed.host !== ""` either.
+  //
+  // WHAT IT COSTS is an opaque path spelling a colon and an `@` — `git:svc:pw@h`
+  // — whose text stops being a needle. The URL Standard reads no credential
+  // there, which is the scope `SECURITY.md`'s password claim already carries,
+  // and `redactUrl` still reduces the whole url to its scheme.
   const absolute = parseProbe(url);
   // `null` when the text is unresolvable even against the base. The raw needles
   // are then all there are, and `redactUrl` answers with the empty string — so
@@ -736,13 +804,22 @@ function userinfosOf(url: string): string[] {
   const cut = absolute === null ? 0 : afterOwnAuthority(url);
   const raw = url.slice(cut);
   const head = absolute === null ? null : ownUserinfo(url);
+  const spelled = head === null ? "" : url.slice(head.start, head.end);
+  // WHERE THE PARSER READ AN AUTHORITY, its own split is the answer and the head
+  // is spent whatever it spells. Where it read none, the text is an opaque path
+  // and the URL Standard calls no part of it a userinfo — but a colon inside it
+  // is a PASSWORD the caller wrote, and round 20's corpus measures 36 checks of
+  // `git:svc:hun ter2@api.test/v1` losing theirs to this needle and to nothing
+  // else. So the two states keep the head for two reasons, and only the state
+  // that has neither — an opaque path whose `@` closes a bare name — gives it up.
+  const authority = absolute !== null && absolute.href.startsWith(`${absolute.protocol}//`);
   // The seam's own question, asked exactly as `redactUrl` asks it on each of its
   // two branches: a reference that brought its own mark had its authority
   // CONSUMED, and an absolute url whose authority a `\` cut short had it SPILL
   // into the path. Both leave a userinfo where only the seam can find it.
   const spilled = absolute === null ? bringsOwnAuthority(url) : spilledAuthority(url);
   const needles = new Set([
-    ...(head === null ? [] : [url.slice(head.start, head.end)]),
+    ...(spelled !== "" && (authority || spelled.includes(":")) ? [spelled] : []),
     ...hiddenUserinfos(url.slice(0, cut)),
     ...hiddenUserinfos(raw, null, parsed === null ? raw.length : pathEnd(raw)),
   ]);
