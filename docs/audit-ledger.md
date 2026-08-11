@@ -1402,6 +1402,107 @@ A note on how round 19 committed. Each round-19 spec file carries more than one
 finding, so the commits are grouped by fix lane rather than one per finding.
 The full gate ran on the complete tree, not on each intermediate commit.
 
+### What round 20 settled
+
+The largest round of the audit: seventeen findings, four critical and six high.
+Round 20 aimed every lane at the surface BETWEEN fixes rather than at the last
+fix, and the result says something the round count alone does not — three of the
+four critical findings had been reachable since before the audit reopened, and
+eighteen rounds could not see them, because no generator in this repository
+could draw the shape they live in.
+
+- **Round 19 closed one spelling class, not the class.** R20-H3-01 and
+  R20-H3-02, both critical. Round 19's fix gave `userinfosOf` the url's own
+  authority in the caller's raw spelling, routed through `userinfoSpans` — and
+  `userinfoSpans` finds a userinfo only where a REGION opens. Under `file:` no
+  region opens, because `authorityAt` asks `isSpecialScheme` and the set
+  excludes `file:`. Under a scheme a tab, CR or LF breaks, none opens either,
+  because the module does not remove the characters the parser removes from the
+  whole input before it starts. In both, `toJSON().url` came out clean while the
+  password stayed in `error.message` and reached all seven channels. The head is
+  now asked one narrow question, `ownUserinfo`, that depends on no region rule.
+- **A backslash in a `file:` password reached the record itself.** R20-H3-03,
+  critical. `redactUrl("file:///svc:hun\ter2@api.test/v1")` answered
+  `file:///svc:hun/ter2@api.test/v1`, because `seamUserinfoEnd` reads the
+  parser's `pathname`, where the `\` the caller wrote is already folded into a
+  `/`. The hunter called it unclosable without moving the pinned
+  `file:///c:/Users/alice@corp/x` answer. The fixer disproved that: the two
+  texts are separated by the URL Standard's own Windows-drive-letter
+  definition, not by the caller's spelling, so both stay whole and one url under
+  two spellings gets one answer.
+- **A password the parser DOES report survived under a non-special scheme.**
+  R20-ORCH-01, critical, and it was found while MEASURING a document sentence
+  rather than while hunting. `git://svc:hun\ter2@api.test/v1` parses with
+  `username: "svc"` and `password: "hun%5Cter2"`, yet the password reached 14
+  renders. `ownUserinfo` bounded its backward search with `authorityEnd`, which
+  reads `\` as a solidus; under a non-special scheme the URL Standard does not,
+  so the walk stopped before the `@`. The terminator is stated once now, in
+  `endsAuthority(character, folds)`, and the fold is decided by the six special
+  schemes the Standard names. Measured over 387,072 urls: 1,836 rows stop
+  leaking, none opens, and `toJSON().url` is byte-identical on every row. The
+  three-way rule is forced — reading `\` as ordinary everywhere blinds the
+  `file:` seam, and reading it as a solidus everywhere is the defect.
+- **One solidus made the pass count the input's length.** R20-H2-01, high. A
+  302 whose `Location` is `/x/` and N copies of `https:/@` made `redactUrl` run
+  N+1 passes and N(N-1) parses: 621 ms to construct one error for an
+  8,027-character `response.url` a live server chose, and 614 ms again for each
+  `toJSON()`, where the same url spelled with two solidi and a thousand
+  characters MORE cost 3 ms. Round 19 had measured this exact mechanism and
+  these exact numbers as the price of a tree it decided not to ship, without
+  asking whether the shipped form pays it on a spelling its own corpus could not
+  reach.
+- **An empty password's colon dropped the embedded authority.** R20-H2-02,
+  high. The URL parser erases an empty password's colon in the SERIALIZER, so
+  `https://api.test/go/https://u:@cdn.test:8443/users/@alice` is one url with
+  its colon-free spelling — and the record read `.../go/https://alice`, naming a
+  user's handle where the authority had been. It is R17-H3-01's harm at the
+  third empty spelling of a userinfo: round 17 asked the no-password case,
+  round 18 asked `:@`, and `u:@` was never asked.
+- **Every gate round 19 added was defective, each in the shape of the defect it
+  was written to close.** R20-H4-01 through R20-H4-06. The roster readers
+  collected steps with an unanchored pattern, so `# - run: pnpm verify-pack`
+  counted as a step CI runs — commenting that gate out of the job that runs
+  immediately before `npm publish` left every roster green. The `v8 ignore` pin
+  recorded where a range OPENS, so moving its `stop` widened it in silence. The
+  walker scanned `.ts` and `.mjs` while the threshold measures six more
+  extensions. The exclusion-premise gate accepted an `echo` that merely NAMED
+  the excluded path. And the `[Unreleased]` direction test collected claims by
+  four fixed phrases, so the same witnessless claim in other words read as no
+  claim. That family has now appeared eleven times. Round 20's repair states,
+  for each gate, what it PROVES — position, presence, read coverage,
+  behaviour-in-text — and that none of them proves a justification is true.
+- **Four instruments could not survive their own fix.** R20-H4-07's EVIDENCE
+  row asserted the Node-floor smoke was the ONLY carrier, the literal negation
+  of what its own two cases demanded, so the describe block was unsatisfiable
+  and landing the fix necessarily turned it red. Two more round-19 claim tests
+  had hardcoded the fixture they audit. The rule this settles: an EVIDENCE row
+  states the invariant that holds AFTER the fix and carries the pre-fix state as
+  prose, and a gate whose subject is another test must READ that test, never
+  copy it.
+- **The combination grid is the instrument this audit was missing.** Round 18's
+  largest finding was two fixes each correct alone and wrong together, and round
+  19 repeated the shape. Round 20's fixer crossed its six changes as 64 variants
+  over 141,228 inputs — 9,038,592 answers per channel — and proved credential
+  survival exactly additive, all-on the unique global minimum of both leak
+  counts, and every non-additive pair confined to the character-count axis.
+  Round 18's finding could not have survived that grid.
+- **Two claims were corrected by measurement rather than accepted.** A repair
+  agent was briefed that round 20's fix supplied a missing CHANGELOG direction;
+  it measured 0 rows of 140,640 and wrote the qualified sentence instead,
+  because the published 2.0.1 opened no region at a bare `//` at all. And a
+  reported leak "across all three scheme classes" turned out to need a url the
+  parser REJECTS, which is a medium-severity class and not the critical one it
+  read as. A brief is a hypothesis too.
+- **`SECURITY.md`'s password absolute is now a qualified claim.** Round 19 wrote
+  "A PASSWORD does not survive it"; round 20 falsified it twice. It reads "A
+  PASSWORD THE PARSER READS AS USERINFO does not survive it" now, and names the
+  two shapes where the parser reads none: a `file:` url, which has no authority
+  state, and a url the parser rejects outright. The qualifier is what makes the
+  claim checkable.
+- **Coverage held at 100 on all four axes** through every change, the suite grew
+  from 3,285 to 3,366 tests, and the gate ran 15 of 15 green with Deno 2.9.5 and
+  Bun 1.3.13 both present and both smokes executed.
+
 ## The audit files, renamed by subject
 
 The audit closed at round 15. Each round-numbered spec file above still holds
