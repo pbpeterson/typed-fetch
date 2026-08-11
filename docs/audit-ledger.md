@@ -1581,6 +1581,83 @@ verify-pack` in the job that runs immediately before publish left every roster
   round 20 made the Bun smoke a release gate and round 21 found it had no
   package script and no documented command.
 
+### What round 22 settled
+
+Eight findings, one critical. But round 22 was called for a different reason,
+and the reason is the round's result: for three rounds the audit had found a
+defect in one condition and the pins those rounds produced guarded almost
+nothing. Two lanes were told the answer mattered more than a finding, and both
+answered.
+
+- **The blindness is in the CORPUS, not the assertions.** H1 reconstructed all
+  three refuted `snapshotRequestInit` bodies on HEAD, instrumented HEAD to
+  record which decision each would reach, and swept 495 pins against each. The
+  three ways a pin can build a different init and stay green — asserting a
+  property the defect preserves, fixing its own branch first, pinning current
+  behaviour — measure **zero**. Every pin that ever built an observably
+  different init reported it. 404, 405 and 493 pins never put the refuted
+  implementation on a different branch at all. And it delivered the pin that
+  fails all three: one property with two clauses, custody and no-invention, on a
+  null-prototype options object with an own `fetch` under a polluted
+  `Object.prototype.signal`. H1 returned CLEAN, and withdrew two candidate
+  findings by measurement after carrying each to a failing test, because the
+  bare platform `fetch` fails the same way on the same object.
+- **The oracle exercises the needle pass on zero rows.** H3 explained the
+  disclosure half and found the class nobody had named: `redaction-oracle`'s
+  MESSAGE sweep builds its message from the input, so `replaceAll` removes the
+  whole url before the needle pass runs. Its 4,163 rows decide nothing about the
+  route four rounds of criticals lived on. A platform strips the fragment before
+  quoting; that one character is what hands a row to the needle. H3 shipped a
+  12-row ledger pinning exact text and exact channel membership — red under all
+  four reverts and under both halves of one guard separately, and still green
+  after a 198-line rewrite of both modules moved none of its answers.
+- **A leak assertion cannot be the sentinel.** Two of the four disclosure fixes
+  changed no leak on any of 38,880 urls. What they bought is that the pass stops
+  eating a host, a mail recipient and a diagnostic. A leak assertion is blind to
+  an over-redaction fix and an over-redaction assertion is blind to a leak; only
+  the exact text sees both.
+- **The message route had never been instrumented, and the first instrument
+  found a defect.** R22-H2-02, high. Five cost instruments existed and every one
+  wrapped the url route. `withoutUserinfos` materialised a candidate slice so a
+  `Set` could be asked about it, unconditionally, before any cheap rejection:
+  copied characters per input character climbed 148.8 → 1024.5 over an eightfold
+  sweep of a server-chosen url, and a 128 KB url copied 1.03e9 characters in
+  39,206 ms inside ONE error construction. Comparing in place makes it 1.7, flat,
+  and 13 ms — and the DIRECTION is load-bearing: forward leaves the product
+  intact, backwards is bounded structurally, because a needle spelling no
+  interior `@` cannot walk past the message's previous `@`.
+- **The two routes are handed different text.** R22-H2-01, critical, and it is
+  R21-H2-01's sentence at a second value: `cleaned` scans `path + tail` where
+  `slotUserinfos` scans `pathname` alone, so one character the path percent-encode
+  set rewrites makes them disagree while `toJSON().url` stays clean. The audit
+  has now found this shape twice and cleared it at seven other values; the
+  eighth, the pass count, is structural and cannot be equalised.
+- **A `file:` solidus pair broken by a control character derived no needle.**
+  R22-H3-01, high. The parser removes tab, CR and LF from the whole input, so
+  `file:/<TAB>/svc:pw@host` parses as a refused `file://…` — the head question is
+  never put — while the region scan reads one solidus and `file:` opens no
+  region under two. The grammar counts a solidus run the way the parser reads it
+  now.
+- **The undriven gates, driven at last.** Three rounds concluded `verify-pack`
+  could not be exercised because its control already exited 1 in a scratch root.
+  H4 found why: `npm pack` does not descend a symlinked directory, so the
+  control was measuring the mirror. Materialize instead, and `validate-release`
+  needs no tag ref at all. Driving it produced R22-H4-03 immediately — the only
+  check between a git tag and `npm publish` requires `[Unreleased]` to be empty
+  and asks the destination only for a dated heading, so a release that DELETED
+  the entries publishes a section describing nothing.
+- **Two more ways to disable a step, and the family reaches fourteen.**
+  R22-H4-01 and R22-H4-02, both high: a `needs:` pointing at a skipped job, and a
+  YAML comment between a step's `- run:` and the `if: false` under it. The roster
+  now computes the transitive closure of `needs:` and skips a comment as it
+  already skipped a blank line.
+- **A sixth instrument could not survive its own fix**, and its EVIDENCE row
+  pinned the FALSE sentence verbatim. Round 22 also caught the orchestrator
+  leaving a tautological assertion in its own repair — anti-pattern 2, in the
+  file that enforces it.
+- **Coverage held at 100 on all four axes** and the suite grew from 3,461 to
+  3,510 tests.
+
 ## The audit files, renamed by subject
 
 The audit closed at round 15. Each round-numbered spec file above still holds
