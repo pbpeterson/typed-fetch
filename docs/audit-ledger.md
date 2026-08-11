@@ -1503,6 +1503,84 @@ could draw the shape they live in.
   from 3,285 to 3,366 tests, and the gate ran 15 of 15 green with Deno 2.9.5 and
   Bun 1.3.13 both present and both smokes executed.
 
+### What round 21 settled
+
+Eleven findings, two critical and four high. The round's own instruments
+produced more than its hunt did: three findings came out of a VERIFICATION step
+rather than a search, and four sentences the orchestrator handed out were
+measured false before anyone wrote them.
+
+- **A needle that ends at a solidus matches nothing.** R21-H2-01 and R21-H3-01,
+  critical, and ONE defect found independently by two lanes from opposite ends —
+  a cost lane reading `pastFiller` and a disclosure lane attacking round 20's
+  new qualifier — which proposed the same three characters. `pastFiller` widens
+  a span past the filler behind its `@`, `hiddenUserinfos` slices that span into
+  a needle ending in `/`, and `withoutUserinfos` tests message slices only where
+  they end at an `@`. The needle could never remove one character. On urls the
+  parser ACCEPTS the password reached 16 of 22 renders on 104 of 156
+  clean-record rows while `toJSON().url` stayed clean. The needle is cut back to
+  the span's last `@`; the span keeps its width, because the width is right for
+  the url route. Measured over 408,960 answers: leaking answers fell from
+  112,632 to 43,692, none newly leaking.
+- **The seam question asked of a url that has no authority.** R21-H2-02.
+  `seamUserinfo` read `parsed.host === ""` as an empty host, when for an OPAQUE
+  url it means the authority component is absent. `mailto:alice@example.com`
+  therefore yielded the needle `alice@`, deleted from the message wherever it
+  appeared, so the record named a recipient the caller never wrote. The fixer
+  proved the hunter's proposal INCOMPLETE — the seam guard alone leaves it open,
+  because `ownUserinfo` answers the same needle independently — and landed two
+  guards for two different questions.
+- **Round 20's gate repairs were defective in four more ways.** R21-H4-01
+  through R21-H4-05, four of them high. Round 20 anchored the run-step reader to
+  refuse a comment; a step is disabled four other ways, and the reader reads a
+  step's COMMAND and never its sibling keys, so `if: false` on `pnpm
+verify-pack` in the job that runs immediately before publish left every roster
+  green. Worse, two of them bought a false coverage number: the provider's own
+  hint pattern is `(?:istanbul|[cv]8|node:coverage)\s+ignore`, so `c8 ignore` was
+  the same directive under a name no gate read; and `IGNORE_STOP` accepted `end`
+  while the provider accepts `stop` alone, so one `end` left a range unclosed and
+  took a whole file out of the denominator while the span pin reported no
+  widening. That family has now appeared twelve times.
+- **And a thirteenth, found while checking a sentence.** R21-ORCH-01, high.
+  After the repair, `if: false` on a JOB still left every gate green, because
+  `ciCommands` read step blocks with no job-level question. The fixer that found
+  it was measuring a document sentence it had been handed, not hunting. Its own
+  sentence deliberately did NOT claim the half it had just found broken.
+- **The descriptor bag was read through `Object.prototype`.** R21-H1-02, low.
+  Round 20 removed the predicate over the caller's object and built a fresh
+  target instead — but built it from a bag whose prototype is `Object.prototype`,
+  one line below the `Object.hasOwn` the same module uses for `fetch` precisely
+  to forbid that read. Harm is confined to reflection; the value is always
+  `undefined`, an absent WebIDL member.
+- **The suite cannot see the class it has found three times.** H1 fed every pin
+  in `tests/request/**` and `tests/envelope/**` the implementation round 20
+  refuted: 494 of 497 pass, and 195 of the 198 signal-family pins pass —
+  INCLUDING both pins R19-H1-01 wrote to name its own defect. H3 measured the
+  same for disclosure: reverting `ownUserinfo` leaves 93 of 94 spec files green
+  while a password reaches the channel set. Round 20 measured 15 of 16 there;
+  the ratio got worse, not better.
+- **A brief is a hypothesis, for the third round running.** The orchestrator's
+  severity ruling from round 20 was corrected by measurement — the shapes it
+  tested were unparseable, but the CLASS was not, and the same mechanism fires
+  on urls the parser accepts. Two document sentences it handed out were false
+  when written and were rewritten after measurement; a third was falsified
+  mid-round by another lane's fix landing; and a `TWO CALLERS` count it asked to
+  correct to three turned out to be four. Measuring first is what caught all of
+  them.
+- **A fifth instrument could not survive its own fix**, after four in round 20.
+  Two tests in one file evaluated the identical expression and demanded opposite
+  answers, so no implementation could satisfy the pair. The two concepts — the
+  SPAN, which is a position for the url route, and the NEEDLE, which is text for
+  the message route — now have two names.
+- **A release gate sat 0.6 seconds from red.** `pnpm coverage` exits 1 when one
+  generator test crosses the 5000 ms default under v8 instrumentation. It passed
+  on this machine and would fail on a slower runner. The test states its own
+  budget now.
+- **Coverage held at 100 on all four axes**, the suite grew from 3,366 to 3,461
+  tests, and the gate ran 16 of 16 green — `smoke:bun` joined the list, because
+  round 20 made the Bun smoke a release gate and round 21 found it had no
+  package script and no documented command.
+
 ## The audit files, renamed by subject
 
 The audit closed at round 15. Each round-numbered spec file above still holds
