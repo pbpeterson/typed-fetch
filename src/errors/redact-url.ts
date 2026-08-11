@@ -604,6 +604,23 @@ function userinfosOf(url: string): string[] {
   // cut is, and the slice is made here, because the scanner answers positions
   // and never text.
   //
+  // AND THE HEAD IS SCANNED TOO, in the caller's own spelling, because the cut
+  // took the url's OWN userinfo away from the raw scan and
+  // {@link slotUserinfos} hands back only the parser's spelling of it. The two
+  // agree for `hunter2` and differ for every password the userinfo encode set
+  // touches — a space, a non-ASCII letter, `|`, `<` — so a message quoting the
+  // url as the caller wrote it kept the password while the same message quoting
+  // `hun%20ter2` lost it. That is round 19's R19-H3-01, and it is the same
+  // "needle that no longer matches" the paragraph above names, wearing the one
+  // slot the cut removed.
+  //
+  // THE PORT IS STILL SAFE, and that is why this reads the head rather than
+  // moving the cut. An authority's LAST `@` ends its userinfo, so a span found
+  // here stops in front of the host and `https://api.test:8443` yields no needle
+  // at all. And what the span covers is text `redactUrl` drops from `url` too,
+  // in `stripValues` — so the two records move together, which is the boundary
+  // {@link hiddenUserinfos} states for every other needle.
+  //
   // AND IT IS ONE STRING WITH THE SLOT BOUNDARY INSIDE IT, which is why the
   // raw scan carries `pathEnd` where {@link slotUserinfos} carries a slot. The
   // text runs from the path on into the query and the fragment, and a span may
@@ -619,8 +636,12 @@ function userinfosOf(url: string): string[] {
   // there is no emitted url for a message to disagree with, and no slot of it to
   // draw the boundary at. The scan keeps every needle in that one state.
   const parsed = absolute ?? parseProbe(url, RELATIVE_BASE);
-  const raw = absolute === null ? url : url.slice(afterOwnAuthority(url));
-  const needles = new Set(hiddenUserinfos(raw, null, parsed === null ? raw.length : pathEnd(raw)));
+  const cut = absolute === null ? 0 : afterOwnAuthority(url);
+  const raw = url.slice(cut);
+  const needles = new Set([
+    ...hiddenUserinfos(url.slice(0, cut)),
+    ...hiddenUserinfos(raw, null, parsed === null ? raw.length : pathEnd(raw)),
+  ]);
   if (parsed !== null) {
     for (const needle of slotUserinfos(parsed, absolute === null && bringsOwnAuthority(url))) {
       needles.add(needle);
@@ -665,8 +686,11 @@ function hasRedactableSlot(url: string): boolean {
  * BEST EFFORT, and deliberately so: a platform that re-serializes the URL
  * before putting it in its message defeats the exact-string replacement. The
  * userinfo pass is the second line — userinfo is unconditionally a credential,
- * so it is removed wherever it survives — and `toJSON()` redacts `url`
- * independently, so a miss here never reaches the record.
+ * so it is removed wherever it survives. `toJSON()` redacts `url`
+ * independently, and copies `message` verbatim, so a miss here DOES reach the
+ * record. `SECURITY.md` states what survives and where; it is not restated
+ * here, because two copies of one rule is how this comment came to say the
+ * opposite.
  *
  * RESIDUAL, and it is the price of reading the path, the query, and the
  * fragment for a hidden authority: a needle from one of those slots is removed
