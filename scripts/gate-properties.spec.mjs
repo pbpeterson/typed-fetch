@@ -5,7 +5,7 @@
 // missing pin, and each was checked to fail against the mutation it describes.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
@@ -254,5 +254,226 @@ describe("the gate roster reaches CI", () => {
 
     for (const name of invoked)
       expect(scripts, `package.json must define ${name}`).toHaveProperty(name);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 5. The coverage exclusion list's PREMISE, and the runtime roster it rests on.
+//
+// `vitest.config.ts` drops two files from the 100 percent threshold and states
+// its reason in its own comment: "CI executes it under that runtime. Coverage
+// for the two files is measured there or not at all." Two committed tests pin
+// that LIST. The PREMISE was pinned for the Deno half only — section 4 above
+// asserts the Deno job runs its smoke — so deleting the OTHER smoke job left
+// every roster gate here green, with the excluded file measured by nothing and
+// executed by nothing (R19-H4-04). The release path inherits it: `release.yml`
+// calls `ci.yml` as a reusable workflow, so a deleted job is a deleted gate.
+//
+// The runtime roster is the same defect one layer out (R19-H4-02): CI declares
+// three runtime smokes, CONTRIBUTING.md named two, RELEASING.md named three,
+// and no gate read either list.
+// ---------------------------------------------------------------------------
+
+/** The paths `vitest.config.ts` drops from the coverage threshold. */
+function coverageExclusions() {
+  const list = /exclude:\s*\[([^\]]*)\]/.exec(readRepoFile("vitest.config.ts"));
+  expect(list, "vitest.config.ts must keep a coverage `exclude` list").not.toBe(null);
+  return [...list[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+}
+
+/** Every command CI runs, each `pnpm <script>` also expanded to the body it runs. */
+function ciCommands() {
+  const { scripts } = JSON.parse(readRepoFile("package.json"));
+  return [...readRepoFile(".github/workflows/ci.yml").matchAll(/- run: (.+)/g)].flatMap((m) => {
+    const command = m[1].trim();
+    const invoked = /^pnpm (?:run )?([\w:-]+)$/.exec(command);
+    const body = invoked ? scripts[invoked[1]] : undefined;
+    return body === undefined ? [command] : [command, body];
+  });
+}
+
+/** The runtime each `…-smoke` job in `ci.yml` exercises, by the job's prefix. */
+function ciSmokeRuntimes() {
+  const ci = readRepoFile(".github/workflows/ci.yml");
+  const jobs = ci.slice(ci.indexOf("\njobs:\n"));
+  return [...jobs.matchAll(/\n {2}([\w-]+)-smoke:\n/g)].map((m) => m[1]);
+}
+
+/**
+ * How the two contributor documents spell each runtime CI smokes, keyed by the
+ * job prefix read from `ci.yml`. A smoke job added without a spelling here
+ * fails the first test below rather than passing it unread.
+ */
+const RUNTIME_SPELLING = { bun: "Bun", deno: "Deno", "node-min": "node-min" };
+
+describe("the runtime jobs the coverage exclusion list rests on", () => {
+  test("every file dropped from the coverage threshold is executed by a CI job", () => {
+    const commands = ciCommands();
+    for (const path of coverageExclusions()) {
+      expect(
+        commands.some((command) => command.includes(path)),
+        `vitest.config.ts drops ${path} from the 100 percent threshold because CI executes it ` +
+          "under its own runtime, so coverage for it is measured there or not at all; no job " +
+          "in .github/workflows/ci.yml runs that file, which leaves it measured by nothing and " +
+          "executed by nothing",
+      ).toBe(true);
+    }
+  });
+
+  test("both contributor rosters name every runtime CI smokes", () => {
+    const contributing = readRepoFile("CONTRIBUTING.md");
+    const releasing = readRepoFile("RELEASING.md");
+    for (const runtime of ciSmokeRuntimes()) {
+      const word = RUNTIME_SPELLING[runtime];
+      expect(word, `no document spelling is recorded for the ${runtime} smoke job`).toBeDefined();
+      expect(contributing, `CONTRIBUTING.md must name the ${runtime} smoke`).toContain(word);
+      expect(releasing, `RELEASING.md must name the ${runtime} smoke`).toContain(word);
+    }
+  });
+
+  test("and neither roster names a runtime CI no longer smokes", () => {
+    // The other direction, and the one a deleted job needs: dropping a smoke
+    // job from `ci.yml` leaves both documents telling a reader that CI runs it.
+    const runtimes = ciSmokeRuntimes();
+    const rosters = `${readRepoFile("CONTRIBUTING.md")}\n${readRepoFile("RELEASING.md")}`;
+    for (const [runtime, word] of Object.entries(RUNTIME_SPELLING)) {
+      expect(
+        rosters.includes(word),
+        `CONTRIBUTING.md or RELEASING.md names the ${runtime} runtime smoke and ` +
+          ".github/workflows/ci.yml declares no job that runs it",
+      ).toBe(runtimes.includes(runtime));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. `v8 ignore` — protocol section 8.6 acceptance item 4, read by a check.
+//
+// A `v8 ignore` range removes its lines from the DENOMINATOR of the same 100
+// percent threshold the release gate enforces, so a range that states no
+// condition takes a wholly untested `if` from 75 percent statements and 50
+// percent branches to 100 on all four axes, with `pnpm coverage` exiting 0.
+// `scripts/round19-h4-gate.spec.mjs` drives that in a throwaway project.
+//
+// Item 4 requires every remaining range to carry a written justification, and
+// until R19-H4-03 no spec, no gate script and no workflow step read a range at
+// all. This reads PRESENCE, never truth: round 5 of this audit found a
+// justification that was FALSE and no pattern can tell. The site pin is what
+// makes a NEW range a reviewable diff instead of a silent widening.
+// ---------------------------------------------------------------------------
+
+/** A `v8 ignore` directive that OPENS a range, never the one that closes it. */
+const IGNORE_DIRECTIVE = /v8 ignore(?!\s+(?:stop|end)\b)/;
+
+/** The shortest justification this check accepts, in characters of prose. */
+const JUSTIFICATION_FLOOR = 40;
+
+/** The `v8 ignore` sites under measurement, each as `file → the line it guards`. */
+const IGNORE_SITES = [
+  'fixtures/channels.ts → "1 JSON.stringify in a log envelope":',
+  'fixtures/http-server.ts → res.setHeader("X-Echo-Method", req.method ?? "");',
+  "src/errors/base-http-error.ts → const revokeLoan = identity ? lendIdentity(teed.branch, identity) : undefined;",
+  "src/errors/response-identity.ts → const code = character.codePointAt(0) ?? 0;",
+  "src/response-verdict.ts → if (!validatedResponseStructures.has(response)) return false;",
+  "src/response-verdict.ts → if (refusedTheValue) rollbackRefusal();",
+];
+
+/** Every measured source file under `rel`. Spec files are not measured. */
+function measuredSources(rel, found = []) {
+  for (const name of readdirSync(join(repoRoot, rel))) {
+    const next = `${rel}/${name}`;
+    if (statSync(join(repoRoot, next)).isDirectory()) measuredSources(next, found);
+    else if (/\.(?:ts|mjs)$/.test(name) && !/\.spec\.(?:ts|mjs)$/.test(name)) found.push(next);
+  }
+  return found;
+}
+
+/**
+ * Every `v8 ignore` range in `source`: the line it opens on, the first line it
+ * guards, and the comment block written directly above it.
+ */
+function ignoreRanges(source) {
+  const lines = source.split("\n");
+  const ranges = [];
+  for (const [index, line] of lines.entries()) {
+    if (!IGNORE_DIRECTIVE.test(line)) continue;
+    let above = index - 1;
+    let justification = "";
+    while (
+      above >= 0 &&
+      /^\s*(?:\/\/|\/?\*)/.test(lines[above]) &&
+      !lines[above].includes("v8 ignore")
+    ) {
+      justification = `${lines[above].replace(/^\s*(?:\/\/+|\/?\*+\/?)\s*/, "")} ${justification}`;
+      above -= 1;
+    }
+    ranges.push({
+      line: index + 1,
+      guards: (lines[index + 1] ?? "").trim(),
+      justification: justification.trim(),
+    });
+  }
+  return ranges;
+}
+
+describe("every `v8 ignore` range acceptance item 4 covers", () => {
+  /** Every range in the trees the coverage `include` names. */
+  const sites = () =>
+    ["src", "fixtures", "scripts"]
+      .flatMap((tree) => measuredSources(tree))
+      .flatMap((file) => ignoreRanges(readRepoFile(file)).map((range) => ({ file, ...range })));
+
+  test("the measured trees hold exactly the sites this round read", () => {
+    expect(
+      sites()
+        .map((site) => `${site.file} → ${site.guards}`)
+        .toSorted(),
+      "a `v8 ignore` range was added, moved, or removed. Every range removes its lines from " +
+        "the denominator of the 100 percent threshold, so the list is pinned by site and an " +
+        "edit to it belongs in the diff a reviewer reads",
+    ).toEqual(IGNORE_SITES.toSorted());
+  });
+
+  test("each one carries a written justification directly above it", () => {
+    for (const site of sites()) {
+      expect(
+        site.justification.length,
+        `${site.file}:${site.line} opens a \`v8 ignore\` range with no reason above it. ` +
+          "Acceptance item 4 requires a written justification naming the exact condition that " +
+          "makes the line unreachable. This check proves the sentence is THERE, never that it " +
+          "is true — round 5 found one that was false",
+      ).toBeGreaterThanOrEqual(JUSTIFICATION_FLOOR);
+    }
+  });
+
+  test("BREAKING IT: the bare range that buys a false 100 percent is refused", () => {
+    // The mutation, in the exact shape `scripts/round19-h4-gate.spec.mjs` runs
+    // through a project carrying this repository's own four thresholds: the
+    // untested arm reports 100/100/100/100 and the coverage gate exits 0.
+    const bare = [
+      "export function pick(flag: boolean): string {",
+      '  const label = "x";',
+      "  /* v8 ignore start */",
+      '  if (flag) return "yes-" + label;',
+      "  /* v8 ignore stop */",
+      '  return "no-" + label;',
+      "}",
+    ].join("\n");
+
+    expect(ignoreRanges(bare)).toEqual([
+      { line: 3, guards: 'if (flag) return "yes-" + label;', justification: "" },
+    ]);
+    expect(ignoreRanges(bare)[0].justification.length).toBeLessThan(JUSTIFICATION_FLOOR);
+
+    // The same range with a stated condition above it passes the same read, so
+    // the check refuses the omission and not the directive.
+    const justified = bare.replace(
+      "  /* v8 ignore start */",
+      "  // UNREACHABLE: every call site in this module passes `false` for `flag`.\n" +
+        "  /* v8 ignore start */",
+    );
+    expect(ignoreRanges(justified)[0].justification).toBe(
+      "UNREACHABLE: every call site in this module passes `false` for `flag`.",
+    );
   });
 });

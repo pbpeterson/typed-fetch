@@ -275,6 +275,14 @@ Words this codebase already uses, some of them only implicitly until now.
   re-enters on the AMBIENT transport. It never re-enters on itself, and a
   forwarding transport that spreads its init cannot build an infinite loop out
   of one option.
+- **The signal snapshot** — a signal the init reports is a signal a spread of
+  the init carries. The entry is materialized as own AND enumerable, because
+  `{ ...init }` copies own enumerable keys and that spread is what a forwarding
+  transport writes. This holds however the caller spelled the signal: an own
+  enumerable one, an own non-enumerable data one, an own non-enumerable
+  accessor, and an inherited one all reach the transport as an own enumerable
+  data property carrying the same `AbortSignal`. An init that reports no signal
+  materializes no entry.
 
 ## The modules
 

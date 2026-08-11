@@ -459,13 +459,34 @@ function namedUrls(markdown: string): string[] {
 const SPELLS_A_CREDENTIAL = /[^/@:]+:[^/@]*@/;
 
 describe.skipIf(!distExists)("the `[Unreleased]` block, against semver rule 8", () => {
-  test("VERIFIED: the block claims the record moved in both directions", () => {
+  test("VERIFIED: the block claims only the direction that has a witness", () => {
+    // REQUALIFIED IN ROUND 19, BY R19-H4-01. This test used to read the block's
+    // claim that the record "moved in both directions", and it read it as a
+    // premise: the rest of this section then asks whether the block names an
+    // ordinary input per direction. Round 19 measured the directions against a
+    // REBUILT 2.0.1 tree and found the keeps-more direction had no witness at
+    // all, so the block dropped the claim rather than the input.
+    //
+    // Round 19 re-measured after the redaction fixes of that round landed, and
+    // the answer did not change: over the 5,600-url corpus of
+    // `round19-h4-surface.spec.ts` the record is shorter than 2.0.1's on 2,264
+    // rows and longer on none. Those fixes only reduce what a build inside this
+    // unreleased window over-removed; they never return a byte the published
+    // package had already dropped.
+    //
+    // The pin therefore reads the requalified sentence AND asserts the retracted
+    // one is gone. It turns red if the claim comes back — and a round that means
+    // to bring it back must supply the witness that
+    // `round19-h4-surface.spec.ts` > "every direction the block names is a
+    // direction some input actually took" demands, and update both pins in the
+    // same commit.
     expect(unwrapped(repoText("RELEASING.md"))).toContain(
       "`CHANGELOG.md` states each direction the output moved, and names one ordinary input per direction.",
     );
     expect(unwrapped(unreleasedBlock())).toContain(
-      "`redactUrl`'s output moved in both directions for an ordinary input, not only for an attack shape.",
+      "`redactUrl`'s output moved for an ordinary input, not only for an attack shape.",
     );
+    expect(unwrapped(unreleasedBlock())).not.toContain("moved in both directions");
   });
 
   test("the block names an ordinary input whose record actually moves", async () => {

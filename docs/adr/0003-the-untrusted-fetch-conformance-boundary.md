@@ -350,3 +350,15 @@ release stays unconditional, because a skipped release strands a stream.
 `tests/request/round16-h1-request.spec.ts` pins both arms, and it pins the
 other side too: a value that no earlier call handed out is still released on a
 refusal.
+
+The release path is not the only phase 3 path this reaches. Measured against
+the built package over 17 shapes — `Response.error()`, `Response.redirect()`,
+a 204 and a 304 with a null body, stream, blob, `ArrayBuffer`, `FormData` and
+`URLSearchParams` bodies, a live server's response, a followed redirect, and a
+clone of a clone — no `Response` a platform built was refused. Each satisfies
+`isResponse`, `hasCompatibleForeignBody`, `hasCompatibleForeignHeaders`,
+`hasTypedResponseIdentityScalars`, and the `FOREIGN_RESPONSE_TYPES` membership
+test, whose set is exactly the six values the Fetch Standard gives
+`Response.type`. Those five reads ask for nothing the Standard does not
+guarantee, so a refusal anywhere in phase 3 names an injected implementation
+that departs from it, never a `Response` the platform built.

@@ -55,11 +55,17 @@ pnpm run audit:ci    # fail on any known vulnerability in the full toolchain
 ```
 
 Run them all locally. CI runs the same checks and fails the PR otherwise.
-CI additionally runs Bun and Deno runtime smokes. Its Deno job runs
-`pnpm check-deno-consumer` after the build, installing the packed artifact and
-typechecking the package's public `.d.mts` declarations by bare package name.
-Run that command locally too when Deno 2 is installed. Deno 1 cannot resolve
-an unpublished local tarball through the required manual `node_modules` mode.
+CI additionally runs Bun, Deno, and Node-floor runtime smokes. Its Deno job
+runs `pnpm check-deno-consumer` after the build, installing the packed artifact
+and typechecking the package's public `.d.mts` declarations by bare package
+name. Run that command locally too when Deno 2 is installed. Deno 1 cannot
+resolve an unpublished local tarball through the required manual `node_modules`
+mode.
+
+Its Node-floor job executes the built artifact on a real Node 20.13.0, the
+exact `engines.node` floor. On any newer Node, `pnpm smoke:node-min` warns
+instead of failing — unless `CI` is set — so running it on your default Node
+proves nothing about the floor.
 
 For full Deno parity, run both package scripts after the build:
 

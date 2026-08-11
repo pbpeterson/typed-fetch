@@ -93,15 +93,52 @@ open after the fixes land.
   the seam reported no username and no password while the parser had still
   read it as userinfo. That span kept its credential. The scan now reads
   the split point directly and no longer parses to confirm it.
+- **A credential-hiding region that a bare `//` opens now ends where the URL
+  parser reads its authority ending, exactly as a region a scheme mark opens
+  does.** Two solidi with no scheme in front of them are how the URL Standard
+  itself opens an authority, so the rule that keeps an embedded host behind
+  `https://` had no reason to ask for a scheme as well — and while it did, one
+  reference answered two ways.
+  `https://api.test/go/https://media.test:8443/img/@alice` kept the authority
+  it names, and `https://api.test//media.test:8443/img/@alice` emitted
+  `https://api.test//alice`, a record that names a handle taken from a later
+  path segment in place of the host the reference named. The redactor leaves
+  both urls unchanged now. The published `2.0.1` leaves both unchanged too, so
+  an upgrade from it sees no move on this shape; the other answer came from a
+  build inside this unreleased window. `SECURITY.md` recorded this limit and
+  now carries it struck through, with the correction.
+- **A password whose raw spelling differs from the spelling the URL parser
+  writes no longer survives in `error.message`.** The message pass removes the
+  whole url wherever the message quotes it, and then removes each userinfo the
+  url carries as a second pass. That second pass read this url's OWN userinfo
+  out of the parser's report, and the parser percent-encodes a space, a
+  non-ASCII letter, `<`, `|`, `` ` `` and a dozen more characters inside a
+  userinfo. So a message quoting the url as the caller wrote it, in any
+  spelling the whole-url replacement misses — a stripped fragment, a
+  normalized default port — kept the password in full, and it reached
+  `message`, `toJSON().message`, `stack`, `String(error)`,
+  `JSON.stringify(error)`, `util.inspect(error)`, and `structuredClone`. The
+  pass now reads this url's own userinfo in the caller's spelling as well as
+  the parser's.
 
 ### Changed
 
-- **`redactUrl`'s output moved in both directions for an ordinary input,
-  not only for an attack shape.** An embedded credential in an ordinary
-  path segment is now removed where it used to survive — see the region
-  rules above. A `file:` path segment is now kept where it used to be
-  deleted, because `file:` opens no region under fewer than two solidi.
-  See the `file:` bullet above. A credential-free proxy url shows the
+- **`redactUrl`'s output moved for an ordinary input, not only for an
+  attack shape.** An embedded credential in an ordinary path segment is
+  now removed where it used to survive — see the region rules above. A
+  `file:` path segment that a build inside this unreleased window deleted
+  is kept again, because `file:` opens no region under fewer than two
+  solidi; no released package deleted it, so an upgrade from 2.0.1 sees
+  no move on that shape. See the `file:` bullet above. A path segment
+  behind a bare `//` authority is kept again for the same kind of reason:
+  the region there ends at the authority the parser reads, so the segment
+  behind it was never a credential to remove. Over the 140,640-url
+  population the disclosure suite draws, 1,266 rows keep such a segment
+  that a build inside this window removed, and on none of them does the
+  platform report a credential. No released package removed them either:
+  over that same population, the record this release emits is never longer
+  than the published 2.0.1's, on any row. A credential-free
+  proxy url shows the
   direction an ordinary input actually took: `redactUrl` turns
   `https://api.test/relay/https://media.test/photos/mia@example.com/pic.png`
   into `https://api.test/relay/https://example.com/pic.png`. The record

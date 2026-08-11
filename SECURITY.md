@@ -8,7 +8,10 @@ security updates.
 ## Known residuals
 
 These are deliberate limits, not defects. Each one is tested, so it stays a
-known limit rather than a surprise.
+known limit rather than a surprise. An entry struck through is one a later
+release closed. It stays on this list, with the correction under it, so a reader
+who meets the old claim somewhere else finds the answer here instead of the
+claim again.
 
 One rule decides membership, and it decides every entry below. A limit belongs
 here when this library's own output can harm the reader who acts on it. Two
@@ -30,22 +33,28 @@ Each one costs a detail a reader wants. None of them emits a value an attacker
 wants. So an absence from this list is a decision, and a reader can test any
 limit found in the source against the rule above.
 
-- **A protocol-relative forward loses the authority it names.** A url whose
-  embedded authority sits behind a bare pair of solidi, with an ordinary `@` in
-  a later path segment, loses that authority:
-  `https://api.test/proxy///cdn.test:8443/img/@alice` emits
-  `https://api.test/proxy///alice`, which names `alice` and drops
-  `cdn.test:8443`. The colon rule fires because no scheme wrote the mark, so
-  the suppression that keeps the authority behind `https://` does not apply.
-  The cost is over-redaction and never a leaked credential: over 97,344
-  generated urls the shape covers 504 rows, of which 414 emit a misleading
-  record and none loses a secret. A rule that separates it exists — a region no
-  colon opened can buy the parser's reading — and it moves five pinned answers,
-  one of them a behavior this repository pinned deliberately, on a row where the
-  authority the parser reads is a scheme token with an empty port. The trade was
-  weighed in round 18 and refused: this module's history is three consecutive
-  rounds in which a new condition became the next round's defect.
-  `round18-h3-disclosure.spec.ts` pins the limit in both directions.
+- **~~A protocol-relative forward loses the authority it names.~~ CLOSED.** A
+  url whose embedded authority sat behind a bare pair of solidi, with an
+  ordinary `@` in a later path segment, used to lose that authority:
+  `https://api.test/proxy///cdn.test:8443/img/@alice` emitted
+  `https://api.test/proxy///alice`, which named `alice` and dropped
+  `cdn.test:8443`. The colon rule fired because no scheme wrote the mark, so the
+  suppression that keeps the authority behind `https://` did not apply. The cost
+  was over-redaction and never a leaked credential: over 97,344 generated urls
+  the shape covered 504 rows, of which 414 emitted a misleading record and none
+  lost a secret.
+
+  It is closed. A region opened by a bare pair of solidi now buys the parser's
+  reading of the authority at its start, exactly as a region a scheme mark opens
+  does, because a bare pair of solidi is how the URL Standard itself opens an
+  authority. Over the same 97,344 urls the residue is 0 rows and the misleading
+  records are 0, no secret was lost, and no row was made worse. The url above is
+  a fixed point of the redactor now. What the closure costs is text a reader
+  reads as a path segment behind the embedded authority, which the path-segment
+  residual below already records: 1,266 rows of a 140,640-url population keep
+  such a segment, and on none of them does the platform report a credential.
+  `round18-h3-disclosure.spec.ts` and `round18-h2-response.spec.ts` pin the
+  closure, and turn red if it reopens.
 
 - **A credential can reach a crash dump through `error.cause`.** A platform
   quotes the URL it refused back in its own message, credentials included.
@@ -119,8 +128,13 @@ limit found in the source against the rule above.
   the same url finds no match. A stripped fragment, a normalized default
   port, and a case-folded host are three such spellings. The query or
   fragment byte in that spelling survives in `error.message`, and in
-  `toJSON().message`, which is the record a structured logger writes. See
-  `redactUrlInMessage`'s own comment for the full best-effort contract.
+  `toJSON().message`, which is the record a structured logger writes. A
+  PASSWORD does not survive it. The url's own userinfo is removed in the
+  spelling the caller wrote as well as in the spelling the parser writes, so
+  a password holding a space, a non-ASCII letter, or any other character the
+  parser percent-encodes inside a userinfo goes even when the whole-url
+  replacement finds no match. See `redactUrlInMessage`'s own comment for the
+  full best-effort contract.
 
   `error.url` keeps every byte regardless, because it is the raw href — see
   the escape-hatch bullet below. Two residuals are left in what `redactUrl`
