@@ -193,6 +193,8 @@ Run every step, in order, for every release:
    `pnpm smoke:node-min` — but ONLY with a real Node **20.13.0** binary. The
    script warns instead of failing on a newer runtime, so running it on your
    default Node proves nothing about the `engines` floor.
+   For parity with the `bun-smoke` job, also run `pnpm smoke:bun`, which needs a
+   Bun binary.
 3. **Commit the release candidate and open a PR:**
    ```bash
    git commit -m "chore: release X.Y.Z"

@@ -62,10 +62,29 @@ name. Run that command locally too when Deno 2 is installed. Deno 1 cannot
 resolve an unpublished local tarball through the required manual `node_modules`
 mode.
 
-A workflow step commented out is a step deleted; `scripts/gate-properties.spec.mjs`
-reads the run lines line-anchored, so a `#` in front of one fails the roster.
+Run `pnpm smoke:bun` locally when Bun is installed. The `bun-smoke` job's own
+step is the only place in `.github/workflows/ci.yml` that runs a Bun binary, and
+the suite reads `scripts/smoke/bun.mjs` as text and never executes it, which is
+why `vitest.config.ts` drops that file from the coverage threshold.
 
-Its Node-floor job executes the built artifact on a real Node 20.13.0, the
+A workflow step commented out is a step deleted, and so is a step that is
+declared and cannot fail. `scripts/gate-properties.spec.mjs` reads a step as a
+BLOCK — its `- run:` line, read line-anchored, plus the keys written under it —
+so a `#` in front of that run line, an `if: false` under it, and a
+`continue-on-error: true` under it each fail the roster. Either key on a JOB the
+roster reads out of fails it too, because the key takes every step in that job
+with it. What the roster proves is the STRUCTURE of a declared step: it does not
+prove that the step ran, or that it exited 0.
+
+`c8 ignore`, `istanbul ignore` and `node:coverage ignore` are the same directive
+to this project's coverage provider as `v8 ignore`: each one takes its lines out
+of the denominator of the same 100 percent threshold. Only the `v8 ignore`
+spelling is permitted here, and `scripts/gate-properties.spec.mjs` pins the
+spelling of every range beside its span. `stop` is the only keyword that closes
+a range; a range spelled `v8 ignore end` never closes and removes every line to
+the end of the file from the coverage denominator.
+
+CI's Node-floor job executes the built artifact on a real Node 20.13.0, the
 exact `engines.node` floor. On any newer Node, `pnpm smoke:node-min` warns
 instead of failing — unless `CI` is set — so running it on your default Node
 proves nothing about the floor.

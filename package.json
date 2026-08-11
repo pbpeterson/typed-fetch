@@ -80,6 +80,7 @@
     "check-deno-consumer": "node scripts/check-deno-consumer.mjs",
     "check-doc-style": "node scripts/check-doc-style.mjs",
     "coverage": "vitest run --coverage.enabled --coverage.provider=v8 --coverage.reporter=text",
+    "smoke:bun": "bun run scripts/smoke/bun.mjs",
     "smoke:deno": "deno check scripts/smoke/deno.ts && deno run --allow-net scripts/smoke/deno.ts",
     "smoke:node-min": "node scripts/smoke/node-min.mjs",
     "prepublishOnly": "node scripts/verify-pack.mjs"

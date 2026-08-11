@@ -134,11 +134,36 @@ limit found in the source against the rule above.
   spelling the parser writes, so a password holding a space, a non-ASCII
   letter, a reverse solidus under a scheme the URL Standard does not call
   special, or any other character the parser percent-encodes inside a
-  userinfo goes even when the whole-url replacement finds no match. The
+  userinfo goes even when the whole-url replacement finds no match. A
+  needle derived from a scan span now ends at the span's last `@`, never
+  past it, so a credential whose `@` is followed by a solidus or a dot
+  segment is removed from the message as well as from `url`:
+  `https://api.test/go/https://svc:hunter2@/cdn.test/v1` and
+  `https://api.test/go/https://svc:hunter2@/./cdn.test/v1` are two such
+  urls, and the span the scanner draws for each of them closes past text
+  no `@` in a message can ever terminate. The
   qualifier is load-bearing: where the parser reads NO userinfo, this pass
   has nothing it can name as a credential. A `file:` url is the first such
-  shape, because `file:` has no authority state and can carry no
-  credentials; a url the parser rejects outright is the second. See
+  shape: no spelling of one reports a username or a password, because the
+  `///` and the `\` spellings reach the file host state with an EMPTY host
+  and hand everything after it to the path, and a `@` where a file host
+  would be is a parse failure. What the pass can still name there is the
+  caller's own spelling, and a `\` inside the password takes even that:
+  `file:` is one of the URL Standard's special schemes, so `authorityEnd`
+  folds that `\` into a solidus and the walk stops in front of the `@` —
+  R20-ORCH-01's mechanism, under the one scheme where the fold is what the
+  Standard asks for. A url the parser rejects outright is the second. An
+  OPAQUE url is the third: it has no authority component, so it yields no
+  seam needle at all, and its head is a needle only where the caller
+  spelled a colon inside it. `mailto:alice@example.com`, and the same
+  address under `sip:`, `xmpp:`, `urn:` and `im:`, yields neither, so a
+  message that names that address without quoting the url keeps every byte
+  of it — which is the limit, because the URL Standard reads no credential
+  in a bare `name@`. An opaque path that spells a colon is a password the
+  caller wrote, and `git:svc:hunter2@api.test/v1` still loses
+  `svc:hunter2@` from a message that quotes it. `redactUrl` reduces every
+  opaque url to its scheme, so a message that quotes the url ITSELF loses
+  the whole of it either way. See
   `redactUrlInMessage`'s own comment for the full best-effort contract.
 
   `error.url` keeps every byte regardless, because it is the raw href — see
