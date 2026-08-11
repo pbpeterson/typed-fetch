@@ -345,7 +345,17 @@ function validateReleaseExit(changelog) {
   }
 }
 
-const RELEASED_SECTION = ["### Fixed", "", "- A real entry a reader can act on.", ""].join("\n");
+/** The direction declaration RELEASING.md step 1 moves in with the block. */
+const DIRECTION = "<!-- redaction-directions: none -->";
+
+const RELEASED_SECTION = [
+  DIRECTION,
+  "",
+  "### Fixed",
+  "",
+  "- A real entry a reader can act on.",
+  "",
+].join("\n");
 
 /** A changelog whose 2.0.1 section holds `body`. */
 const changelogWith = (body) =>
@@ -381,6 +391,32 @@ describe("R22-H4-03 — the gate between a tag and `npm publish`, driven", () =>
         "directions reads `[Unreleased]`, which this gate has just required to be empty",
     ).not.toBe(0);
   }, 60_000);
+
+  // R23-H4-03, driven in the same live world. The section says something and
+  // still fails semver rule 8's direction obligation, in the three ways the
+  // declaration can be wrong. Each is a real `node scripts/validate-release.mjs`
+  // inside a scratch git repository, so nothing here rests on an import.
+  test.each([
+    ["carries no direction declaration", `${DIRECTION}\n`, ""],
+    ["carries two", DIRECTION, `${DIRECTION}\n\n<!-- redaction-directions: keeps-more -->`],
+    ["names a direction outside the vocabulary", DIRECTION, "<!-- redaction-directions: wider -->"],
+  ])(
+    "a release whose new dated section %s is refused",
+    (_name, find, put) => {
+      const run = validateReleaseExit(changelogWith(RELEASED_SECTION.replace(find, put)));
+      expect(
+        run.status,
+        "the dated section says something, so the rule round 22 added accepts it. Semver rule 8 " +
+          "obliges that section to state each direction `toJSON().url` moved, and RELEASING.md " +
+          "step 1 copies the declaration there with the block. Every other reader of it slices " +
+          "`## [Unreleased]`, which scripts/validate-release.mjs requires to be EMPTY before the " +
+          "workflow may publish, so this gate is the only one that can read the obligation at the " +
+          "moment it applies",
+      ).not.toBe(0);
+      expect(run.out).toContain("✖ validate-release");
+    },
+    60_000,
+  );
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

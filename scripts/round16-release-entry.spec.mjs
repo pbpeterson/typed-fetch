@@ -106,7 +106,13 @@ const COMPARE = "https://github.com/pbpeterson/typed-fetch/compare";
  * rule at a time and know which rule it broke.
  */
 function changelogFor(version, { unreleasedLast = false } = {}) {
-  const release = `## [${version}] - 2026-07-17\n\n### Added\n\n- A release.\n`;
+  // The dated section carries the `<!-- redaction-directions: … -->`
+  // declaration semver rule 8 obliges it to carry: RELEASING.md step 1 moves it
+  // there with the pending block, and the gate requires exactly one there. A
+  // release that moved the redacted url in no direction still declares `none`.
+  const release =
+    `## [${version}] - 2026-07-17\n\n<!-- redaction-directions: none -->\n\n` +
+    "### Added\n\n- A release.\n";
   const footer =
     `[Unreleased]: ${COMPARE}/v${version}...HEAD\n` +
     `[${version}]: ${COMPARE}/v0.0.1...v${version}\n`;
@@ -246,6 +252,36 @@ describe("validateRelease — every remaining refusal class the function reports
   test("rejects an impossible changelog calendar date", () => {
     const changelog = changelogFor(shipped.version).replace("2026-07-17", "2026-02-30");
     expect(() => validateRelease(shippedCandidate({ changelog }))).toThrow("valid calendar date");
+  });
+
+  // Semver rule 8's direction obligation. This describe claims to hold every
+  // remaining refusal class the function reports, so a new class belongs here
+  // by the describe's own title. Each row breaks the declaration in one way.
+  const DECLARATION = "<!-- redaction-directions: none -->";
+
+  test.each([
+    ["deleted", `${DECLARATION}\n\n`, "", "section carries 0 <!-- redaction-directions: … -->"],
+    [
+      "written twice",
+      DECLARATION,
+      `${DECLARATION}\n\n<!-- redaction-directions: keeps-more -->`,
+      "section carries 2 <!-- redaction-directions: … -->",
+    ],
+    [
+      "left empty",
+      DECLARATION,
+      "<!-- redaction-directions: -->",
+      "redaction-directions declaration names no direction",
+    ],
+    [
+      "outside the closed vocabulary",
+      DECLARATION,
+      "<!-- redaction-directions: shorter -->",
+      "declaration names shorter; every value must be one of removes-more, keeps-more, none",
+    ],
+  ])("rejects a dated section whose direction declaration is %s", (_name, find, put, message) => {
+    const changelog = changelogFor(shipped.version).replace(find, put);
+    expect(() => validateRelease(shippedCandidate({ changelog }))).toThrow(message);
   });
 
   test("rejects a changelog missing the version's footer link entirely", () => {

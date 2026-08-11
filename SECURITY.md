@@ -135,24 +135,61 @@ limit found in the source against the rule above.
   letter, a reverse solidus under a scheme the URL Standard does not call
   special, or any other character the parser percent-encodes inside a
   userinfo goes even when the whole-url replacement finds no match. A
+  reverse solidus under a SPECIAL scheme is not in a userinfo the parser
+  reads at all — it ENDS the authority — and the pass no longer depends on
+  the parser reading one there. The authority the caller wrote SPILLS into
+  the path, and the seam removes every character in front of the first
+  solidus the caller typed, so
+  `https://CORP\alice\service:hunter2@api.test/v1` records
+  `https://corp/api.test/v1` and its message carries no password. Measured
+  against the built package over 360 spilled urls — the six special
+  schemes, three spellings of the authority mark, five spellings of the
+  break and four password shapes — the parser reports a userinfo on NONE
+  of them, and `hunter2` reaches neither `error.message`, nor
+  `toJSON().message`, nor `toJSON().url`, under three quotings each. What
+  the wider seam costs is the `file:` bullet below. A
   needle derived from a scan span now ends at the span's last `@`, never
   past it, so a credential whose `@` is followed by a solidus or a dot
   segment is removed from the message as well as from `url`:
   `https://api.test/go/https://svc:hunter2@/cdn.test/v1` and
   `https://api.test/go/https://svc:hunter2@/./cdn.test/v1` are two such
   urls, and the span the scanner draws for each of them closes past text
-  no `@` in a message can ever terminate. The
+  no `@` in a message can ever terminate. A span also yields every SEGMENT
+  of itself that ends in an `@`, because a forwarding message names the
+  upstream a second time in the caller's own spelling:
+  `https://api.test/go/https://b.test/svc:hunter2@i.test/v1` draws the one
+  span `b.test/svc:hunter2@`, so a message reading
+  `the upstream svc:hunter2@i.test was refused`
+  kept the password until the segments became needles too. THAT MAKES THE
+  MESSAGE OVER-REDACTION WIDER, which is limit 3 at the head of this
+  section: its whole cost is a detail a reader wants, never a value an
+  attacker wants. A message naming only the TAIL of an embedded resource
+  loses it now, so
+  `https://registry.test/proxy/https://npm.test/left-pad@1.2.3` yields
+  `left-pad@` as well as `npm.test/left-pad@`, and a message reading
+  `cache miss for left-pad@1.2.3` reads `cache miss for 1.2.3` instead. No
+  record names a host another one does not: `toJSON().url` drops the same
+  span and still names `registry.test`. The
   qualifier is load-bearing: where the parser reads NO userinfo, this pass
   has nothing it can name as a credential. A `file:` url is the first such
   shape: no spelling of one reports a username or a password, because the
   `///` and the `\` spellings reach the file host state with an EMPTY host
   and hand everything after it to the path, and a `@` where a file host
-  would be is a parse failure. What the pass can still name there is the
-  caller's own spelling, and a `\` inside the password takes even that:
-  `file:` is one of the URL Standard's special schemes, so `authorityEnd`
-  folds that `\` into a solidus and the walk stops in front of the `@` —
-  R20-ORCH-01's mechanism, under the one scheme where the fold is what the
-  Standard asks for. A url the parser rejects outright is the second. An
+  would be is a parse failure. What the pass names there is the caller's
+  own spelling, and it names it even where a `\` sits inside the password.
+  It did not until the segments of a span became needles: `file:` is one of
+  the URL Standard's special schemes, so `authorityEnd` folds that `\` into
+  a solidus and the whole-span needle is written `svc:hun/ter2@`, which no
+  quote of the caller's text can match — R20-ORCH-01's mechanism, under the
+  one scheme where the fold is what the Standard asks for. The SEGMENT
+  `ter2@` is spelled the same on both sides of the fold, so it matches, and
+  `file:///svc:hun\ter2@api.test/v1` now reads
+  `file:///svc:hun\api.test/v1` in the message and `file:///api.test/v1` in
+  the record. The password's head survives where the fold cut it. Measured
+  against the built package over the four solidus spellings and both hosts,
+  no message keeps `hun\ter2` and no record does; over the same spellings
+  with eight delimiter classes inside the password and three quotings, 192
+  checks keep nothing. A url the parser rejects outright is the second. An
   OPAQUE url is the third: it has no authority component, so it yields no
   seam needle at all, and its head is a needle only where the caller
   spelled a colon inside it. `mailto:alice@example.com`, and the same
@@ -224,9 +261,10 @@ limit found in the source against the rule above.
   under the same count, for the reason residual 2 above states. This
   narrowing is deliberate. It stops `/a:/b` from being read as an authority,
   and it also stops `/a:/b@c` from losing a path segment it must keep.
-- **A `file:` path whose FIRST segment holds a colon that is not a Windows
-  drive letter, and whose later text holds an `@`, loses everything up to
-  that `@`.** `file:///a:b/c/mail@example.com/x` emits
+- **A `file:` path whose later text holds an `@` loses everything up to that
+  `@`, when its FIRST segment holds a colon that is not a Windows drive
+  letter, or when the caller spelled the break that ended their own
+  authority as `\`.** `file:///a:b/c/mail@example.com/x` emits
   `file:///example.com/x`. The emitted record is a path the request never
   used, and its only remaining segments are text taken from the far side of
   an `@`. It is the price of reading a solidus the parser folded out of a
@@ -242,6 +280,22 @@ limit found in the source against the rule above.
   later segment is not read at all:
   `file:///a/b:c/mail@example.com/x` is a fixed point.
   `tests/redaction/round20-h3-disclosure.spec.ts` pins both sides.
+
+  THE COLON IS ASKED ONLY WHERE NOTHING SPILLED, and that is the wider
+  half of this limit. Where the caller's own authority ran into the path —
+  where the character that ended it is a `\` they wrote — the spill answers
+  the same question with better evidence, and the colon is never asked at
+  all: every character in front of the first solidus the caller typed is
+  authority text they wrote. So the drive-letter carve-out above holds for
+  the solidus spelling and not for the reverse-solidus one.
+  `file:///c:\Users\alice@corp\report.pdf` emits `file:///corp/report.pdf`
+  and `file:///C:\c\mail@example.com\x` emits `file:///example.com/x`,
+  where both keep every byte when the same paths are spelled with `/`. This
+  is the same over-redaction the bullet opens with, reached by the other
+  route, and it is what buys a credential under every other special scheme:
+  `https://CORP\alice\service:hunter2@api.test/v1` is a password the parser
+  reports nowhere, and the spill is what takes it out of the record.
+
 - **`error.url` and `error.headers` hold the raw values.** They are the escape
   hatches, non-enumerable so no structured logger reaches them by accident.
 - **A forged brand passes a type guard.** The guards answer "does this claim to

@@ -38,12 +38,22 @@ attestation.
     aside, so a release that deleted the pending entries instead of moving them
     into it is refused;
   - the `[Unreleased]` changelog section is empty;
+  - that dated section carries exactly one `<!-- redaction-directions: … -->`
+    declaration, and every comma-separated value in it reads `removes-more`,
+    `keeps-more`, or `none`;
   - the changelog footer defines a `[X.Y.Z]:` compare link that ends at
     `vX.Y.Z`;
   - the `[Unreleased]:` link compares from `vX.Y.Z` to `HEAD`.
 
   The gate does not check the base of the version range. It cannot see the
   previous version.
+
+  The direction rule reads a DECLARATION, never a measurement. The gate never
+  opens `src/` or `dist/` and cannot see the previous version, so it proves the
+  dated section names a direction from that closed vocabulary. It does not
+  prove the direction it names is the direction the code took. The differential
+  that measures the move is `tests/surface/round19-h4-surface.spec.ts`, and it
+  reads `[Unreleased]`.
 
 - The package job uses a GitHub-hosted runner, Node `22.23.1`, pnpm from the
   exact `packageManager` field, and npm `11.18.0`. Release dependencies are not
@@ -155,6 +165,15 @@ Run every step, in order, for every release:
    pending changelog entries from `[Unreleased]` into
    `## [X.Y.Z] - YYYY-MM-DD`, and leave `[Unreleased]` empty. For the first
    stable publication, use a stable version and the `latest` dist-tag.
+
+   The `<!-- redaction-directions: … -->` declaration is one of those pending
+   entries, so it moves into the dated section with the rest of the block.
+   `scripts/validate-release.mjs` requires exactly one declaration THERE, and
+   every comma-separated value in it must read `removes-more`, `keeps-more`, or
+   `none`. This is semver rule 8's direction obligation, and the dated section
+   is the only place a release can still carry it: every other reader of the
+   declaration reads `[Unreleased]`, which this same step has just emptied. A
+   release that moves `toJSON().url` in no direction declares `none`.
 
    Then update the reference definitions at the FOOTER of `CHANGELOG.md`:
 

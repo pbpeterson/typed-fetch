@@ -73,7 +73,9 @@ A workflow step commented out is a step deleted, and so is a step that is
 declared and cannot fail. `scripts/gate-properties.spec.mjs` reads a step as a
 BLOCK — its `- run:` line, read line-anchored, plus the keys written under it —
 so a `#` in front of that run line, an `if: false` under it, and a
-`continue-on-error: true` under it each fail the roster. A step block ends at
+`continue-on-error: true` under it each fail the roster. A disabling key counts
+however YAML spells it: `"if": false`, `'if': false` and `if: false` are one
+mapping key, and the roster reads all three. A step block ends at
 the first line indented less than the step's keys, and a YAML comment written
 inside the block does not end it, because a comment is no part of the step
 mapping GitHub Actions reads — so an `if: false` written below a comment fails

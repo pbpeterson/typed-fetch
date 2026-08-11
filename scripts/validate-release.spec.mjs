@@ -14,8 +14,12 @@ const release = {
   repositoryUrl: "git+https://github.com/pbpeterson/typed-fetch.git",
   publishAccess: "public",
   provenance: true,
+  // The dated section carries the direction declaration semver rule 8 obliges
+  // it to carry, because RELEASING.md step 1 moves it there with the block and
+  // the gate requires exactly one there.
   changelog:
-    "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-07-17\n\n### Added\n\n- First release.\n\n" +
+    "# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-07-17\n\n" +
+    "<!-- redaction-directions: none -->\n\n### Added\n\n- First release.\n\n" +
     "[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.0...HEAD\n" +
     "[1.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v0.8.1...v1.0.0\n",
   headCommit: "a".repeat(40),
@@ -87,6 +91,53 @@ describe("validateRelease", () => {
       },
       "must be empty before publishing",
     ],
+    // Semver rule 8's direction obligation, at the release boundary. Step 1
+    // moves the `<!-- redaction-directions: … -->` declaration into the dated
+    // section with the block, and this gate is the only reader that can still
+    // see it there — every other reader slices `[Unreleased]`, which the rule
+    // above has just required to be empty. Each arm carries its full message,
+    // because a maintainer reading it must know what to write and where.
+    [
+      "released section with no direction declaration",
+      { changelog: release.changelog.replace("<!-- redaction-directions: none -->\n\n", "") },
+      "The CHANGELOG [1.0.0] section carries 0 <!-- redaction-directions: … --> declarations; " +
+        "semver rule 8 needs exactly one, naming each direction toJSON().url moved " +
+        "(removes-more, keeps-more, none).",
+    ],
+    [
+      "released section with two direction declarations",
+      {
+        changelog: release.changelog.replace(
+          "<!-- redaction-directions: none -->",
+          "<!-- redaction-directions: none -->\n\n<!-- redaction-directions: keeps-more -->",
+        ),
+      },
+      "The CHANGELOG [1.0.0] section carries 2 <!-- redaction-directions: … --> declarations; " +
+        "semver rule 8 needs exactly one, naming each direction toJSON().url moved " +
+        "(removes-more, keeps-more, none).",
+    ],
+    [
+      "direction declaration that names nothing",
+      {
+        changelog: release.changelog.replace(
+          "<!-- redaction-directions: none -->",
+          "<!-- redaction-directions:  , -->",
+        ),
+      },
+      "The CHANGELOG [1.0.0] redaction-directions declaration names no direction; write one or " +
+        "more of removes-more, keeps-more, none.",
+    ],
+    [
+      "direction declaration outside the closed vocabulary",
+      {
+        changelog: release.changelog.replace(
+          "<!-- redaction-directions: none -->",
+          "<!-- redaction-directions: none, moves-more -->",
+        ),
+      },
+      "The CHANGELOG [1.0.0] redaction-directions declaration names moves-more; every value " +
+        "must be one of removes-more, keeps-more, none.",
+    ],
     // The three footer states that shipped a dead link. A dated heading and an
     // emptied [Unreleased] both pass while the footer still points at the
     // previous version, so the two checks above cannot see any of them.
@@ -123,6 +174,22 @@ describe("validateRelease", () => {
       validateRelease({
         ...release,
         changelog: release.changelog.replace("compare/v0.8.1...v1.0.0", "compare/v0.4.0...v1.0.0"),
+      }),
+    ).toEqual({ distTag: "latest" });
+  });
+
+  test("accepts a direction declaration that names several directions at once", () => {
+    // Rule 8 asks for EACH direction the output moved, and a release can move it
+    // both ways: one input loses a segment the previous release kept, another
+    // keeps one it used to lose. The values are comma-separated for that reason,
+    // and every one of them must lie in the closed vocabulary.
+    expect(
+      validateRelease({
+        ...release,
+        changelog: release.changelog.replace(
+          "<!-- redaction-directions: none -->",
+          "<!-- redaction-directions: removes-more, keeps-more -->",
+        ),
       }),
     ).toEqual({ distTag: "latest" });
   });

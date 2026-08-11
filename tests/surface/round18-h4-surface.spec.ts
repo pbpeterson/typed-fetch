@@ -626,6 +626,8 @@ const changelogCutAt = (version: string): string =>
     "",
     `## [${version}] - 2026-08-09`,
     "",
+    "<!-- redaction-directions: none -->",
+    "",
     "### Changed",
     "",
     "- The redacted url moved.",

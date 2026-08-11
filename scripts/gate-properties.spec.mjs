@@ -171,6 +171,26 @@ const RUN_STEP = /^\s*- run: (.+)$/;
 const DISABLING_KEYS = new Set(["if", "continue-on-error"]);
 
 /**
+ * The name of the mapping key `line` opens, or null where it opens none.
+ *
+ * ONE READER FOR BOTH ROSTERS, which is R23-H4-02. A step's keys were read with
+ * `const key = /^([\w-]+):/.exec(line.slice(open.indent + 2));` and a job's with
+ * `/^ {4}([\w-]+):/gm`, and both spell a mapping key as a BARE word. YAML lets
+ * any key be quoted, and `"if"` and `if` are the same key, so one pair of
+ * quotation marks hid the condition from every roster while GitHub Actions read
+ * the identical mapping and skipped the step — under `- run: pnpm verify-pack`
+ * in the `package` job of `release.yml`, the job that runs immediately before
+ * `npm publish`, and on the job that executes the Bun smoke one level out. That
+ * is R21-H4-01 and R21-ORCH-01 at a spelling neither closed, and the family's
+ * sixteenth appearance. Both readers now ask this one function, so a spelling
+ * taught here is a spelling both rosters read.
+ */
+function mappingKey(line) {
+  const key = /^(?:"([\w-]+)"|'([\w-]+)'|([\w-]+))\s*:/.exec(line);
+  return key === null ? null : (key[1] ?? key[2] ?? key[3]);
+}
+
+/**
  * The steps of `region`, each as the line it OPENS on plus the keys written
  * under it at the step's own key indentation.
  *
@@ -203,8 +223,8 @@ function stepBlocks(region) {
       open = null;
       continue;
     }
-    const key = /^([\w-]+):/.exec(line.slice(open.indent + 2));
-    if (key !== null) open.keys.push(key[1]);
+    const key = mappingKey(line.slice(open.indent + 2));
+    if (key !== null) open.keys.push(key);
   }
   return blocks;
 }
@@ -223,9 +243,29 @@ function runCommands(region) {
 }
 
 /**
- * The jobs `body` declares it `needs:`, in each of the three spellings YAML
- * accepts: `needs: one`, `needs: [one, two]`, and a block sequence written
- * under the key. Read at the JOB's own key indentation, as `disabling` is.
+ * The jobs `body` declares it `needs:`, in every spelling YAML accepts. There
+ * are four: a scalar (`needs: one`), a flow sequence closed on the key's own
+ * line (`needs: [one, two]`), a flow sequence broken across lines, and a block
+ * sequence written under the key — whose items may sit at the KEY's own
+ * indentation or at any deeper one, both being the same sequence. Read at the
+ * JOB's own key indentation, as `disabling` is.
+ *
+ * R23-H4-01: this comment used to say the reader read `needs:`
+ * "in each of the three spellings YAML accepts", and YAML accepts more than
+ * three. The block walk was `const item = /^ {5,}- *(.+)$/.exec(line);` — five
+ * spaces, one past the four the key itself is written at — so `needs:` followed by
+ * `    - preflight` broke on its first line and answered NO dependencies, and a
+ * flow sequence broken across lines lost its names to that same walk after the
+ * inline read stripped the bracket and found nothing. Both are ordinary YAML
+ * and both are what GitHub Actions receives, so R22-H4-01's transitive closure
+ * closed over nothing and the job that runs the Bun smoke was skipped behind a
+ * job written `if: false` with every roster green. The family's fifteenth
+ * appearance.
+ *
+ * A flow sequence is read to its closing bracket rather than by indentation,
+ * because a flow sequence is not indentation-structured; an unclosed one yields
+ * the rest of the job as names, which name no declared job, so `runningJobs`
+ * refuses the job rather than reading a roster out of it.
  */
 function jobNeeds(body) {
   const names = (value) =>
@@ -238,12 +278,21 @@ function jobNeeds(body) {
   const lines = body.split("\n");
   const at = lines.findIndex((line) => /^ {4}needs:/.test(line));
   if (at === -1) return [];
-  const inline = names(lines[at].slice(lines[at].indexOf(":") + 1));
+  const opener = lines[at].slice(lines[at].indexOf(":") + 1);
+  if (opener.includes("[") && !opener.includes("]")) {
+    const flow = [opener];
+    for (const line of lines.slice(at + 1)) {
+      flow.push(line);
+      if (line.includes("]")) break;
+    }
+    return names(flow.join(" "));
+  }
+  const inline = names(opener);
   if (inline.length > 0) return inline;
   const sequence = [];
   for (const line of lines.slice(at + 1)) {
     if (line.trim() === "" || line.trim().startsWith("#")) continue;
-    const item = /^ {5,}- *(.+)$/.exec(line);
+    const item = /^ {4,}- *(.+)$/.exec(line);
     if (item === null) break;
     sequence.push(...names(item[1]));
   }
@@ -275,9 +324,11 @@ function workflowJobs(workflow) {
       name: open[1],
       body,
       needs: jobNeeds(body),
-      disabling: [...body.matchAll(/^ {4}([\w-]+):/gm)]
-        .map((m) => m[1])
-        .filter((key) => DISABLING_KEYS.has(key)),
+      disabling: body
+        .split("\n")
+        .filter((line) => /^ {4}\S/.test(line))
+        .map((line) => mappingKey(line.slice(4)))
+        .filter((key) => key !== null && DISABLING_KEYS.has(key)),
     };
   });
 }
@@ -350,6 +401,91 @@ function releasingLocalGates() {
     .map((line) => line.trim())
     .filter(Boolean);
 }
+
+/**
+ * A two-job workflow whose `downstream` job carries `keys` above its `runs-on:`.
+ *
+ * The job names here are the fixture's own, and deliberately not a real job's:
+ * `scripts/round19-h4-gate.spec.mjs` reads every spec that names a job of
+ * `ci.yml`, so a fixture that borrowed a real name would answer that read.
+ */
+const workflowWith = (...keys) =>
+  [
+    "name: CI",
+    "",
+    "jobs:",
+    "  preflight:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: echo preflight",
+    "",
+    "  downstream:",
+    ...keys,
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - run: echo downstream",
+    "",
+  ].join("\n");
+
+/** Whether `downstream` is a job the rosters above may read a command out of. */
+const downstreamRuns = (workflow) => runningJobs(workflow).some((job) => job.name === "downstream");
+
+/** Every spelling of `needs: preflight` YAML accepts, as the lines it is written on. */
+const NEEDS_SPELLINGS = {
+  "a scalar": ["    needs: preflight"],
+  "a flow sequence on the key's own line": ["    needs: [preflight]"],
+  "a flow sequence broken across lines": ["    needs: [", "      preflight", "    ]"],
+  "a block sequence at the key's own indentation": ["    needs:", "    - preflight"],
+  "a block sequence indented under the key": ["    needs:", "      - preflight"],
+};
+
+/** Every spelling of a disabling key YAML accepts, at a job's key indentation. */
+const DISABLING_SPELLINGS = [
+  "    if: false",
+  '    "if": false',
+  "    'if': false",
+  "    continue-on-error: true",
+  '    "continue-on-error": true',
+];
+
+describe("the workflow readers, at every spelling YAML accepts", () => {
+  // R23-H4-01 and R23-H4-02. `scripts/round23-h4-gate.spec.mjs` drives both
+  // through mutated copies of the real workflows, and that is the proof that
+  // matters. These rows name the spelling itself, so a reader that loses one
+  // fails here with the spelling in the message instead of as an exit code.
+
+  test("CONTROL: with neither key nor dependency, the job supplies a roster", () => {
+    expect(downstreamRuns(workflowWith())).toBe(true);
+  });
+
+  test.each(Object.keys(NEEDS_SPELLINGS))(
+    "`needs:` written as %s is one dependency",
+    (spelling) => {
+      expect(workflowJobs(workflowWith(...NEEDS_SPELLINGS[spelling])).at(-1).needs).toEqual([
+        "preflight",
+      ]);
+    },
+  );
+
+  test.each(Object.keys(NEEDS_SPELLINGS))("and a skipped dependency stops it: %s", (spelling) => {
+    const workflow = workflowWith(...NEEDS_SPELLINGS[spelling]);
+    expect(downstreamRuns(workflow)).toBe(true);
+    expect(
+      downstreamRuns(workflow.replace("  preflight:\n", "  preflight:\n    if: false\n")),
+    ).toBe(false);
+  });
+
+  test.each(DISABLING_SPELLINGS)("a job carrying `%s` supplies no roster", (key) => {
+    expect(downstreamRuns(workflowWith(key))).toBe(false);
+  });
+
+  test.each(DISABLING_SPELLINGS)("and the same key under a step drops that step: `%s`", (key) => {
+    const region = ["      - run: pnpm verify-pack", `    ${key}`, "      - run: pnpm build"].join(
+      "\n",
+    );
+    expect(runCommands(region)).toEqual(["pnpm build"]);
+  });
+});
 
 describe("the gate roster reaches CI", () => {
   test("CONTRIBUTING lists exactly the twelve gates this lane audited", () => {
@@ -881,6 +1017,12 @@ const releaseCandidate = (body) => ({
   mainCommit: "a".repeat(40),
 });
 
+/** The direction declaration step 1 moves into the dated section with the block. */
+const DIRECTION = "<!-- redaction-directions: none -->";
+
+/** One real entry, under the declaration semver rule 8 obliges the section to carry. */
+const MOVED_BLOCK = `\n${DIRECTION}\n\n### Fixed\n\n- A real entry a reader can act on.\n`;
+
 describe("validate-release reads the destination of RELEASING.md step 1", () => {
   test("a dated section carrying nothing but the footer links is refused", () => {
     // The footer sits UNDER that heading whenever the released section is the
@@ -891,9 +1033,19 @@ describe("validate-release reads the destination of RELEASING.md step 1", () => 
     );
   });
 
-  test("the same release with one entry moved into it is accepted", () => {
-    expect(
-      validateRelease(releaseCandidate("\n### Fixed\n\n- A real entry a reader can act on.\n")),
-    ).toEqual({ distTag: "latest" });
+  test("the same release with the whole block moved into it is accepted", () => {
+    expect(validateRelease(releaseCandidate(MOVED_BLOCK))).toEqual({ distTag: "latest" });
+  });
+
+  test("and the same block with the direction declaration dropped on the way is refused", () => {
+    // R23-H4-03. Step 1 moves the pending entries into the dated section, and
+    // the `<!-- redaction-directions: … -->` declaration is one of them. A
+    // release that carried the prose across and left the declaration behind
+    // states no direction where semver rule 8 obliges it to state each one, and
+    // every other reader of that declaration slices `[Unreleased]` — which this
+    // same gate has required to be empty two rules earlier.
+    expect(() =>
+      validateRelease(releaseCandidate(MOVED_BLOCK.replace(`${DIRECTION}\n\n`, ""))),
+    ).toThrow("semver rule 8 needs exactly one, naming each direction toJSON().url moved");
   });
 });

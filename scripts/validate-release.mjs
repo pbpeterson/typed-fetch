@@ -45,6 +45,21 @@ export const defaultIo = {
 const SEMVER =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
+/**
+ * The declaration semver rule 8's direction obligation is carried by, and the
+ * closed vocabulary it takes.
+ *
+ * An HTML comment, because RELEASING.md step 1 copies the pending block into
+ * the dated section VERBATIM, so the declaration survives that copy without
+ * rendering. The spelling and the vocabulary are round 20's, shared with the
+ * `[Unreleased]` reader in `tests/surface/round19-h4-surface.spec.ts`: one
+ * declaration, one vocabulary, two readers.
+ */
+const DIRECTION_DECLARATION = /<!--\s*redaction-directions:\s*([^>]*?)\s*-->/g;
+
+/** @type {readonly string[]} */
+const DIRECTION_VOCABULARY = ["removes-more", "keeps-more", "none"];
+
 /** @param {string} value */
 function escapeRegex(value) {
   return value.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -154,11 +169,11 @@ export function validateRelease(candidate) {
   // Step 1 tells a maintainer to MOVE the pending entries into the dated
   // section and leave `[Unreleased]` empty. The rule below enforces the source
   // half, so a release that DELETED the block instead of moving it satisfied
-  // every check here and published a section describing nothing. Semver rule 8
-  // obliges that section to state each direction the output moved, and the
-  // differential that reads directions reads `[Unreleased]` — which this
-  // function has just required to be empty.
-  if (sectionProse(candidate.changelog, releaseHeading) === "") {
+  // every check here and published a section describing nothing. This rule
+  // proves the section carries text; the direction rule further down proves
+  // that text states what semver rule 8 obliges it to state.
+  const releasedProse = sectionProse(candidate.changelog, releaseHeading);
+  if (releasedProse === "") {
     throw new Error(
       `The CHANGELOG [${candidate.version}] section is empty; move the pending entries into it.`,
     );
@@ -170,6 +185,51 @@ export function validateRelease(candidate) {
   }
   if (sectionProse(candidate.changelog, unreleasedHeading) !== "") {
     throw new Error("The CHANGELOG [Unreleased] section must be empty before publishing.");
+  }
+
+  // Semver rule 8's direction obligation, read where the release leaves it.
+  //
+  // Rule 8 obliges `CHANGELOG.md` to state each direction `toJSON().url` moved,
+  // and the DATED section is where a reader finds it, because step 1 copies the
+  // pending block there verbatim. The declaration's other readers slice
+  // `## [Unreleased]` — which the rule directly above has just required to be
+  // EMPTY — so at the moment the obligation applies, this is the only gate that
+  // can still read it, and it is the only check between a git tag and
+  // `npm publish`.
+  //
+  // EXACTLY ONE declaration, for R21-H4-05's reason: a section carrying two
+  // claims two things and is answered for by one, and a reader that stops at
+  // the first lets the second state a direction nothing took.
+  //
+  // This reads a DECLARATION, never a measurement. This function never sees
+  // `src/`, `dist/`, or the previous version, so it proves the section names a
+  // direction from the closed vocabulary — not that the direction it names is
+  // the direction the code took. The differential that measures that is
+  // `tests/surface/round19-h4-surface.spec.ts`, and it reads `[Unreleased]`.
+  const declarations = [...releasedProse.matchAll(DIRECTION_DECLARATION)];
+  if (declarations.length !== 1) {
+    throw new Error(
+      `The CHANGELOG [${candidate.version}] section carries ${declarations.length} ` +
+        "<!-- redaction-directions: … --> declarations; semver rule 8 needs exactly one, " +
+        `naming each direction toJSON().url moved (${DIRECTION_VOCABULARY.join(", ")}).`,
+    );
+  }
+  const declared = declarations[0][1]
+    .split(",")
+    .map((word) => word.trim())
+    .filter(Boolean);
+  if (declared.length === 0) {
+    throw new Error(
+      `The CHANGELOG [${candidate.version}] redaction-directions declaration names no ` +
+        `direction; write one or more of ${DIRECTION_VOCABULARY.join(", ")}.`,
+    );
+  }
+  const unknown = declared.filter((word) => !DIRECTION_VOCABULARY.includes(word));
+  if (unknown.length > 0) {
+    throw new Error(
+      `The CHANGELOG [${candidate.version}] redaction-directions declaration names ` +
+        `${unknown.join(", ")}; every value must be one of ${DIRECTION_VOCABULARY.join(", ")}.`,
+    );
   }
 
   // The footer reference definitions, for THIS version only.
