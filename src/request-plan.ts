@@ -169,19 +169,27 @@ function snapshotRequestInit(
   signal: AbortSignal | null | undefined,
   removeFetchOverride: boolean,
 ): RequestInit {
-  // An INHERITED signal is not an own key of the caller's object, and the
-  // descriptor below is the only thing that makes it one. Which object the
-  // proxy sits on therefore cannot be decided by the `fetch` extension alone:
-  // the caller's object can be the target only while every entry the init owes
-  // a spread is already an own key of it.
-  const inheritedSignal = signal !== undefined && !Object.hasOwn(options, "signal");
+  // The entry the descriptor below materializes exists for ONE reader:
+  // `{ ...init }`, which a forwarding transport writes. A spread copies own
+  // ENUMERABLE keys, not own keys, so own-ness is not the question. Asking it
+  // let two ordinary shapes through — `Object.create(defaults, { signal: {
+  // value } })` and a bare `Object.defineProperty(options, "signal", { value
+  // })`, both of which default `enumerable` to false while owning the key. The
+  // init reported the caller's signal, the spread carried none, and
+  // `classifyRequestFailure` went on treating that signal as the authority:
+  // `controller.abort()` cancelled nothing, the server wrote the whole
+  // response, and the envelope reported a SUCCESS for a request the caller had
+  // aborted. So the caller's object can be the target only while a spread of it
+  // already carries every entry the init owes one.
+  const materializeSignal =
+    signal !== undefined && Object.getOwnPropertyDescriptor(options, "signal")?.enumerable !== true;
 
-  if (!removeFetchOverride && !inheritedSignal) {
+  if (!removeFetchOverride && !materializeSignal) {
     // Nothing has to be hidden and nothing has to be added, so the original
     // object can remain the proxy target. This preserves reflection and avoids
     // inspecting every descriptor on a potentially exotic RequestInit. A
-    // `signal` the caller wrote as its OWN key is already spread by this
-    // target, and the trap answers each read with the captured value.
+    // `signal` the caller wrote as its own ENUMERABLE key is already spread by
+    // this target, and the trap answers each read with the captured value.
     return new Proxy(options, {
       get(target, property) {
         if (property === "signal") return signal;
@@ -211,26 +219,22 @@ function snapshotRequestInit(
   // the caller never wrote. An implementation is entitled to reflect over its
   // init, and the suite already treats that as legitimate.
   //
-  // An INHERITED signal still needs the entry, and testing only for an own
-  // descriptor dropped it. A proxy invariant does not require it — the
+  // A signal a spread cannot see still needs the entry, and testing only for an
+  // own descriptor dropped it. A proxy invariant does not require it — the
   // sanitized target keeps the original prototype — but `{ ...init }` does, and
-  // that spread is what a forwarding transport writes. Without it the request
-  // ran UNGOVERNED while `classifyRequestFailure` went on treating that signal
-  // as the authority: `controller.abort()` cancelled nothing, and a later
-  // network failure was reported as an `AbortedError`.
+  // that spread is what a forwarding transport writes. `materializeSignal`
+  // above is what brings every such shape here: an inherited slot, and an own
+  // slot the caller declared non-enumerable.
   //
-  // That was written while this path was the only one an inherited signal could
-  // reach, and it was reachable only through an own `fetch` option. A
-  // forwarding transport installed on `globalThis.fetch` carries no such
-  // option, and it spread an init with no signal for two rounds: the server
-  // wrote the whole response and the envelope reported a SUCCESS for a request
-  // the caller had aborted. `inheritedSignal` above is what brings that shape
-  // here.
+  // ENUMERABLE, never the caller's own enumerability copied forward. Carrying
+  // `enumerable: false` here re-declared the entry exactly as invisible to a
+  // spread as the caller's own slot was, which left this branch materializing
+  // an entry the branch exists to make spreadable.
   if (descriptors.signal || signal !== undefined) {
     descriptors.signal = {
       value: signal,
       writable: true,
-      enumerable: descriptors.signal?.enumerable ?? true,
+      enumerable: true,
       configurable: true,
     };
   }

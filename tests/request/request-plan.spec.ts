@@ -250,6 +250,23 @@ describe("the init the transport reads", () => {
     // while `classifyRequestFailure` went on treating that signal as the
     // authority — `controller.abort()` cancelled nothing, and a later network
     // failure was reported as an `AbortedError`.
+    // R19-H1-02: this fixture passed NO `fetch` option until round 19. A
+    // `fetch` option selects the branch that already carried the entry, so the
+    // pin could not fail for the defect its own title names. The `fetch` case
+    // is the separate test below, and both branches stay pinned.
+    const controller = new AbortController();
+    const options = Object.create({ signal: controller.signal }) as Record<string, unknown>;
+
+    const { init } = planRequest(ABSOLUTE, options as TypedFetchOptions);
+
+    expect({ ...init }.signal).toBe(controller.signal);
+    expect(init.signal).toBe(controller.signal);
+  });
+
+  test("an inherited signal survives the spread on the `fetch`-option branch too", () => {
+    // The other arm of the branch R19-H1-02 split out. An own `fetch` makes the
+    // snapshot a copy rather than the caller's object, and the entry must reach
+    // a forwarding transport's spread there as well.
     const controller = new AbortController();
     const options = Object.create({ signal: controller.signal }) as Record<string, unknown>;
     options.fetch = recordingTransport().fetch;
