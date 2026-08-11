@@ -68,6 +68,14 @@ import { responseWith } from "../../fixtures/responses";
  *    over-redaction judge and 360 of those are urls the platform parses
  *    absolutely. R18-H3-02.
  *
+ *    ROUND 19 CLOSED IT. RES-7 is struck: R19-H2-02 gives a region whose mark
+ *    the GRAMMAR wrote — which is what a bare `//` is — the parser's reading of
+ *    the authority at its start, and the residue went from 504 rows to 0 with
+ *    no credential lost. Section 7's pins are inverted rather than deleted, so
+ *    they turn red if the gap reopens. Section 4's `whole` count carries the
+ *    cost of the closure: 1,266 more path segments kept, 0 more credentials the
+ *    platform reports.
+ *
  * NOT RE-REPORTED: RES-1 through RES-6 — RES-6 is decided and this file does
  * not reopen it — `showHidden`, `console.dir` with `cause`, the
  * accessor-pollution guard shape, and the round-16 pollution and header sweeps.
@@ -995,6 +1003,39 @@ interface Escapes {
   causedByRewrite: number;
   partial: number;
   moved: number;
+  reportedCredential: number;
+}
+
+/**
+ * Every credential the platform reports anywhere in `text`, read out of the
+ * same slices {@link hostsNamedBy} reads. Round 17's reader, reproduced for the
+ * reason that one is: the two halves must read ONE text, or "a credential
+ * survived" and "a host moved" are two readings rather than two axes.
+ *
+ * ADDED IN ROUND 19, and it is what turns the count below into a safety claim.
+ * `whole` says how many secrets survive; this says how many of them survive
+ * WHERE A READER READS A CREDENTIAL, which is the only half that can harm the
+ * reader. The two move independently, and round 19's closure of RES-7 moved the
+ * first by 1,266 and the second by nothing.
+ */
+function credentialsNamedBy(text: string): string[] {
+  const found = new Set<string>();
+  const views = new Set<string>([text, text.replace(/[\t\r\n]/g, "")]);
+  const absolute = parseAbsolute(text);
+  if (absolute) views.add(absolute.pathname);
+  const relative = parseRelative(text);
+  if (relative) views.add(relative.pathname);
+  for (const view of views) {
+    const slices = new Set<string>([view]);
+    for (const at of matchIndexes(view, SCHEME_TOKEN)) slices.add(view.slice(at));
+    for (const at of matchIndexes(view, SOLIDUS_PAIR)) slices.add(view.slice(at));
+    for (const slice of slices) {
+      const parsed = parseAbsolute(slice) ?? parseRelative(slice);
+      if (!parsed) continue;
+      for (const value of [parsed.username, parsed.password]) if (value) found.add(value);
+    }
+  }
+  return [...found];
 }
 
 function gradeEscapes(population: readonly Planted[]): Escapes {
@@ -1006,6 +1047,7 @@ function gradeEscapes(population: readonly Planted[]): Escapes {
     causedByRewrite: 0,
     partial: 0,
     moved: 0,
+    reportedCredential: 0,
   };
   for (const { url, secret } of population) {
     if (!url.includes(secret)) continue;
@@ -1030,6 +1072,9 @@ function gradeEscapes(population: readonly Planted[]): Escapes {
       const plain = url.split(secret).join(spelling);
       if (!redactUrl(plain).includes(spelling)) measured.causedByRewrite += 1;
     }
+    if (credentialsNamedBy(output).some((value) => value.includes(survivor))) {
+      measured.reportedCredential += 1;
+    }
     const before = new Set([...slotsOf(url, secret), ...slotsOf(url, spelling)]);
     if ([...slotsOf(output, survivor)].some((slot) => !before.has(slot))) measured.moved += 1;
   }
@@ -1038,14 +1083,32 @@ function gradeEscapes(population: readonly Planted[]): Escapes {
 
 describe("the third judge, over the populations this lane draws", () => {
   test("three axes, and the one that fires is a rewrite", { timeout: 300_000 }, () => {
+    // `whole` MOVED IN ROUND 19, under R19-H2-02, and it is the one row of this
+    // repair whose direction is mixed. 1,266 more rows keep the sentinel
+    // verbatim, because a region a bare `//` opens now buys the parser's
+    // reading of the authority at its start instead of losing it to the colon
+    // rule. Every one of the 1,266 is a PATH SEGMENT behind that authority,
+    // which is the residual `SECURITY.md` records for a secret in a path
+    // segment, and it is the measured cost of closing RES-7.
+    //
+    // WHAT MUST NOT MOVE WITH IT is `reportedCredential`, and it did not: 176
+    // before the change and 176 after, so not one of the 1,266 survives where
+    // the platform reads a credential. That is the axis this test exists to
+    // guard, and it is asserted as an exact count rather than as a bound — a
+    // change that let one real credential through turns it red at 177.
+    //
+    // The other five counts are untouched, which is the second half of the
+    // claim: the rewrite axis, the partial axis and the slot axis do not move
+    // when the region rule does.
     expect(gradeEscapes(drawn())).toEqual({
       size: 140_640,
       carried: 86_880,
-      whole: 13_237,
+      whole: 14_503,
       transformed: 9_258,
       causedByRewrite: 0,
       partial: 4,
       moved: 0,
+      reportedCredential: 176,
     });
   });
 
@@ -1260,10 +1323,20 @@ function suppressionResidue(population: readonly Planted[]): Residue {
 
 describe("round 17's F3 differential, re-derived over a population this file draws", () => {
   test("no credential the PARSER reports can newly survive", { timeout: 300_000 }, () => {
+    // `keptPathSegment` MOVED IN ROUND 19, from 1,008 to 1,044, under
+    // R19-H2-02. The suppression now also declines to guess at a region a bare
+    // `//` opened, so 36 more rows keep text the parser reads as an authority
+    // and a path. `touched` is unchanged, because the SPANS this instrument
+    // enumerates are the same spans; only the module's answer for them moved.
+    //
+    // `keptParserCredential` is the count that carries the claim in this test's
+    // name, and it is still zero — by the second condition rather than by the
+    // corpus, as the comment above states. The move is the module agreeing with
+    // its own document one row further, not the safety half weakening.
     expect(suppressionResidue(drawn())).toEqual({
       size: 140_640,
       touched: 2_167,
-      keptPathSegment: 1_008,
+      keptPathSegment: 1_044,
       keptParserCredential: 0,
     });
   });
@@ -1298,10 +1371,14 @@ describe("round 17's F3 differential, re-derived over a population this file dra
 });
 
 /* -------------------------------------------------------------------------- */
-/* 7. R18-H3-02 — THE NAMED GAP, CONFIRMED AND RE-GRADED                      */
+/* 7. R18-H3-02 — THE NAMED GAP, CONFIRMED, RE-GRADED, AND CLOSED IN ROUND 19 */
 /* -------------------------------------------------------------------------- */
 
-/** Round 17's `portOnlySpans`, reproduced so the 504 is the same 504. */
+/**
+ * Round 17's `portOnlySpans`, reproduced so the 504 was the same 504 — and kept
+ * unchanged in round 19 so the ZERO is measured by the same instrument that
+ * measured the 504.
+ */
 function portOnlySpans(path: string): string[] {
   const lost: string[] = [];
   for (const span of userinfoSpans(path)) {
@@ -1364,83 +1441,102 @@ function gradeTheGap(): Gap {
   return measured;
 }
 
-describe("R18-H3-02 — the residue the ledger calls costless", () => {
-  test("the count and the zero are exactly what round 17 reported", { timeout: 300_000 }, () => {
-    // CONFIRMED, and this half passes. 504 rows of 97,344, no planted
-    // credential in any of them, and all 504 fail the FIRST condition — so the
-    // ledger's attribution of the gap to the bare `//` region is right.
-    const graded = gradeTheGap();
-    expect({
-      size: graded.size,
-      residue: graded.residue,
-      lostSecret: graded.lostSecret,
-      failsTheMarkCondition: graded.failsTheMarkCondition,
-    }).toEqual({
-      size: 97_344,
-      residue: 504,
-      lostSecret: 0,
-      failsTheMarkCondition: 504,
-    });
-  });
-
+describe("R18-H3-02 — the residue round 19 closed", () => {
   test(
-    "414 of the 504 cost more than a diagnostic, and that is RES-7",
-    { timeout: 300_000 },
+    "the count round 17 reported is zero now, and the population still reaches it",
+    {
+      timeout: 300_000,
+    },
     () => {
-      // ADJUDICATED IN ROUND 18, AND THE VERDICT IS A RESIDUAL.
+      // RES-7 IS CLOSED, and round 19's R19-H2-02 closed it. Round 18 measured
+      // this residue at 504 rows of 97,344 and refused to close it, because
+      // closing it then moved five pinned answers. The fix that closed it is not
+      // that one: it is a confirmed HIGH-severity fix on its own evidence — a
+      // region whose mark no scheme wrote is the URL Standard's protocol-relative
+      // authority, so it buys the parser's reading — and the residue going to
+      // zero is its by-product. No credential is lost by it: `lostSecret` was
+      // zero and stays zero, and `removed` in `round17-h3-disclosure.spec.ts`
+      // holds at 57,360 over this same population.
       //
-      // The finding is correct: `lostSecret: 0` measures the UNDER-redaction axis
-      // and the gap's cost is on the other one. 414 rows emit a record that names
-      // a host the request never contacted, and 360 of them are urls the platform
-      // parses absolutely.
-      //
-      // The fixer built the separation the hunter said did not exist — a region no
-      // COLON opened buys the parse's reading — and measured it: 738 of 97,344
-      // rows move, zero planted credentials newly survive, residual 1 holds and
-      // the base64 pin holds. The orchestrator first ruled to land it. The fixer
-      // then reported the full scope, which the ruling had not been made on: it
-      // moves FIVE pinned answers across THREE spec files, and one of them is
-      // behavioural — `round17-h3-disclosure.spec.ts` line 881, the row round 17
-      // wrote deliberately as this gap's definition. On that row the region's own
-      // text is `https:`, so the "authority" the parser reads is a scheme token
-      // with an empty port. Suppressing the colon rule there rests on an
-      // accidental parse, which is a weaker case than the two HIGH fixes stood on.
-      //
-      // So the ruling was reversed. The cost is over-redaction, never a leaked
-      // credential, and this module's own history is three consecutive rounds in
-      // which a new condition became the next round's surface. The limit is
-      // written down instead, as RES-7 in `SECURITY.md`, with the number.
-      //
-      // The pin holds the residual in BOTH directions. A round that turns it red
-      // has closed RES-7 — delete the pin and the SECURITY.md entry together — or
-      // widened it, and must say which.
+      // THE PIN IS INVERTED, NOT DELETED, and it now fails if the gap REOPENS.
+      // A zero here is the instrument finding no span to grade, so on its own it
+      // could also be an instrument that stopped reading; the two rows at the end
+      // of this section are the positive witnesses that keep it honest, and they
+      // state the answer the module emits for the shape rather than a count.
       const graded = gradeTheGap();
-      expect({ condemned: graded.condemned, wellFormed: graded.wellFormed }).toEqual({
-        condemned: 414,
-        wellFormed: 360,
+      expect({
+        size: graded.size,
+        residue: graded.residue,
+        lostSecret: graded.lostSecret,
+        failsTheMarkCondition: graded.failsTheMarkCondition,
+      }).toEqual({
+        size: 97_344,
+        residue: 0,
+        lostSecret: 0,
+        failsTheMarkCondition: 0,
       });
     },
   );
 
-  test("the row, and the answer it emits, pinned as RES-7", () => {
-    // The documented example, quoted in `SECURITY.md`, exactly as it emits. A
+  test("the 414 misleading records this gap emitted are zero now", { timeout: 300_000 }, () => {
+    // ADJUDICATED IN ROUND 18 AS A RESIDUAL, CLOSED IN ROUND 19.
+    //
+    // Round 18's finding was correct: `lostSecret: 0` measures the
+    // UNDER-redaction axis and the gap's cost was on the other one. 414 rows
+    // emitted a record that names a host the request never contacted, and 360
+    // of them were urls the platform parses absolutely. Round 18 still
+    // refused to close it, because the separation it had in hand — a region
+    // no COLON opened buys the parse's reading — moved five pinned answers on
+    // an accidental parse, and this module's history is three consecutive
+    // rounds in which a new condition became the next round's surface.
+    //
+    // ROUND 19 CLOSED IT ON A DIFFERENT MECHANISM, and the difference is the
+    // whole reason the ruling could change. R19-H2-02 does not ask whether a
+    // COLON opened the region; it asks whether the GRAMMAR wrote the region's
+    // mark, and a bare `//` is the URL Standard's own protocol-relative
+    // authority, so it writes one. That is a rule with a citation instead of
+    // an accidental parse, and it arrived as a confirmed high-severity fix in
+    // its own right. The residue went from 504 rows to 0, no credential was
+    // lost, and no row was made worse.
+    //
+    // The pin still holds in BOTH directions. Both counts are exact, so a
+    // round that reopens the gap by one row turns this red at 1.
+    const graded = gradeTheGap();
+    expect({ condemned: graded.condemned, wellFormed: graded.wellFormed }).toEqual({
+      condemned: 0,
+      wellFormed: 0,
+    });
+  });
+
+  test("the row RES-7 was documented on invents no host now", () => {
+    // The example round 18 quoted in `SECURITY.md`, which round 19 struck. A
     // forward through a protocol-relative reference to a host on a port.
     // Nothing here is a credential: the platform reads the embedded authority
-    // whole and reports none. The record names `alice`.
+    // whole and reports none, and the record used to name `alice` and drop
+    // `cdn.test:8443`. It names no host the input did not name now.
+    //
+    // The judge is asked rather than the redactor, and that is deliberate: this
+    // row's subject is the misleading RECORD, so the assertion must fail if the
+    // answer ever invents a host again under any spelling, not only if it
+    // stops being byte-identical to its input.
     const verdict = judgeHosts("https://api.test/proxy///cdn.test:8443/img/@alice");
-    expect(verdict === null ? "no host invented" : line(verdict)).toBe(
-      "in=https://api.test/proxy///cdn.test:8443/img/@alice" +
-        " out=https://api.test/proxy///alice invented=alice dropped=cdn.test:8443",
+    expect(verdict === null ? "no host invented" : line(verdict)).toBe("no host invented");
+    expect(redactUrl("https://api.test/proxy///cdn.test:8443/img/@alice")).toBe(
+      "https://api.test/proxy///cdn.test:8443/img/@alice",
     );
   });
 
-  test("and it is the same defect round 17 filed, under the spelling it left", () => {
-    // The two rows differ only in whether a scheme wrote the mark, and the
-    // module answers them oppositely. This half PASSES — it is the pin round 17
-    // wrote — and it is here so a fixer reads the pair together.
+  test("and the pair round 17 answered oppositely now answers alike", () => {
+    // The two rows differ only in whether a SCHEME wrote the region's mark.
+    // Round 17 fixed the marked one and left the bare one, and the pair was
+    // written here so a fixer would read them together. R19-H2-02 read them
+    // together: the grammar writes a mark at a bare `//` exactly as a scheme
+    // does, so both are fixed points and the asymmetry is gone.
     expect(redactUrl("https://api.test/go/https://cdn.test:8443/img/@alice")).toBe(
       "https://api.test/go/https://cdn.test:8443/img/@alice",
     );
-    expect(redactUrl("https://api.test//cdn.test:8443/img/@alice")).toBe("https://api.test//alice");
+    expect(redactUrl("https://api.test//cdn.test:8443/img/@alice")).toBe(
+      "https://api.test//cdn.test:8443/img/@alice",
+    );
   });
 });

@@ -743,20 +743,10 @@ function parsesAsAuthority(text: string, start: number): boolean {
  * whole: the run of scheme characters in front of the colon spells a scheme
  * when it is not empty and its first character is {@link SCHEME_HEAD}.
  *
- * A MARK THAT IS NOT A COLON ANSWERS NO, and round 18 left that standing rather
- * than settled. Two or more solidi with no scheme slot in front of them are the
- * grammar's own protocol-relative authority — `new URL("//cdn.test:8443/x", base)`
- * answers the host `cdn.test:8443` — so the bare-`//` region is separable from
- * the empty scheme a template leaves by the MARK, and not only by the LABEL the
- * deny list this module's header rejects. Landing that separation closes
- * R18-H3-02: 738 of round 17's 97,344 rows move, no planted credential newly
- * survives, and residual 1's `://a:1234/x/@bob` holds. What stopped it is not
- * the shape. `round17-h3-disclosure.spec.ts` pins
- * `//https:/cdn.test/img/@alice` at the gap's own answer, and the bare-`//`
- * residue is a measured number in three more places — so the separation moves
- * five pinned answers across three spec files, which is an adjudication and not
- * a fix. It is written here so the next reader meets the decision instead of
- * rediscovering the shape.
+ * A MARK THAT IS NOT A COLON ANSWERS NO HERE, and {@link grammarWroteTheMark}
+ * is where round 19 answered it the other way for the one question that reads
+ * it. This function keeps the NARROW question — did a scheme write the mark —
+ * because one caller still needs exactly that. See both.
  *
  * THE WALK IS BOUNDED BY DISJOINTNESS, not by a length. A token stops at the
  * first character that cannot spell a scheme, and a colon is one of those, so
@@ -771,6 +761,49 @@ function schemeWroteTheMark(text: string, region: number): boolean {
   let at = mark - 1;
   while (isSchemeCharacter(text[at])) at -= 1;
   return at < mark - 1 && SCHEME_HEAD.test(text[at + 1]!);
+}
+
+/**
+ * Did the GRAMMAR write the mark the region opening at `region` hangs off — a
+ * scheme's colon, OR the bare pair of solidi that is protocol-relative?
+ *
+ * The WIDE reading of {@link schemeWroteTheMark}'s question, and round 19 is
+ * why the two are separate. Two or more solidi with no scheme slot in front of
+ * them are the URL Standard's own protocol-relative authority —
+ * `new URL("//cdn.test:8443/x", base)` answers the host `cdn.test:8443` — so
+ * the bare-`//` region is separable from the empty scheme a template leaves by
+ * the MARK, and not only by the LABEL the deny list this module's header
+ * rejects. R18-H3-02 recorded that and left it, because landing it moves pinned
+ * answers.
+ *
+ * WHAT MADE IT A FIX is a url no earlier round drew: one whose leading solidi
+ * are POPPED. `/go/https:/@..//cdn.test:8443/users/@alice` — the spelling every
+ * slash-collapsing proxy and every `path.join` produces — reaches the rebuild
+ * as `/go//cdn.test:8443/users/@alice`, because the `..` the removed credential
+ * exposes takes the scheme's OWN segment when the run is a single solidus. The
+ * two-solidus spelling pops an empty segment instead and keeps `https:`. So the
+ * bare-`//` reading is not a separate class at all: it is the class every
+ * special-scheme url falls into once its run is short enough, and the narrow
+ * question answered one url two ways — `cdn.test:8443` kept under `https://`
+ * and the handle `alice` named as the host under `https:/`. 1,440 of 6,912
+ * one-url families split on the solidus count, and none do now.
+ *
+ * ASKED FOR THE COLON RULE ALONE, and that bound is a cost measurement rather
+ * than a doubt about the reading. {@link userinfoEnd}'s empty-userinfo guard
+ * reads {@link schemeWroteTheMark} still. Widening the guard too moves no
+ * answer — `/x/@a//@a//…/@b` emits the same text either way — and costs a PASS
+ * per unit: the guard declines the region, and rule 1 of
+ * {@link looksLikeUserinfo} then removes the same `@` on the next whole-string
+ * rebuild because it has become the text's last one. 1,000 units took 1,001
+ * rebuilds and 499,500 parses against 2 and 0, on a path a redirect chooses.
+ * `round19-h2-response.spec.ts` reads both counts.
+ *
+ * TWO WALKS OVER ONE RUN, and the disjointness {@link beforeSolidi} argues for
+ * is what pays for it: the runs two regions hang off are disjoint, so walking
+ * one of them twice is twice a bound rather than a new one.
+ */
+function grammarWroteTheMark(text: string, region: number): boolean {
+  return text[beforeSolidi(text, region)] !== ":" || schemeWroteTheMark(text, region);
 }
 
 /**
@@ -790,21 +823,22 @@ function schemeWroteTheMark(text: string, region: number): boolean {
  *
  * THREE CONDITIONS, AND NOT ONE OF THEM IS SPARE.
  *
- *  - A SCHEME WROTE THE MARK. {@link parsesAsAuthority} asks what a
- *    special-scheme parse would read, and the module's rule for that answer is
- *    that a `false` only ever WIDENS a region — over-redaction, the safe
- *    direction. Using its `true` to NARROW one is the other direction, and it
- *    is sound only where the text invoked a parse at all: behind `https://`,
- *    `https:/`, or `git://`, `cdn.test:8443` is an authority someone wrote.
- *    Behind a bare pair of solidi, or behind the empty scheme a template leaves
- *    (`://a:1234/x/@bob`), no scheme wrote a port and the reading is the
+ *  - THE MARK WAS WRITTEN, and the CALLER says which reading of that it needs.
+ *    {@link parsesAsAuthority} asks what a special-scheme parse would read, and
+ *    the module's rule for that answer is that a `false` only ever WIDENS a
+ *    region — over-redaction, the safe direction. Using its `true` to NARROW
+ *    one is the other direction, and it is sound only where the text invoked a
+ *    parse at all: behind `https://`, `https:/`, `git://` or a bare `//`,
+ *    `cdn.test:8443` is an authority the grammar reads. Behind the empty scheme
+ *    a template leaves (`://a:1234/x/@bob`), or a token no parser reads as a
+ *    scheme (`9://a:1234/x/@bob`), nothing wrote a port and the reading is the
  *    module's own assumption. `redact-url.spec.ts` pins that shape's
  *    over-redaction as a residual in those words — it cannot be resolved "once
  *    a malformed scheme has taken away where the authority ends" — and this
  *    condition is what leaves that pin exactly where it is.
- *    {@link schemeWroteTheMark} answers it, of the REGION, and the parameter
- *    is that answer rather than a position because the cursor cannot re-derive
- *    it.
+ *    {@link grammarWroteTheMark} and {@link schemeWroteTheMark} are the two
+ *    readings, both answered of the REGION, and the parameter is that answer
+ *    rather than a position because the cursor cannot re-derive it.
  *  - THE AUTHORITY'S COLON IS NOT A PASSWORD'S. `svc:PW@i.test` parses, and
  *    its colon delimits a credential — so an `@` inside the authority refuses
  *    this. It refuses only a colon that DELIMITS something: one with text in
@@ -854,8 +888,8 @@ function schemeWroteTheMark(text: string, region: number): boolean {
  * settled, the two searches read the authority, and only what survives all
  * three is handed a parse.
  */
-function readsAsHostAndPort(text: string, scheme: boolean, start: number): boolean {
-  if (!scheme) return false;
+function readsAsHostAndPort(text: string, marked: boolean, start: number): boolean {
+  if (!marked) return false;
   const authority = text.slice(start, authorityEnd(text, start));
   const at = authority.lastIndexOf("@");
   const colon = authority.indexOf(":");
@@ -1091,9 +1125,10 @@ function authorityAt(text: string, colon: number): number | null {
  *
  *  - An authority the colon rule cannot hand to {@link readsAsHostAndPort},
  *    followed by a path `@`. Three shapes reach it: a port the parser refuses
- *    (`://a:99999/x/@bob`), a region whose mark spells no scheme at all
- *    (`://a:1234/x/@bob`, the empty scheme a template leaves, and `//a:1234/…`,
- *    which spells no mark whatever), and a region whose authority holds a colon
+ *    (`://a:99999/x/@bob`), a region whose mark spells no scheme the grammar
+ *    reads (`://a:1234/x/@bob`, the empty scheme a template leaves, and
+ *    `9://a:1234/x/@bob`, a token no parser reads as one), and a region whose
+ *    authority holds a colon
  *    that DELIMITS something in front of an `@` (`://svc:PW@i.test/users/@bob`).
  *    In each of them nothing separates `a:1234` from `user:password`, which is
  *    the sentence this residual has always carried. An `@` with no delimiting
@@ -1122,13 +1157,13 @@ function authorityAt(text: string, colon: number): number | null {
  * full href stays on `error.url` — this rule only decides where a MALFORMED
  * authority ends.
  */
-function looksLikeUserinfo(text: string, scheme: boolean, start: number, end: number): boolean {
+function looksLikeUserinfo(text: string, marked: boolean, start: number, end: number): boolean {
   if (end === start) return true;
   const slash = text.indexOf("/", start);
   if (slash < 0 || slash >= end) return true;
   if (text[end - 1] !== "/") return true;
-  const colon = text.indexOf(":", start);
-  return colon >= 0 && colon < slash && !readsAsHostAndPort(text, scheme, start);
+  const colon = text.slice(start, slash).indexOf(":");
+  return colon >= 0 && !readsAsHostAndPort(text, marked, start);
 }
 
 /**
@@ -1183,12 +1218,13 @@ function looksLikeUserinfo(text: string, scheme: boolean, start: number, end: nu
 function userinfoEnd(
   text: string,
   scheme: boolean,
+  marked: boolean,
   start: number,
   lastAt: number,
   lastLoneAt: number,
 ): number {
   if (lastAt < start) return -1;
-  if (looksLikeUserinfo(text, scheme, start, lastAt)) return lastAt;
+  if (looksLikeUserinfo(text, marked, start, lastAt)) return lastAt;
   const fallback = lastLoneAt >= start ? lastLoneAt : text[start] === "@" ? start : -1;
   if (fallback < 0) return -1;
   const empty = fallback === start || (fallback === start + 1 && text[start] === ":");
@@ -1348,10 +1384,12 @@ export function userinfoSpans(text: string, seam: Span | null = null): Span[] {
     // below reads forward from a cursor; this one reads BEHIND the region's
     // opening, and the crossing moves the cursor over text the rebuild has not
     // performed yet. Asked from the cursor it answered about a `..`; asked once,
-    // here, it answers about the scheme that opened the region. See
-    // {@link schemeWroteTheMark}, and {@link popsBefore} for the other question
-    // this opening settles.
+    // here, it answers about the mark that opened the region. See
+    // {@link schemeWroteTheMark} and its wide reading
+    // {@link grammarWroteTheMark}, and {@link popsBefore} for the other
+    // question this opening settles.
     const scheme = schemeWroteTheMark(text, start);
+    const marked = grammarWroteTheMark(text, start);
     if (stop >= 0 && stop < start) stop = text.indexOf(AUTHORITY_MARK, start);
     // ASKED ONLY WHERE THE ANSWER CAN MATTER. With no `@` past `stop` the
     // bounded and the unbounded region hold the same candidates, so the parse
@@ -1382,7 +1420,7 @@ export function userinfoSpans(text: string, seam: Span | null = null): Span[] {
     let cut = floor > start ? floor : start;
     floor = -1;
     for (;;) {
-      const at = userinfoEnd(text, scheme, cut, lastAt, lastLoneAt);
+      const at = userinfoEnd(text, scheme, marked, cut, lastAt, lastLoneAt);
       if (at < 0) break;
       // WHAT THE ANSWER EXPOSES GOES WITH IT, and that is the same rule as the
       // re-ask rather than a second one: what the removal leaves behind at

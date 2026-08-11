@@ -544,14 +544,29 @@ function sweep(urls: readonly string[], both: boolean): Sweep {
  * reads, and on every one of them the calibration moves no verdict. The entire
  * difference between 475 and 154 on the credential population is text no parser
  * reads as a url, read by a rule that slices where no parser opens an authority.
+ *
+ * ROUND 19 MOVED TWO OF THE THREE COUNTS, and R19-H2-02 is what moved them. A
+ * region whose opening mark no scheme wrote is the URL Standard's own
+ * protocol-relative authority, so it now buys the parser's reading of the
+ * authority at its start exactly as a scheme-marked region does. RES-7 — the
+ * bare-`//` gap round 18 recorded and refused to close — closes as a
+ * by-product. The counts below are re-measured on this tree, and both moves are
+ * in the same direction: FEWER rows where the record drops a host the input
+ * named. The credential population does not move at all.
  */
 describe("the judge over the populations the module is measured against", () => {
   test("the structured population, under both rules", { timeout: 120_000 }, () => {
+    // MOVED BY R19-H2-02, and every row of the move is more correct. 558 fewer
+    // rows drop a host the input named, `created` is still zero, and the two
+    // rules still agree on every row of this population — which is the claim
+    // this test exists for, and it survives the move. 738 answers changed here;
+    // the sample is `https://api.test/proxy///cdn.test:8443/img/@alice`, which
+    // used to emit `https://api.test/proxy///alice` and is a fixed point now.
     expect(sweep(structuredUrls(), true)).toEqual({
       size: 57_344,
-      round16: 37_038,
-      calibrated: 37_038,
-      dropped: 37_038,
+      round16: 36_480,
+      calibrated: 36_480,
+      dropped: 36_480,
       created: 0,
     });
   });
@@ -567,12 +582,24 @@ describe("the judge over the populations the module is measured against", () => 
   });
 
   test("the 400,000 random urls", { timeout: 120_000 }, () => {
+    // MOVED BY R19-H2-02, and this is the one population where the move is not
+    // uniformly an improvement. Eight rows change verdict: seven stop dropping
+    // a host the input named and are no longer condemned at all, and ONE moves
+    // from acquitted to `created`. That one row is
+    // `127.0.0.1x\\%40\%2e：@bob%2e%2e://\t@bob`. It used to emit
+    // `/127.0.0.1x//bob` and now emits `/127.0.0.1x//bob%2e%2e://bob`, so the
+    // judge reads the host `bob..` out of the answer. The text is the input's
+    // own — `bob%2e%2e` sits in front of the input's `@` — and keeping it is
+    // the same decision that keeps `cdn.test:8443`; the judge condemns it
+    // because the input never spelled that text where a parser reads a host.
+    // It is stated here rather than averaged away: a later round that widens
+    // this rule must know the widening already costs one row on this corpus.
     expect(sweep(randomUrls(0xc0ffee, 400_000), false)).toEqual({
       size: 400_000,
       round16: 0,
-      calibrated: 675,
-      dropped: 139,
-      created: 536,
+      calibrated: 669,
+      dropped: 132,
+      created: 537,
     });
   });
 });
@@ -793,7 +820,9 @@ describe("shape 1 — RES-6, re-pinned in both directions", () => {
  *
  * An IPv6 literal supplies the same colon (`https://[::1]/users/@alice`), and so
  * does an embedded scheme colon inside a region a bare `//` opened
- * (`https://api.test//https:/cdn.test/img/@alice`).
+ * (`https://api.test//https:/cdn.test/img/@alice`). The first two were fixed in
+ * round 17 and the third in round 19, under R19-H2-02; the pins below carry
+ * each answer.
  *
  * WHY THIS IS NOT RES-6 RESTATED. RES-6's bullet quotes the third rule's
  * mechanism and the third rule's example, and round 16's corpus pins 64 rows of
@@ -855,7 +884,7 @@ describe("R17-H3-01 — an embedded authority with a port loses its host to a ha
     await error.cancel();
   });
 
-  test("two of the three spellings are fixed points now, and the third is the named gap", () => {
+  test("all three spellings are fixed points now, and the third closed in round 19", () => {
     // FIXED IN ROUND 17 for the two spellings whose region carries a real
     // scheme mark: the IPv6 literal and the explicit port. Both are fixed
     // points of the redactor, which is what a url with no credential must be.
@@ -866,20 +895,24 @@ describe("R17-H3-01 — an embedded authority with a port loses its host to a ha
       "https://api.test/go/http://cdn.test:8080/u/@bob",
     );
 
-    // THE THIRD IS DELIBERATELY NOT COVERED, and this pins the decision so a
-    // later round reads it instead of rediscovering it. F3's separating
-    // predicate carries three conditions, and each one buys a pinned answer:
-    // the region's mark must spell a scheme, so the empty scheme of
-    // `://a:1234/x/@bob` keeps its pin; the authority text must hold no `@`,
-    // so `svc:PW@i.test` stays a password; and the authority must read.
+    // THE THIRD CLOSED IN ROUND 19, under R19-H2-02, and this row is where the
+    // decision it reverses was written down. Round 17 left the bare `//`
+    // spelling out because F3's first condition asks that a SCHEME wrote the
+    // region's mark; round 19 asks instead whether the GRAMMAR wrote it, and a
+    // bare `//` is the URL Standard's own protocol-relative authority, so it
+    // writes one. The other two conditions are untouched: the authority text
+    // must still hold no `@`, so `svc:PW@i.test` stays a password, and the
+    // authority must still read.
     //
-    // A bare `//` region has no scheme mark, so it fails the first condition
-    // and keeps the old answer. Widening to cover it costs a named pinned
-    // answer. The residue F3 measured is 504 rows of 97,344 with lostSecret
-    // zero, so a later round can widen with the same evidence, one condition
-    // at a time.
+    // WHY THE NEW ANSWER IS THE CORRECT ONE. The authority of
+    // `//https:/cdn.test/img/@alice` is the scheme token `https` with an empty
+    // port, and everything after it is a path. So the old answer named `alice`,
+    // a host no reader of the input could find, and dropped the text the
+    // reference does put where a host goes. Nothing here is a credential.
+    const embedded = new URL("https://https:/cdn.test/img/@alice");
+    expect([embedded.host, embedded.username, embedded.password]).toEqual(["https", "", ""]);
     expect(redactUrl("https://api.test//https:/cdn.test/img/@alice")).toBe(
-      "https://api.test//alice",
+      "https://api.test//https:/cdn.test/img/@alice",
     );
   });
 });
@@ -931,7 +964,17 @@ function pathOf(url: string): string | null {
 }
 
 describe("R17-H3-01 — what the separating predicate costs, measured", () => {
-  test("over 97,344 urls it costs no planted credential at all", { timeout: 120_000 }, () => {
+  test("over 97,344 urls it now costs nothing at all", { timeout: 120_000 }, () => {
+    // MOVED BY R19-H2-02: `touched` was 504 and is 0. Those 504 rows were the
+    // whole of RES-7 — spans the colon rule took only because a bare `//`
+    // wrote the region's mark — and round 19 gives that mark the parser's
+    // reading, so `userinfoSpans` no longer offers a single one of them.
+    //
+    // `removed` and `lostSecret` are the two counts that must NOT move, and
+    // neither did: 57,360 planted credentials still go, and no span the
+    // predicate touched ever held one. `removed` is the non-vacuity guard for
+    // the zero — a population that stopped redacting would report zero here
+    // too, and it would report zero there as well.
     let removed = 0;
     let touched = 0;
     let lostSecret = 0;
@@ -951,7 +994,7 @@ describe("R17-H3-01 — what the separating predicate costs, measured", () => {
     expect({ size: population.length, removed, touched, lostSecret }).toEqual({
       size: 97_344,
       removed: 57_360,
-      touched: 504,
+      touched: 0,
       lostSecret: 0,
     });
   });

@@ -563,11 +563,11 @@ describe("round 18 / H2 — conditions two and three answer for their own reason
   });
 });
 
-// ── 6. THE NAMED GAP, WITH ITS RESIDUE REDRAWN ───────────────────────────────
+// ── 6. THE NAMED GAP, WITH ITS RESIDUE REDRAWN — CLOSED IN ROUND 19 ─────────
 //
-// A bare `//` region has no scheme mark, so condition 1 declines and the old
-// answer stands. Round 17 measured the residue at 504 rows of 97,344 with no
-// credential lost, and left the gap open so a later round can widen it one
+// A bare `//` region had no scheme mark, so condition 1 declined and the old
+// answer stood. Round 17 measured the residue at 504 rows of 97,344 with no
+// credential lost, and left the gap open so a later round could widen it one
 // condition at a time.
 //
 // The number cannot be checked — that population is not in the tree — so the
@@ -576,14 +576,36 @@ describe("round 18 / H2 — conditions two and three answer for their own reason
 // over-redaction, and none of them costs more than a diagnostic. A row is in
 // the residue when the bare `//` spelling loses an authority that the same
 // region behind a scheme mark keeps.
+//
+// ROUND 19 CLOSED THE GAP. R19-H2-02 replaced condition 1's question — did a
+// SCHEME write the region's mark — with the question the URL Standard answers:
+// did the GRAMMAR write it. A bare `//` opens a protocol-relative authority, so
+// the grammar wrote that mark and the region buys the parser's reading. The
+// redrawn residue is empty now, and the test below is inverted to say so.
 
-describe("round 18 / H2 — the bare `//` gap costs a diagnostic and no credential", () => {
-  test("the residue is over-redaction on every row of it", () => {
+describe("round 18 / H2 — the bare `//` gap is closed, and closing it cost nothing", () => {
+  test("no row of the redrawn residue loses the authority any more", () => {
+    // CLOSED IN ROUND 19, BY R19-H2-02. Round 18 measured this residue and
+    // asserted only that it was over-redaction on every row, with
+    // `residue > 0` as the non-vacuity guard that the gap existed. The gap does
+    // not exist now: a region a bare `//` opens buys the parser's reading of
+    // the authority at its start, exactly as a scheme-marked region does, so
+    // the bare spelling keeps every label its scheme-marked twin keeps.
+    //
+    // THE GUARD IS INVERTED RATHER THAN DROPPED, and it is stronger than the
+    // `> 0` it replaces. `reaches` counts the rows where the scheme-marked twin
+    // keeps the label at all — the rows on which the question can be asked —
+    // and it is pinned exactly, so this test cannot pass by drawing a
+    // population that never reaches the shape. `residue` is then the count of
+    // rows where the bare spelling loses what the marked one keeps, and one
+    // such row turns it red.
     const authorities = ["cdn.test:8443", "h.test:1", "[::1]", "a:1234"];
     const middles = ["/x", "/users", "", "/x/y"];
     const tails = ["/@alice", "/@bob", "/img/@carol", "/dG9rZW4vcGFzc3dvcmQ/@h.test"];
     const credentials = ["", `svc:${SECRET}@`, `${SECRET}@`];
 
+    let rows = 0;
+    let reaches = 0;
     let residue = 0;
     const worse: string[] = [];
     for (const authority of authorities) {
@@ -594,11 +616,14 @@ describe("round 18 / H2 — the bare `//` gap costs a diagnostic and no credenti
             const bare = redactUrl(`${ORIGIN}/go//${body}`);
             const marked = redactUrl(`${ORIGIN}/go/https://${body}`);
             const label = authority.split(":")[0]!;
+            rows += 1;
+            if (marked.includes(label)) reaches += 1;
             if (marked.includes(label) && !bare.includes(label)) residue += 1;
             // COSTS MORE THAN A DIAGNOSTIC in exactly two ways: the gap keeps a
             // planted credential the scheme-marked twin removes, or the gap's
             // answer is LONGER than the twin's, which would make it
-            // under-redaction rather than over.
+            // under-redaction rather than over. Both were empty while the gap
+            // was open, and closing it left both empty.
             if (bare.includes(SECRET) && !marked.includes(SECRET)) worse.push(`keeps: ${body}`);
             if (bare.length > marked.length - "https:".length) worse.push(`longer: ${body}`);
           }
@@ -607,8 +632,7 @@ describe("round 18 / H2 — the bare `//` gap costs a diagnostic and no credenti
     }
 
     expect(worse).toEqual([]);
-    // Non-vacuity: the gap is real and this population reaches it.
-    expect(residue).toBeGreaterThan(0);
+    expect({ rows, reaches, residue }).toEqual({ rows: 192, reaches: 148, residue: 0 });
   });
 
   test("and no credential the parser itself reports rides out of the corpus", () => {
