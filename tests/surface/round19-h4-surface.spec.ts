@@ -291,32 +291,102 @@ describe.skipIf(!distExists || ESBUILD === null)(
       // R18-H4-02 measured the same asymmetry over 23,040 urls, and its fix
       // supplied the missing direction without removing the one that never
       // happened.
-      const block = unwrapped(unreleasedBlock());
-      const claims = [
-        {
-          id: "removes more" as const,
-          phrases: ["removed where it used to survive", "moved in both directions"],
-        },
-        {
-          id: "keeps more" as const,
-          phrases: ["kept where it used to be deleted", "moved in both directions"],
-        },
-      ];
+      // R20-H4-06 rewrote the reading. The first version collected claims by
+      // matching four fixed phrases, so the SAME claim in other words read as no
+      // claim at all and passed — the defect this test exists to catch, inside
+      // the test written to catch it. Two readings replace the phrase list:
+      //
+      //  1. A machine-readable declaration, `<!-- redaction-directions: … -->`,
+      //     with a closed vocabulary. An HTML comment because RELEASING.md step
+      //     1 copies the block verbatim into the published section, so the
+      //     declaration survives the copy without rendering. It is REQUIRED: a
+      //     block with no declaration fails here rather than passing silently.
+      //  2. The direction bullet, pinned VERBATIM. Free prose is what defeated
+      //     the phrase list, and only a verbatim pin refuses free prose. Editing
+      //     the bullet is therefore a deliberate edit of this test, the same
+      //     discipline `IGNORE_SITES` imposes on a `v8 ignore` range.
+      //
+      // The check runs BOTH ways: a declared direction needs a witness, and a
+      // witnessed direction needs a declaration. Rule 8 obliges the block to
+      // name every direction that moved, and forbids naming one that did not.
+      //
+      // What this still does not read: a direction sentence written into some
+      // OTHER bullet of the block. Closing that means pinning the whole block.
+      const DIRECTION_VOCABULARY = ["removes-more", "keeps-more", "none"] as const;
+      const DIRECTION_BULLET =
+        "- **`redactUrl`'s output moved for an ordinary input, not only for an attack " +
+        "shape.** An embedded credential in an ordinary path segment is now removed where " +
+        "it used to survive — see the region rules above. A `file:` path segment that a " +
+        "build inside this unreleased window deleted is kept again, because `file:` opens " +
+        "no region under fewer than two solidi; no released package deleted it, so an " +
+        "upgrade from 2.0.1 sees no move on that shape. See the `file:` bullet above. A " +
+        "path segment behind a bare `//` authority is kept again for the same kind of " +
+        "reason: the region there ends at the authority the parser reads, so the segment " +
+        "behind it was never a credential to remove. Over the 140,640-url population the " +
+        "disclosure suite draws, 1,266 rows keep such a segment that a build inside this " +
+        "window removed, and on none of them does the platform report a credential. No " +
+        "released package removed them either: over that same population, the record this " +
+        "release emits is never longer than the published 2.0.1's, on any row. A " +
+        "credential-free proxy url shows the direction an ordinary input actually took: " +
+        "`redactUrl` turns " +
+        "`https://api.test/relay/https://media.test/photos/mia@example.com/pic.png` into " +
+        "`https://api.test/relay/https://example.com/pic.png`. The record drops " +
+        "`media.test`, the host the request contacted, and names `example.com`, a host it " +
+        "never reached. See `SECURITY.md` for the residual this shape leaves open. Anything " +
+        "that greps or alerts on `error.message` or `toJSON().url` sees a different string " +
+        "after this upgrade. That is true even for a url that carried no credential at all " +
+        "before this release.";
+
+      const rawBlock = unreleasedBlock();
+      const block = unwrapped(rawBlock);
+
+      const declaration = /<!--\s*redaction-directions:\s*([^>]*?)\s*-->/.exec(rawBlock);
+      expect(
+        declaration,
+        "the `[Unreleased]` block must declare which directions it claims, as " +
+          "`<!-- redaction-directions: … -->`, so this test reads a closed vocabulary " +
+          "rather than guessing at prose",
+      ).not.toBe(null);
+      const declared = (declaration?.[1] ?? "")
+        .split(",")
+        .map((word) => word.trim())
+        .filter(Boolean);
+      expect(
+        declared.filter((word) => !DIRECTION_VOCABULARY.includes(word as never)),
+        `the declaration takes only ${DIRECTION_VOCABULARY.join(", ")}`,
+      ).toEqual([]);
+      expect(declared, "the declaration must name at least one value").not.toEqual([]);
+
+      const bulletStart = block.indexOf("- **`redactUrl`'s output moved");
+      expect(bulletStart, "the block must carry the direction bullet").not.toBe(-1);
+      expect(
+        block.slice(bulletStart, bulletStart + DIRECTION_BULLET.length),
+        "the direction bullet is pinned verbatim: free prose is how a witnessless " +
+          "direction re-entered the block under R20-H4-06, and only a verbatim pin " +
+          "refuses it. Editing the bullet is a deliberate edit of this test",
+      ).toBe(DIRECTION_BULLET);
+
       const { removesMore, keepsMore, cleanup } = await differential();
       try {
-        const witnesses = { "removes more": removesMore, "keeps more": keepsMore };
-        const claimedWithNoWitness = claims
-          .filter(({ phrases }) => phrases.some((phrase) => block.includes(phrase)))
-          .filter(({ id }) => witnesses[id].length === 0)
-          .map(({ id }) => id);
+        const witnesses = {
+          "removes-more": removesMore,
+          "keeps-more": keepsMore,
+        };
+        const claimedWithNoWitness = declared
+          .filter((word) => word !== "none")
+          .filter((word) => witnesses[word as keyof typeof witnesses].length === 0);
+        const witnessedWithNoClaim = (Object.keys(witnesses) as (keyof typeof witnesses)[])
+          .filter((word) => witnesses[word].length > 0)
+          .filter((word) => !declared.includes(word));
         expect(
-          claimedWithNoWitness,
-          `The \`[Unreleased]\` block may name a direction only when some input took it. ` +
-            `Over ${redactionCorpus().length} urls spanning every shape the block discusses, ` +
-            `${removesMore.length} records removed MORE than the published 2.0.1 tree did and ` +
-            `${keepsMore.length} kept more. RELEASING.md step 1 copies this block verbatim into ` +
-            `the published section, so a direction with no witness outlives the round that wrote it`,
-        ).toEqual([]);
+          { claimedWithNoWitness, witnessedWithNoClaim },
+          `The \`[Unreleased]\` block may name a direction only when some input took it, ` +
+            `and must name every direction that moved. Over ${redactionCorpus().length} ` +
+            `urls spanning every shape the block discusses, ${removesMore.length} records ` +
+            `removed MORE than the published 2.0.1 tree did and ${keepsMore.length} kept ` +
+            `more. RELEASING.md step 1 copies this block verbatim into the published ` +
+            `section, so a direction with no witness outlives the round that wrote it`,
+        ).toEqual({ claimedWithNoWitness: [], witnessedWithNoClaim: [] });
       } finally {
         cleanup();
       }

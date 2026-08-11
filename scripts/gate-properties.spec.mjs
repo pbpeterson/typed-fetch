@@ -154,6 +154,14 @@ function contributingGates() {
     .filter(Boolean);
 }
 
+/**
+ * A `- run:` step CI actually runs: the sequence must START the line, so a step
+ * commented OUT with YAML's `#` is not read back as a step (R20-H4-01). An
+ * unanchored read let `      # - run: pnpm coverage` yield `pnpm coverage`, and
+ * five gates below rest on this reader and on `ciCommands`.
+ */
+const RUN_STEP = /^\s*- run: (.+)$/gm;
+
 /** The `- run:` commands of one job, in order. */
 function jobRunSteps(workflow, jobName) {
   const start = workflow.indexOf(`\n  ${jobName}:\n`);
@@ -161,7 +169,7 @@ function jobRunSteps(workflow, jobName) {
   const rest = workflow.slice(start + 1);
   const end = rest.search(/\n {2}[A-Za-z][\w-]*:\n/);
   const job = end === -1 ? rest : rest.slice(0, end);
-  return [...job.matchAll(/- run: (.+)/g)].map((m) => m[1].trim());
+  return [...job.matchAll(RUN_STEP)].map((m) => m[1].trim());
 }
 
 /**
@@ -248,7 +256,7 @@ describe("the gate roster reaches CI", () => {
     const release = readRepoFile(".github/workflows/release.yml");
     const invoked = new Set();
     for (const workflow of [ci, release]) {
-      for (const m of workflow.matchAll(/- run: pnpm (?:run )?([\w:-]+)$/gm)) invoked.add(m[1]);
+      for (const m of workflow.matchAll(/^\s*- run: pnpm (?:run )?([\w:-]+)$/gm)) invoked.add(m[1]);
     }
     invoked.delete("install");
 
@@ -284,7 +292,7 @@ function coverageExclusions() {
 /** Every command CI runs, each `pnpm <script>` also expanded to the body it runs. */
 function ciCommands() {
   const { scripts } = JSON.parse(readRepoFile("package.json"));
-  return [...readRepoFile(".github/workflows/ci.yml").matchAll(/- run: (.+)/g)].flatMap((m) => {
+  return [...readRepoFile(".github/workflows/ci.yml").matchAll(RUN_STEP)].flatMap((m) => {
     const command = m[1].trim();
     const invoked = /^pnpm (?:run )?([\w:-]+)$/.exec(command);
     const body = invoked ? scripts[invoked[1]] : undefined;
@@ -304,30 +312,93 @@ function ciSmokeRuntimes() {
  * job prefix read from `ci.yml`. A smoke job added without a spelling here
  * fails the first test below rather than passing it unread.
  */
-const RUNTIME_SPELLING = { bun: "Bun", deno: "Deno", "node-min": "node-min" };
+const RUNTIME_SPELLING = { bun: "Bun", deno: "Deno", "node-min": "Node-floor" };
+
+/**
+ * The one sentence in each contributor document that tells a reader which
+ * runtimes CI smokes.
+ *
+ * R20-H4-02: reading the WHOLE document for the word `Bun` passes on any stray
+ * mention — CONTRIBUTING.md spells it again in a paragraph about which runtime
+ * locks a stream on `getReader()` — so the roster sentence itself could be
+ * deleted with every gate green. The sentence is the roster; the word is not.
+ * A document that loses its sentence fails here rather than reading as a
+ * document that never claimed anything.
+ */
+const RUNTIME_ROSTER_SENTENCE = {
+  "CONTRIBUTING.md": /CI additionally runs\b[\s\S]*?runtime smokes\./,
+  "RELEASING.md": /Its Node 20\/22\/24,[\s\S]*?must all pass before the package job can start\./,
+};
+
+/** That sentence, on one line, or a failure naming the document that lost it. */
+function runtimeRoster(file) {
+  const found = RUNTIME_ROSTER_SENTENCE[file].exec(readRepoFile(file));
+  expect(
+    found,
+    `${file} must keep the sentence that tells a reader which runtimes CI smokes. Reading the ` +
+      "whole document for a runtime's name passes on an unrelated mention of it, so the roster " +
+      "is read as a sentence and deleting the sentence is the failure",
+  ).not.toBe(null);
+  return found[0].replaceAll(/\s+/g, " ");
+}
+
+/**
+ * The runtime binary each excluded path must be INVOKED by. The exclusion's own
+ * premise in `vitest.config.ts` is that each smoke "runs under a runtime a Node
+ * worker cannot host, and CI executes it under that runtime", so the gate must
+ * read an execution BY that runtime. R20-H4-05: asking whether some `- run:`
+ * line merely CONTAINS the path is satisfied by `node scripts/smoke/bun.mjs`
+ * and by `echo "skipping scripts/smoke/bun.mjs"`, and both leave the file
+ * excluded from the threshold and executed by no Bun.
+ */
+const EXCLUSION_RUNTIME = {
+  "scripts/smoke/bun.mjs": "bun",
+  "scripts/smoke/deno.ts": "deno",
+};
+
+/** Whether `command` runs `binary` with `path` as one of its arguments. */
+function invokesUnder(command, binary, path) {
+  return command
+    .split(/&&|\|\||[;|\n]/)
+    .map((segment) => segment.trim().split(/\s+/).filter(Boolean))
+    .some((tokens) => tokens[0] === binary && tokens.slice(1).includes(path));
+}
 
 describe("the runtime jobs the coverage exclusion list rests on", () => {
-  test("every file dropped from the coverage threshold is executed by a CI job", () => {
+  test("every file dropped from the coverage threshold is run by the runtime that premise names", () => {
     const commands = ciCommands();
     for (const path of coverageExclusions()) {
+      const binary = EXCLUSION_RUNTIME[path];
       expect(
-        commands.some((command) => command.includes(path)),
+        binary,
+        `no runtime binary is pinned for ${path}, so nothing states which runtime the exclusion ` +
+          "premise rests on",
+      ).toBeDefined();
+      expect(
+        commands.some((command) => invokesUnder(command, binary, path)),
         `vitest.config.ts drops ${path} from the 100 percent threshold because CI executes it ` +
-          "under its own runtime, so coverage for it is measured there or not at all; no job " +
-          "in .github/workflows/ci.yml runs that file, which leaves it measured by nothing and " +
-          "executed by nothing",
+          `under ${binary}, so coverage for it is measured there or not at all; no step in ` +
+          `.github/workflows/ci.yml passes that path to \`${binary}\`, which leaves it measured ` +
+          "by nothing and executed by nothing. Naming the path in a step is not running it: " +
+          "this reads the invocation",
       ).toBe(true);
     }
   });
 
   test("both contributor rosters name every runtime CI smokes", () => {
-    const contributing = readRepoFile("CONTRIBUTING.md");
-    const releasing = readRepoFile("RELEASING.md");
+    const contributing = runtimeRoster("CONTRIBUTING.md");
+    const releasing = runtimeRoster("RELEASING.md");
     for (const runtime of ciSmokeRuntimes()) {
       const word = RUNTIME_SPELLING[runtime];
       expect(word, `no document spelling is recorded for the ${runtime} smoke job`).toBeDefined();
-      expect(contributing, `CONTRIBUTING.md must name the ${runtime} smoke`).toContain(word);
-      expect(releasing, `RELEASING.md must name the ${runtime} smoke`).toContain(word);
+      expect(
+        contributing,
+        `CONTRIBUTING.md's runtime roster sentence must name the ${runtime} smoke`,
+      ).toContain(word);
+      expect(
+        releasing,
+        `RELEASING.md's runtime roster sentence must name the ${runtime} smoke`,
+      ).toContain(word);
     }
   });
 
@@ -335,7 +406,7 @@ describe("the runtime jobs the coverage exclusion list rests on", () => {
     // The other direction, and the one a deleted job needs: dropping a smoke
     // job from `ci.yml` leaves both documents telling a reader that CI runs it.
     const runtimes = ciSmokeRuntimes();
-    const rosters = `${readRepoFile("CONTRIBUTING.md")}\n${readRepoFile("RELEASING.md")}`;
+    const rosters = `${runtimeRoster("CONTRIBUTING.md")}\n${runtimeRoster("RELEASING.md")}`;
     for (const [runtime, word] of Object.entries(RUNTIME_SPELLING)) {
       expect(
         rosters.includes(word),
@@ -365,32 +436,56 @@ describe("the runtime jobs the coverage exclusion list rests on", () => {
 /** A `v8 ignore` directive that OPENS a range, never the one that closes it. */
 const IGNORE_DIRECTIVE = /v8 ignore(?!\s+(?:stop|end)\b)/;
 
+/** The directive that CLOSES a range — the end of what leaves the denominator. */
+const IGNORE_STOP = /v8 ignore\s+(?:stop|end)\b/;
+
 /** The shortest justification this check accepts, in characters of prose. */
 const JUSTIFICATION_FLOOR = 40;
 
-/** The `v8 ignore` sites under measurement, each as `file → the line it guards`. */
+/**
+ * The `v8 ignore` sites under measurement, each as
+ * `file → the first line it guards (how many lines the range spans)`.
+ *
+ * R20-H4-03: the span is pinned because a range can be widened without moving
+ * anything else. `IGNORE_DIRECTIVE` skips the `stop` marker by design, so
+ * pushing that marker down took a range from one line to three — three lines
+ * out of the denominator instead of one — with the file, the opening line, the
+ * guarded line, and the justification all byte-identical. The pin exists to
+ * make a range edit a reviewable diff instead of a silent widening, and a
+ * widening it cannot see is exactly the silent one.
+ */
 const IGNORE_SITES = [
-  'fixtures/channels.ts → "1 JSON.stringify in a log envelope":',
-  'fixtures/http-server.ts → res.setHeader("X-Echo-Method", req.method ?? "");',
-  "src/errors/base-http-error.ts → const revokeLoan = identity ? lendIdentity(teed.branch, identity) : undefined;",
-  "src/errors/response-identity.ts → const code = character.codePointAt(0) ?? 0;",
-  "src/response-verdict.ts → if (!validatedResponseStructures.has(response)) return false;",
-  "src/response-verdict.ts → if (refusedTheValue) rollbackRefusal();",
+  'fixtures/channels.ts → "1 JSON.stringify in a log envelope": (2-line range)',
+  'fixtures/http-server.ts → res.setHeader("X-Echo-Method", req.method ?? ""); (1-line range)',
+  "src/errors/base-http-error.ts → const revokeLoan = identity ? lendIdentity(teed.branch, identity) : undefined; (1-line range)",
+  "src/errors/response-identity.ts → const code = character.codePointAt(0) ?? 0; (1-line range)",
+  "src/response-verdict.ts → if (!validatedResponseStructures.has(response)) return false; (1-line range)",
+  "src/response-verdict.ts → if (refusedTheValue) rollbackRefusal(); (1-line range)",
 ];
+
+/**
+ * Every extension the v8 coverage provider instruments. R20-H4-04: the walker
+ * accepted `.ts` and `.mjs` only, while `vitest.config.ts` includes `src/**`,
+ * `scripts/**` and `fixtures/**` with no extension filter — so a range in a
+ * measured `.mts`, `.cts`, `.js`, `.cjs`, `.tsx` or `.jsx` file left lines out
+ * of the same denominator and was read by nothing here.
+ */
+const MEASURED_EXTENSION = /\.[cm]?[jt]sx?$/;
 
 /** Every measured source file under `rel`. Spec files are not measured. */
 function measuredSources(rel, found = []) {
   for (const name of readdirSync(join(repoRoot, rel))) {
     const next = `${rel}/${name}`;
     if (statSync(join(repoRoot, next)).isDirectory()) measuredSources(next, found);
-    else if (/\.(?:ts|mjs)$/.test(name) && !/\.spec\.(?:ts|mjs)$/.test(name)) found.push(next);
+    else if (MEASURED_EXTENSION.test(name) && !/\.spec\.[cm]?[jt]sx?$/.test(name)) found.push(next);
   }
   return found;
 }
 
 /**
  * Every `v8 ignore` range in `source`: the line it opens on, the first line it
- * guards, and the comment block written directly above it.
+ * guards, how many lines it spans, and the comment block written directly
+ * above it.
  */
 function ignoreRanges(source) {
   const lines = source.split("\n");
@@ -410,10 +505,23 @@ function ignoreRanges(source) {
     ranges.push({
       line: index + 1,
       guards: (lines[index + 1] ?? "").trim(),
+      span: ignoreSpan(lines, index),
       justification: justification.trim(),
     });
   }
   return ranges;
+}
+
+/**
+ * How many lines the range opened on `lines[index]` takes out of the coverage
+ * denominator: the count between the directive and its `stop`, or the count a
+ * `next` directive states, or `"unclosed"` when no `stop` follows it.
+ */
+function ignoreSpan(lines, index) {
+  const next = /v8 ignore\s+next\s*(\d*)/.exec(lines[index]);
+  if (next) return next[1] === "" ? 1 : Number(next[1]);
+  const closesAt = lines.findIndex((line, at) => at > index && IGNORE_STOP.test(line));
+  return closesAt === -1 ? "unclosed" : closesAt - index - 1;
 }
 
 describe("every `v8 ignore` range acceptance item 4 covers", () => {
@@ -426,11 +534,12 @@ describe("every `v8 ignore` range acceptance item 4 covers", () => {
   test("the measured trees hold exactly the sites this round read", () => {
     expect(
       sites()
-        .map((site) => `${site.file} → ${site.guards}`)
+        .map((site) => `${site.file} → ${site.guards} (${site.span}-line range)`)
         .toSorted(),
-      "a `v8 ignore` range was added, moved, or removed. Every range removes its lines from " +
-        "the denominator of the 100 percent threshold, so the list is pinned by site and an " +
-        "edit to it belongs in the diff a reviewer reads",
+      "a `v8 ignore` range was added, moved, removed, or WIDENED. Every range removes its lines " +
+        "from the denominator of the 100 percent threshold, so the list is pinned by site AND " +
+        "by how many lines the range spans, and an edit to either belongs in the diff a " +
+        "reviewer reads",
     ).toEqual(IGNORE_SITES.toSorted());
   });
 
@@ -461,9 +570,23 @@ describe("every `v8 ignore` range acceptance item 4 covers", () => {
     ].join("\n");
 
     expect(ignoreRanges(bare)).toEqual([
-      { line: 3, guards: 'if (flag) return "yes-" + label;', justification: "" },
+      { line: 3, guards: 'if (flag) return "yes-" + label;', span: 1, justification: "" },
     ]);
     expect(ignoreRanges(bare)[0].justification.length).toBeLessThan(JUSTIFICATION_FLOOR);
+
+    // R20-H4-03. The same range with its `stop` one line lower is a DIFFERENT
+    // range: two lines leave the denominator instead of one. The directive, the
+    // guarded line, and the justification do not move, so the span is the only
+    // thing that says so, and the site pin above reads it.
+    const widened = bare.replace(
+      '  /* v8 ignore stop */\n  return "no-" + label;',
+      '  return "no-" + label;\n  /* v8 ignore stop */',
+    );
+    expect(ignoreRanges(widened)[0]).toMatchObject({
+      line: 3,
+      guards: 'if (flag) return "yes-" + label;',
+      span: 2,
+    });
 
     // The same range with a stated condition above it passes the same read, so
     // the check refuses the omission and not the directive.
