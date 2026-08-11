@@ -443,11 +443,25 @@ describe("round 11 / H2 — a real body that fails mid-stream", () => {
   });
 
   test("a timeout that fires after the response resolved leaves the error unchanged", async () => {
-    const { error } = await typedFetch(`${base}/?mode=slow`, { signal: AbortSignal.timeout(60) });
+    // TWO RACES USED TO DECIDE THIS TEST, and both are gone.
+    //
+    // The deadline has to fall between the handoff and the read, and it used to
+    // be 60 ms against a local server's headers — which the server loses under
+    // load, so the envelope came back a `TimeoutError` and the first assertion
+    // failed. One second is the same shape with a thousandfold margin over the
+    // millisecond a loopback handoff costs.
+    //
+    // The wait afterwards used to be a fixed 120 ms racing that same deadline.
+    // It waits on the deadline's own event now, so the ordering this test is
+    // about is observed rather than assumed.
+    const signal = AbortSignal.timeout(1_000);
+    const { error } = await typedFetch(`${base}/?mode=slow`, { signal });
     expect(isHttpError(error)).toBe(true);
     if (!isHttpError(error)) return;
     expect(error.status).toBe(404);
-    await new Promise((resolve) => setTimeout(resolve, 120));
+    await new Promise((resolve) => {
+      signal.addEventListener("abort", resolve, { once: true });
+    });
     // The timeout fired between the handoff and the read. It errors the body,
     // and it changes nothing about the error's class or identity.
     await expect(error.text()).rejects.toThrow();

@@ -532,6 +532,12 @@ function sweep(urls: readonly string[], both: boolean): Sweep {
 }
 
 /**
+ * BUDGETS ARE 300 s, which is this repository's figure for a generator suite —
+ * `round18-h3`, `round19-h2` and `round19-h3` all use it. This file carried
+ * 120 s until the whole suite ran beside four other lanes and the 400,000-url
+ * sweep took 147 s, so the budget failed on contention rather than on a hang,
+ * which is what a budget is for. Solo the file is 32 s.
+ *
  * Measured solo: 3.8 s for the structured population under both rules, 3.6 s
  * for the credential one, 21 s for the 400,000 random urls under one, and 53 s
  * for the whole file inside a `pnpm coverage` run. The budgets state that
@@ -563,7 +569,7 @@ function sweep(urls: readonly string[], both: boolean): Sweep {
  * moved it and in which direction.
  */
 describe("the judge over the populations the module is measured against", () => {
-  test("the structured population, under both rules", { timeout: 120_000 }, () => {
+  test("the structured population, under both rules", { timeout: 300_000 }, () => {
     // MOVED BY R19-H2-02, and every row of that move was more correct. 558
     // fewer rows dropped a host the input named. 738 answers changed; the
     // sample is `https://api.test/proxy///cdn.test:8443/img/@alice`, which used
@@ -600,7 +606,7 @@ describe("the judge over the populations the module is measured against", () => 
     });
   });
 
-  test("the credential population, under both rules", { timeout: 120_000 }, () => {
+  test("the credential population, under both rules", { timeout: 300_000 }, () => {
     // MOVED BY ROUND 20, and it is the first round to move this population at
     // all. EVERY COUNT FALLS — 475 to 461, 154 to 148, 30 to 29, 124 to 119 —
     // so there is no axis on which the round bought a verdict with another one.
@@ -649,7 +655,7 @@ describe("the judge over the populations the module is measured against", () => 
     });
   });
 
-  test("the 400,000 random urls", { timeout: 120_000 }, () => {
+  test("the 400,000 random urls", { timeout: 300_000 }, () => {
     // MOVED BY R19-H2-02, and this is the one population where the move is not
     // uniformly an improvement. Eight rows change verdict: seven stop dropping
     // a host the input named and are no longer condemned at all, and ONE moves
@@ -1078,7 +1084,7 @@ function pathOf(url: string): string | null {
 }
 
 describe("R17-H3-01 — what the separating predicate costs, measured", () => {
-  test("over 97,344 urls it now costs nothing at all", { timeout: 120_000 }, () => {
+  test("over 97,344 urls it now costs nothing at all", { timeout: 300_000 }, () => {
     // MOVED BY R19-H2-02: `touched` was 504 and is 0. Those 504 rows were the
     // whole of RES-7 — spans the colon rule took only because a bare `//`
     // wrote the region's mark — and round 19 gives that mark the parser's
