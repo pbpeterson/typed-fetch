@@ -1253,14 +1253,41 @@ describe("R9 residual — a scheme colon and its solidi open an authority", () =
   // What the widened anchor COSTS, all of it over-redaction, which is this
   // module's safe direction. Stated as pins so a later round narrowing the
   // anchor has to say which of these it is buying back.
+  //
+  // ROUND 20 BOUGHT ONE OF THEM BACK, which is the answer to the invitation the
+  // paragraph above wrote. The chain row used to read
+  // `https://api.test/go/https:/h2/v1`: `h1` went with the first credential,
+  // because a region ENDED at the three literal characters `://` and a chain of
+  // one-solidus forwards spells none, so the first region ran to the end of the
+  // text and its last `@` was the second credential's. R20-H2-01's fix ends a
+  // region at `nextSchemeAuthority` instead — the colon mark under ANY solidus
+  // count — so the first region now stops where the second embedded url begins.
+  // Both credentials still go, and both hosts the url named survive.
+  //
+  // WHAT IS STILL A RESIDUAL is row 2, and it is the narrower half of the same
+  // cost. Inside ONE region the anchor still runs to that region's LAST `@`, so
+  // an ordinary `@` in a path segment behind the embedded authority still takes
+  // the authority with it. That is the shape `SECURITY.md` records for an
+  // embedded url, and no region bound narrows it: there is no second url in the
+  // text for the region to end at.
   test.each([
     [
-      "a chain of single-solidus authorities collapses to the last host",
+      "a chain of single-solidus authorities keeps every host it names",
       "https://api.test/go/https:/svc:pw@h1/then/http:/u2:pw2@h2/v1",
-      "https://api.test/go/https:/h2/v1",
+      "https://api.test/go/https:/h1/then/http:/h2/v1",
+      ["svc:pw@", "u2:pw2@"],
     ],
-  ])("RESIDUAL: %s", (_label, url, expected) => {
+    [
+      "RESIDUAL: an ordinary `@` behind a single-solidus authority still takes its host",
+      "https://api.test/go/https:/svc:pw@h1/then/more@here/v1",
+      "https://api.test/go/https:/here/v1",
+      ["svc:pw@"],
+    ],
+  ])("%s", (_label, url, expected, credentials) => {
     expect(redactUrl(url)).toBe(expected);
+    // Both rows cost over-redaction and neither leaks, which is what makes the
+    // move above a cost decision rather than a safety one.
+    for (const credential of credentials) expect(redactUrl(url)).not.toContain(credential);
   });
 
   // CLOSED IN ROUND 12, and this shape was the residual round 9 recorded when

@@ -1083,28 +1083,53 @@ function gradeEscapes(population: readonly Planted[]): Escapes {
 
 describe("the third judge, over the populations this lane draws", () => {
   test("three axes, and the one that fires is a rewrite", { timeout: 300_000 }, () => {
-    // `whole` MOVED IN ROUND 19, under R19-H2-02, and it is the one row of this
-    // repair whose direction is mixed. 1,266 more rows keep the sentinel
+    // `whole` MOVED IN ROUND 19, under R19-H2-02, and it was the one row of
+    // that repair whose direction was mixed. 1,266 more rows kept the sentinel
     // verbatim, because a region a bare `//` opens now buys the parser's
     // reading of the authority at its start instead of losing it to the colon
     // rule. Every one of the 1,266 is a PATH SEGMENT behind that authority,
     // which is the residual `SECURITY.md` records for a secret in a path
-    // segment, and it is the measured cost of closing RES-7.
+    // segment, and it was the measured cost of closing RES-7.
     //
-    // WHAT MUST NOT MOVE WITH IT is `reportedCredential`, and it did not: 176
-    // before the change and 176 after, so not one of the 1,266 survives where
-    // the platform reads a credential. That is the axis this test exists to
-    // guard, and it is asserted as an exact count rather than as a bound — a
-    // change that let one real credential through turns it red at 177.
+    // BOTH SURVIVAL COUNTS MOVED IN ROUND 20, and this time both fall: `whole`
+    // by 621 and `transformed` by 327. 948 fewer of the 86,880 carried secrets
+    // reach the emitted url at all — 23,761 used to survive and 22,813 do.
+    // Read off the rows rather than attributed:
     //
-    // The other five counts are untouched, which is the second half of the
-    // claim: the rewrite axis, the partial axis and the slot axis do not move
-    // when the region rule does.
+    //  - 387 rows: R20-H2-01. A region now ends at a one-solidus embedded mark
+    //    instead of running to the end of the text, so the credential in front
+    //    of that mark is inside a region that closes on it.
+    //    `https://api.test//https:/svc:PWSENTINEL18@cdn.test/PWSENTINEL18/@internal.test/v1`
+    //    emitted `https://api.test//cdn.test/PWSENTINEL18/@internal.test/v1`
+    //    and now emits `https://api.test//https:/internal.test/v1`.
+    //  - 288 rows: the `SECRET/x` body, and 288 more: the `SECRET\x` body, both
+    //    under R20-H3-03's seam fallback. `file:asvc:PWSENTINEL18/x@\r%3A///`
+    //    emitted the credential whole and now emits `file:///%3A///`.
+    //  - 24 rows of `PW SENT18` and 15 of `PW<TAB>SENT18`, the same seam.
+    //  - AND 54 ROWS THE OTHER WAY, which this comment states rather than nets
+    //    away. On those the sentinel now survives WHOLE where it used to go:
+    //    `https://api.test//https:@cdn.test/PWSENTINEL18/@internal.test/v1`
+    //    emitted `https://api.test//internal.test/v1` and now emits the url
+    //    unchanged. The sentinel there is a PATH SEGMENT of the target, not a
+    //    userinfo, and the previous answer reached it only by over-redacting
+    //    the embedded host `cdn.test` away with it. Same class as round 19's
+    //    1,266, and the same residual records it.
+    //
+    // WHAT MUST NOT MOVE WITH ANY OF IT is `reportedCredential`, and it has now
+    // held at 176 across two rounds that moved `whole` by 1,266 and by 621 in
+    // opposite directions. Not one of the 54 survives where the platform reads
+    // a credential. That is the axis this test exists to guard, and it is
+    // asserted as an exact count rather than as a bound — a change that let one
+    // real credential through turns it red at 177.
+    //
+    // `causedByRewrite`, `partial` and `moved` are untouched, which is the
+    // second half of the claim: the rewrite axis, the partial axis and the slot
+    // axis do not move when the region rule and the seam do.
     expect(gradeEscapes(drawn())).toEqual({
       size: 140_640,
       carried: 86_880,
-      whole: 14_503,
-      transformed: 9_258,
+      whole: 13_882,
+      transformed: 8_931,
       causedByRewrite: 0,
       partial: 4,
       moved: 0,

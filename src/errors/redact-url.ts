@@ -45,6 +45,7 @@ import {
   afterOwnAuthority,
   bringsOwnAuthority,
   leadsWithHierarchicalScheme,
+  ownUserinfo,
   pathEnd,
   pathUserinfoSpans,
   seamSpan,
@@ -153,7 +154,7 @@ export function redactUrl(url: string): string {
     if (!leadsWithHierarchicalScheme(absolute.protocol)) return absolute.protocol;
     const origin = `${absolute.protocol}//${absolute.host}`;
     try {
-      return cleaned(absolute, origin).href;
+      return cleaned(absolute, origin, spilledAuthority(url)).href;
     } catch {
       // THE REBUILD'S THROW IS NOT A PARSE FAILURE, and holding both under one
       // `catch` is what made this worth its own line. The absolute parse used to
@@ -338,10 +339,10 @@ function resolvedPath(text: string): string {
  * paid it again per log line. The pass count is a fact about the input's SHAPE,
  * so it belongs to a remote server whenever `url` came from a redirect.
  */
-function cleaned(parsed: URL, origin: string, consumed = false): URL {
+function cleaned(parsed: URL, origin: string, spilled = false): URL {
   for (;;) {
     const path = parsed.pathname;
-    const seam = seamUserinfo(parsed, consumed);
+    const seam = seamUserinfo(parsed, spilled);
     const clean = withoutMalformedUserinfo(path, parsed.search + parsed.hash, seam);
     if (clean === path) return stripValues(parsed);
     parsed = new URL(origin + clean);
@@ -391,9 +392,39 @@ function cleaned(parsed: URL, origin: string, consumed = false): URL {
  * subject is what that parse did NOT report, and it would cost every function
  * below the ability to be called from a test with a string literal.
  */
-function seamUserinfo(parsed: URL, consumed: boolean): Span | null {
-  if (parsed.host !== "" && !consumed) return null;
+function seamUserinfo(parsed: URL, spilled: boolean): Span | null {
+  if (parsed.host !== "" && !spilled) return null;
   return seamSpan(parsed.pathname);
+}
+
+/**
+ * Did the caller's own authority SPILL into the path — did a `\` the caller
+ * wrote inside it end it for the parser?
+ *
+ * THE THIRD STATE {@link seamUserinfo} NAMES, and round 20's R20-H4-08 is what
+ * leaving it unnamed cost. Every one of the six hierarchical schemes is
+ * SPECIAL, and under a special scheme the authority state terminates on `\`
+ * exactly as it does on `/` — so `https://alice:\hunter2@api.test/p` parses
+ * with the host `alice`, no username, no password, and the path
+ * `/hunter2@api.test/p`. The parser is right and the caller wrote a credential:
+ * `hunter2` reached `error.message` under every spelling a platform can quote,
+ * and `toJSON().url` — the record a structured logger writes — kept it too,
+ * because the url has an authority of its own so the seam was never asked and
+ * the path spells no mark for a region to open on.
+ *
+ * ASKED OF THE RAW URL, which is the only text that knows: `pathname` holds the
+ * `/` the parser folded and cannot be told from one the caller typed.
+ * {@link bringsOwnAuthority} is the other question of this shape, and the two
+ * answer the same thing for the two branches — the text the caller wrote as
+ * authority is in the path now.
+ *
+ * ONE CHARACTER, READ WHERE THE AUTHORITY STOPPED. `afterOwnAuthority` answers
+ * the first `/`, `\`, `?` or `#`, so the character sitting there says WHICH of
+ * them stopped it, and only the `\` is a solidus the caller did not spell as
+ * one. `https://api.test/x` reads `/` and answers `false`.
+ */
+function spilledAuthority(url: string): boolean {
+  return url[afterOwnAuthority(url)] === "\\";
 }
 
 /**
@@ -521,6 +552,50 @@ function hiddenUserinfos(text: string, seam: Span | null = null, kept = text.len
 }
 
 /**
+ * Does this needle NAME a credential, or is it one of the two userinfos the URL
+ * Standard writes down as nothing at all?
+ *
+ * THE GRAMMAR RATHER THAN A LENGTH. A userinfo is a username and an optional
+ * password, and it is EMPTY when both are — which is exactly the two spellings
+ * `@` and `:@`. The URL serializer writes neither: it appends the colon only
+ * under a non-empty-password guard, and it appends the whole userinfo only
+ * where there is one, so `new URL("https://:@api.test/v1").href` IS
+ * `https://api.test/v1`. Both spellings carry no text a reader could recover.
+ *
+ * {@link hiddenUserinfos} refuses the first of the two outright and states why:
+ * a needle is deleted from a message WHEREVER it appears, and `@` alone appears
+ * in every e-mail address a diagnostic carries. The second is the same needle
+ * two characters long, and round 19 made it reachable by reading the url's own
+ * authority in the caller's spelling: `https://:@api.test/v1` answered `:@`,
+ * and the pass turned `ratio 3:@4; key:@value` into `ratio 34; keyvalue`.
+ * R20-H3-04.
+ *
+ * IT IS REFUSED WHERE IT NAMES NOTHING AND KEPT WHERE IT IS STRUCTURE, which is
+ * what {@link withoutUserinfos} spends this on: an empty userinfo is a userinfo
+ * only where a mark opened an authority in front of it. That keeps the url's
+ * own `https://:@api.test/v1` reduced in the message the platform quoted, and
+ * it is the whole difference between the two `:@`s of that message.
+ */
+function namesACredential(userinfo: string): boolean {
+  const named = userinfo.slice(0, -1);
+  return named !== "" && named !== ":";
+}
+
+/**
+ * Does a mark open an authority immediately in front of `at`?
+ *
+ * A SOLIDUS, IN EITHER SPELLING, and that is the whole question a message can
+ * answer. The scanner's own grammar lives in `./userinfo-spans`, and this is
+ * not a region question: it reads a MESSAGE, which is arbitrary text with a url
+ * quoted somewhere inside it, and asks only whether the two characters in front
+ * of a match are the ones a url writes before its userinfo. `\` counts because
+ * a special scheme reaches its authority over either one.
+ */
+function opensAnAuthority(message: string, at: number): boolean {
+  return message[at - 1] === "/" || message[at - 1] === "\\";
+}
+
+/**
  * Every userinfo the FOUR SLOTS of one parsed url spell: its own credential,
  * and the ones hidden in the path, the query, and the fragment.
  *
@@ -558,12 +633,12 @@ function hiddenUserinfos(text: string, seam: Span | null = null, kept = text.len
  * protocol-relative reference hands its authority to the parser, and
  * `redactUrl` emits the path alone. See {@link bringsOwnAuthority}.
  */
-function slotUserinfos(parsed: URL, consumed: boolean): string[] {
+function slotUserinfos(parsed: URL, spilled: boolean): string[] {
   const { username, password } = parsed;
   const own = username || password ? [password ? `${username}:${password}@` : `${username}@`] : [];
   return [
     ...own,
-    ...hiddenUserinfos(parsed.pathname, seamUserinfo(parsed, consumed)),
+    ...hiddenUserinfos(parsed.pathname, seamUserinfo(parsed, spilled)),
     ...hiddenUserinfos(parsed.search, null, 0),
     ...hiddenUserinfos(parsed.hash, null, 0),
   ];
@@ -604,7 +679,7 @@ function userinfosOf(url: string): string[] {
   // cut is, and the slice is made here, because the scanner answers positions
   // and never text.
   //
-  // AND THE HEAD IS SCANNED TOO, in the caller's own spelling, because the cut
+  // AND THE HEAD IS ASKED TOO, in the caller's own spelling, because the cut
   // took the url's OWN userinfo away from the raw scan and
   // {@link slotUserinfos} hands back only the parser's spelling of it. The two
   // agree for `hunter2` and differ for every password the userinfo encode set
@@ -613,6 +688,28 @@ function userinfosOf(url: string): string[] {
   // `hun%20ter2` lost it. That is round 19's R19-H3-01, and it is the same
   // "needle that no longer matches" the paragraph above names, wearing the one
   // slot the cut removed.
+  //
+  // AND IT IS ASKED TWICE, WITH TWO QUESTIONS, which is round 20's R20-H3-01
+  // and R20-H3-02. Round 19 asked the head with `hiddenUserinfos` alone, and
+  // that reaches the REGION rules — which open at a scheme colon under fewer
+  // than two solidi only for the five schemes the URL Standard gives an
+  // authority state, and which never skip the tab, CR and LF the parser removes
+  // from the whole input before it reads anything. Both answers are right about
+  // a colon found INSIDE a path and neither is the question the head asks, so
+  // `file:/svc:hun ter2@api.test/v1` and `htt<TAB>ps:/svc:hun ter2@api.test/v1`
+  // opened no region at all, the caller's spelling of the password was never a
+  // needle, and it reached all seven channels. `ownUserinfo` in
+  // `./userinfo-spans` asks the head question instead: the parse committed to
+  // reading an authority at that offset, so the answer is the URL Standard's
+  // own split and no region rule is consulted.
+  //
+  // BOTH, AND NEITHER SUBSUMES THE OTHER. The head question answers ONE span —
+  // this authority's userinfo — and a head can spell more than one: a scheme
+  // token inside it opens a region of its own, and the region scan finds the
+  // shorter needle nested in the longer one. Dropping the region scan cost a
+  // needle on a message quoting a `file:` url whose emitted form still held the
+  // password, measured at 1 row in the 40,000-url credential population. The
+  // union is what both slots of every other needle already are.
   //
   // THE PORT IS STILL SAFE, and that is why this reads the head rather than
   // moving the cut. An authority's LAST `@` ends its userinfo, so a span found
@@ -638,12 +735,19 @@ function userinfosOf(url: string): string[] {
   const parsed = absolute ?? parseProbe(url, RELATIVE_BASE);
   const cut = absolute === null ? 0 : afterOwnAuthority(url);
   const raw = url.slice(cut);
+  const head = absolute === null ? null : ownUserinfo(url);
+  // The seam's own question, asked exactly as `redactUrl` asks it on each of its
+  // two branches: a reference that brought its own mark had its authority
+  // CONSUMED, and an absolute url whose authority a `\` cut short had it SPILL
+  // into the path. Both leave a userinfo where only the seam can find it.
+  const spilled = absolute === null ? bringsOwnAuthority(url) : spilledAuthority(url);
   const needles = new Set([
+    ...(head === null ? [] : [url.slice(head.start, head.end)]),
     ...hiddenUserinfos(url.slice(0, cut)),
     ...hiddenUserinfos(raw, null, parsed === null ? raw.length : pathEnd(raw)),
   ]);
   if (parsed !== null) {
-    for (const needle of slotUserinfos(parsed, absolute === null && bringsOwnAuthority(url))) {
+    for (const needle of slotUserinfos(parsed, spilled)) {
       needles.add(needle);
     }
   }
@@ -786,7 +890,18 @@ function withoutUserinfos(message: string, userinfos: string[]): string {
     for (const [length, needles] of byLength) {
       const start = at + 1 - length;
       if (start < 0) continue;
-      if (needles.has(message.slice(start, at + 1))) spans.push({ start, end: at + 1 });
+      const match = message.slice(start, at + 1);
+      if (!needles.has(match)) continue;
+      // AN EMPTY USERINFO IS A USERINFO ONLY BEHIND A MARK, and that is the one
+      // needle whose text is not distinctive enough to stand for itself. `:@`
+      // names nothing — see {@link namesACredential} — so what a match of it
+      // removes is decided by what opened the authority in front of it. The
+      // solidus is that mark wherever a message quotes one:
+      // `https://:@api.test/v1` is the url reduced, and `ratio 3:@4` and
+      // `key:@value` are the platform's own arithmetic and the platform's own
+      // key. R20-H3-04 is the round that deleted all three.
+      if (!namesACredential(match) && !opensAnAuthority(message, start)) continue;
+      spans.push({ start, end: at + 1 });
     }
   }
   if (spans.length === 0) return message;

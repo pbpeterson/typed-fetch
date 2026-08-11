@@ -308,40 +308,72 @@ describe("round 18 / H2 — the crossing hands `readsAsHostAndPort` the wrong ma
 // is never asked about. This is the slash-collapsed spelling — the one
 // `userinfoSpans`' own header says "every slash-collapsing proxy and every
 // `path.join`" produces.
+//
+// CLOSED IN ROUND 20, BY THE SENTENCE ABOVE. The paragraph names the whole
+// defect without naming the fix: the two spellings of ONE embedded url differ
+// only in a solidus, and only one of them bounded the region. R20-H2-01 asks
+// `nextSchemeAuthority` for the bound instead of scanning for three literal
+// characters, so a colon mark bounds a region under any solidus count and the
+// slash-collapsed spelling is now as linear as the other one. The condition is
+// unchanged and its floor is unchanged; it is simply never reached. The pin
+// below is inverted to hold the closure and states what turns it red again.
 
 function probePath(units: number): string {
   return `/x${"/ws:a:1".repeat(units)}/@b`;
 }
 
-describe("round 18 / H2 — the host-and-port question is quadratic in the marks", () => {
-  test("R18-H2-02: the backward walk grows with the square of a server's path", () => {
+describe("round 18 / H2 — the host-and-port question is asked where a url starts", () => {
+  test("R18-H2-02: the backward walk does not grow with a server's path at all", () => {
+    // THIS PIN'S SUBJECT NO LONGER EXISTS, AND THE PIN IS INVERTED RATHER THAN
+    // DELETED. Round 18 measured one backward `lastIndexOf("@", …)` per region
+    // and N regions in a path the SERVER chose: 500, 1,000 and 2,000 calls at
+    // the three sizes below, growing exactly with the mark count.
+    //
+    // R20-H2-01 removed the reason the question was ever reached. A region's
+    // END used to be the three literal characters `://`, which `/ws:a:1` never
+    // writes, so every region ran to the end of the text, every region's
+    // candidate `@` was the last one in the whole string, and every region
+    // therefore reached the colon rule. The end is now `nextSchemeAuthority` —
+    // the colon mark under ANY solidus count — so each region is bounded by the
+    // next `ws:` and holds no candidate at all. The question is asked ONCE,
+    // whatever the path costs, and `readsAsHostAndPort` is the only caller.
+    //
+    // SO THE ASSERTION IS THE CONSTANT AND NOT A BOUND. `[1, 1, 1]` is red the
+    // moment a per-region backward search returns, at [500, 1000, 2000]; a
+    // per-region bound of "eight characters" would have stayed green through
+    // exactly that regression, which is why the count is pinned and not the
+    // work. The walked characters are pinned the same way, at a flat 3.
     const rows = [500, 1000, 2000].map((units) => {
       const url = ORIGIN + probePath(units);
       return { units, ...measure(url) };
     });
 
     // NON-VACUITY. Nothing is redacted at any size — the answer is the input —
-    // so every character below is walked for an answer that never changes.
+    // so a tree that stopped reading this text would report the same zeros.
     for (const row of rows) expect(row.answer).toBe(ORIGIN + probePath(row.units));
 
-    // THE TWO INSTRUMENTS ROUNDS 16 AND 17 USED ARE BOTH GREEN. One rebuild at
-    // every size, so this is not a pass-count defect and `cleaned`'s bound is
-    // untouched; one probe per region, which is the linear cost
-    // `parsesAsAuthority` is supposed to have.
+    // THE TWO INSTRUMENTS ROUNDS 16 AND 17 USED ARE BOTH STILL GREEN, and both
+    // are unmoved. One rebuild at every size, so `cleaned`'s bound is untouched;
+    // one probe per region, which is the linear cost `parsesAsAuthority` is
+    // supposed to have and which round 20 did not buy this fix with.
     expect(rows.map((row) => row.rebuilds)).toEqual([1, 1, 1]);
     expect(rows.map((row) => row.probes)).toEqual([500, 1000, 2000]);
-    expect(rows.map((row) => row.backwardCalls)).toEqual([500, 1000, 2000]);
 
-    // AND THE WALK IS NOT. A linear reader of a text looks at each character a
-    // bounded number of times; eight is generous and scale-free, and a tree
-    // that asks `lastBelow` instead of `lastIndexOf` walks zero.
+    // AND THE BACKWARD SEARCH IS NOW SIZE-INDEPENDENT, on both counts.
+    expect(rows.map((row) => row.backwardCalls)).toEqual([1, 1, 1]);
+    expect(rows.map((row) => row.backwardWalk)).toEqual([3, 3, 3]);
+
+    // The bound round 18 wrote, kept as the weaker statement it always was: a
+    // linear reader looks at each character a bounded number of times. It
+    // passed before the fix too, which is the whole reason the counts above are
+    // exact.
     const overLinear = rows
       .filter((row) => row.backwardWalk > 8 * row.length)
       .map((row) => `${row.units} units, ${row.length} chars: ${row.backwardWalk} walked`);
     expect(overLinear).toEqual([]);
   });
 
-  test("R18-H2-02: one `toJSON()` of a 14 KB redirect target pays it whole", async () => {
+  test("R18-H2-02: one `toJSON()` of a 14 KB redirect target stays within the bound", async () => {
     const server = http.createServer((request, response) => {
       const path = request.url ?? "/";
       if (path.startsWith("/go/")) {

@@ -542,7 +542,7 @@ function sweep(urls: readonly string[], both: boolean): Sweep {
  * THE STRUCTURED POPULATION IS WHERE THE TWO RULES AGREE, and that is the
  * sharpest thing the comparison says. Every one of its urls is one a parser
  * reads, and on every one of them the calibration moves no verdict. The entire
- * difference between 475 and 154 on the credential population is text no parser
+ * difference between 461 and 148 on the credential population is text no parser
  * reads as a url, read by a rule that slices where no parser opens an authority.
  *
  * ROUND 19 MOVED TWO OF THE THREE COUNTS, and R19-H2-02 is what moved them. A
@@ -550,34 +550,82 @@ function sweep(urls: readonly string[], both: boolean): Sweep {
  * protocol-relative authority, so it now buys the parser's reading of the
  * authority at its start exactly as a scheme-marked region does. RES-7 — the
  * bare-`//` gap round 18 recorded and refused to close — closes as a
- * by-product. The counts below are re-measured on this tree, and both moves are
- * in the same direction: FEWER rows where the record drops a host the input
- * named. The credential population does not move at all.
+ * by-product.
+ *
+ * ROUND 20 MOVED ALL THREE, and the paragraph above no longer holds: the
+ * credential population moves too, and every one of its four counts FALLS. Two
+ * fixes reach these sweeps. R20-H2-01 ends a region at the next colon mark
+ * under ANY solidus count instead of at the three literal characters `://`, so
+ * a one-solidus embedded url now bounds the region in front of it. R20-H3-01,
+ * R20-H3-02 and R20-H3-03 teach the head and the seam the caller's own
+ * spelling, which is what takes a `file:` credential out of the emitted url.
+ * The counts below are re-measured on this tree, and each test says which fix
+ * moved it and in which direction.
  */
 describe("the judge over the populations the module is measured against", () => {
   test("the structured population, under both rules", { timeout: 120_000 }, () => {
-    // MOVED BY R19-H2-02, and every row of the move is more correct. 558 fewer
-    // rows drop a host the input named, `created` is still zero, and the two
-    // rules still agree on every row of this population — which is the claim
-    // this test exists for, and it survives the move. 738 answers changed here;
-    // the sample is `https://api.test/proxy///cdn.test:8443/img/@alice`, which
-    // used to emit `https://api.test/proxy///alice` and is a fixed point now.
+    // MOVED BY R19-H2-02, and every row of that move was more correct. 558
+    // fewer rows dropped a host the input named. 738 answers changed; the
+    // sample is `https://api.test/proxy///cdn.test:8443/img/@alice`, which used
+    // to emit `https://api.test/proxy///alice` and is a fixed point now.
+    //
+    // MOVED AGAIN BY R20-H2-01, and this move is +144 on all three condemned
+    // counts. 1,392 answers changed and exactly 144 rows changed verdict, all
+    // of them acquitted to `dropped`, all of them the ONE-SOLIDUS spelling of
+    // the opener. The sample is
+    // `https://api.test//https:/svc:hunter2@cdn.test/img/@alice`. A region used
+    // to END at the three literal characters `://`, which the one-solidus
+    // spelling never writes, so the outer bare-`//` region ran to the end of
+    // the text and stopped at the credential's own `@`; it now ends at the
+    // embedded mark, the inner region runs to `@alice`, and the answer is
+    // `https://api.test//https:/alice`.
+    //
+    // THAT ANSWER IS THE ONE THE OTHER SEVEN SPELLINGS OF THE SAME OPENER
+    // ALREADY GAVE. `https://`, `http://`, `//`, `ftp://`, `https:`, `HTTPS://`
+    // and `wss://` each emit `<mark>alice` for this row and always did; the
+    // one-solidus spelling was the single opener that answered differently, and
+    // one reference answering two ways is the defect R19-H2-02 closed for the
+    // bare pair. So the +144 is a spelling joining its own family, and it is
+    // over-redaction, which is this module's safe direction.
+    //
+    // `created` IS STILL ZERO, which is the claim this test exists for: not one
+    // row of a population every parser reads names a host its input did not.
+    // The two rules also still agree on every row.
     expect(sweep(structuredUrls(), true)).toEqual({
       size: 57_344,
-      round16: 36_480,
-      calibrated: 36_480,
-      dropped: 36_480,
+      round16: 36_624,
+      calibrated: 36_624,
+      dropped: 36_624,
       created: 0,
     });
   });
 
   test("the credential population, under both rules", { timeout: 120_000 }, () => {
+    // MOVED BY ROUND 20, and it is the first round to move this population at
+    // all. EVERY COUNT FALLS — 475 to 461, 154 to 148, 30 to 29, 124 to 119 —
+    // so there is no axis on which the round bought a verdict with another one.
+    //
+    // 343 answers changed. 53 rows changed verdict, and the two that carry the
+    // calibrated fall are `created` to acquitted, 6 rows, and `dropped` to
+    // acquitted, 1 row; one row moves the other way, acquitted to `created`.
+    // Almost every changed row is a `file:` url whose planted credential now
+    // leaves the emitted record: R20-H3-03 taught the seam to fall back to the
+    // path's last `@` where the first segment holds a colon no Windows drive
+    // letter wrote, so `file:b%5C:/%5Cbsvc:svc:ZQ7XKPWV@internal.test/v1` emits
+    // `file:///internal.test/v1` where it used to emit the credential whole.
+    //
+    // AND THAT IS THE HALF THE HOST JUDGE CANNOT SEE, so it is counted here as
+    // well: 11,312 rows of this population used to emit the planted password
+    // and 11,230 do now. 82 secrets stopped being disclosed and no row started.
+    // A future round that widens a region must not buy a host verdict with one
+    // of those 82 — see the `removed` count in R17-H3-01 below, which pins the
+    // same 82 from the other side.
     expect(sweep(credentialUrls(0xdeadbeef, 40_000), true)).toEqual({
       size: 40_000,
-      round16: 475,
-      calibrated: 154,
-      dropped: 30,
-      created: 124,
+      round16: 461,
+      calibrated: 148,
+      dropped: 29,
+      created: 119,
     });
   });
 
@@ -594,12 +642,36 @@ describe("the judge over the populations the module is measured against", () => 
     // because the input never spelled that text where a parser reads a host.
     // It is stated here rather than averaged away: a later round that widens
     // this rule must know the widening already costs one row on this corpus.
+    // That row is unmoved by round 20 and still emits
+    // `/127.0.0.1x//bob%2e%2e://bob`.
+    //
+    // MOVED BY R20-H2-01, and this is the one count in the file that does not
+    // fall on every axis. `dropped` falls by 7 and `created` rises by 6, for a
+    // net of one fewer condemned row. 2,264 answers changed and 89 rows changed
+    // verdict: 45 are no longer condemned at all (32 `created`, 13 `dropped`)
+    // and 44 are newly condemned (38 `created`, 6 `dropped`).
+    //
+    // WHAT THE 44 HAVE IN COMMON, read off them rather than assumed: on every
+    // one of them the invented host is the NAME OF A SCHEME the input itself
+    // spelled — `https` 15 times, `ftp` 11, `http` 6, `ws` 6, `wss` 5, `.ws`
+    // once, and nothing else. The shape is one narrowing: a region used to run
+    // to the end of the text and swallow the trailing scheme token, and it now
+    // ends at the mark that token opens, so the token survives — `|<TAB>file:
+    // .://<CR>ftp:@` emitted `/|file:.://` and now emits `/|file:.://ftp:`. The
+    // judge then slices at that token and reads a host out of it.
+    //
+    // SO THE SIX ARE THE SAME DECISION AS THE ONE ROW ABOVE: text the input
+    // spelled, kept where the previous answer deleted it, condemned because the
+    // input never spelled that text where a parser reads a host. Keeping it is
+    // the decision that keeps `cdn.test:8443`. The seven rows on the other side
+    // stop dropping a host the input DID name, which is the harm this judge
+    // exists to find, so the net move is toward the safer half.
     expect(sweep(randomUrls(0xc0ffee, 400_000), false)).toEqual({
       size: 400_000,
       round16: 0,
-      calibrated: 669,
-      dropped: 132,
-      created: 537,
+      calibrated: 668,
+      dropped: 125,
+      created: 543,
     });
   });
 });
@@ -970,11 +1042,20 @@ describe("R17-H3-01 — what the separating predicate costs, measured", () => {
     // wrote the region's mark — and round 19 gives that mark the parser's
     // reading, so `userinfoSpans` no longer offers a single one of them.
     //
-    // `removed` and `lostSecret` are the two counts that must NOT move, and
-    // neither did: 57,360 planted credentials still go, and no span the
-    // predicate touched ever held one. `removed` is the non-vacuity guard for
-    // the zero — a population that stopped redacting would report zero here
-    // too, and it would report zero there as well.
+    // `touched` AND `lostSecret` ARE THE TWO GUARDED ZEROS, and neither moved.
+    // No span the predicate touches has ever held a planted secret, and after
+    // round 19 the predicate touches nothing at all.
+    //
+    // `removed` IS THE NON-VACUITY GUARD, and it may only RISE. A population
+    // that stopped redacting would report zero here and zero there alike, so
+    // the two zeros above mean nothing without it. It rose in round 20, from
+    // 57,360 to 57,442: 82 more planted credentials leave the emitted url.
+    // Every one of the 82 is a credential-population row, all of them under
+    // R20-H3-03's seam fallback — the structured half is unchanged at 28,672 of
+    // 28,672, and the credential half goes from 28,688 to 28,770 of 40,000. A
+    // change that let one of those 82 back through turns this red at 57,441,
+    // and so does a change that stops removing any credential this file plants.
+    // The number is asserted exactly rather than as a floor for that reason.
     let removed = 0;
     let touched = 0;
     let lostSecret = 0;
@@ -993,7 +1074,7 @@ describe("R17-H3-01 — what the separating predicate costs, measured", () => {
     }
     expect({ size: population.length, removed, touched, lostSecret }).toEqual({
       size: 97_344,
-      removed: 57_360,
+      removed: 57_442,
       touched: 0,
       lostSecret: 0,
     });

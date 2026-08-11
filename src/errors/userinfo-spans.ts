@@ -157,6 +157,25 @@ function isStripped(character: string | undefined): boolean {
 }
 
 /**
+ * Where the text the PARSER reads begins: past the leading run of characters
+ * {@link isStripped} names.
+ *
+ * ONE WALK FOR THE TWO QUESTIONS THIS MODULE ASKS OF A RAW INPUT, and they have
+ * to agree for the reason {@link ownAuthorityStart} is written once.
+ * {@link bringsOwnAuthority} skips this run before it reads a scheme, and
+ * {@link foldsReverseSolidus} asks the same text about the same scheme for the
+ * other end of the parse. One leading space in front of
+ * `https://alice:\hunter2@api.test/p` hides that scheme from a reader that does
+ * not skip it, while the parser strips the space and reads `https` exactly
+ * where it was — and a reader that calls that url non-special keeps a password.
+ */
+function pastStripped(text: string): number {
+  let at = 0;
+  while (isStripped(text[at])) at += 1;
+  return at;
+}
+
+/**
  * The six schemes whose path is structure rather than a value, by NAME — which
  * is the spelling a path holds them in, and the spelling the URL grammar reads
  * them in.
@@ -278,10 +297,36 @@ export function leadsWithHierarchicalScheme(text: string, from = 0): boolean {
 function isSpecialScheme(text: string, colon: number): boolean {
   for (const scheme of SPECIAL_SCHEMES) {
     const start = colon - scheme.length;
-    if (start < 0 || text.slice(start, colon).toLowerCase() !== scheme) continue;
+    if (start < 0 || !spellsToken(text, start, scheme)) continue;
     return !isSchemeCharacter(text[start - 1]);
   }
   return false;
+}
+
+/**
+ * Does `text` spell `token` from `start`, ASCII case-insensitively?
+ *
+ * READ IN PLACE, and that is a cost fix rather than a taste. Every colon in a
+ * text is asked {@link isSpecialScheme}, and the question used to cut five
+ * substrings out and lower-case each of them — seventeen characters copied per
+ * colon, whatever the first one said. Round 20 gave the colon a second reader:
+ * {@link nextSchemeAuthority} seeks the bound of a region over the same colons
+ * {@link nextAuthority} opens on, and doubling seventeen characters per colon
+ * put `//@h.test:1` repeated over the linear bound `round20-h2-response.spec.ts`
+ * states. Compared in place the walk stops at the first character that differs,
+ * which for a path segment is the first one.
+ *
+ * `| 0x20` IS THE ASCII LOWER-CASING AND NOTHING WIDER. Every name in
+ * {@link HIERARCHICAL_SCHEMES} is ASCII lower-case letters, and the only code
+ * points that map onto one of those under `| 0x20` are that letter and its
+ * upper case — which is exactly the URL Standard's ASCII case-insensitive
+ * match for a scheme.
+ */
+function spellsToken(text: string, start: number, token: string): boolean {
+  for (let at = 0; at < token.length; at += 1) {
+    if ((text.charCodeAt(start + at) | 0x20) !== token.charCodeAt(at)) return false;
+  }
+  return true;
 }
 
 /**
@@ -341,8 +386,7 @@ function isSpecialScheme(text: string, colon: number): boolean {
  * @internal
  */
 export function bringsOwnAuthority(text: string): boolean {
-  let at = 0;
-  while (isStripped(text[at])) at += 1;
+  let at = pastStripped(text);
   if (isSolidus(text[at])) {
     at += 1;
     while (isIgnored(text[at])) at += 1;
@@ -353,21 +397,64 @@ export function bringsOwnAuthority(text: string): boolean {
 
 /**
  * Where the authority reading from `from` ENDS: the first `/`, `\`, `?` or `#`,
- * or the end of the text.
+ * or `limit`, which defaults to the end of the text.
  *
  * The bound the URL parser itself uses, and the one place this module states it.
- * Three questions rest on it, and each walked the four characters for itself
+ * Four questions rest on it, and each walked the four characters for itself
  * until this existed: where a consumed mark's userinfo can still sit
  * ({@link seamUserinfoEnd}), what text a parse is offered
- * ({@link parsesAsAuthority}), and where a url's own authority stops
- * ({@link afterOwnAuthority}).
+ * ({@link parsesAsAuthority}), where a url's own authority stops
+ * ({@link afterOwnAuthority}), and how far the userinfo of that authority can
+ * reach ({@link ownUserinfo}).
+ *
+ * `limit` IS A COST BOUND AND NEVER A DIFFERENT ANSWER, and one caller needs it.
+ * {@link userinfoSpans} asks whether this authority ends at or before the next
+ * mark, which is a question about the text BETWEEN the two — so it stops the
+ * walk one character past the mark instead of running to the end of a text the
+ * mark already answered for. The unbounded walk is the same walk with the same
+ * answer wherever the answer is below `limit`.
+ *
+ * `folds` IS THE ONE CHARACTER THE SCHEME DECIDES, and it defaults to the
+ * module's own convention: every text read here that is not a raw url is read
+ * as the authority a special-scheme parse would produce, which is the rule
+ * {@link parsesAsAuthority} states. {@link afterOwnAuthority} is the one caller
+ * that reads a url with a scheme of its own, and {@link endsAuthority} holds
+ * what the difference cost.
  */
-function authorityEnd(text: string, from: number): number {
+function authorityEnd(text: string, from: number, folds = true, limit = text.length): number {
   let at = from;
-  while (at < text.length && !isSolidus(text[at]) && text[at] !== "?" && text[at] !== "#") {
+  while (at < limit && !endsAuthority(text[at], folds)) {
     at += 1;
   }
   return at;
+}
+
+/**
+ * Does this character END an authority — `/`, `?`, `#`, and, where the scheme
+ * FOLDS it, `\`?
+ *
+ * THE REVERSE SOLIDUS IS THE ONE A SCHEME DECIDES, and R20-ORCH-01 is what
+ * reading it as a solidus everywhere cost. The URL Standard's authority state
+ * terminates on U+005C only where the url is special: under `https:` the parser
+ * ends the authority at a `\` exactly as at a `/`, and under `git:` — or any
+ * scheme the special table does not name — the `\` stays an ordinary code
+ * point, the `@` branch still fires, and
+ * `new URL("git://svc:hun\\ter2@api.test/v1")` reports the username `svc` and
+ * the password `hun%5Cter2`. That is the url's OWN userinfo, so the walk
+ * bounding {@link ownUserinfo} has to reach the `@` behind the `\`. It stopped
+ * in front of it, the caller's own spelling of the password was never a needle,
+ * and the only needle left was the percent-encoded one no message quotes.
+ *
+ * See the authority state and the special scheme table:
+ * https://url.spec.whatwg.org/#authority-state and
+ * https://url.spec.whatwg.org/#special-scheme
+ *
+ * The other three characters end an authority under EVERY scheme, special or
+ * not, so only this one takes an answer from the caller.
+ */
+function endsAuthority(character: string | undefined, folds: boolean): boolean {
+  if (character === "\\") return folds;
+  return character === "/" || character === "?" || character === "#";
 }
 
 /**
@@ -423,12 +510,98 @@ export function pathEnd(text: string): number {
  * @internal
  */
 export function afterOwnAuthority(url: string): number {
-  // TOTAL, with no guard for a missing colon: this only ever reads a url that
-  // PARSED, and a url that parsed has a scheme. `indexOf` answering -1 would
-  // start the scan at index 0, which is the same answer as an empty scheme.
+  return authorityEnd(url, ownAuthorityStart(url), foldsReverseSolidus(url));
+}
+
+/**
+ * Does the parser read a `\` inside THIS url's own authority as a solidus?
+ *
+ * ASKED OF THE SIX, and the two scheme lists have to disagree here exactly as
+ * they disagree everywhere else. {@link SPECIAL_SCHEMES} answers about a colon
+ * found INSIDE a text and leaves `file:` out, because a `file:` colon under
+ * fewer than two solidi opens no authority. This question is about the FOLD,
+ * and `file:` is one of the URL Standard's special schemes: the file and file
+ * host states read `\` exactly as `/`, so `file://api.test\svc:pw@h/x` carries
+ * the path `/svc:pw@h/x` and the `\` the caller wrote is where the authority
+ * stopped. Reading the five here would answer `false` for it,
+ * `spilledAuthority` in `./redact-url` would stop seeing that spill, and the
+ * credential would stay in the emitted url. {@link HIERARCHICAL_SCHEMES} is the
+ * six, and {@link leadsWithHierarchicalScheme} is the whole question.
+ *
+ * ASKED OF A RAW INPUT, so both of the parser's own removals are skipped: the
+ * leading run with {@link pastStripped}, and the tab, CR and LF inside the
+ * scheme token with the walk {@link leadsWithHierarchicalScheme} already makes.
+ * A reader that misses either one calls ` https:` or `htt<TAB>ps:` non-special,
+ * and a non-special answer under a special scheme keeps a password.
+ */
+function foldsReverseSolidus(url: string): boolean {
+  return leadsWithHierarchicalScheme(url, pastStripped(url));
+}
+
+/**
+ * Where this url's OWN authority begins: past the scheme's colon and past every
+ * solidus and every character the parser removes behind it.
+ *
+ * TOTAL, with no guard for a missing colon: this only ever reads a url that
+ * PARSED, and a url that parsed has a scheme. `indexOf` answering -1 would
+ * start the walk at index 0, which is the same answer as an empty scheme.
+ *
+ * Written once because {@link afterOwnAuthority} and {@link ownUserinfo} are
+ * the two ends of ONE region, and the two walks to its start had to agree.
+ */
+function ownAuthorityStart(url: string): number {
   let at = url.indexOf(":") + 1;
   while (isSolidus(url[at]) || isIgnored(url[at])) at += 1;
-  return authorityEnd(url, at);
+  return at;
+}
+
+/**
+ * The userinfo THIS url's own authority spells, in the CALLER's spelling, or
+ * `null` where it spells none.
+ *
+ * A NARROW QUESTION, ASKED WHERE THE PARSER HAS ALREADY COMMITTED. Every other
+ * span in this module is found by a REGION rule, which has to decide for itself
+ * whether some colon or some pair of solidi inside a text opens an authority at
+ * all. Here nothing is in doubt: the text starts with this url's scheme, the
+ * parse succeeded, and {@link ownAuthorityStart} is where the parser began
+ * reading the authority. So the answer is the URL Standard's own split — the
+ * LAST `@` before the authority ends — and no region rule is consulted.
+ *
+ * WHICH IS THE WHOLE REASON IT EXISTS. `userinfosOf` in `./redact-url` used to
+ * ask {@link userinfoSpans} of this same text, and a region opens at a scheme
+ * colon under fewer than two solidi only where {@link isSpecialScheme} accepts
+ * the token. That question answers `false` for `file:` — correctly, because
+ * `file:` has no authority state at all — and it does not skip the tab, CR and
+ * LF the parser removes before it reads anything. Both answers are right for a
+ * colon found INSIDE a path and wrong for the url's own scheme colon, so
+ * `file:/svc:pw@api.test/v1` and `htt<TAB>ps:/svc:pw@api.test/v1` opened no
+ * region, the caller's own spelling of the password was never a needle, and it
+ * rode out through every channel. R20-H3-01 and R20-H3-02. The head question
+ * and the embedded-authority question are different questions, and this is the
+ * head one.
+ *
+ * THE PORT IS SAFE FOR THE REASON THE PARSER MAKES IT SAFE: an authority's
+ * userinfo ends at its LAST `@`, so `https://api.test:8443/v1` holds no `@`
+ * before {@link authorityEnd} and answers `null`, and
+ * `https://svc:pw@api.test:8443/v1` stops in front of the host.
+ *
+ * AN `@` AT THE START NAMES NOTHING, which is {@link seamUserinfoEnd}'s rule
+ * read at the other end of the url: there is no text in front of it to be a
+ * userinfo. The other empty spelling — `:@` — is a span of two delimiters, and
+ * the caller refuses it: see `hiddenUserinfos` in `./redact-url`.
+ *
+ * @internal
+ */
+export function ownUserinfo(url: string): Span | null {
+  const start = ownAuthorityStart(url);
+  // Bounded by {@link afterOwnAuthority}, so the backward walk costs the
+  // authority and never the url — the floor round 18 put under the same search
+  // in {@link readsAsHostAndPort}. IT IS THE SAME BOUND THAT FUNCTION ANSWERS,
+  // asked here rather than spelled again: the two are the ends of ONE region,
+  // for the reason {@link ownAuthorityStart} is written once, and a `\` that
+  // ends the authority for one of them has to end it for the other.
+  const at = url.lastIndexOf("@", afterOwnAuthority(url) - 1);
+  return at <= start ? null : { start, end: at + 1 };
 }
 
 /**
@@ -603,7 +776,57 @@ function seamUserinfoEnd(path: string, from: number): number {
   // An `@` AT `from` has no text in front of it, so it names no userinfo and
   // there is nothing to remove: `file:///@api.test/v1` keeps its mark.
   const at = path.lastIndexOf("@", term - 1);
-  return at <= from ? -1 : at;
+  if (at > from) return at;
+  // THE LAST `@` IN THE PATH, and it is asked at most once per seam: the answer
+  // moves the loop's cursor past every `@` there is, so the call after it finds
+  // none in front of `from` and the seam closes. Over-redaction is the safe
+  // direction, and where the authority's own end is a solidus the caller never
+  // wrote there is no narrower end to read.
+  const folded = spellsCredentialHead(path, from, term) ? path.lastIndexOf("@") : -1;
+  return folded > from ? folded : -1;
+}
+
+/**
+ * Does the first segment at `from` spell the HEAD of a credential — a colon
+ * that no Windows drive letter wrote — so that the solidus ending it can be one
+ * the parser FOLDED out of the caller's `\`?
+ *
+ * A FALLBACK AND NEVER A WIDENING, and the difference is the whole of round
+ * 20's R20-H3-03. {@link seamUserinfoEnd} reads to {@link authorityEnd}, and
+ * that bound is right whenever the authority holds an `@` — `/svc:pw@api.test`
+ * ends its userinfo where the parser ends it, and `/svc:pw@api.test/users/@alice`
+ * must keep the handle at the segment head that round 17 fought for. This is
+ * asked ONLY where that reading found no `@` at all, which is the one state in
+ * which the bound can be a solidus the caller never wrote: `file:` is a special
+ * scheme, so `\` inside `file:///svc:hun\ter2@api.test/v1` is a `/` by the time
+ * `pathname` exists, the authority "ends" in the middle of the password, and
+ * the whole credential was emitted as path — into `toJSON().url`, the record.
+ *
+ * THE DRIVE LETTER IS THE URL STANDARD'S OWN CARVE-OUT, not a heuristic about
+ * this text. A Windows drive letter is an ASCII alpha and a `:`, and the file
+ * path start state gives it a case of its own — so `file:///c:/Users/alice@corp/x`
+ * spells a colon that no credential wrote, and `seamSpan`'s own comment records
+ * that reading it as one takes the head off a Windows path. A segment that is
+ * not two characters long is not one, whatever else it spells: `svc:hun` is the
+ * head of `svc:hun/ter2@api.test`, and `Users` holds no colon at all, so
+ * `file:///Users/alice@corp/report.pdf` is never asked.
+ *
+ * `pathname` holds the NORMALIZED drive letter, so `:` is the only second
+ * character to test: the parser rewrites `c|` to `c:` before this text exists.
+ *
+ * WHAT IT COSTS is over-redaction, and it is the direction this module takes
+ * everywhere: a `file:` path whose FIRST segment holds a colon that is not a
+ * drive letter and whose later text holds an `@` loses everything up to that
+ * `@`. `file:///a:b/c/mail@example.com/x` is that shape.
+ */
+function spellsCredentialHead(path: string, from: number, term: number): boolean {
+  if (term === from + 2 && SCHEME_HEAD.test(path[from]!) && path[from + 1] === ":") return false;
+  // SOUGHT FORWARD, inside the segment and no further. A backward `lastIndexOf`
+  // reads to index 0 whenever the segment holds no colon, and this is asked once
+  // per answer of a loop — the shape round 18 measured and `userinfoSpans` puts
+  // a floor under everywhere else.
+  for (let at = from; at < term; at += 1) if (path[at] === ":") return true;
+  return false;
 }
 
 /**
@@ -841,8 +1064,8 @@ function grammarWroteTheMark(text: string, region: number): boolean {
  *    rather than a position because the cursor cannot re-derive it.
  *  - THE AUTHORITY'S COLON IS NOT A PASSWORD'S. `svc:PW@i.test` parses, and
  *    its colon delimits a credential — so an `@` inside the authority refuses
- *    this. It refuses only a colon that DELIMITS something: one with text in
- *    front of it, in front of the authority's last `@`. `:@` has none and
+ *    this. It refuses only a colon that DELIMITS something: one with text on
+ *    BOTH sides of it, in front of the authority's last `@`. `:@` has none and
  *    `u@cdn.test:8443` keeps its colon on the far side of the `@` entirely, and
  *    reading every `@` as a refusal is what let one erased character choose the
  *    answer — `https://:@cdn.test/users/@alice` IS `https://cdn.test/users/@alice`
@@ -850,6 +1073,20 @@ function grammarWroteTheMark(text: string, region: number): boolean {
  *    TEXT rather than of the parse's report, for the reason {@link seamSpan}
  *    states: an empty userinfo normalises away, and a report of two empty
  *    strings does not tell an absent userinfo from a consumed one.
+ *
+ *    A USERINFO HAS TWO EMPTY SPELLINGS AND BOTH ARE ERASED, which is why the
+ *    colon must delimit a NON-EMPTY password. Round 18 asked only about `:@`.
+ *    The other spelling is an empty PASSWORD: the URL serializer appends the
+ *    colon only under a non-empty-password guard, so `u:@` and `u@` produce one
+ *    URL record and one href on every runtime, and
+ *    `https://api.test/go/https://u:@cdn.test:8443/users/@alice` IS
+ *    `https://api.test/go/https://u@cdn.test:8443/users/@alice`. Reading that
+ *    colon as a delimiter refused the suppression, the colon rule fired, and
+ *    the span ran to the handle at a segment head: `cdn.test:8443` — the
+ *    authority the url named — went, and `alice`, a user's handle, was what the
+ *    forward named. R20-H2-02, and `https://APIKEY:@host/` is how a client
+ *    writes an API key into basic auth with no password. So the colon is a
+ *    delimiter at `colon < at - 1` and not at `colon < at`.
  *  - THE AUTHORITY READS, from AFTER the userinfo the parser would consume. A
  *    port the parser refuses (`://a:99999/x/@bob`) is not a port, and the
  *    region is back to the ambiguity residual 1 records.
@@ -893,7 +1130,7 @@ function readsAsHostAndPort(text: string, marked: boolean, start: number): boole
   const authority = text.slice(start, authorityEnd(text, start));
   const at = authority.lastIndexOf("@");
   const colon = authority.indexOf(":");
-  if (at >= 0 && colon > 0 && colon < at) return false;
+  if (at >= 0 && colon > 0 && colon < at - 1) return false;
   if (DOT_SEGMENTS.has(authority.slice(at + 1).toLowerCase())) return false;
   return parsesAsAuthority(text, at < 0 ? start : start + at + 1);
 }
@@ -970,17 +1207,6 @@ function endsInsideAuthority(path: string): boolean {
 }
 
 /**
- * The authority mark spelled IN FULL.
- *
- * It bounds a region, and it does so only where {@link parsesAsAuthority} has
- * already said the region's own authority ENDS — a complete authority is
- * followed by a url of its own, and this is where that url starts. It is not
- * the end of a region by itself, and round 12 is why: a password can spell it.
- * What OPENS a region is wider still — see {@link nextAuthority}.
- */
-const AUTHORITY_MARK = "://";
-
-/**
  * Where the next authority in `text` begins, at or after `from`. `null` once no
  * mark is left.
  *
@@ -1021,6 +1247,40 @@ function nextAuthority(text: string, from: number): number | null {
     }
     if (!isSolidus(text[at]) || !isSolidus(text[at + 1])) continue;
     return pastSolidi(text, at);
+  }
+  return null;
+}
+
+/**
+ * Where the next authority a SCHEME's COLON opens begins, at or after `from`.
+ * `null` once no such mark is left.
+ *
+ * THE HALF OF {@link nextAuthority} THAT NAMES A NEW URL, and the two are kept
+ * apart because they answer for different ends of a region. What OPENS a region
+ * is the wider question: a bare pair of solidi is protocol-relative, so it opens
+ * one. What ENDS a region is the narrower one, and round 20 measured the
+ * difference. `/svc:hunter2@http:/@bob//tok@internal.testsvc:hunter2@..` spells
+ * a bare pair inside a region that has to run past it — the region is the one
+ * {@link pastFiller} names, where the trailing `..` pops the segment holding the
+ * password — and ending it at the pair left `svc:hunter2@` in the emitted path.
+ * Over-redaction is this module's safe direction, and a narrower END is the
+ * other one.
+ *
+ * WHAT IT IS WIDE ENOUGH FOR is the whole of round 20's H2-01: `://` is one
+ * SPELLING of a colon mark, and {@link authorityAt} opens the same mark over one
+ * solidus, over none, and over a backslash. Reading the three literal characters
+ * instead meant a path spelling `https:/@` per unit held no bound anywhere, every
+ * region ran to the end of the text, and `cleaned` in `./redact-url` drained one
+ * `@` per whole-string pass.
+ *
+ * A FORWARD WALK, over the colons alone: `from` only moves forward across the
+ * calls {@link userinfoSpans} makes, and each call stops at the first colon that
+ * opens something, so the whole seek stays linear in the text.
+ */
+function nextSchemeAuthority(text: string, from: number): number | null {
+  for (let at = text.indexOf(":", from); at >= 0; at = text.indexOf(":", at + 1)) {
+    const start = authorityAt(text, at);
+    if (start !== null) return start;
   }
   return null;
 }
@@ -1373,10 +1633,26 @@ export function userinfoSpans(text: string, seam: Span | null = null): Span[] {
       from = seam.end;
     }
   }
-  // The next `://`, read forward and never re-read. It bounds a region only
-  // where the parser has already said the region's authority ENDS — see
-  // {@link parsesAsAuthority}.
-  let stop = text.indexOf(AUTHORITY_MARK);
+  // WHERE THE NEXT AUTHORITY BEGINS, read forward and never re-read. It bounds
+  // a region only where the parser has already said the region's own authority
+  // ENDS — see {@link parsesAsAuthority}.
+  //
+  // ASKED WITH THE MODULE'S OWN QUESTION FOR IT — {@link nextSchemeAuthority},
+  // which holds why the bound is the colon half alone — and round 20's H2
+  // finding is what reading three literal characters cost instead. `://` is one
+  // spelling of a mark {@link authorityAt} opens over any solidus count, so a
+  // path spelling `https:/@` per unit held no `://` anywhere: every region ran
+  // to the end of the text, every region's only candidate was the LAST `@` of
+  // the whole text, and each pass of `cleaned` in `./redact-url` removed one
+  // `@`. An 8 KB `response.url` a redirecting server chose cost 621 ms in one
+  // error construction and 614 ms again per `toJSON()`, while the SAME embedded
+  // url spelled with two solidi and a thousand characters LONGER cost 3 ms and
+  // 2 ms. One question for the opening and another for the bound is what let
+  // the two spellings of one url disagree about the cost of reading it.
+  //
+  // `0` IS A SEED AND NEVER A BOUND: a bound is at or before no region's own
+  // start, so the first region always re-seeks.
+  let stop = 0;
   for (;;) {
     const start = nextAuthority(text, from);
     if (start === null) break;
@@ -1390,11 +1666,25 @@ export function userinfoSpans(text: string, seam: Span | null = null): Span[] {
     // question this opening settles.
     const scheme = schemeWroteTheMark(text, start);
     const marked = grammarWroteTheMark(text, start);
-    if (stop >= 0 && stop < start) stop = text.indexOf(AUTHORITY_MARK, start);
+    if (stop >= 0 && stop <= start) stop = nextSchemeAuthority(text, start + 1) ?? -1;
     // ASKED ONLY WHERE THE ANSWER CAN MATTER. With no `@` past `stop` the
-    // bounded and the unbounded region hold the same candidates, so the parse
-    // is skipped — which is what keeps a path of nothing but marks linear.
-    const bounded = stop >= 0 && (lastAtOfText <= stop || parsesAsAuthority(text, start));
+    // bounded and the unbounded region hold the same candidates, so neither
+    // question below is asked — which is what keeps a path of nothing but marks
+    // linear.
+    //
+    // AND A MARK INSIDE THE REGION'S OWN AUTHORITY IS NOT WHERE A URL STARTS.
+    // The bound's whole warrant is that a COMPLETE authority is followed by a
+    // url of its own; a mark the authority itself spells is part of that
+    // authority instead, and cutting there hides the credential the authority
+    // carries. `://https:8443@host/v1` is the shape: `https:` inside it opens a
+    // region of its own, and bounding the outer region there left the username
+    // `https` standing. So the mark bounds only where this authority has
+    // already ended, asked as a walk over the text BETWEEN the two rather than
+    // over everything past the mark.
+    const bounded =
+      stop >= 0 &&
+      (lastAtOfText <= stop ||
+        (authorityEnd(text, start, true, stop + 1) <= stop && parsesAsAuthority(text, start)));
     let end = bounded ? stop : text.length;
     let lastAt = lastBelow(ats, end);
     let lastLoneAt = lastBelow(loneAts, end);
