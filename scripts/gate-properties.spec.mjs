@@ -160,16 +160,106 @@ function contributingGates() {
  * unanchored read let `      # - run: pnpm coverage` yield `pnpm coverage`, and
  * five gates below rest on this reader and on `ciCommands`.
  */
-const RUN_STEP = /^\s*- run: (.+)$/gm;
+const RUN_STEP = /^\s*- run: (.+)$/;
 
-/** The `- run:` commands of one job, in order. */
+/**
+ * The sibling keys that stop a step from being a gate. `if:` decides whether the
+ * step runs at all, and `continue-on-error:` decides whether its failure fails
+ * the job; a step carrying either one is not a step the roster may count.
+ */
+const DISABLING_KEYS = new Set(["if", "continue-on-error"]);
+
+/**
+ * The steps of `region`, each as the line it OPENS on plus the keys written
+ * under it at the step's own key indentation.
+ *
+ * A step is a YAML BLOCK, not a line. R21-H4-01: an anchored line read answers
+ * what a step WOULD run and never whether it runs, so one appended `if: false`
+ * under `- run: pnpm verify-pack` skipped the gate that refuses a code-less
+ * tarball with the release roster green — the smaller edit that `#` used to be.
+ */
+function stepBlocks(region) {
+  const blocks = [];
+  let open = null;
+  for (const line of region.split("\n")) {
+    const item = /^( *)- /.exec(line);
+    if (item !== null && (open === null || item[1].length <= open.indent)) {
+      open = { indent: item[1].length, opener: line, keys: [] };
+      blocks.push(open);
+      continue;
+    }
+    if (open === null || line.trim() === "") continue;
+    // Anything indented past the dash belongs to the step; anything else — the
+    // next key of the job, or a comment between steps — closes it.
+    if (!line.startsWith(" ".repeat(open.indent + 2))) {
+      open = null;
+      continue;
+    }
+    const key = /^([\w-]+):/.exec(line.slice(open.indent + 2));
+    if (key !== null) open.keys.push(key[1]);
+  }
+  return blocks;
+}
+
+/**
+ * The commands of the `- run:` steps `region` runs unconditionally and whose
+ * failure fails the job, in order. The command is still read from the anchored
+ * opening line; the block around it is what says the step runs at all.
+ */
+function runCommands(region) {
+  return stepBlocks(region).flatMap((step) => {
+    const command = RUN_STEP.exec(step.opener);
+    if (command === null || step.keys.some((key) => DISABLING_KEYS.has(key))) return [];
+    return [command[1].trim()];
+  });
+}
+
+/**
+ * The jobs of `workflow`, in order, each as its name, its body, and the
+ * disabling keys written at the JOB's own key indentation.
+ *
+ * ASKED OF EVERY JOB, WHICH IS R21-ORCH-01. `if:` on a job skips every step in
+ * it and `continue-on-error:` on a job discards every failure those steps
+ * report, so a roster read out of such a job is a roster of steps that need not
+ * run. Round 21 taught {@link runCommands} to ask that of a STEP, and taught
+ * `jobRunSteps` to ask it of the jobs it is handed a NAME for — but the
+ * coverage-exclusion premise and the runtime roster read the workflow whole,
+ * with no job-level question anywhere in them. One `if: false` on the job that
+ * runs the Bun smoke therefore left every gate here green with the smoke never
+ * executing, which is R19-H4-04's own state restored one level out. The
+ * question is asked ONCE, of every job, rather than by whichever reader happens
+ * to name one.
+ */
+function workflowJobs(workflow) {
+  const region = workflow.slice(workflow.indexOf("\njobs:\n") + 1);
+  const opens = [...region.matchAll(/^ {2}([A-Za-z][\w-]*):$/gm)];
+  return opens.map((open, index) => {
+    const body = region.slice(open.index, opens[index + 1]?.index);
+    return {
+      name: open[1],
+      body,
+      disabling: [...body.matchAll(/^ {4}([\w-]+):/gm)]
+        .map((m) => m[1])
+        .filter((key) => DISABLING_KEYS.has(key)),
+    };
+  });
+}
+
+/** The jobs of `workflow` that RUN — the only ones a roster may read out of. */
+function runningJobs(workflow) {
+  return workflowJobs(workflow).filter((job) => job.disabling.length === 0);
+}
+
+/** The `- run:` commands of one job, in order, refusing a job that need not run. */
 function jobRunSteps(workflow, jobName) {
-  const start = workflow.indexOf(`\n  ${jobName}:\n`);
-  expect(start, `${jobName} must exist in the workflow`).not.toBe(-1);
-  const rest = workflow.slice(start + 1);
-  const end = rest.search(/\n {2}[A-Za-z][\w-]*:\n/);
-  const job = end === -1 ? rest : rest.slice(0, end);
-  return [...job.matchAll(RUN_STEP)].map((m) => m[1].trim());
+  const job = workflowJobs(workflow).find((candidate) => candidate.name === jobName);
+  expect(job, `${jobName} must exist in the workflow`).toBeDefined();
+  expect(
+    job.disabling,
+    `the ${jobName} job carries a condition of its own, so every gate this roster reads out of ` +
+      "it may be skipped or may fail without failing the job",
+  ).toEqual([]);
+  return runCommands(job.body);
 }
 
 /**
@@ -289,22 +379,37 @@ function coverageExclusions() {
   return [...list[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
 }
 
-/** Every command CI runs, each `pnpm <script>` also expanded to the body it runs. */
+/**
+ * Every command CI runs, each `pnpm <script>` also expanded to the body it runs.
+ *
+ * READ OUT OF THE JOBS THAT RUN, never out of the file. A command in a job
+ * `if: false` skips is a command CI does not run, and this is the list the
+ * coverage-exclusion premise below rests on.
+ */
 function ciCommands() {
   const { scripts } = JSON.parse(readRepoFile("package.json"));
-  return [...readRepoFile(".github/workflows/ci.yml").matchAll(RUN_STEP)].flatMap((m) => {
-    const command = m[1].trim();
-    const invoked = /^pnpm (?:run )?([\w:-]+)$/.exec(command);
-    const body = invoked ? scripts[invoked[1]] : undefined;
-    return body === undefined ? [command] : [command, body];
-  });
+  return runningJobs(readRepoFile(".github/workflows/ci.yml"))
+    .flatMap((job) => runCommands(job.body))
+    .flatMap((command) => {
+      const invoked = /^pnpm (?:run )?([\w:-]+)$/.exec(command);
+      const body = invoked ? scripts[invoked[1]] : undefined;
+      return body === undefined ? [command] : [command, body];
+    });
 }
 
-/** The runtime each `…-smoke` job in `ci.yml` exercises, by the job's prefix. */
+/**
+ * The runtime each `…-smoke` job in `ci.yml` exercises, by the job's prefix.
+ *
+ * A DECLARED JOB IS NOT A JOB THAT RUNS, which is the other half of
+ * R21-ORCH-01. Both contributor rosters are read against this list, so a job
+ * disabled at the job level had every document still telling a reader that CI
+ * smokes a runtime nothing executes.
+ */
 function ciSmokeRuntimes() {
-  const ci = readRepoFile(".github/workflows/ci.yml");
-  const jobs = ci.slice(ci.indexOf("\njobs:\n"));
-  return [...jobs.matchAll(/\n {2}([\w-]+)-smoke:\n/g)].map((m) => m[1]);
+  return runningJobs(readRepoFile(".github/workflows/ci.yml")).flatMap((job) => {
+    const smoke = /^([\w-]+)-smoke$/.exec(job.name);
+    return smoke === null ? [] : [smoke[1]];
+  });
 }
 
 /**
@@ -350,6 +455,10 @@ function runtimeRoster(file) {
  * line merely CONTAINS the path is satisfied by `node scripts/smoke/bun.mjs`
  * and by `echo "skipping scripts/smoke/bun.mjs"`, and both leave the file
  * excluded from the threshold and executed by no Bun.
+ *
+ * R21-H4-02: an invocation is not an execution either, unless the step carrying
+ * it runs. `ciCommands` reads a step as a block for that reason, so a step
+ * disabled with `if: false` contributes no command here.
  */
 const EXCLUSION_RUNTIME = {
   "scripts/smoke/bun.mjs": "bun",
@@ -433,18 +542,53 @@ describe("the runtime jobs the coverage exclusion list rests on", () => {
 // makes a NEW range a reviewable diff instead of a silent widening.
 // ---------------------------------------------------------------------------
 
-/** A `v8 ignore` directive that OPENS a range, never the one that closes it. */
-const IGNORE_DIRECTIVE = /v8 ignore(?!\s+(?:stop|end)\b)/;
+/**
+ * How the instrumenter spells an ignore hint, in the instrumenter's OWN words.
+ *
+ * R21-H4-03: vitest's v8 provider remaps through `ast-v8-to-istanbul`, whose
+ * hint patterns are
+ *
+ *   /^\s*(?:istanbul|[cv]8|node:coverage)\s+ignore\s+(if|else|next|file)(?=\W|$)/
+ *   /\s*(?:istanbul|[cv]8|node:coverage)\s+ignore\s+(start|stop)(?=\W|$)/
+ *
+ * so `c8 ignore`, `istanbul ignore` and `node:coverage ignore` take their lines
+ * out of the SAME denominator the release gate enforces. Reading the four
+ * characters `v8 i` read one spelling of four, and the other three bought a
+ * false 100 on all axes with this whole section blind to them.
+ */
+const IGNORE_HINT = String.raw`(?:istanbul|[cv]8|node:coverage)\s+ignore`;
 
-/** The directive that CLOSES a range — the end of what leaves the denominator. */
-const IGNORE_STOP = /v8 ignore\s+(?:stop|end)\b/;
+/** An ignore hint in any spelling, opening or closing. */
+const IGNORE_ANY = new RegExp(IGNORE_HINT);
+
+/** An ignore directive that OPENS a range, never the one that closes it. */
+const IGNORE_DIRECTIVE = new RegExp(String.raw`${IGNORE_HINT}(?!\s+stop\b)`);
+
+/**
+ * The directive that CLOSES a range — the end of what leaves the denominator.
+ *
+ * `stop`, and nothing else. R21-H4-04: the instrumenter accepts `start|stop`,
+ * so a range closed with `end` is an UNCLOSED range whose lines run to the end
+ * of the file. Accepting `end` here computed the one-line span its author wrote
+ * for a range that had swallowed everything below it, and the pin written to
+ * refuse `a silent widening` reported no widening at all. An `end` line now
+ * reads as what the instrumenter reads it as: not a close, and — carrying a
+ * hint that is not `stop` — the opening of a further unclosed range.
+ */
+const IGNORE_STOP = new RegExp(String.raw`${IGNORE_HINT}\s+stop\b`);
 
 /** The shortest justification this check accepts, in characters of prose. */
 const JUSTIFICATION_FLOOR = 40;
 
 /**
  * The `v8 ignore` sites under measurement, each as
- * `file → the first line it guards (how many lines the range spans)`.
+ * `file → the first line it guards (how many lines the range spans, in which
+ * spelling)`.
+ *
+ * R21-H4-03: the SPELLING is pinned beside the span, because `c8 ignore`,
+ * `istanbul ignore` and `node:coverage ignore` remove the same lines from the
+ * same denominator. Rewriting a range into one of them is then a reviewable
+ * diff here rather than an edit no gate reads.
  *
  * R20-H4-03: the span is pinned because a range can be widened without moving
  * anything else. `IGNORE_DIRECTIVE` skips the `stop` marker by design, so
@@ -455,12 +599,12 @@ const JUSTIFICATION_FLOOR = 40;
  * widening it cannot see is exactly the silent one.
  */
 const IGNORE_SITES = [
-  'fixtures/channels.ts → "1 JSON.stringify in a log envelope": (2-line range)',
-  'fixtures/http-server.ts → res.setHeader("X-Echo-Method", req.method ?? ""); (1-line range)',
-  "src/errors/base-http-error.ts → const revokeLoan = identity ? lendIdentity(teed.branch, identity) : undefined; (1-line range)",
-  "src/errors/response-identity.ts → const code = character.codePointAt(0) ?? 0; (1-line range)",
-  "src/response-verdict.ts → if (!validatedResponseStructures.has(response)) return false; (1-line range)",
-  "src/response-verdict.ts → if (refusedTheValue) rollbackRefusal(); (1-line range)",
+  'fixtures/channels.ts → "1 JSON.stringify in a log envelope": (2-line `v8 ignore` range)',
+  'fixtures/http-server.ts → res.setHeader("X-Echo-Method", req.method ?? ""); (1-line `v8 ignore` range)',
+  "src/errors/base-http-error.ts → const revokeLoan = identity ? lendIdentity(teed.branch, identity) : undefined; (1-line `v8 ignore` range)",
+  "src/errors/response-identity.ts → const code = character.codePointAt(0) ?? 0; (1-line `v8 ignore` range)",
+  "src/response-verdict.ts → if (!validatedResponseStructures.has(response)) return false; (1-line `v8 ignore` range)",
+  "src/response-verdict.ts → if (refusedTheValue) rollbackRefusal(); (1-line `v8 ignore` range)",
 ];
 
 /**
@@ -483,9 +627,9 @@ function measuredSources(rel, found = []) {
 }
 
 /**
- * Every `v8 ignore` range in `source`: the line it opens on, the first line it
- * guards, how many lines it spans, and the comment block written directly
- * above it.
+ * Every ignore range in `source`: the line it opens on, the first line it
+ * guards, how many lines it spans, the spelling of the hint that opens it, and
+ * the comment block written directly above it.
  */
 function ignoreRanges(source) {
   const lines = source.split("\n");
@@ -497,7 +641,7 @@ function ignoreRanges(source) {
     while (
       above >= 0 &&
       /^\s*(?:\/\/|\/?\*)/.test(lines[above]) &&
-      !lines[above].includes("v8 ignore")
+      !IGNORE_ANY.test(lines[above])
     ) {
       justification = `${lines[above].replace(/^\s*(?:\/\/+|\/?\*+\/?)\s*/, "")} ${justification}`;
       above -= 1;
@@ -506,6 +650,7 @@ function ignoreRanges(source) {
       line: index + 1,
       guards: (lines[index + 1] ?? "").trim(),
       span: ignoreSpan(lines, index),
+      spelling: IGNORE_ANY.exec(line)[0].replaceAll(/\s+/g, " "),
       justification: justification.trim(),
     });
   }
@@ -518,7 +663,7 @@ function ignoreRanges(source) {
  * `next` directive states, or `"unclosed"` when no `stop` follows it.
  */
 function ignoreSpan(lines, index) {
-  const next = /v8 ignore\s+next\s*(\d*)/.exec(lines[index]);
+  const next = new RegExp(String.raw`${IGNORE_HINT}\s+next\s*(\d*)`).exec(lines[index]);
   if (next) return next[1] === "" ? 1 : Number(next[1]);
   const closesAt = lines.findIndex((line, at) => at > index && IGNORE_STOP.test(line));
   return closesAt === -1 ? "unclosed" : closesAt - index - 1;
@@ -534,12 +679,14 @@ describe("every `v8 ignore` range acceptance item 4 covers", () => {
   test("the measured trees hold exactly the sites this round read", () => {
     expect(
       sites()
-        .map((site) => `${site.file} → ${site.guards} (${site.span}-line range)`)
+        .map(
+          (site) => `${site.file} → ${site.guards} (${site.span}-line \`${site.spelling}\` range)`,
+        )
         .toSorted(),
-      "a `v8 ignore` range was added, moved, removed, or WIDENED. Every range removes its lines " +
-        "from the denominator of the 100 percent threshold, so the list is pinned by site AND " +
-        "by how many lines the range spans, and an edit to either belongs in the diff a " +
-        "reviewer reads",
+      "an ignore range was added, moved, removed, WIDENED, or RESPELLED. Every range removes its " +
+        "lines from the denominator of the 100 percent threshold, so the list is pinned by site, " +
+        "by how many lines the range spans, and by which of the four spellings the instrumenter " +
+        "accepts opens it, and an edit to any of them belongs in the diff a reviewer reads",
     ).toEqual(IGNORE_SITES.toSorted());
   });
 
@@ -547,7 +694,7 @@ describe("every `v8 ignore` range acceptance item 4 covers", () => {
     for (const site of sites()) {
       expect(
         site.justification.length,
-        `${site.file}:${site.line} opens a \`v8 ignore\` range with no reason above it. ` +
+        `${site.file}:${site.line} opens a \`${site.spelling}\` range with no reason above it. ` +
           "Acceptance item 4 requires a written justification naming the exact condition that " +
           "makes the line unreachable. This check proves the sentence is THERE, never that it " +
           "is true — round 5 found one that was false",
@@ -570,9 +717,41 @@ describe("every `v8 ignore` range acceptance item 4 covers", () => {
     ].join("\n");
 
     expect(ignoreRanges(bare)).toEqual([
-      { line: 3, guards: 'if (flag) return "yes-" + label;', span: 1, justification: "" },
+      {
+        line: 3,
+        guards: 'if (flag) return "yes-" + label;',
+        span: 1,
+        spelling: "v8 ignore",
+        justification: "",
+      },
     ]);
     expect(ignoreRanges(bare)[0].justification.length).toBeLessThan(JUSTIFICATION_FLOOR);
+
+    // R21-H4-03. The same range in a spelling the instrumenter accepts and the
+    // reader did not: `c8 ignore` takes the same line out of the same
+    // denominator, and reading `v8 i` read one spelling of four.
+    expect(ignoreRanges(bare.replaceAll("v8 ignore", "c8 ignore"))).toEqual([
+      {
+        line: 3,
+        guards: 'if (flag) return "yes-" + label;',
+        span: 1,
+        spelling: "c8 ignore",
+        justification: "",
+      },
+    ]);
+
+    // R21-H4-04. `stop` is the only keyword that closes a range. Spelled `end`,
+    // the range never closes and runs to the end of the file, and the `end`
+    // line — a hint that is not `stop` — opens a second unclosed range.
+    expect(
+      ignoreRanges(bare.replace("v8 ignore stop", "v8 ignore end")).map((range) => ({
+        line: range.line,
+        span: range.span,
+      })),
+    ).toEqual([
+      { line: 3, span: "unclosed" },
+      { line: 5, span: "unclosed" },
+    ]);
 
     // R20-H4-03. The same range with its `stop` one line lower is a DIFFERENT
     // range: two lines leave the denominator instead of one. The directive, the

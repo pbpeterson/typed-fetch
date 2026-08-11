@@ -340,14 +340,22 @@ describe.skipIf(!distExists || ESBUILD === null)(
       const rawBlock = unreleasedBlock();
       const block = unwrapped(rawBlock);
 
-      const declaration = /<!--\s*redaction-directions:\s*([^>]*?)\s*-->/.exec(rawBlock);
+      // R21-H4-05. `matchAll`, and EXACTLY ONE declaration. The first reading
+      // used `exec`, which answers the first match and stops, so a block
+      // carrying two declarations claimed two things and was read for one — the
+      // second could name a direction no input took with this test green. A
+      // second declaration is not a second claim to union in: the block answers
+      // for itself once, and two answers are the failure.
+      const declarations = [...rawBlock.matchAll(/<!--\s*redaction-directions:\s*([^>]*?)\s*-->/g)];
       expect(
-        declaration,
-        "the `[Unreleased]` block must declare which directions it claims, as " +
+        declarations.length,
+        "the `[Unreleased]` block must declare which directions it claims EXACTLY ONCE, as " +
           "`<!-- redaction-directions: … -->`, so this test reads a closed vocabulary " +
-          "rather than guessing at prose",
-      ).not.toBe(null);
-      const declared = (declaration?.[1] ?? "")
+          "rather than guessing at prose. No declaration leaves the block unread; a second " +
+          "one states a claim the first answers for, and RELEASING.md step 1 copies every " +
+          "declaration in the block verbatim into the published section",
+      ).toBe(1);
+      const declared = (declarations[0]?.[1] ?? "")
         .split(",")
         .map((word) => word.trim())
         .filter(Boolean);
