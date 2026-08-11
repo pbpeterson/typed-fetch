@@ -48,11 +48,17 @@ const NOT_MIRRORED = new Set(["coverage", "node_modules/.cache"]);
 
 /** A vitest child, run over `root`, answering its result. */
 function runVitest(root, argv) {
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([key]) => !key.startsWith("VITEST") && key !== "NODE_V8_COVERAGE",
+  // And `NO_COLOR`, for the reason round 19's harness states: vitest turns its
+  // colors off only where `std-env` reports an AI agent, so every read of this
+  // child's output as text passed under an agent and failed in a terminal.
+  const env = {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([key]) => !key.startsWith("VITEST") && key !== "NODE_V8_COVERAGE",
+      ),
     ),
-  );
+    NO_COLOR: "1",
+  };
   return spawnSync(
     process.execPath,
     [
@@ -298,6 +304,10 @@ function reportsFullCoverage(source) {
       "--coverage.enabled",
       "--coverage.provider=v8",
       "--coverage.reporter=text",
+      // Named, never inherited: vitest adds `text-summary` on its own only
+      // where `std-env` reports an AI agent, and the `Statements` read below
+      // quotes the summary line that reporter prints.
+      "--coverage.reporter=text-summary",
     ]);
     return {
       exit: run.status,

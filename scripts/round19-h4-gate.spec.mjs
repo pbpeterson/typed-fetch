@@ -75,11 +75,20 @@ function runVitest(root, argv) {
   // `NODE_V8_COVERAGE` goes too: under `pnpm coverage` the parent worker
   // carries one, and a child that inherits it writes its scratch project's
   // v8 output into the repository's own report directory.
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([key]) => !key.startsWith("VITEST") && key !== "NODE_V8_COVERAGE",
+  // `NO_COLOR`, because this harness reads the child's summary lines as text.
+  // Vitest turns its own colors OFF when `std-env` reports an AI agent — it
+  // reads `AI_AGENT` and `CLAUDECODE` — and leaves them ON everywhere else. So
+  // every read below passed under the agent that wrote it and failed on a
+  // developer's terminal, on escape codes nobody put in the assertion. The
+  // child writes to a pipe and is read as text: it never needs color.
+  const env = {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([key]) => !key.startsWith("VITEST") && key !== "NODE_V8_COVERAGE",
+      ),
     ),
-  );
+    NO_COLOR: "1",
+  };
   return spawnSync(
     process.execPath,
     [
@@ -95,6 +104,22 @@ function runVitest(root, argv) {
     { cwd: root, encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] },
   );
 }
+
+/**
+ * The coverage run this harness reads: the table, and the summary lines the
+ * four threshold reads below quote word for word.
+ *
+ * `text-summary` is named here because vitest ADDS it on its own when
+ * `std-env` reports an AI agent, and only then. The summary the reads below
+ * quote existed under the agent that wrote them and in no other environment.
+ * Naming both reporters makes the child print the same report everywhere.
+ */
+const COVERAGE_ARGV = [
+  "--coverage.enabled",
+  "--coverage.provider=v8",
+  "--coverage.reporter=text",
+  "--coverage.reporter=text-summary",
+];
 
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. R19-H4-03 — acceptance item 4 is enforced by nothing, and an unjustified
@@ -148,11 +173,7 @@ describe("R19-H4-03 — the `v8 ignore` justifications acceptance item 4 require
       ].join("\n"),
     );
     try {
-      const child = runVitest(project, [
-        "--coverage.enabled",
-        "--coverage.provider=v8",
-        "--coverage.reporter=text",
-      ]);
+      const child = runVitest(project, COVERAGE_ARGV);
       expect(child.stdout).toContain("Statements   : 75%");
       expect(child.stdout).toContain("Branches     : 50%");
       expect(child.stdout + child.stderr).toContain("does not meet global threshold");
@@ -178,11 +199,7 @@ describe("R19-H4-03 — the `v8 ignore` justifications acceptance item 4 require
       ].join("\n"),
     );
     try {
-      const child = runVitest(project, [
-        "--coverage.enabled",
-        "--coverage.provider=v8",
-        "--coverage.reporter=text",
-      ]);
+      const child = runVitest(project, COVERAGE_ARGV);
       expect(child.stdout + child.stderr).not.toContain("does not meet global threshold");
       expect(child.stdout).toContain("Statements   : 100%");
       expect(child.stdout).toContain("Branches     : 100%");

@@ -49,11 +49,17 @@ function runVitest(root, argv) {
   // The same clean environment round 19's harness states its reasons for: this
   // runs INSIDE a vitest worker, and the child must not inherit the parent
   // run's pool bookkeeping or its `NODE_V8_COVERAGE` directory.
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([key]) => !key.startsWith("VITEST") && key !== "NODE_V8_COVERAGE",
+  // And `NO_COLOR`, for the reason round 19's harness states: vitest turns its
+  // colors off only where `std-env` reports an AI agent, so every read of this
+  // child's output as text passed under an agent and failed in a terminal.
+  const env = {
+    ...Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([key]) => !key.startsWith("VITEST") && key !== "NODE_V8_COVERAGE",
+      ),
     ),
-  );
+    NO_COLOR: "1",
+  };
   return spawnSync(
     process.execPath,
     [
@@ -332,6 +338,10 @@ describe("R20-H4-04 — a `v8 ignore` range in a measured file the walker skips"
         "--coverage.enabled",
         "--coverage.provider=v8",
         "--coverage.reporter=text",
+        // Named, never inherited: vitest adds `text-summary` on its own only
+        // where `std-env` reports an AI agent, and the reads below quote the
+        // summary lines that reporter prints.
+        "--coverage.reporter=text-summary",
       ]);
       expect(uncovered.stdout + uncovered.stderr).toContain("does not meet global threshold");
 
@@ -339,6 +349,10 @@ describe("R20-H4-04 — a `v8 ignore` range in a measured file the walker skips"
         "--coverage.enabled",
         "--coverage.provider=v8",
         "--coverage.reporter=text",
+        // Named, never inherited: vitest adds `text-summary` on its own only
+        // where `std-env` reports an AI agent, and the reads below quote the
+        // summary lines that reporter prints.
+        "--coverage.reporter=text-summary",
       ]);
       expect(hidden.stdout + hidden.stderr).not.toContain("does not meet global threshold");
       expect(hidden.stdout).toContain("Statements   : 100%");

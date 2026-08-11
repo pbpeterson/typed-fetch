@@ -555,10 +555,17 @@ describe("the coverage exclusion pin, driven against a grown exclusion list", ()
       );
 
       // A clean environment: this runs inside a vitest worker, and the child
-      // must not inherit the parent run's pool bookkeeping.
-      const env = Object.fromEntries(
-        Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST")),
-      );
+      // must not inherit the parent run's pool bookkeeping. `NO_COLOR` too,
+      // because the read below is a read of the child's summary line as TEXT:
+      // vitest turns its colors off only where `std-env` reports an AI agent,
+      // and leaves them on in a developer's terminal, where the escape codes
+      // then sit between the words this regex spells.
+      const env = {
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST")),
+        ),
+        NO_COLOR: "1",
+      };
       const child = spawnSync(
         process.execPath,
         [

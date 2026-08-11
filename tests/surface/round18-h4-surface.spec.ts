@@ -748,10 +748,16 @@ describe("the coverage threshold pin, driven against a lowered threshold", () =>
       writeFileSync(join(root, "vitest.config.ts"), config.replace(anchor, mutated));
 
       // A clean environment: this runs inside a vitest worker, and the child
-      // must not inherit the parent run's pool bookkeeping.
-      const env = Object.fromEntries(
-        Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST")),
-      );
+      // must not inherit the parent run's pool bookkeeping. `NO_COLOR` too,
+      // for the reason round 17's copy of this harness states: the read below
+      // is a read of the child's summary line as TEXT, and vitest colors that
+      // line everywhere except under an AI agent.
+      const env = {
+        ...Object.fromEntries(
+          Object.entries(process.env).filter(([key]) => !key.startsWith("VITEST")),
+        ),
+        NO_COLOR: "1",
+      };
       const child = spawnSync(
         process.execPath,
         [
