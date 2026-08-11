@@ -62,6 +62,9 @@ name. Run that command locally too when Deno 2 is installed. Deno 1 cannot
 resolve an unpublished local tarball through the required manual `node_modules`
 mode.
 
+A workflow step commented out is a step deleted; `scripts/gate-properties.spec.mjs`
+reads the run lines line-anchored, so a `#` in front of one fails the roster.
+
 Its Node-floor job executes the built artifact on a real Node 20.13.0, the
 exact `engines.node` floor. On any newer Node, `pnpm smoke:node-min` warns
 instead of failing — unless `CI` is set — so running it on your default Node

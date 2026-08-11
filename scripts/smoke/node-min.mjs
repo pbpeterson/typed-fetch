@@ -20,7 +20,13 @@
 
 import http from "node:http";
 import process from "node:process";
-import { typedFetch, isHttpError, isKnownHttpError, isNetworkError } from "../../dist/index.mjs";
+import {
+  isAbortError,
+  isHttpError,
+  isKnownHttpError,
+  isNetworkError,
+  typedFetch,
+} from "../../dist/index.mjs";
 import { isMainModule } from "../lib/is-main-module.mjs";
 
 const MINIMUM = [20, 13, 0];
@@ -139,6 +145,33 @@ export async function main(io = defaultIo) {
     controller.abort(new Error("smoke abort"));
     const aborted = await typedFetch(`${base}/ok`, { signal: controller.signal });
     assert(aborted.error.name === "AbortedError", `got ${aborted.error.name}`);
+
+    // 4b. An abort that lands while the PROLOGUE is still running is not an
+    //     abort of the call — no request ever left the process, so the signal
+    //     never governed anything. ADR 0003's 2026-08-08 amendment scopes the
+    //     abort window to the transport phase of each runtime's own ambient
+    //     fetch, which is why this cannot be measured once and inherited: the
+    //     window is a property of THIS runtime's fetch, so each of the three
+    //     smokes has to ask its own runtime. The reader below aborts and then
+    //     throws, so the governing signal reports `aborted` while the rejection
+    //     has nothing to do with it — the exact input that must stay a
+    //     NetworkError instead of being upgraded to an abort.
+    const racer = new AbortController();
+    const prologue = await typedFetch(`${base}/ok`, {
+      signal: racer.signal,
+      get method() {
+        racer.abort();
+        throw new Error("x");
+      },
+    });
+    assert(
+      isNetworkError(prologue.error),
+      `expected a NetworkError from a prologue abort, got ${prologue.error.name}`,
+    );
+    assert(
+      isAbortError(prologue.error) === false,
+      `a prologue abort must not classify as an abort, got ${prologue.error.name}`,
+    );
 
     // 5. A transport failure is a value, not a rejection.
     const refused = await typedFetch("http://127.0.0.1:1/nope");

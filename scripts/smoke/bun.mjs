@@ -5,7 +5,7 @@
 // Run with: bun run scripts/smoke/bun.mjs
 // Requires: pnpm build (dist/index.mjs must exist)
 
-import { NotFoundError, typedFetch } from "../../dist/index.mjs";
+import { isAbortError, isNetworkError, NotFoundError, typedFetch } from "../../dist/index.mjs";
 
 const server = Bun.serve({
   port: 0,
@@ -59,7 +59,47 @@ try {
   await consumed.text();
   await consumedError.cancel();
 
-  console.log(`bun smoke: OK (NotFoundError, status 404; cancel on locked + consumed bodies)`);
+  // Cancellation classifies under Bun's own ambient fetch. A signal that was
+  // already aborted when `typedFetch` was entered comes back as an
+  // `AbortedError`; `scripts/smoke/node-min.mjs` step 4 asks Node the same
+  // question, and neither answer stands in for the other.
+  const controller = new AbortController();
+  controller.abort(new Error("smoke abort"));
+  const aborted = await typedFetch(url, { signal: controller.signal });
+  if (aborted.error === null || aborted.error.name !== "AbortedError") {
+    throw new Error(
+      `expected an AbortedError for an already-aborted signal, got ${JSON.stringify(aborted.error && aborted.error.name)}`,
+    );
+  }
+
+  // And an abort that lands while the PROLOGUE is still running is NOT an
+  // abort of the call: no request left the process, so the signal governed
+  // nothing. ADR 0003's 2026-08-08 amendment scopes the abort window to the
+  // transport phase of each runtime's own ambient fetch, so this has to be
+  // asked of Bun here rather than inherited from the Node measurement. The
+  // reader aborts and then throws, so the signal reports `aborted` while the
+  // rejection has nothing to do with it.
+  const racer = new AbortController();
+  const prologue = await typedFetch(url, {
+    signal: racer.signal,
+    get method() {
+      racer.abort();
+      throw new Error("x");
+    },
+  });
+  if (!isNetworkError(prologue.error)) {
+    throw new Error(
+      `expected a NetworkError from a prologue abort, got ${JSON.stringify(prologue.error && prologue.error.name)}`,
+    );
+  }
+  if (isAbortError(prologue.error)) {
+    throw new Error("a prologue abort must not classify as an abort under Bun");
+  }
+
+  console.log(
+    `bun smoke: OK (NotFoundError, status 404; cancel on locked + consumed bodies; ` +
+      `AbortedError before the call, NetworkError from a prologue abort)`,
+  );
 } finally {
   server.stop(true);
 }

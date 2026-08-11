@@ -11,7 +11,13 @@
 // type-consumability is covered separately by `pnpm check-deno-consumer`, which
 // installs the tarball and imports it through its package name and exports map.
 
-import { isKnownHttpError, NotFoundError, typedFetch } from "../../dist/index.mjs";
+import {
+  isAbortError,
+  isKnownHttpError,
+  isNetworkError,
+  NotFoundError,
+  typedFetch,
+} from "../../dist/index.mjs";
 
 const server = Deno.serve(
   { port: 0, onListen: () => {} },
@@ -75,7 +81,47 @@ try {
     throw new Error(`expected the lock to be named in the message, got ${cancelFailure.message}`);
   }
 
-  console.log("deno smoke: OK (NotFoundError, status 404; locked-body cancel rejects)");
+  // Cancellation classifies under Deno's own ambient fetch. A signal that was
+  // already aborted when `typedFetch` was entered comes back as an
+  // `AbortedError`; `scripts/smoke/node-min.mjs` step 4 asks Node the same
+  // question, and neither answer stands in for the other.
+  const controller = new AbortController();
+  controller.abort(new Error("smoke abort"));
+  const aborted = await typedFetch(url, { signal: controller.signal });
+  if (aborted.error === null || aborted.error.name !== "AbortedError") {
+    throw new Error(
+      `expected an AbortedError for an already-aborted signal, got ${JSON.stringify(aborted.error)}`,
+    );
+  }
+
+  // And an abort that lands while the PROLOGUE is still running is NOT an
+  // abort of the call: no request left the process, so the signal governed
+  // nothing. ADR 0003's 2026-08-08 amendment scopes the abort window to the
+  // transport phase of each runtime's own ambient fetch, so this has to be
+  // asked of Deno here rather than inherited from the Node measurement. The
+  // reader aborts and then throws, so the signal reports `aborted` while the
+  // rejection has nothing to do with it.
+  const racer = new AbortController();
+  const prologue = await typedFetch(url, {
+    signal: racer.signal,
+    get method(): string {
+      racer.abort();
+      throw new Error("x");
+    },
+  });
+  if (!isNetworkError(prologue.error)) {
+    throw new Error(
+      `expected a NetworkError from a prologue abort, got ${JSON.stringify(prologue.error)}`,
+    );
+  }
+  if (isAbortError(prologue.error)) {
+    throw new Error("a prologue abort must not classify as an abort under Deno");
+  }
+
+  console.log(
+    "deno smoke: OK (NotFoundError, status 404; locked-body cancel rejects; " +
+      "AbortedError before the call, NetworkError from a prologue abort)",
+  );
 } finally {
   await server.shutdown();
 }
