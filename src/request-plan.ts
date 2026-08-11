@@ -170,26 +170,43 @@ function snapshotRequestInit(
   removeFetchOverride: boolean,
 ): RequestInit {
   // The entry the descriptor below materializes exists for ONE reader:
-  // `{ ...init }`, which a forwarding transport writes. A spread copies own
-  // ENUMERABLE keys, not own keys, so own-ness is not the question. Asking it
-  // let two ordinary shapes through — `Object.create(defaults, { signal: {
-  // value } })` and a bare `Object.defineProperty(options, "signal", { value
-  // })`, both of which default `enumerable` to false while owning the key. The
-  // init reported the caller's signal, the spread carried none, and
+  // `{ ...init }`, which a forwarding transport writes. A spread asks the
+  // object it copies TWO questions, in this order: `[[OwnPropertyKeys]]` once,
+  // then `[[GetOwnProperty]]` for every key it got back. It asks them of that
+  // object, at the moment it runs.
+  //
+  // So NO predicate over the caller's object decides this, and three of them
+  // are the reason. Own-ness answered neither question, and let
+  // `Object.defineProperty(options, "signal", { value })` through.
+  // Descriptor enumerability answered the second question only, and answered it
+  // here, early, about an object the caller still owns and can still change: a
+  // Proxy may legally report an enumerable descriptor for a key its `ownKeys`
+  // omits, and an ordinary sibling accessor may make the key non-enumerable
+  // while the spread is already running. Every one of them ended in the same
+  // place — the init reported the caller's signal, the spread carried none, and
   // `classifyRequestFailure` went on treating that signal as the authority:
   // `controller.abort()` cancelled nothing, the server wrote the whole
   // response, and the envelope reported a SUCCESS for a request the caller had
-  // aborted. So the caller's object can be the target only while a spread of it
-  // already carries every entry the init owes one.
-  const materializeSignal =
-    signal !== undefined && Object.getOwnPropertyDescriptor(options, "signal")?.enumerable !== true;
-
-  if (!removeFetchOverride && !materializeSignal) {
+  // aborted.
+  //
+  // The question is put to the object this module CONSTRUCTS instead. Whenever
+  // a signal has to be carried, the branch below builds a fresh target the
+  // caller cannot reach, and gives it an own ENUMERABLE `signal` entry: that
+  // answers both of the spread's questions by construction, and no later read
+  // can invalidate it. The caller's object stays the target only when there is
+  // nothing to carry at all. This costs the descriptor clone on every
+  // signal-carrying call, which is what the condition here used to avoid, and
+  // it removes a caller-controlled read instead of adding a fourth one — the
+  // rule ADR 0003 row H-26 states for the request input, applied to the
+  // options object: a caller-controlled fact read twice can answer differently
+  // each time.
+  if (!removeFetchOverride && signal === undefined) {
     // Nothing has to be hidden and nothing has to be added, so the original
     // object can remain the proxy target. This preserves reflection and avoids
-    // inspecting every descriptor on a potentially exotic RequestInit. A
-    // `signal` the caller wrote as its own ENUMERABLE key is already spread by
-    // this target, and the trap answers each read with the captured value.
+    // inspecting every descriptor on a potentially exotic RequestInit. The trap
+    // still answers `signal`, because a slot that answered `undefined` on the
+    // caller's own first read can answer something else on a second one, and
+    // the init reports the FIRST answer.
     return new Proxy(options, {
       get(target, property) {
         if (property === "signal") return signal;
@@ -212,29 +229,29 @@ function snapshotRequestInit(
   // descriptor is what makes that legal, because a proxy may not report a value
   // other than the one a non-configurable own property of its target holds.
   //
-  // Only when there is a signal to carry. Writing it unconditionally invented
-  // an own key: `Object.keys(init)` and `Reflect.ownKeys(init)` listed `signal`
-  // while `"signal" in init` — answered from the original object by the `has`
-  // trap — said `false`, and `{ ...init }` grew a `signal: undefined` member
-  // the caller never wrote. An implementation is entitled to reflect over its
-  // init, and the suite already treats that as legitimate.
+  // Only when the caller owns the slot or there is a signal to carry. Writing
+  // it unconditionally invented an own key: `Object.keys(init)` and
+  // `Reflect.ownKeys(init)` listed `signal` while `"signal" in init` — answered
+  // from the original object by the `has` trap — said `false`, and
+  // `{ ...init }` grew a `signal: undefined` member the caller never wrote. An
+  // implementation is entitled to reflect over its init, and the suite already
+  // treats that as legitimate.
   //
-  // A signal a spread cannot see still needs the entry, and testing only for an
-  // own descriptor dropped it. A proxy invariant does not require it — the
-  // sanitized target keeps the original prototype — but `{ ...init }` does, and
-  // that spread is what a forwarding transport writes. `materializeSignal`
-  // above is what brings every such shape here: an inherited slot, and an own
-  // slot the caller declared non-enumerable.
-  //
-  // ENUMERABLE, never the caller's own enumerability copied forward. Carrying
-  // `enumerable: false` here re-declared the entry exactly as invisible to a
-  // spread as the caller's own slot was, which left this branch materializing
-  // an entry the branch exists to make spreadable.
+  // ENUMERABLE for two separate reasons, and neither one covers the other. A
+  // signal must reach `{ ...init }`, the spread a forwarding transport writes,
+  // so an entry that carries one is enumerable however the caller declared the
+  // slot: this is the entry the branch above sends here, and carrying
+  // `enumerable: false` re-declared it exactly as invisible to a spread as the
+  // caller's own slot was. With NO signal to carry, the entry only stands in
+  // for the caller's own slot and copies its enumerability. Declaring that one
+  // enumerable too grew the invented member again, on an own non-enumerable
+  // slot reading `undefined`, and only where an own `fetch` option selects this
+  // branch — so the two branches disagreed about one options object.
   if (descriptors.signal || signal !== undefined) {
     descriptors.signal = {
       value: signal,
       writable: true,
-      enumerable: true,
+      enumerable: descriptors.signal?.enumerable === true || signal !== undefined,
       configurable: true,
     };
   }
