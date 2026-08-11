@@ -57,6 +57,29 @@ function isCalendarDate(value) {
 }
 
 /**
+ * What the section opened by `heading` says, up to the next `## ` heading or to
+ * the end of the file, with the footer's link reference definitions removed.
+ *
+ * The footer is not section prose. It sits under the last `## ` heading of the
+ * file whenever the released section is the last one, so a section that says
+ * nothing still reads as text unless the definitions come out first.
+ *
+ * @param {string} changelog
+ * @param {RegExpExecArray} heading
+ */
+function sectionProse(changelog, heading) {
+  const start = heading.index + heading[0].length;
+  const offset = changelog.slice(start).search(/^## /m);
+  const end = offset === -1 ? changelog.length : start + offset;
+  return changelog
+    .slice(start, end)
+    .split("\n")
+    .filter((line) => !/^\[[^\]]+\]:/.test(line))
+    .join("\n")
+    .trim();
+}
+
+/**
  * Validate everything that must be true before the workflow may publish.
  * Keeping this pure makes the release policy executable and unit-testable.
  *
@@ -126,15 +149,26 @@ export function validateRelease(candidate) {
     throw new Error(`Version ${candidate.version} needs a valid calendar date in CHANGELOG.md.`);
   }
 
+  // The DESTINATION half of RELEASING.md step 1, which asked for a heading only.
+  //
+  // Step 1 tells a maintainer to MOVE the pending entries into the dated
+  // section and leave `[Unreleased]` empty. The rule below enforces the source
+  // half, so a release that DELETED the block instead of moving it satisfied
+  // every check here and published a section describing nothing. Semver rule 8
+  // obliges that section to state each direction the output moved, and the
+  // differential that reads directions reads `[Unreleased]` — which this
+  // function has just required to be empty.
+  if (sectionProse(candidate.changelog, releaseHeading) === "") {
+    throw new Error(
+      `The CHANGELOG [${candidate.version}] section is empty; move the pending entries into it.`,
+    );
+  }
+
   const unreleasedHeading = /^## \[Unreleased\]\s*$/m.exec(candidate.changelog);
   if (!unreleasedHeading) {
     throw new Error("CHANGELOG.md must retain an [Unreleased] heading.");
   }
-  const unreleasedStart = unreleasedHeading.index + unreleasedHeading[0].length;
-  const nextHeadingOffset = candidate.changelog.slice(unreleasedStart).search(/^## /m);
-  const unreleasedEnd =
-    nextHeadingOffset === -1 ? candidate.changelog.length : unreleasedStart + nextHeadingOffset;
-  if (candidate.changelog.slice(unreleasedStart, unreleasedEnd).trim() !== "") {
+  if (sectionProse(candidate.changelog, unreleasedHeading) !== "") {
     throw new Error("The CHANGELOG [Unreleased] section must be empty before publishing.");
   }
 

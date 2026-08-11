@@ -34,6 +34,9 @@ attestation.
   - the ref is strict SemVer and exactly `v<package.json version>`;
   - the tag points to `HEAD`, which is also the current `origin/main` tip;
   - `CHANGELOG.md` has a section with a calendar-valid date for the version;
+  - that dated section says something once the footer link definitions are set
+    aside, so a release that deleted the pending entries instead of moving them
+    into it is refused;
   - the `[Unreleased]` changelog section is empty;
   - the changelog footer defines a `[X.Y.Z]:` compare link that ends at
     `vX.Y.Z`;

@@ -10,6 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
 import { findVocabularyViolations } from "./check-doc-style.mjs";
+import { validateRelease } from "./validate-release.mjs";
 import { readPackManifest, verifyPackManifest } from "./verify-pack.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -177,6 +178,13 @@ const DISABLING_KEYS = new Set(["if", "continue-on-error"]);
  * what a step WOULD run and never whether it runs, so one appended `if: false`
  * under `- run: pnpm verify-pack` skipped the gate that refuses a code-less
  * tarball with the release roster green — the smaller edit that `#` used to be.
+ *
+ * R22-H4-02: a YAML COMMENT is not structure, so it does not close the block
+ * either. The reader closed a step at the first line short of the step's key
+ * indentation, and a `#` line is such a line, so one comment written between
+ * `- run: pnpm verify-pack` and the `if: false` under it hid that condition
+ * from every roster while GitHub Actions read the same one step mapping and
+ * skipped it. A comment is skipped exactly as a blank line already was.
  */
 function stepBlocks(region) {
   const blocks = [];
@@ -188,9 +196,9 @@ function stepBlocks(region) {
       blocks.push(open);
       continue;
     }
-    if (open === null || line.trim() === "") continue;
-    // Anything indented past the dash belongs to the step; anything else — the
-    // next key of the job, or a comment between steps — closes it.
+    if (open === null || line.trim() === "" || line.trim().startsWith("#")) continue;
+    // Anything indented past the dash belongs to the step; the next key of the
+    // job, written at a shallower indentation, closes it.
     if (!line.startsWith(" ".repeat(open.indent + 2))) {
       open = null;
       continue;
@@ -215,8 +223,36 @@ function runCommands(region) {
 }
 
 /**
- * The jobs of `workflow`, in order, each as its name, its body, and the
- * disabling keys written at the JOB's own key indentation.
+ * The jobs `body` declares it `needs:`, in each of the three spellings YAML
+ * accepts: `needs: one`, `needs: [one, two]`, and a block sequence written
+ * under the key. Read at the JOB's own key indentation, as `disabling` is.
+ */
+function jobNeeds(body) {
+  const names = (value) =>
+    value
+      .replace(/\s+#.*$/, "")
+      .replaceAll(/[[\]"']/g, "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter(Boolean);
+  const lines = body.split("\n");
+  const at = lines.findIndex((line) => /^ {4}needs:/.test(line));
+  if (at === -1) return [];
+  const inline = names(lines[at].slice(lines[at].indexOf(":") + 1));
+  if (inline.length > 0) return inline;
+  const sequence = [];
+  for (const line of lines.slice(at + 1)) {
+    if (line.trim() === "" || line.trim().startsWith("#")) continue;
+    const item = /^ {5,}- *(.+)$/.exec(line);
+    if (item === null) break;
+    sequence.push(...names(item[1]));
+  }
+  return sequence;
+}
+
+/**
+ * The jobs of `workflow`, in order, each as its name, its body, the jobs it
+ * `needs:`, and the disabling keys written at the JOB's own key indentation.
  *
  * ASKED OF EVERY JOB, WHICH IS R21-ORCH-01. `if:` on a job skips every step in
  * it and `continue-on-error:` on a job discards every failure those steps
@@ -238,6 +274,7 @@ function workflowJobs(workflow) {
     return {
       name: open[1],
       body,
+      needs: jobNeeds(body),
       disabling: [...body.matchAll(/^ {4}([\w-]+):/gm)]
         .map((m) => m[1])
         .filter((key) => DISABLING_KEYS.has(key)),
@@ -245,9 +282,37 @@ function workflowJobs(workflow) {
   });
 }
 
-/** The jobs of `workflow` that RUN — the only ones a roster may read out of. */
+/**
+ * The jobs of `workflow` that RUN — the only ones a roster may read out of.
+ *
+ * TRANSITIVELY, which is R22-H4-01. A job runs when it carries no disabling key
+ * AND every job it `needs:` runs, because GitHub Actions skips a job whose
+ * dependency was skipped. Round 21 taught this reader to ask a job for its OWN
+ * `if:` and `continue-on-error:`, and nothing asked about the chain: one
+ * `if: false` on an added job, plus one `needs:` line on the job that executes
+ * `scripts/smoke/bun.mjs`, skipped that smoke with the coverage-exclusion
+ * premise and both runtime rosters green. R19-H4-04's own state, two levels out
+ * and the family's fourteenth appearance.
+ *
+ * A `needs:` naming a job the workflow does not declare is not a dependency
+ * that runs, and neither is a cycle: GitHub refuses both workflows outright, so
+ * neither may hand a roster a command.
+ */
 function runningJobs(workflow) {
-  return workflowJobs(workflow).filter((job) => job.disabling.length === 0);
+  const jobs = workflowJobs(workflow);
+  const declared = new Map(jobs.map((job) => [job.name, job]));
+  const answers = new Map();
+  const runs = (job) => {
+    const answered = answers.get(job.name);
+    if (answered !== undefined) return answered;
+    answers.set(job.name, false);
+    const answer =
+      job.disabling.length === 0 &&
+      job.needs.every((name) => declared.has(name) && runs(declared.get(name)));
+    answers.set(job.name, answer);
+    return answer;
+  };
+  return jobs.filter((job) => runs(job));
 }
 
 /** The `- run:` commands of one job, in order, refusing a job that need not run. */
@@ -255,10 +320,11 @@ function jobRunSteps(workflow, jobName) {
   const job = workflowJobs(workflow).find((candidate) => candidate.name === jobName);
   expect(job, `${jobName} must exist in the workflow`).toBeDefined();
   expect(
-    job.disabling,
-    `the ${jobName} job carries a condition of its own, so every gate this roster reads out of ` +
-      "it may be skipped or may fail without failing the job",
-  ).toEqual([]);
+    runningJobs(workflow).map((candidate) => candidate.name),
+    `the ${jobName} job need not run — it carries a condition of its own, or it \`needs:\` a job ` +
+      "that need not run — so every gate this roster reads out of it may be skipped or may fail " +
+      "without failing the job",
+  ).toContain(jobName);
   return runCommands(job.body);
 }
 
@@ -777,5 +843,57 @@ describe("every `v8 ignore` range acceptance item 4 covers", () => {
     expect(ignoreRanges(justified)[0].justification).toBe(
       "UNREACHABLE: every call site in this module passes `false` for `flag`.",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. validate-release — the DESTINATION half of RELEASING.md step 1.
+//
+// R22-H4-03. Step 1 tells a maintainer to MOVE the pending entries into
+// `## [X.Y.Z] - YYYY-MM-DD` and leave `[Unreleased]` empty. The only gate
+// between a git tag and `npm publish` enforced the SOURCE half and asked the
+// destination for a dated heading alone, so a release that DELETED the block
+// instead of moving it published a section describing nothing — with semver
+// rule 8's direction obligation resting on a differential that reads
+// `[Unreleased]`, which the same gate has just required to be empty.
+//
+// Both rows below run the refusal in this process. The end-to-end proof is
+// `scripts/round22-h4-gate.spec.mjs`, which drives the gate as a subprocess
+// inside a scratch git repository, and no subprocess reaches the v8 instrument.
+// ---------------------------------------------------------------------------
+
+const COMPARE = "https://github.com/pbpeterson/typed-fetch/compare";
+
+/** A release of 1.0.0 whose dated section holds `body`, and nothing else wrong. */
+const releaseCandidate = (body) => ({
+  tag: "v1.0.0",
+  refType: "tag",
+  packageName: "@pbpeterson/typed-fetch",
+  version: "1.0.0",
+  repositoryUrl: "git+https://github.com/pbpeterson/typed-fetch.git",
+  publishAccess: "public",
+  provenance: true,
+  changelog:
+    `# Changelog\n\n## [Unreleased]\n\n## [1.0.0] - 2026-07-17\n${body}\n` +
+    `[Unreleased]: ${COMPARE}/v1.0.0...HEAD\n[1.0.0]: ${COMPARE}/v0.8.1...v1.0.0\n`,
+  headCommit: "a".repeat(40),
+  tagCommit: "a".repeat(40),
+  mainCommit: "a".repeat(40),
+});
+
+describe("validate-release reads the destination of RELEASING.md step 1", () => {
+  test("a dated section carrying nothing but the footer links is refused", () => {
+    // The footer sits UNDER that heading whenever the released section is the
+    // last one in the file, so a reader that stops at the next `## ` sees text
+    // where the release says nothing. The link definitions come out first.
+    expect(() => validateRelease(releaseCandidate("\n"))).toThrow(
+      "The CHANGELOG [1.0.0] section is empty",
+    );
+  });
+
+  test("the same release with one entry moved into it is accepted", () => {
+    expect(
+      validateRelease(releaseCandidate("\n### Fixed\n\n- A real entry a reader can act on.\n")),
+    ).toEqual({ distTag: "latest" });
   });
 });

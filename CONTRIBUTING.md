@@ -63,18 +63,27 @@ resolve an unpublished local tarball through the required manual `node_modules`
 mode.
 
 Run `pnpm smoke:bun` locally when Bun is installed. The `bun-smoke` job's own
-step is the only place in `.github/workflows/ci.yml` that runs a Bun binary, and
-the suite reads `scripts/smoke/bun.mjs` as text and never executes it, which is
-why `vitest.config.ts` drops that file from the coverage threshold.
+step is the only place in `.github/workflows/ci.yml` that runs a Bun binary.
+`tests/surface/round21-h4-surface.spec.ts` runs that file under Bun wherever a
+Bun binary and a built `dist/` both exist, and the v8 instrument measures no
+child process, which is why `vitest.config.ts` drops it from the coverage
+threshold.
 
 A workflow step commented out is a step deleted, and so is a step that is
 declared and cannot fail. `scripts/gate-properties.spec.mjs` reads a step as a
 BLOCK — its `- run:` line, read line-anchored, plus the keys written under it —
 so a `#` in front of that run line, an `if: false` under it, and a
-`continue-on-error: true` under it each fail the roster. Either key on a JOB the
-roster reads out of fails it too, because the key takes every step in that job
-with it. What the roster proves is the STRUCTURE of a declared step: it does not
-prove that the step ran, or that it exited 0.
+`continue-on-error: true` under it each fail the roster. A step block ends at
+the first line indented less than the step's keys, and a YAML comment written
+inside the block does not end it, because a comment is no part of the step
+mapping GitHub Actions reads — so an `if: false` written below a comment fails
+the roster the same way. Either key on a JOB the roster reads out of fails it
+too, because the key takes every step in that job with it. A job the roster
+reads out of must also `needs:` only jobs that run: GitHub Actions skips a job
+whose dependency was skipped, and the roster follows that chain, so a `needs:`
+on a job written `if: false` fails it as well. What the roster proves is the
+STRUCTURE of a declared step: it does not prove that the step ran, or that it
+exited 0.
 
 `c8 ignore`, `istanbul ignore` and `node:coverage ignore` are the same directive
 to this project's coverage provider as `v8 ignore`: each one takes its lines out
