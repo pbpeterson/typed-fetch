@@ -113,6 +113,48 @@ function pastSolidi(text: string, from: number): number {
 }
 
 /**
+ * How many solidi the PARSER reads in the run at `from`.
+ *
+ * THE COUNT AND THE POSITION ARE TWO ANSWERS, and only this one is the parser's.
+ * {@link pastSolidi} stops at the first character that is not a solidus, so the
+ * distance it walks counts the run for a text a parse already produced — which
+ * is what {@link authorityAt} used to read the count out of. The region scan is
+ * ALSO handed a raw url: `userinfosOf` in `./redact-url` scans the caller's own
+ * text for the needles a message quotes, and there the three characters
+ * {@link isIgnored} names can sit BETWEEN two solidi. The parser removes them
+ * from the whole input before it reads anything, so `/<TAB>/` is one run of TWO.
+ *
+ * `file:/<TAB>/svc:pw@api.test/v1` is what counting the distance instead cost,
+ * and it is R22-H3-01. The parser reads that url as `file://svc:pw@api.test/v1`
+ * and REFUSES it, so {@link ownUserinfo} is never asked — the head question is
+ * put only where the parse answered — and this scan was the last reader left.
+ * `file:` opens no region under fewer than two solidi, the walk stopped at the
+ * tab and counted one, and NO needle was derived at all: `redactUrl` answered
+ * the documented empty string, so `toJSON().url` was `""` and the password rode
+ * out through every render of the message.
+ *
+ * THE POSITION IS LEFT WHERE IT WAS, and that is a decision rather than an
+ * omission. The count decides whether a region OPENS; where it opens is still
+ * {@link pastSolidi}'s answer, so the span starts at the character the parser
+ * removed and the needle carries what the caller wrote in front of the
+ * credential — which is the answer `https:/<TAB>/svc:pw@api.test/v1` has always
+ * given, under a scheme {@link isSpecialScheme} opens a region for anyway.
+ *
+ * A RUN IS WALKED TWICE, and the disjointness {@link beforeSolidi} argues for is
+ * what pays for it: the runs two marks hang off are disjoint, so walking one of
+ * them twice is twice a bound rather than a new one. {@link nextAuthority} asks
+ * this only where the run it stands on holds fewer than two solidi, which is a
+ * walk that stops at the second one.
+ */
+function solidiAt(text: string, from: number): number {
+  let count = 0;
+  for (let at = from; ; at += 1) {
+    if (isSolidus(text[at])) count += 1;
+    else if (!isIgnored(text[at])) return count;
+  }
+}
+
+/**
  * The index of the character IN FRONT of the solidus run that ends at `from`,
  * and `-1` where the run reaches the start of the text.
  *
@@ -1261,7 +1303,11 @@ function nextAuthority(text: string, from: number): number | null {
       if (start !== null) return start;
       continue;
     }
-    if (!isSolidus(text[at]) || !isSolidus(text[at + 1])) continue;
+    // TWO SOLIDI, COUNTED AS THE PARSER COUNTS THEM. `text[at + 1]` reads the
+    // pair for a text a parse produced and misses `/<TAB>/`, which is one pair
+    // in a RAW url. See {@link solidiAt}, and {@link authorityAt} for the same
+    // correction behind a scheme's colon.
+    if (!isSolidus(text[at]) || solidiAt(text, at) < 2) continue;
     return pastSolidi(text, at);
   }
   return null;
@@ -1332,10 +1378,15 @@ function nextSchemeAuthority(text: string, from: number): number | null {
  * `path.join` produces — and nowhere else. A Windows drive letter
  * (`file:///c:/Users/alice@corp/x`) is now excluded by the same rule rather than
  * by a separate carve-out in {@link looksLikeUserinfo}.
+ *
+ * THE COUNT IS COUNTED AND NEVER MEASURED, which is round 22's R22-H3-01. `start`
+ * is where the run ENDS, and the distance to it is the run's length only where
+ * nothing inside the run was removed before the parse. See {@link solidiAt},
+ * which holds the url the distance answered `file:` for.
  */
 function authorityAt(text: string, colon: number): number | null {
   const start = pastSolidi(text, colon + 1);
-  if (start > colon + 2) return start;
+  if (solidiAt(text, colon + 1) >= 2) return start;
   return isSpecialScheme(text, colon) ? start : null;
 }
 
@@ -1830,5 +1881,34 @@ export function userinfoSpans(text: string, seam: Span | null = null): Span[] {
  * @internal
  */
 export function pathUserinfoSpans(path: string, tail: string, seam: Span | null): Span[] {
-  return userinfoSpans(tail !== "" && endsInsideAuthority(path) ? path + tail : path, seam);
+  return userinfoSpans(pathScanText(path, tail), seam);
+}
+
+/**
+ * The TEXT that scan reads: the path, joined to the slot the outer parse cut it
+ * off from in the one state {@link endsInsideAuthority} names, and the path
+ * itself everywhere else.
+ *
+ * ONE QUESTION FOR THE TWO ROUTES, and round 22's R22-H2-01 is what it cost to
+ * leave it inside {@link pathUserinfoSpans}. `cleaned` in `./redact-url` reaches
+ * the scan through that function and reads `path + tail`; `slotUserinfos`
+ * reaches the same scan for a MESSAGE and read `pathname` alone. So for a url
+ * whose pathname ends inside an embedded authority the message route derived no
+ * needle in the parser's spelling at all, and the raw scan beside it covers only
+ * the CALLER's spelling — one character the path percent-encode set rewrites (a
+ * space, `<`, `{`, `"`) is enough to make the two texts disagree, and
+ * `https://api.test/go/https://svc:hun<pw?ter3@h.test` emitted a clean
+ * `toJSON().url` while the password reached every render of the message.
+ *
+ * IT IS THE SAME ANSWER AND NOT A SECOND READING OF THE RULE. The condition is
+ * the module's own grammar question, so it stays here, where every other one is;
+ * the caller spends the text, which is what the two routes do differently. The
+ * identity of the answer is also the caller's signal: where no widening applies
+ * this returns `path` itself, so a route that must ask BOTH texts can tell that
+ * there is only one to ask.
+ *
+ * @internal
+ */
+export function pathScanText(path: string, tail: string): string {
+  return tail !== "" && endsInsideAuthority(path) ? path + tail : path;
 }
