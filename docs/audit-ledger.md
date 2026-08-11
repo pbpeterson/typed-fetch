@@ -1658,6 +1658,93 @@ answered.
 - **Coverage held at 100 on all four axes** and the suite grew from 3,461 to
   3,510 tests.
 
+### What round 23 settled, and where the audit stopped
+
+Seven findings, five high. Round 23 is the last round of this run: the
+maintainer asked for it to be the last after the fix phase had already started.
+**The audit stopped by instruction, with `cleanStreak` at 0. It did not
+converge.** Round 15 stopped at a cap with the same streak and left a reader
+unable to tell a stop from a finish; this paragraph exists so that cannot happen
+twice.
+
+- **A fix from the previous round was itself quadratic.** R23-H2-02, high.
+  Round 22 removed the copying from the message pass by comparing in place — and
+  moved the entire cost into character comparisons, the one quantity all six of
+  the audit's instruments were blind to. `withoutUserinfos` walked every needle
+  sharing a length: 41.6 → 327.0 compares per input character over an eightfold
+  sweep of the needle COUNT, where round 22 had swept the LENGTH and held the
+  count at one. One reverse trie over the whole needle set makes it 1.2, flat.
+  The seventh instrument was built by asking what a defect would must grow
+  for the other six to stay flat, and the answer named the place round 22's own
+  fix had put it.
+- **One needle per span, so the message keeps what the record drops.**
+  R23-H2-01, high. `hiddenUserinfos` derived one needle per span, so a userinfo
+  NESTED in a wide span was never a needle: `redactUrl` removed the whole span
+  from `url` while a message naming the upstream a second time kept the
+  password, on 48 of 100 rows, with a clean `toJSON().url`. The witness is
+  ordinary — no malformed scheme, no control character, no percent-encoding.
+  The class is older and wider than the change that surfaced six instances of it
+  a round earlier. A span now yields the whole span AND its segments; a pure
+  split would have moved a host, which R17-H3-02 forbids.
+- **Two reverse solidi in one authority kept the whole credential.**
+  R23-H3-01, high. The authority state ends on `\`, so `https://CORP\alice\service:hunter2@api.test/v1`
+  parses with host `corp` and everything else as path. The seam read to
+  `authorityEnd`, stopped at the SECOND folded `\`, and handed the question to a
+  colon test the first segment failed. `hunter2` reached `toJSON().url` and 16
+  of 22 renders, on 120 of 180 grid rows. The spill is forwarded into the seam
+  now. The naive fix — widening the colon condition — was the FIFTH revert the
+  round-22 characterization ledger cannot catch, and the hunter that found the
+  defect also found that blind spot and named the two rows that pin it.
+- **Two more spellings of `needs:`, and one pair of quotation marks.**
+  R23-H4-01 and R23-H4-02, both high, the family's fifteenth and sixteenth
+  appearances. A block sequence at the key's own indentation and a flow sequence
+  broken across lines both read as NO dependency, so the transitive closure
+  round 22 built closed over nothing. And `"if": false` is the same mapping key
+  as `if: false` to YAML and invisible to both readers — in the job that runs
+  immediately before `npm publish`.
+- **No gate read the direction obligation at the release boundary.**
+  R23-H4-03. Semver rule 8 obliges the changelog to state each direction the
+  output moved; the dated section is where a reader finds it; and the only
+  reader of that obligation slices `[Unreleased]`, which `validate-release`
+  requires to be EMPTY before publishing. At the moment the obligation applied,
+  the section carrying it was the one section no gate read. The gate reads the
+  dated section now — and proves only that a direction is DECLARED, never that
+  it is the direction the code took.
+- **The seventh instrument that could not survive its own fix, and the first
+  that forbade the cure.** R23-H4-03's own test asserted that
+  `validate-release.mjs` must NOT contain the token its only remedy must add.
+  Twenty-four pins across five files recorded the gate's old refusal set and
+  were repaired to the new one without weakening any.
+- **Two lanes returned CLEAN, and both delivered more than a finding.** H1
+  censused the input space at 7,882 calls: the module's decision is a 15-cell
+  table, the suite draws 13, and the cell where asking the descriptor bag and
+  asking the caller's object give DIFFERENT ANSWERS is drawn zero times. It then
+  found the fourth and fifth wrong implementations the round-22 pin misses — the
+  fifth fails ZERO pins in the whole request suite and is the read the module
+  refuses in prose while nothing refuses it executably. H4 refuted its own lane's
+  previous conclusion: the two gates called a budget wall are the two cheapest
+  in the repository, and all four release gates are now driven with a control
+  and a mutation each.
+- **Two release gates were failing on the machine, not the code.** Eleven tests
+  in six files crossed vitest's 5,000 ms default under full-suite load and passed
+  in isolation, and a wall-clock assertion in the redaction suite failed one
+  coverage run in four. The suite states a budget now, and the assertion is a
+  ratio across a size sweep — which is how every cost finding this audit filed
+  was written, precisely so the number on the clock never decides the verdict.
+- **Coverage held at 100 on all four axes** and the suite grew from 3,510 to
+  3,614 tests.
+
+**What remains open, for whoever resumes.** Release readiness is still FALSE and
+has been since round 15: `package.json` reads 2.0.1, the `[Unreleased]` block is
+uncut, and semver rule 8 forces at least 2.1.0. No gate proves a `v8 ignore`
+justification is TRUE, and round 5 found a false one. The direction vocabulary
+and its reader regex now live in two files with no pin tying them together. A
+direction sentence written into a neighbouring bullet of the `[Unreleased]`
+block is still unread. And three rounds of gates now constrain how the fourth
+may be written — round 23's fixer renamed a fixture because a round-19 pin
+forbids any spec reading `ci.yml` from naming one job. That coupling is growing,
+and nothing measures it.
+
 ## The audit files, renamed by subject
 
 The audit closed at round 15. Each round-numbered spec file above still holds
