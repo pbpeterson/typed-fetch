@@ -247,11 +247,29 @@ function snapshotRequestInit(
   // enumerable too grew the invented member again, on an own non-enumerable
   // slot reading `undefined`, and only where an own `fetch` option selects this
   // branch — so the two branches disagreed about one options object.
-  if (descriptors.signal || signal !== undefined) {
+  //
+  // "The caller owns the slot" is asked with `Object.hasOwn`, for the reason
+  // `planRequest` states at the `fetch` read. `Object.getOwnPropertyDescriptors`
+  // returns an ORDINARY object, so `descriptors.signal` walks
+  // `Object.prototype`, and one `Object.prototype.signal = …` write anywhere in
+  // the process answered it for every call. A caller defending against exactly
+  // that — a null-prototype options object — plus an own `fetch` to select this
+  // branch got the invented member back: `Object.keys(init)`, `ownKeys` and a
+  // spread listed `signal: undefined` while `"signal" in init`, answered from
+  // the caller's object by the `has` trap, said `false`. The bag is this
+  // module's; the prototype behind it belongs to whoever wrote to it last.
+  //
+  // The BAG is what is asked, never the caller's object. A `Proxy` whose
+  // `ownKeys` omits `signal` contributes no entry here, and its
+  // `getOwnPropertyDescriptor` trap would answer a different question — the
+  // descriptors that reach `Object.create` below are the only ones this entry
+  // stands in for.
+  const ownSignal = Object.hasOwn(descriptors, "signal") ? descriptors.signal : undefined;
+  if (ownSignal !== undefined || signal !== undefined) {
     descriptors.signal = {
       value: signal,
       writable: true,
-      enumerable: descriptors.signal?.enumerable === true || signal !== undefined,
+      enumerable: ownSignal?.enumerable === true || signal !== undefined,
       configurable: true,
     };
   }
