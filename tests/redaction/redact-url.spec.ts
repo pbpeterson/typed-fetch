@@ -151,13 +151,32 @@ describe("redactUrl — structure is kept, every value slot is dropped", () => {
   // The scan runs once per call over each region, and `redactUrl` runs it
   // twice. Walking back from the end of every region made it quadratic in the
   // number of marks: 96 KB took 855 ms.
+  //
+  // ORCHESTRATOR, round 23: this was an absolute wall clock,
+  // `toBeLessThan(100)`, and it failed once in four `pnpm coverage` runs at
+  // 314 ms under v8 instrumentation while passing the other three. A release
+  // gate that goes red on contention tests the runner, and `CONTRIBUTING.md`
+  // forbids a bare time figure as evidence. It is a RATIO across a size sweep
+  // now, which is how R20-H2-01, R22-H2-02 and R23-H2-02 were each written:
+  // quadratic growth doubles the ratio per doubling and linear growth does
+  // not, whatever the machine costs per unit.
   test("the scan stays linear on an input of repeated `://` marks", () => {
-    const hostile = "://".repeat(32_000);
-    const started = performance.now();
+    const timed = (marks: number): number => {
+      const hostile = "://".repeat(marks);
+      const started = performance.now();
+      redactUrl(hostile);
+      return Math.max(performance.now() - started, 0.05);
+    };
 
-    redactUrl(hostile);
+    // Warm the path so the first reading does not pay for compilation.
+    timed(1_000);
+    const small = timed(8_000);
+    const large = timed(32_000);
 
-    expect(performance.now() - started).toBeLessThan(100);
+    // Four times the input. Linear answers about 4, quadratic about 16; the
+    // bound sits between them so neither the machine nor the instrument
+    // decides the verdict.
+    expect(large / small).toBeLessThan(9);
   });
 
   // Removing the userinfo must not make an invalid URL resolvable: these are
@@ -672,18 +691,33 @@ describe("the diagnostic a path-derived needle costs", () => {
     );
   });
 
-  // CONTROL for the blast radius: the needle always starts at the character
-  // after `://`, so it carries the embedded host. A message that names only the
-  // tail of the segment keeps it.
-  test("CONTROL — the needle is host-anchored, so a bare segment survives", () => {
+  // THE BLAST RADIUS WIDENED, and round 23's R23-H2-01 is what moved it. This
+  // test read "the needle is host-anchored, so a bare segment survives", and
+  // that half is no longer true: `hiddenUserinfos` now emits a path span AND
+  // every segment of it that ends in an `@`, because a needle cut back to the
+  // whole span alone missed a second mention in the caller's own spelling. So
+  // `npm.test/left-pad@` and `left-pad@` are both needles, and either spelling
+  // of the message loses its text.
+  //
+  // THE COST IS OVER-REDACTION AND NOTHING WORSE. Both answers below name no
+  // host at all, and `redactUrl` drops the same whole span from `url` —
+  // `https://registry.test/proxy/https://1.2.3` — so the two records still
+  // agree about which host failed. That is the trade R23-H2-01 states.
+  //
+  // The two assertions guard the two halves of that union separately, which is
+  // why both stay. Stop emitting the SEGMENTS and the first one comes back
+  // unchanged; stop emitting the WHOLE span and the second one keeps
+  // `npm.test/`, naming in the message a host the redacted url does not.
+  test("both the whole path span and its segments are needles", () => {
     const url = "https://registry.test/proxy/https://npm.test/left-pad@1.2.3";
-    expect(redactUrlInMessage("cache miss for left-pad@1.2.3", url)).toBe(
-      "cache miss for left-pad@1.2.3",
-    );
-    // The same message WITH the host is the one that loses text.
+    // The SEGMENT half: no host is quoted, and `left-pad@` still goes.
+    expect(redactUrlInMessage("cache miss for left-pad@1.2.3", url)).toBe("cache miss for 1.2.3");
+    // The WHOLE half: the host is quoted, and it goes with the segment.
     expect(redactUrlInMessage("cache miss for npm.test/left-pad@1.2.3", url)).toBe(
       "cache miss for 1.2.3",
     );
+    // And neither answer names a host the redacted url does not.
+    expect(redactUrl(url)).toBe("https://registry.test/proxy/https://1.2.3");
   });
 });
 

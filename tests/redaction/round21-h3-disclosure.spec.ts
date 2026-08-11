@@ -279,8 +279,8 @@ describe("the qualifier holds: a userinfo the parser READS never reaches a chann
 /* -------------------------------------------------------------------------- */
 
 /**
- * The eight rows of round 20's 1,200-check corpus that still hold the password
- * in the caller's own spelling, written out rather than counted.
+ * The eight rows of round 20's 1,200-check corpus that held the password in the
+ * caller's own spelling until round 23, written out rather than counted.
  *
  * They are ONE shape under four spellings of a mark and two hosts: a `file:`
  * url whose password holds a `\`, quoted by a message that stripped the
@@ -289,10 +289,18 @@ describe("the qualifier holds: a userinfo the parser READS never reaches a chann
  * search stops in front of the `@` — R20-ORCH-01's mechanism, under the one
  * scheme where the fold is what the Standard asks for.
  *
- * THE RECORDED RESIDUAL COVERS ALL EIGHT. The parser reports neither a username
- * nor a password on any of them, which is exactly the state the qualifier in
- * `SECURITY.md` names. This test pins the extent in both directions, so a later
- * round that widens the class or narrows it has to come here first.
+ * AND R23-H2-01 CLOSED ALL EIGHT. `hiddenUserinfos` emits a path span AND every
+ * segment of it that ends in an `@`, so `ter2@` — the segment on the far side
+ * of the folded `\`, which the parser and the caller spell identically — is now
+ * a needle of its own. The whole-span needle `svc:hun/ter2@` never was one: it
+ * is written in the PARSER's spelling and no quote of the caller's text can
+ * match it.
+ *
+ * The parser still reports neither a username nor a password on any of the
+ * eight, which is why the first test below stays: the class this closes is
+ * exactly the one the `SECURITY.md` qualifier scoped ITSELF out of, so the eight
+ * are now covered by more than the qualifier promises. The rows stay written out
+ * so a later round that reopens the class has to come here first.
  */
 const FILE_SEAM_ROWS = [
   `file:svc:hun${BACKSLASH}ter2@api.test/v1#anchor`,
@@ -315,15 +323,36 @@ describe("the recorded `file:` residual, drawn out row by row", () => {
     expect(reported).toEqual([]);
   });
 
-  test("and each one keeps the password only through the fragment-stripped quote", () => {
+  test("and not one of them keeps the password through either quote", () => {
+    // THIS PINNED THE RESIDUAL AND NOW PINS ITS CLOSURE. `stripped` was 8 —
+    // every row keeping the password through the quote a fetch adapter really
+    // writes — and R23-H2-01 took it to 0. `exact` was 0 and stays 0: that
+    // quote holds the whole url, so the first line of `redactUrlInMessage`
+    // always reached it and the seam was never the only reader.
+    //
+    // THE THIRD COUNT IS WHAT MAKES THIS MORE THAN THE FIRST TWO. `ter2@` is
+    // the needle that does the work, so `tail` asks directly whether that
+    // segment left the message, and it must stay 0 whatever else moves. A
+    // change that emitted a WIDER needle could take the password out while
+    // leaving the tail somewhere else in the text; a change that stopped
+    // emitting segments at all turns all three counts back to 8.
+    //
+    // WHAT SURVIVES IS THE HEAD, and it is stated rather than pinned: the
+    // answer is `…: file:///svc:hun\api.test/v1`, so `hun\` stands where the
+    // password's first three characters were. It is not asserted because
+    // asserting it would turn a later round that removes it red for an
+    // improvement.
     const password = `hun${BACKSLASH}ter2`;
     const answers = FILE_SEAM_ROWS.map((url) => ({
       stripped: redactUrlInMessage(messageFor(quotedWithoutFragment(url)), url).includes(password),
       exact: redactUrlInMessage(messageFor(url), url).includes(password),
+      tail: redactUrlInMessage(messageFor(quotedWithoutFragment(url)), url).includes("ter2"),
     }));
 
-    expect(answers.filter((one) => one.stripped).length).toBe(8);
+    expect(answers.length).toBe(8);
+    expect(answers.filter((one) => one.stripped).length).toBe(0);
     expect(answers.filter((one) => one.exact).length).toBe(0);
+    expect(answers.filter((one) => one.tail).length).toBe(0);
   });
 });
 

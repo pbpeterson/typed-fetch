@@ -411,11 +411,21 @@ function cleaned(parsed: URL, origin: string, spilled = false): URL {
  * {@link cleaned}, so this arm is the message route's alone —
  * {@link slotUserinfos} asks every parsed url. `file:` is hierarchical and
  * keeps its answer, which is the one state the guard below is written for.
+ *
+ * AND `spilled` IS SPENT TWICE, ONCE ON EACH QUESTION, which is round 23's
+ * R23-H3-01. It decides whether a url with a host of its own has a seam AT ALL,
+ * and then it decides what `seamSpan` may read there: a scanner handed a
+ * `pathname` cannot tell a solidus the parser FOLDED out of the caller's `\`
+ * from one the caller typed, so `https://CORP\alice\service:hunter2@api.test/v1`
+ * was asked the seam and then refused the credential, on the evidence of a
+ * segment boundary that only the fold created. This function is where the raw
+ * url has already been read, so it is where the fact belongs. `seamUserinfoEnd`
+ * in `./userinfo-spans` holds the input and the grid.
  */
 function seamUserinfo(parsed: URL, spilled: boolean): Span | null {
   if (!leadsWithHierarchicalScheme(parsed.protocol)) return null;
   if (parsed.host !== "" && !spilled) return null;
-  return seamSpan(parsed.pathname);
+  return seamSpan(parsed.pathname, spilled);
 }
 
 /**
@@ -527,9 +537,9 @@ function withoutMalformedUserinfo(path: string, tail: string, seam: Span | null)
  * anything else the diagnostic was carrying.
  *
  * `kept` IS WHERE THIS TEXT STOPS BEING TEXT THE EMITTED URL KEEPS, and past it
- * a span is read as {@link segmentUserinfos}. That is round 17's R17-H3-02. A
- * span can cover a HOST — RES-6 — and removing one from a message joins the
- * mark in front of it to text that was a path:
+ * the WHOLE span is dropped and only {@link segmentUserinfos} answers. That is
+ * round 17's R17-H3-02. A span can cover a HOST — RES-6 — and removing one from
+ * a message joins the mark in front of it to text that was a path:
  * `https://api.test/v1?next=https://cdn.test/u/alice@example.com` is an
  * ordinary callback url, its query yields the needle `cdn.test/u/alice@`, and a
  * message quoting the callback TARGET read `…contacting https://example.com/…`.
@@ -538,12 +548,29 @@ function withoutMalformedUserinfo(path: string, tail: string, seam: Span | null)
  * message ever named as one, and two records of one failure naming different
  * hosts.
  *
- * WHERE THE SPAN COMES FROM THE PATH IT IS WHOLE, whatever it covers, and that
- * is why this is a boundary rather than a rule: `redactUrl` removes the same
- * text from the url it emits, so both records move together and RES-6 stays one
- * residual instead of becoming two answers. A slot `redactUrl` drops WHOLE —
+ * WHERE THE SPAN COMES FROM THE PATH IT IS KEPT WHOLE, whatever it covers, and
+ * that is why this is a boundary rather than a rule: `redactUrl` removes the
+ * same text from the url it emits, so both records move together and RES-6 stays
+ * one residual instead of becoming two answers. A slot `redactUrl` drops WHOLE —
  * the query, the fragment — is the one place the url pass makes no answer for
  * the message to agree with.
+ *
+ * AND THE SEGMENTS ARE EMITTED ALONGSIDE IT, NEVER INSTEAD OF IT. That is round
+ * 23's R23-H2-01, and the two halves of the sentence are two different harms.
+ * THE WHOLE SPAN is what keeps the url's own quote answering exactly as
+ * `redactUrl` does: the segments of `alice@sso.test/svc:hunter2@` are `alice@`
+ * and `svc:hunter2@`, and removing only those leaves `sso.test/` standing in a
+ * message while `url` names `internal.test` — two records of one failure naming
+ * different hosts, which is R17-H3-02 again wearing the path's clothes. THE
+ * SEGMENTS are what a SECOND MENTION loses. A needle is deleted from a message
+ * wherever it appears, and a forwarding diagnostic names the upstream again in
+ * the caller's own spelling:
+ * `https://api.test/go/https://b.test/svc:hunter2@i.test/v1` draws ONE span,
+ * `b.test/svc:hunter2@`, so `svc:hunter2@` was no needle at all — the record
+ * clean, the password in `…; the upstream svc:hunter2@i.test was refused` and in
+ * every render of it, on 48 of the 100 forwarding rows
+ * `round23-h2-response.spec.ts` crosses. Neither reading alone is the answer;
+ * the union of the two is.
  *
  * RE-READ, NOT REFUSED, and the difference is a credential. Refusing the needle
  * leaves the whole of it in the message; the re-read keeps every part of it
@@ -585,7 +612,8 @@ function withoutMalformedUserinfo(path: string, tail: string, seam: Span | null)
 function hiddenUserinfos(text: string, seam: Span | null = null, kept = text.length): string[] {
   const found: string[] = [];
   for (const span of userinfoSpans(text, seam)) {
-    for (const one of span.start < kept ? [span] : segmentUserinfos(text, span)) {
+    const whole = span.start < kept ? [span] : [];
+    for (const one of [...whole, ...segmentUserinfos(text, span)]) {
       const userinfo = text.slice(one.start, text.lastIndexOf("@", one.end - 1) + 1);
       if (userinfo.length > 1) found.push(userinfo);
     }
@@ -624,23 +652,69 @@ function namesACredential(userinfo: string): boolean {
 }
 
 /**
- * Does `message` spell `needle` from `start`, read from the END backwards?
+ * One node of the REVERSE needle trie: the needle that ends here, and the
+ * characters that can precede it.
  *
- * `spellsToken` in `./userinfo-spans` is the same rule for the same reason —
- * compare in place, so that a candidate is never cut out of the text to be
- * looked at — and {@link withoutUserinfos} holds why this one reads backwards
- * and what the direction buys. The whole needle is compared, including the `@`
- * both sides are known to spell: one comparison, against a walk this saves the
- * length of.
- *
- * No index is out of range: the caller has already refused a `start` below zero,
- * and the needle ends at an `@` the message holds.
+ * `needle` is the empty string where no needle ends at this node, which is the
+ * same "no match" spelling {@link withoutUserinfos} already used for its bucket
+ * search. A needle is never empty itself — {@link hiddenUserinfos} refuses
+ * anything one character long — so the two states cannot be confused.
  */
-function spellsNeedle(message: string, start: number, needle: string): boolean {
-  for (let at = needle.length - 1; at >= 0; at -= 1) {
-    if (message.charCodeAt(start + at) !== needle.charCodeAt(at)) return false;
+type NeedleNode = { needle: string; before: Map<number, NeedleNode> };
+
+/**
+ * The needle set as ONE trie, keyed by character code and read from each
+ * needle's `@` BACKWARDS.
+ *
+ * THE SET, NOT A NEEDLE, IS WHAT THE MESSAGE PASS MAY WALK, and that is round
+ * 23's R23-H2-02. Round 22 replaced a hash lookup on a copied slice with a
+ * comparison in place, which is right about the copying and moved the whole cost
+ * into character comparisons — the one quantity no instrument this audit owns
+ * had ever counted. What it left behind is a walk over every needle that shares
+ * a LENGTH, so the pass cost the message's `@` count times the needle count,
+ * both chosen by a redirecting server: one out of a query slot the message
+ * quotes, one out of the credentials a forward embeds. Measured over an
+ * eightfold sweep of the COUNT — round 22's own sweep varied the LENGTH and held
+ * the count at one — compares per input character climbed 41.6 → 82.4 → 163.9 →
+ * 327.0, and 8,000 credentials took 1,325 ms inside ONE error construction
+ * against 12 ms at 1,000.
+ *
+ * The trie answers the whole set in one walk: each character of the message is
+ * read at most once per step of a walk that no needle's length bounds, and every
+ * needle ending at that position is collected on the way past. So the search
+ * costs the DEPTH reached rather than the count of needles that share a length,
+ * and the needle count leaves the pass entirely.
+ *
+ * AND THE BOUND IS THE ONE THE BUCKET WALK ALREADY ARGUED FOR, now stated of the
+ * set. A walk from an `@` of the message crosses a previous `@` of the message
+ * only where some needle spells one INSIDE itself, so a set spelling none has
+ * disjoint walks and the whole pass is linear in the message; a set spelling `k`
+ * of them buys `k + 1` times that, and it has to spell them in the url for the
+ * scanner to answer them. Read FORWARDS the bound is gone, and the same input
+ * takes it away: every `@` of a quoted query tests a start that lands inside one
+ * run of the character the needles open with.
+ *
+ * The trie costs one node per distinct needle suffix, which is at most the sum
+ * of the needle lengths — and every needle is a slice of one of the six texts
+ * {@link userinfosOf} scans, whose spans do not overlap, so that sum is linear
+ * in the caller's url.
+ */
+function needleTrie(userinfos: string[]): NeedleNode {
+  const root: NeedleNode = { needle: "", before: new Map() };
+  for (const userinfo of userinfos) {
+    let node = root;
+    for (let at = userinfo.length - 1; at >= 0; at -= 1) {
+      const code = userinfo.charCodeAt(at);
+      let next = node.before.get(code);
+      if (next === undefined) {
+        next = { needle: "", before: new Map() };
+        node.before.set(code, next);
+      }
+      node = next;
+    }
+    node.needle = userinfo;
   }
-  return true;
+  return root;
 }
 
 /**
@@ -746,9 +820,9 @@ function slotUserinfos(parsed: URL, spilled: boolean): string[] {
  * and whether the parser consumed the mark that opens the seam. The three are
  * the three lines below; the slots are {@link slotUserinfos}.
  *
- * A SET, because the answer is one. {@link withoutUserinfos} buckets the
- * needles by length and matches them by position, so neither the order of this
- * list nor a repeat in it can reach a message. The two branches used to dedupe
+ * A SET, because the answer is one. {@link withoutUserinfos} reads the needles
+ * into one trie and matches them by position, so neither the order of this list
+ * nor a repeat in it can reach a message. The two branches used to dedupe
  * separately, and each dedupe was quadratic in the needle count.
  */
 function userinfosOf(url: string): string[] {
@@ -868,7 +942,8 @@ function userinfosOf(url: string): string[] {
   // The seam's own question, asked exactly as `redactUrl` asks it on each of its
   // two branches: a reference that brought its own mark had its authority
   // CONSUMED, and an absolute url whose authority a `\` cut short had it SPILL
-  // into the path. Both leave a userinfo where only the seam can find it.
+  // into the path. Both leave a userinfo where only the seam can find it, and
+  // both are the state {@link seamUserinfo} spends the answer on twice.
   const spilled = absolute === null ? bringsOwnAuthority(url) : spilledAuthority(url);
   const needles = new Set([
     ...(spelled !== "" && (authority || spelled.includes(":")) ? [spelled] : []),
@@ -935,6 +1010,12 @@ function hasRedactableSlot(url: string): boolean {
  * segment in `url`, because there it is a path — so the two can name different
  * resources.
  *
+ * AND THE SEGMENT IS A NEEDLE OF ITS OWN, which widens the same residual by the
+ * width round 23's R23-H2-01 must buy: `alice@` comes out of that span too, so
+ * a message naming the tail alone loses it as well. {@link hiddenUserinfos}
+ * holds the credential that reading is the answer to, and why the whole span
+ * stays beside it.
+ *
  * Over-redaction is the safe direction, and it costs a diagnostic rather than a
  * password. It stays a residual rather than a fix because narrowing the needle
  * needs the caller's value a second time, which is the read the whole
@@ -974,10 +1055,9 @@ export function redactUrlInMessage(message: string, url: string): string {
  * existed. Doubling the input multiplied the cost by nearly four.
  *
  * Every needle ends with `@`, which is what makes one pass possible: an `@` in
- * the message is the only place a needle can end, so each one is tested against
- * the lengths the needle set actually holds. The work is the message's `@` count
- * times the needles those lengths hold, and no test reads past the first
- * character that differs.
+ * the message is the only place a needle can end, so each one is asked of the
+ * whole needle set at once, backwards, and no walk reads past the first
+ * character no needle continues.
  *
  * COMPARED IN PLACE, AND THAT IS `spellsToken`'s OWN RULE (in `./userinfo-spans`)
  * APPLIED TO THE ROUTE IT WAS NEVER APPLIED TO. This used to cut the candidate
@@ -992,26 +1072,13 @@ export function redactUrlInMessage(message: string, url: string): string {
  * took 39,206 ms inside ONE error construction — which `toJSON()` never repeats,
  * because it copies the message, but which every construction pays. R22-H2-02.
  *
- * WHAT THE BUCKET COSTS INSTEAD is a walk over the needles that share one
- * length, where the copy cost one length. The two differ on a needle set with
- * many same-length members, and the walk is what has no allocation in it. At
- * most one member of a bucket can match a given position — same length, same
- * start, and the caller's own `Set` has already made the list distinct — so the
- * search stops at the first.
- *
- * AND IT IS READ FROM THE `@` BACKWARDS, which is where the BOUND comes from
- * rather than a preference. Read forwards, a comparison stops at the first
- * character that differs — and the input above chooses that too: every `@` of
- * the query tests a start that lands inside ONE run of the same character the
- * needle opens with, so each comparison walks the whole needle and the product
- * survives with the allocation removed. 128 KB took 6,261 ms that way.
- * {@link spellsNeedle} reads the other end, and the reason it is bounded there
- * is the loop this one is nested in: a needle ends at an `@`, so a backward walk
- * that crosses an `@` of the MESSAGE has matched an `@` INSIDE the needle. A
- * needle spelling none can therefore never walk past the previous `@`, the walks
- * of all the `@`s are disjoint, and the whole pass is linear in the message; one
- * spelling `k` of them buys `k + 1` times that, and it has to spell them in the
- * url for the scanner to answer them. The same 128 KB is 1 ms.
+ * AND THE SET IS ASKED ONCE, NOT NEEDLE BY NEEDLE. Round 22 answered the copy
+ * with a walk over the needles sharing one LENGTH, which removed the allocation
+ * and left the needle COUNT multiplying the message's `@` count. That is round
+ * 23's R23-H2-02 and it is the same two remote quantities the paragraph above
+ * names, multiplied the other way round. {@link needleTrie} holds the numbers,
+ * what the trie replaces the length buckets with, and why the bound the bucket
+ * walk argued for per needle now holds for the SET.
  *
  * UNION, not first-match-wins. Two needles OVERLAP whenever one authority's
  * userinfo runs to the last `@` in its region and another needle ends at an `@`
@@ -1038,28 +1105,21 @@ export function redactUrlInMessage(message: string, url: string): string {
 function withoutUserinfos(message: string, userinfos: string[]): string {
   if (userinfos.length === 0) return message;
 
-  const byLength = new Map<number, Set<string>>();
-  for (const userinfo of userinfos) {
-    const bucket = byLength.get(userinfo.length);
-    if (bucket === undefined) byLength.set(userinfo.length, new Set([userinfo]));
-    else bucket.add(userinfo);
-  }
+  const root = needleTrie(userinfos);
 
   // EVERY match, before any of them is applied. A needle that starts inside an
   // earlier match is the case that matters, so nothing can be decided until all
   // of them are known.
   const spans: Span[] = [];
   for (let at = message.indexOf("@"); at >= 0; at = message.indexOf("@", at + 1)) {
-    for (const [length, needles] of byLength) {
-      const start = at + 1 - length;
-      if (start < 0) continue;
-      let match = "";
-      for (const needle of needles) {
-        if (spellsNeedle(message, start, needle)) {
-          match = needle;
-          break;
-        }
-      }
+    let node = root;
+    for (let start = at; start >= 0; start -= 1) {
+      const next = node.before.get(message.charCodeAt(start));
+      // No needle of the SET continues here, so none of them can end at this
+      // `@` from any earlier start either.
+      if (next === undefined) break;
+      node = next;
+      const match = node.needle;
       if (match === "") continue;
       // AN EMPTY USERINFO IS A USERINFO ONLY BEHIND A MARK, and that is the one
       // needle whose text is not distinctive enough to stand for itself. `:@`

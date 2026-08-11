@@ -616,13 +616,33 @@ describe("the judge over the populations the module is measured against", () => 
     //
     // AND THAT IS THE HALF THE HOST JUDGE CANNOT SEE, so it is counted here as
     // well: 11,312 rows of this population used to emit the planted password
-    // and 11,230 do now. 82 secrets stopped being disclosed and no row started.
-    // A future round that widens a region must not buy a host verdict with one
-    // of those 82 — see the `removed` count in R17-H3-01 below, which pins the
-    // same 82 from the other side.
+    // and 11,221 do now. A future round that widens a region must not buy a
+    // host verdict with one of those secrets — see the `removed` count in
+    // R17-H3-01 below, which pins the same quantity from the other side.
+    //
+    // MOVED BY R23-H3-01, and ONLY the round16 count moves: 461 to 456. The
+    // calibrated rule's three counts are byte-identical, which is the sharpest
+    // thing this move says — the five rows that leave were condemned by the
+    // rule that reads a SPELLING, and the rule that reads a url never held them
+    // against the module at all.
+    //
+    // `seamUserinfo` now forwards the SPILL to `seamSpan`, so a `\` the caller
+    // wrote inside its own authority opens the seam even where the parser found
+    // a host. All five rows are that one shape: `FiLe:localhost\\svc:…@`
+    // `internal.test/v1` emitted `file:///localhost//internal.test/v1` and now
+    // emits `file:///internal.test/v1`. The old answer spelled `localhost`
+    // behind a solidus pair, which is exactly where round 16's rule slices and
+    // reads a host; the text is gone now, so the invented host is too. 35
+    // answers changed in all, and no row joined the condemned set under either
+    // rule.
+    //
+    // AND NINE MORE SECRETS LEAVE WITH THEM. 11,230 rows emitted the planted
+    // password before this fix; 11,221 do. So the five acquittals are not a
+    // verdict bought with a disclosure — the disclosure count fell in the same
+    // move, and R17-H3-01 below pins that same nine as `removed` rising.
     expect(sweep(credentialUrls(0xdeadbeef, 40_000), true)).toEqual({
       size: 40_000,
-      round16: 461,
+      round16: 456,
       calibrated: 148,
       dropped: 29,
       created: 119,
@@ -666,12 +686,34 @@ describe("the judge over the populations the module is measured against", () => 
     // the decision that keeps `cdn.test:8443`. The seven rows on the other side
     // stop dropping a host the input DID name, which is the harm this judge
     // exists to find, so the net move is toward the safer half.
+    //
+    // MOVED BY R23-H3-01, and this is the smallest move any round has made
+    // here: 195 answers change and TWO verdicts do. `created` falls by two —
+    // three rows leave it and one joins — and `dropped` does not move at all,
+    // neither leaving nor joining. That split is the claim. `dropped` is the
+    // axis this judge exists to protect, because a dropped host is a host the
+    // input really named; the seam forwarding its spill buys nothing on it and
+    // pays nothing to it.
+    //
+    // THE THREE THAT LEAVE ARE THE SPILL REMOVING MORE, and the invented host
+    // goes out with the text that spelled it:
+    // `ftp:x\\／//:/:zz:<TAB><LF>@bob` emitted `ftp://x/%EF%BC%8F//bob`, out of
+    // which the judge read the host `bob`, and now emits `ftp://x/bob`, where
+    // there is no solidus pair left to slice at. THE ONE THAT JOINS is the
+    // mirror of that and is stated rather than averaged away:
+    // `https:@bob@bob:0\\\ \@bob..http:\` emitted
+    // `https://bob:0///%20/@bob..http:/` and now emits
+    // `https://bob:0///bob..http:/`, so removing the `@` in front of
+    // `bob..http:` leaves that text behind a solidus pair and the judge reads
+    // the host `bob..http` out of it. It is the same decision as the row named
+    // above — text the input spelled, condemned because the input never spelled
+    // it where a parser reads a host.
     expect(sweep(randomUrls(0xc0ffee, 400_000), false)).toEqual({
       size: 400_000,
       round16: 0,
-      calibrated: 668,
+      calibrated: 666,
       dropped: 125,
-      created: 543,
+      created: 541,
     });
   });
 });
@@ -1052,10 +1094,24 @@ describe("R17-H3-01 — what the separating predicate costs, measured", () => {
     // 57,360 to 57,442: 82 more planted credentials leave the emitted url.
     // Every one of the 82 is a credential-population row, all of them under
     // R20-H3-03's seam fallback — the structured half is unchanged at 28,672 of
-    // 28,672, and the credential half goes from 28,688 to 28,770 of 40,000. A
-    // change that let one of those 82 back through turns this red at 57,441,
-    // and so does a change that stops removing any credential this file plants.
-    // The number is asserted exactly rather than as a floor for that reason.
+    // 28,672, and the credential half goes from 28,688 to 28,770 of 40,000.
+    //
+    // AND IT ROSE AGAIN IN ROUND 23, from 57,442 to 57,451, under R23-H3-01.
+    // `seamUserinfo` forwards the SPILL to `seamSpan` now, so a `\` the caller
+    // wrote inside its own authority opens the seam even where the parser found
+    // a host — and nine more planted credentials leave the emitted url with the
+    // authority text they hid behind. Again every one of the nine is a
+    // credential-population row: the structured half is still 28,672 of 28,672
+    // and the credential half goes from 28,770 to 28,779 of 40,000. The
+    // credential sweep above pins the same nine from the other side, as its
+    // 11,230 rows still emitting the password falling to 11,221.
+    //
+    // A change that lets one of those 91 back through turns this red at 57,450
+    // or below, and so does a change that stops removing any credential this
+    // file plants. The number is asserted exactly rather than as a floor for
+    // that reason. `touched` and `lostSecret` stay the guarded zeros above: the
+    // seam is not the predicate this test measures, and R23-H3-01 offers it no
+    // new span.
     let removed = 0;
     let touched = 0;
     let lostSecret = 0;
@@ -1074,7 +1130,7 @@ describe("R17-H3-01 — what the separating predicate costs, measured", () => {
     }
     expect({ size: population.length, removed, touched, lostSecret }).toEqual({
       size: 97_344,
-      removed: 57_442,
+      removed: 57_451,
       touched: 0,
       lostSecret: 0,
     });

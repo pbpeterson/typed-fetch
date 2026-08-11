@@ -336,6 +336,39 @@ describe("R20-H3-03 — CLOSED: a `\\` inside a `file:` password leaves `toJSON(
     expect(error.toJSON().url).not.toContain("hun/ter2");
     expect(leakingChannels(everyChannel(error), ["hun/ter2"])).toEqual([]);
   });
+
+  test("what the colon fallback costs, on both spellings of the separator", () => {
+    // ADDED IN ROUND 23, because R23-H3-01 widened this bullet's cost and
+    // `SECURITY.md` says every residual it lists is tested. `seamUserinfo`
+    // forwards the SPILL to `seamSpan` now, so where the character that ended
+    // the caller's own authority is a `\` they wrote, the spill answers and the
+    // colon is never asked — which means the Windows drive letter carves this
+    // out only in the SOLIDUS spelling.
+    //
+    // ASKED AS FOUR PAIRS, one line of the residual each, so a failure names the
+    // spelling that moved rather than a count. Refuse the spill again and the
+    // two `\` rows go back to their input; widen the colon question instead of
+    // the seam and the two `/` rows lose their head, which is the fifth revert
+    // `round23-h3-disclosure.spec.ts` names.
+    const answers = [
+      // The colon arm: the first segment holds a colon no drive letter wrote.
+      ["file:///a:b/c/mail@example.com/x", "file:///example.com/x"],
+      // The drive letter, spelled with solidi: still a fixed point.
+      ["file:///c:/Users/alice@corp/report.pdf", "file:///c:/Users/alice@corp/report.pdf"],
+      // The same two paths with the separator the caller types on Windows. The
+      // authority spilled, so the drive letter decides nothing.
+      [
+        `file:///c:${BACKSLASH}Users${BACKSLASH}alice@corp${BACKSLASH}report.pdf`,
+        "file:///corp/report.pdf",
+      ],
+      [`file:///C:${BACKSLASH}c${BACKSLASH}mail@example.com${BACKSLASH}x`, "file:///example.com/x"],
+    ] as const;
+
+    expect(answers.map(([url]) => redactUrl(url))).toEqual(answers.map(([, emitted]) => emitted));
+    // AND THE COST IS A PATH, NEVER A HOST. Every answer above is a `file:` url
+    // with an empty host, so no reader gains a host the caller did not write.
+    expect(answers.map(([, emitted]) => new URL(emitted).host)).toEqual(["", "", "", ""]);
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -501,19 +534,28 @@ describe("the corpus, and what every surviving password has in common", () => {
     expect({ checks, rawRemoved, spellingOnly: [...spellingOnly.keys()].sort() }).toEqual({
       // 600 corpus rows, each quoted the two ways a platform quotes a url.
       checks: 1200,
-      // 8 of the 1,200 still hold the password in the caller's own spelling.
-      // It was 12 until R20-ORCH-01 closed the four `git:` rows — a `\` inside
-      // a userinfo the parser reports under a NON-special scheme. The eight
-      // that remain are all `file:`, which the URL Standard DOES call special;
-      // this spec's own five-name `URL_SPECIAL_SCHEMES` is what excludes it,
-      // and `SECURITY.md` records the limit. The raw judge SEES those 8, so
-      // they are not this test's subject.
+      // AND THE LAST EIGHT CLOSED IN ROUND 23, under R23-H2-01. This read 1,192
+      // and the residual it named was the eight `file:` rows whose password
+      // spells a `\` — `file:svc:hun\ter2@api.test/v1` and its `/`, `///`, `\`
+      // and `:8443` siblings. It was 12 before R20-ORCH-01 closed the four
+      // `git:` rows, and the eight survived because the needle was the WHOLE
+      // path span in the PARSER's spelling, `svc:hun/ter2@`, which no message
+      // quoting the caller's own text can ever match.
       //
-      // `rawRemoved` is a non-vacuity FLOOR on how much the redactor removes,
-      // so closing four more credentials must raise it. It is pinned exactly,
-      // not as a bound, because a bound stays green while the number falls.
-      rawRemoved: 1192,
-      // And on none of the 1,188 does any reader-recoverable spelling survive.
+      // `hiddenUserinfos` now emits a span AND its segments, so `ter2@` — the
+      // segment on the far side of the folded `\`, spelled the same way in both
+      // texts — is a needle of its own, and removing it takes the password's
+      // tail out of the quote. Measured against the two halves of round 23's
+      // fix separately: the segment union alone moves all eight, and the seam's
+      // spill alone moves none of them.
+      //
+      // `rawRemoved` NOW EQUALS `checks`, which is the strongest form this
+      // count can take: every corpus row loses its password under both
+      // quotings. It stays a non-vacuity guard on the empty map below, and it
+      // stays pinned exactly rather than as a bound — a bound stays green while
+      // the number falls back to 1,192.
+      rawRemoved: 1200,
+      // And on none of the 1,200 does any reader-recoverable spelling survive.
       spellingOnly: [],
     });
   });

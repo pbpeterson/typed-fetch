@@ -156,8 +156,9 @@ const ROWS: readonly Row[] = [
     message: "",
     secret: "hunter2",
   },
-  // The recorded `file:` residual, pinned by its channel MEMBERSHIP rather than
-  // by a count, so a round that widens it or narrows it comes here first.
+  // The `file:` residual round 20 recorded and round 23 closed, pinned by its
+  // channel MEMBERSHIP rather than by a count, so a round that reopens it comes
+  // here first. The membership was fourteen renders and is now none.
   {
     label: "file backslash",
     url: `file:///svc:hun${BACKSLASH}ter2@api.test/v1#anchor`,
@@ -274,9 +275,24 @@ describe("THE SENTINEL — the exact answer, and the exact channels, for twelve 
     // whole subject is over-redaction, and an over-redaction assertion is blind
     // to a leak. The exact text is the one judge that sees both.
     //
-    // AND THE CHANNELS ARE A MEMBERSHIP, not a count. `file backslash` is the
-    // recorded residual and it names its fourteen renders, so a round that
+    // AND THE CHANNELS ARE A MEMBERSHIP, not a count. `file backslash` was the
+    // recorded residual and it named its fourteen renders, so a round that
     // widens the class or narrows it has to move this list.
+    //
+    // AND ROUND 23 NARROWED IT TO NOTHING. This row survived round 22's own
+    // 198-line rewrite of this file unmoved, and it moves now because the
+    // behaviour genuinely changed: R23-H2-01 made `hiddenUserinfos` emit a path
+    // span AND its segments, so `ter2@` is a needle in the spelling the caller
+    // wrote, the message reads `file:///svc:hun\api.test/v1`, and `hun\ter2` is
+    // in none of the twenty-two renders. The old needle was the whole span in
+    // the PARSER's spelling, `svc:hun/ter2@`, which no quote of the caller's
+    // text could match — which is why the fourteen renders existed at all.
+    //
+    // THE HEAD IS WHAT IS LEFT, and the message is pinned as exact text rather
+    // than as "no secret", so `hun\` standing where the password began is
+    // visible in this ledger to anyone who reads it. Stop emitting the segments
+    // and both halves of this row go back at once: the message to the caller's
+    // url verbatim, and the channels to the fourteen named renders.
     const ledger = ROWS.map((row) => {
       const text = textOf(row);
       return {
@@ -322,23 +338,8 @@ describe("THE SENTINEL — the exact answer, and the exact channels, for twelve 
       },
       {
         label: "file backslash",
-        message: messageFor(`file:///svc:hun${BACKSLASH}ter2@api.test/v1`),
-        channels: [
-          "2 util.inspect at default options",
-          "2 util.inspect at unlimited depth",
-          "2 util.inspect with showHidden",
-          "2 util.inspect with colors",
-          "2 util.inspect nested",
-          "2 util.inspect in an array",
-          "3 String(error)",
-          "3 template interpolation",
-          "3 error.toString()",
-          "3 string concatenation",
-          "4 error.message",
-          "6 structuredClone",
-          "6 structuredClone with showHidden",
-          "7 the fatal-exception printer",
-        ],
+        message: messageFor(`file:///svc:hun${BACKSLASH}api.test/v1`),
+        channels: [],
       },
       {
         label: "mailto",

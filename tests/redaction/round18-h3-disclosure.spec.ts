@@ -1125,11 +1125,33 @@ describe("the third judge, over the populations this lane draws", () => {
     // `causedByRewrite`, `partial` and `moved` are untouched, which is the
     // second half of the claim: the rewrite axis, the partial axis and the slot
     // axis do not move when the region rule and the seam do.
+    //
+    // BOTH SURVIVAL COUNTS FELL AGAIN IN ROUND 23, under R23-H3-01, and this
+    // move is one-directional in a way round 20's was not: `whole` falls by 407
+    // and `transformed` by 11, and NO row goes the other way. 418 of the 86,880
+    // carried secrets stop reaching the emitted url and none starts, so 22,813
+    // survivors became 22,395. 1,414 of the 140,640 answers changed.
+    //
+    // `seamUserinfo` forwards the SPILL to `seamSpan` now, so a reference that
+    // brings its own authority opens the seam even where the parser built a
+    // host out of it, and the seam runs to the last `@` in the path.
+    // `//https://cdn.test/PWSENTINEL18/@internal.test/v1` emitted
+    // `/PWSENTINEL18/@internal.test/v1` and now emits `/v1`. Read off the 418
+    // by the body planted in them: 406 carry `PWSENTINEL18`, 5 `PW SENT18`, 3
+    // `PW<TAB>SENT18`, 3 `PWSENTINEL18\x` and 1 `PWSENTINEL18/x` — so the 11
+    // that leave `transformed` are the space and tab bodies the parser rewrites,
+    // and every body this lane plants loses ground.
+    //
+    // AND `reportedCredential` HELD AT 176 THROUGH IT, across three rounds that
+    // have now moved `whole` by 1,266, 621 and 407. That is still the axis this
+    // test exists to guard, and it is still asserted exactly: a change that let
+    // one real credential through turns it red at 177. `causedByRewrite`,
+    // `partial` and `moved` did not move either.
     expect(gradeEscapes(drawn())).toEqual({
       size: 140_640,
       carried: 86_880,
-      whole: 13_882,
-      transformed: 8_931,
+      whole: 13_475,
+      transformed: 8_920,
       causedByRewrite: 0,
       partial: 4,
       moved: 0,

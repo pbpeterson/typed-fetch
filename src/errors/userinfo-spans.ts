@@ -823,8 +823,16 @@ function popsBefore(text: string, start: number): number {
 /**
  * Where the userinfo of the authority at `from` ends, or `-1` when it holds
  * none. One answer of {@link seamSpan}'s loop.
+ *
+ * `spilled` says the caller's OWN authority text is in this path, which is the
+ * one state in which the fallback below needs no evidence from the text: the
+ * caller wrote every character in front of the first `/` they typed as
+ * authority, so a solidus the path spells there is one the PARSER folded and not
+ * a segment boundary anybody wrote. See {@link spellsCredentialHead} for the
+ * evidence the other state has to find, and `seamUserinfo` in `./redact-url`
+ * for who answers this question.
  */
-function seamUserinfoEnd(path: string, from: number): number {
+function seamUserinfoEnd(path: string, from: number, spilled: boolean): number {
   const term = authorityEnd(path, from);
   // The last `@` before the authority ends is where the parser splits userinfo
   // from host, so it is where the span ends. Asked of the TEXT rather than of
@@ -840,7 +848,25 @@ function seamUserinfoEnd(path: string, from: number): number {
   // none in front of `from` and the seam closes. Over-redaction is the safe
   // direction, and where the authority's own end is a solidus the caller never
   // wrote there is no narrower end to read.
-  const folded = spellsCredentialHead(path, from, term) ? path.lastIndexOf("@") : -1;
+  //
+  // AND A SPILL IS THAT STATE WITHOUT A SECOND SOLIDUS TO PROVE IT, which is
+  // round 23's R23-H3-01. R20-H4-08 closed the one-`\` shape through the colon
+  // question below; write the SECOND one and the parser folds it too, so
+  // `https://CORP\alice\service:hunter2@api.test/v1` has the pathname
+  // `/alice/service:hunter2@api.test/v1`, {@link authorityEnd} stops at a
+  // segment boundary the caller never typed, and the colon question is asked of
+  // `alice` — which holds none. The fallback was refused and no other reader
+  // covers the text: `service:` is not a hierarchical scheme, so no region opens
+  // under one solidus and `hunter2` reached `toJSON().url` and 16 of 22 renders,
+  // on 120 of 180 grid rows against 0 for the one-`\` control.
+  //
+  // SO THE SPILL ANSWERS FOR ITSELF and the colon is asked only where nothing
+  // spilled — which keeps the Windows drive letter exactly where round 13 put
+  // it, since `file:///Users/alice@corp/report.pdf` has an EMPTY host and no
+  // spill at all. Widening the colon question instead is the edit
+  // `round23-h3-disclosure.spec.ts` names as the fifth revert: it eats that
+  // path's head and emits `file:///corp/report.pdf`.
+  const folded = spilled || spellsCredentialHead(path, from, term) ? path.lastIndexOf("@") : -1;
   return folded > from ? folded : -1;
 }
 
@@ -936,6 +962,14 @@ function spellsCredentialHead(path: string, from: number, term: number): boolean
  * `file:///c:/Users/alice@corp/x` has no `@` before its end at all and the
  * question is never even asked.
  *
+ * `spilled` IS THE CALLER'S ANSWER TO WHETHER THAT BOUND IS THEIRS. It is the
+ * one fact the path cannot report — a folded `\` and a typed `/` are the same
+ * character here — so the decision stays with `seamUserinfo` in `./redact-url`,
+ * which reads the raw url, and this function is told rather than asked. The
+ * default is `false`, which is the answer for every url whose authority the
+ * parser read where the caller wrote it. {@link seamUserinfoEnd} holds what the
+ * flag buys and what refusing it cost.
+ *
  * AND IT IS ASKED AGAIN OF WHAT ITS OWN ANSWER LEAVES BEHIND, for the reason
  * {@link userinfoSpans} asks its two questions again: this span is removed from
  * a text that is REJOINED to the origin's solidi, so what follows the span
@@ -947,11 +981,11 @@ function spellsCredentialHead(path: string, from: number, term: number): boolean
  *
  * @internal
  */
-export function seamSpan(path: string): Span | null {
+export function seamSpan(path: string, spilled = false): Span | null {
   const start = pastSolidi(path, 0);
   let end = -1;
   for (let from = start; ; ) {
-    const at = seamUserinfoEnd(path, from);
+    const at = seamUserinfoEnd(path, from, spilled);
     if (at < 0) break;
     end = at + 1;
     from = pastFiller(path, end, DOT_SEGMENTS);

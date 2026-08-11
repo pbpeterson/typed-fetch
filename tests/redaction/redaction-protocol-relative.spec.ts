@@ -124,8 +124,29 @@ describe("R12-H3-01 controls — where the line sits today", () => {
   test("a protocol-relative url with a REAL host loses an embedded credential", () => {
     // The same two solidi, but the authority the parser builds from them is a
     // host rather than the embedded scheme, so the embedded `://` stays in the
-    // path and the scan reaches it.
+    // path and the scan reaches it. The credential goes either way, which is
+    // the whole of what this control is for.
+    //
+    // WHAT GOES WITH IT MOVED, and round 23's R23-H3-01 is what moved it. This
+    // read `/go/https://internal.test/v1`: the seam was refused outright
+    // wherever the parser had a host, so only the region scan answered and it
+    // removed `svc:hunter2@` alone. `seamUserinfo` now forwards the SPILL to
+    // `seamSpan`, and a relative reference that brings its own authority is
+    // spilled — so the seam is asked here too, and a seam span runs from the
+    // start of the path to the last `@` inside it. `go/https://` goes with the
+    // credential.
+    //
+    // OVER-REDACTION, AND NO HOST IS CLAIMED. The answer is a path with no
+    // authority at all, exactly as before: `internal.test` was a path segment
+    // in the old answer and is a path segment in the new one, so no reader of
+    // this record gains a host the caller did not write. Refuse the spill again
+    // and this goes back to the old, narrower answer.
     expect(redactUrl(`//api.test/go/https://svc:${PASSWORD}@internal.test/v1`)).toBe(
+      "/internal.test/v1",
+    );
+    // CONTROL for the seam's own trigger: with no `@` in the path there is no
+    // seam span, and `go/https://` stays.
+    expect(redactUrl(`//api.test/go/https://internal.test/v1`)).toBe(
       "/go/https://internal.test/v1",
     );
   });
