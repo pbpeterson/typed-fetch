@@ -10,6 +10,8 @@ protocol-relative reference, or a bare `//` with no scheme. Upgrade past
 this release to close every shape below. `SECURITY.md` lists what remains
 open after the fixes land.
 
+<!-- redaction-directions: removes-more -->
+
 ### Security
 
 - **`redactUrl` now opens a credential-hiding region everywhere the URL
@@ -120,6 +122,87 @@ open after the fixes land.
   `JSON.stringify(error)`, `util.inspect(error)`, and `structuredClone`. The
   pass now reads this url's own userinfo in the caller's spelling as well as
   the parser's.
+- **That same pass now covers a `file:` url under fewer than two solidi, and
+  a scheme token that a tab, CR, or LF breaks.** It read this url's OWN head
+  with the rules written for a colon found INSIDE a path. Those rules open a
+  region at a scheme colon under fewer than two solidi only for the five
+  schemes the URL Standard gives an authority state, which excludes `file:`
+  on purpose, and they do not skip the tab, CR, and LF that the parser
+  removes from the whole input before it reads anything. Both answers are
+  correct for a path and wrong for the url's own scheme colon, which is the
+  one place the parser has already committed to reading an authority. So
+  `file:/svc:hun ter2@api.test/v1` and `htt<TAB>ps:/svc:hun ter2@api.test/v1`
+  produced no needle for the caller's spelling, and the password reached
+  `message`, `toJSON().message`, `stack`, `String(error)`,
+  `JSON.stringify(error)`, `util.inspect(error)`, and `structuredClone`. Both
+  urls are one url with a cleanly spelled twin — `new URL` answers
+  `file:///svc:hun%20ter2@api.test/v1` and
+  `https://svc:hun%20ter2@api.test/v1` — and the twin never leaked, so the
+  character the caller typed decided it. The head is now asked its own
+  question: the parse committed to an authority at that offset, so the answer
+  is the URL Standard's own split, the last `@` before the authority ends.
+- **A `\` inside a `file:` password no longer reaches `toJSON().url`.** A
+  `file:` url has an empty host, so its credential lands in the path and the
+  seam between the emitted origin and that path is what removes it. The seam
+  read to the first `/`, `\`, `?`, or `#`, and `file:` is a special scheme,
+  so a `\` the caller wrote inside the password had already been folded into
+  a `/` before the seam saw it. The authority therefore appeared to end in
+  the middle of the password, no `@` sat before that end, and the whole
+  credential was emitted as path:
+  `redactUrl("file:///svc:hun\ter2@api.test/v1")` was
+  `file:///svc:hun/ter2@api.test/v1`, while the same password spelled `%5C`
+  was removed in full. Both answer `file:///api.test/v1` now. This one
+  reaches the record a structured logger writes, not only the message. The
+  seam falls back to the path's last `@` only where the first segment holds a
+  colon that no Windows drive letter wrote, so
+  `file:///c:/Users/alice@corp/report.pdf` keeps every byte. See
+  `SECURITY.md` for the over-redaction that fallback costs.
+- **A password behind a leading backslash no longer survives under a special
+  scheme.** Every hierarchical scheme is special, and under a special scheme
+  the authority state ends on `\` exactly as it ends on `/`. So
+  `https://alice:\hunter2@api.test/p` parses with the host `alice`, no
+  username, no password, and the path `/hunter2@api.test/p`. The parser is
+  right and the caller still wrote a credential: `hunter2` reached
+  `error.message` under every spelling a platform can quote, and
+  `toJSON().url` kept it too, because the url has an authority of its own so
+  the seam was never asked and the path spells no mark for a region to open
+  on. The redactor now asks the raw url whether its own authority SPILLED
+  into the path, and reads the seam where it did. The record is
+  `https://alice/api.test/p`.
+- **An empty password's colon no longer costs an embedded url the authority
+  it names.** The rule that keeps an embedded host behind `https://` asks
+  whether the text at the region's start reads as a host and a port. It
+  accepted the colon of an EMPTY password as that host-and-port colon and
+  declined to suppress the colon rule, so the span ran on to a later `@` and
+  the record named a handle in place of the host:
+  `https://api.test/go/https://APIKEY:@media.test:8443/users/@alice` emitted
+  `https://api.test/go/https://alice`, and the same url without the colon
+  kept `media.test:8443`. `redactUrl` now removes an empty password's colon
+  from the reading that suppresses the colon rule, so
+  `https://APIKEY:@host/` and `https://APIKEY@host/` are recorded alike.
+- **A message no longer loses every `:@` it carries.** Reading this url's own
+  authority in the caller's spelling made the two-character span `:@` a
+  needle, because the URL Standard erases an empty userinfo —
+  `new URL("https://:@api.test/v1").href` is `https://api.test/v1` — and a
+  needle is deleted from a message wherever it appears. A message reading
+  `ratio 3:@4; key:@value` became `ratio 34; keyvalue`. `@` alone was already
+  refused for exactly that reason; `:@` names no credential either, and an
+  empty userinfo is now removed only where a solidus opens an authority in
+  front of it. No released version carries this shape: it came from a build
+  inside this unreleased window.
+- **A redirect target that a server chose no longer costs one redaction pass
+  per embedded url.** A credential-hiding region ended at the three literal
+  characters `://`, and `://` is one SPELLING of a mark this module opens
+  over any solidus count. A path spelling `https:/@` per unit therefore held
+  no region bound anywhere: every region ran to the end of the text, every
+  region's only candidate was the last `@` of the whole text, and each pass
+  removed one `@`. An 8 KB `response.url` cost 1,001 rebuild passes and
+  999,000 parses in one error construction, and paid it again on every
+  `toJSON()`, while the SAME embedded url spelled with two solidi cost 2
+  passes and 1,998 parses. A region now ends where the next scheme mark opens
+  an authority, under any solidus count, so the one-solidus spelling costs 2
+  passes and 1,997 parses. `response.url` after a redirect is text the server
+  chose, so the shape of that text is a remote party's to pick.
 
 ### Changed
 

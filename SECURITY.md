@@ -129,12 +129,17 @@ limit found in the source against the rule above.
   port, and a case-folded host are three such spellings. The query or
   fragment byte in that spelling survives in `error.message`, and in
   `toJSON().message`, which is the record a structured logger writes. A
-  PASSWORD does not survive it. The url's own userinfo is removed in the
-  spelling the caller wrote as well as in the spelling the parser writes, so
-  a password holding a space, a non-ASCII letter, or any other character the
-  parser percent-encodes inside a userinfo goes even when the whole-url
-  replacement finds no match. See `redactUrlInMessage`'s own comment for the
-  full best-effort contract.
+  PASSWORD THE PARSER READS AS USERINFO does not survive it. The url's own
+  userinfo is removed in the spelling the caller wrote as well as in the
+  spelling the parser writes, so a password holding a space, a non-ASCII
+  letter, a reverse solidus under a scheme the URL Standard does not call
+  special, or any other character the parser percent-encodes inside a
+  userinfo goes even when the whole-url replacement finds no match. The
+  qualifier is load-bearing: where the parser reads NO userinfo, this pass
+  has nothing it can name as a credential. A `file:` url is the first such
+  shape, because `file:` has no authority state and can carry no
+  credentials; a url the parser rejects outright is the second. See
+  `redactUrlInMessage`'s own comment for the full best-effort contract.
 
   `error.url` keeps every byte regardless, because it is the raw href — see
   the escape-hatch bullet below. Two residuals are left in what `redactUrl`
@@ -194,6 +199,24 @@ limit found in the source against the rule above.
   under the same count, for the reason residual 2 above states. This
   narrowing is deliberate. It stops `/a:/b` from being read as an authority,
   and it also stops `/a:/b@c` from losing a path segment it must keep.
+- **A `file:` path whose FIRST segment holds a colon that is not a Windows
+  drive letter, and whose later text holds an `@`, loses everything up to
+  that `@`.** `file:///a:b/c/mail@example.com/x` emits
+  `file:///example.com/x`. The emitted record is a path the request never
+  used, and its only remaining segments are text taken from the far side of
+  an `@`. It is the price of reading a solidus the parser folded out of a
+  `\` as part of the authority: `file:` is special, so the parser has
+  already turned `file:///svc:hun\ter2@api.test/v1` into
+  `file:///svc:hun/ter2@api.test/v1` before the seam sees it, the authority
+  therefore appears to end inside the password, and the seam cannot tell
+  that solidus from one the caller typed. Falling back to the path's last
+  `@` is what withholds the credential, and over-redaction is the safe
+  direction. The fallback is asked only where the first segment's colon is
+  not a drive letter, so `file:///c:/Users/alice@corp/report.pdf` and
+  `file:///C:/c/mail@example.com/x` keep every byte, and a colon in any
+  later segment is not read at all:
+  `file:///a/b:c/mail@example.com/x` is a fixed point.
+  `tests/redaction/round20-h3-disclosure.spec.ts` pins both sides.
 - **`error.url` and `error.headers` hold the raw values.** They are the escape
   hatches, non-enumerable so no structured logger reaches them by accident.
 - **A forged brand passes a type guard.** The guards answer "does this claim to
