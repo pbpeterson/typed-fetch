@@ -1293,6 +1293,115 @@ are defects in the instruments the audit itself built.
 - **Coverage held at 100 on all four axes** through every change, and the suite
   grew from 3,142 to 3,224 tests.
 
+### What round 19 settled
+
+Round 19 aimed every lane at the SURFACE BETWEEN fixes rather than at the last
+fix, because round 18's largest finding was two fixes each correct alone and
+wrong together. Ten findings, one critical, three high. The critical one had
+been reachable since before the audit reopened, and eighteen rounds could not
+see it, because no generator in this repository could draw the shape it lives
+in.
+
+- **A password the URL parser re-spells reached every disclosure channel.**
+  R19-H3-01, critical. `new NetworkError("request to https://svc:hun ter2@api.test/v1 failed…", { url })`
+  — the shape `redactUrlInMessage`'s own comment is written for — left the
+  password in `error.message` and in `toJSON().message`, on 16 renders across
+  all seven channels. `userinfosOf` scanned the raw text only from
+  `afterOwnAuthority(url)` onward, and took the url's OWN userinfo from
+  `parsed.username` and `parsed.password`, which the parser had already
+  rewritten to `hun%20ter2`. With the ASCII password `hunter2` the two
+  spellings coincide and every one of the same four message spellings IS
+  cleaned. `userinfosOf` now also scans the url's own authority in the
+  caller's raw spelling. Measured over 842,240 rows: the password survived on
+  42,240 rows before and on none after, the only rows that move are those
+  42,240, and no row grew, lost a host the message named, or invented one.
+  The generator gap is the lesson: every corpus in this repository planted a
+  userinfo whose raw spelling already equalled the parser's.
+- **An own non-enumerable `signal` never reached a forwarding transport.**
+  R19-H1-01, high. Round 18 fixed own-versus-inherited; the real invariant is
+  spread-visibility. `snapshotRequestInit` tested `Object.hasOwn` while the
+  consumer is `{ ...init }`, which copies own ENUMERABLE keys, so
+  `plan.init.signal` and `plan.signal` both reported the caller's signal while
+  the spread carried none — on BOTH branches. `abort()` cancelled nothing, the
+  server wrote the whole response, and the envelope reported SUCCESS for a
+  request the caller aborted. That is R18-H1-01's consequence reached through
+  the condition that replaced it. The branch now asks whether the descriptor is
+  enumerable, and the materialized entry is always written `enumerable: true`.
+- **The colon search walked the rest of the url, once per region.** R19-H2-01,
+  high. `looksLikeUserinfo` asked `text.indexOf(":", start)` with no floor,
+  although its own third bullet reads "a `:` BEFORE the first `/`" and `slash`
+  is that bound one line above. A `Location` of `/x` plus `//a` repeated N
+  times examined 6,019,009 characters for a 6,021-character url, and
+  24,038,009 inside one `toJSON()` of a 12 KB redirect target the SERVER chose.
+  It is round 18's own remedy applied one call up the stack: round 18 clipped
+  the two BACKWARD searches inside `readsAsHostAndPort` and left the two
+  FORWARD searches in its only caller unclipped, so the instrument it built to
+  prove the first is structurally blind to the second.
+- **One url, five spellings of its mark, three answers — and RES-7 closed.**
+  R19-H2-02, high. `popsBefore` derived the crossing budget from the number of
+  solidi in front of a region, which the URL grammar discards: under a special
+  scheme `https:`, `https:/`, `https://`, `https:///` and `https:\\` are one
+  url with one `href`, and `userinfo-spans.ts`' own header says so. The module
+  answered differently, and the one-solidus spelling — the one every
+  slash-collapsing proxy and every `path.join` produces — dropped
+  `cdn.test:8443` and left the handle `alice` as the last thing the record
+  named, which is R17-H3-01 verbatim, reachable end to end through a 302
+  `Location`. The docs grill confirmed the collapse against the URL Standard's
+  special-authority states, and named two exceptions the fix must honour:
+  `file:` never reaches those states, and a same-scheme base resolves three
+  spellings three ways. The hunter's proposed remedy was measured and REJECTED
+  — constants 0 through 3 in the `popsBefore` arm left the split at 1,440 of
+  6,912 in every case, because 480 splitting families carry no `@` at all and
+  the outer parse alone produces the divergence. What landed instead: a region
+  whose mark is NOT a colon is the URL Standard's protocol-relative authority,
+  so it may buy the parser's reading. That closed RES-7, which round 18
+  refused to close: residue 504 rows to 0, misleading records 414 to 0, no
+  secret lost, at a measured cost of 1,266 rows that keep a path segment behind
+  a bare `//` authority, none of them a credential the platform reports.
+- **Three more gates that could not fail.** R19-H4-02, R19-H4-03, R19-H4-04,
+  all medium, and all the R16-ORCH-01 family for the fourth, fifth and sixth
+  time. `CONTRIBUTING.md` named two runtime smokes where CI declares three, and
+  no gate read either roster. Coverage acceptance item 4 — every `v8 ignore`
+  range carries a justification — was enforced by nothing, and a range that
+  states no condition takes a wholly untested `if` from 75 percent statements
+  to 100 on all four axes with the coverage gate exiting 0. The coverage
+  exclusion list rests on the sentence "CI executes it under that runtime", and
+  deleting the whole `bun-smoke` job left every roster gate green: the file was
+  excluded from the gate AND executed by nothing, while the identical mutation
+  on the Deno half was red. The shape is now named: what a gate guards has a
+  pin, and the PREMISE that pin rests on has none.
+- **Two round-19 claim tests could never go green, and that is a defect in the
+  audit's own instrument.** R19-H1-02 and R19-H4-01 each hardcoded the fixture
+  they audit, so no repair could satisfy them: one demanded witnesses for a
+  direction its own finding said had none, and the other copied the pin's
+  fixture instead of reading it. Both were rewritten by the orchestrator to
+  read their subject out of the committed source, and both were then verified
+  by BREAKING what they guard. A gate whose subject is another test must READ
+  that test, never copy it.
+- **`redact-url.ts` said a miss cannot reach the record.** R19-H3-02, low. The
+  comment claimed `toJSON()` redacts `url` independently so a miss never
+  reaches the record, while `toJSON()` copies `message` verbatim and
+  `SECURITY.md` said the opposite in the same breath. The comment now points at
+  `SECURITY.md` rather than restating the residual.
+- **The `[Unreleased]` block named a direction no input took.** R19-H4-01,
+  medium. Semver rule 8 obliges the block to name every direction the output
+  moved; it does not permit naming one that did not. A rebuild of the published
+  2.0.1 tree found the `file:` cases byte-identical to HEAD, and of 2,300
+  records that moved, every one removed more. The clause is requalified as a
+  regression introduced and fixed inside the unreleased window. When the
+  orchestrator then briefed a repair agent that round 19's own fix supplied the
+  missing direction, that agent falsified the brief by measurement — 0 rows of
+  140,640 where this tree's record is longer than 2.0.1's, because 2.0.1 opened
+  no region at a bare `//` at all — and wrote the qualified sentence instead.
+  A brief is a hypothesis too.
+- **Coverage held at 100 on all four axes** through every change, and the suite
+  grew from 3,224 to 3,285 tests. The gate ran 15 of 15 green, with Deno 2.9.5
+  present and both Deno rows executed.
+
+A note on how round 19 committed. Each round-19 spec file carries more than one
+finding, so the commits are grouped by fix lane rather than one per finding.
+The full gate ran on the complete tree, not on each intermediate commit.
+
 ## The audit files, renamed by subject
 
 The audit closed at round 15. Each round-numbered spec file above still holds
