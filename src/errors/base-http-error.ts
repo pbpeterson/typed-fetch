@@ -358,7 +358,11 @@ export abstract class BaseHttpError extends Error {
     // `error.headers.set(...)` edit the `Response` a consumer still holds
     // through an injected `fetch`, which the `readonly` here denies. One
     // allocation per error buys that. The copy is faithful: a `Headers` init
-    // preserves every duplicate `set-cookie` entry. The identity record holds
+    // preserves every duplicate `set-cookie` entry. Faithful is not byte for
+    // byte: the init normalizes each value per the Fetch Standard, so trailing
+    // tabs and spaces do not survive. RFC 9110 puts that whitespace outside the
+    // field value, and any `new Headers(response.headers)` drops it the same
+    // way. The identity record holds
     // the response's own `Headers` and never this copy, so two errors built
     // from one response get one copy each and cannot edit each other's.
     define(this, "headers", new Headers(identity.headers));
