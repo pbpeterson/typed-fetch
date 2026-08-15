@@ -354,7 +354,55 @@ export type TypedFetchOptions = NativeRequestOptions & {
   // fetch accepts any method string (and normalizes case); the union only
   // drives IntelliSense.
   method?: HttpMethods | (string & {});
-  /** Override the fetch implementation (testing, DI, custom agents). */
+  /**
+   * Override the fetch implementation (testing, DI, custom agents).
+   *
+   * READ AS AN OWN PROPERTY. A `fetch` reached through the prototype chain is
+   * IGNORED, and the request goes to the global `fetch` — with the caller's
+   * headers on it. This slot differs from every other option for that reason:
+   * `method`, `headers`, `body`, and `signal` are WebIDL dictionary members, and
+   * the platform reads those through the prototype chain, which `typedFetch`
+   * preserves. `fetch` is this library's own extension, and a single
+   * `Object.prototype.fetch = …` write anywhere in the process would otherwise
+   * redirect every request in it, including calls that pass no options at all.
+   *
+   * So set it as an own property:
+   *
+   * ```ts
+   * import { typedFetch, type TypedFetchOptions } from "@pbpeterson/typed-fetch";
+   *
+   * declare const url: string;
+   * declare const options: TypedFetchOptions;
+   * declare const transport: typeof fetch;
+   *
+   * await typedFetch(url, { ...options, fetch: transport });
+   * await typedFetch(url, Object.assign({}, options, { fetch: transport }));
+   * ```
+   *
+   * A class instance passed as `options` does NOT work: a method lives on the
+   * prototype, so this slot never sees it. Reading the method out of the
+   * instance makes it own, but a plain read also drops `this`, so bind it or
+   * wrap it in an arrow.
+   *
+   * ```ts
+   * import { typedFetch } from "@pbpeterson/typed-fetch";
+   *
+   * declare const url: string;
+   *
+   * class HttpClient {
+   *   // On the PROTOTYPE, and it uses `this`.
+   *   async fetch(...args: Parameters<typeof fetch>): ReturnType<typeof fetch> {
+   *     return globalThis.fetch(...args);
+   *   }
+   * }
+   * const client = new HttpClient();
+   *
+   * await typedFetch(url, client); // IGNORED — inherited, so the global fetch runs
+   * await typedFetch(url, { fetch: client.fetch }); // own, but `this` is undefined
+   * await typedFetch(url, { fetch: client.fetch.bind(client) }); // correct
+   * await typedFetch(url, { fetch: (...args) => client.fetch(...args) }); // correct
+   * ```
+   */
   fetch?: typeof fetch | undefined;
 };
 
