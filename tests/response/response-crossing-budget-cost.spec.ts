@@ -528,15 +528,9 @@ describe("the relative branch, on both sides", () => {
     expect(redactUrl(`${"//a".repeat(8)}/x`)).toBe("/x");
   });
 
-  test("a relative request url reaches the branch, and the branch redacts it", async () => {
-    const { error } = await typedFetch("//svc:hunter2@internal.test/v1?token=s3cret");
-    if (!error || isHttpError(error)) throw new TypeError("expected a pre-response error");
-
-    expect(error.url).toBe("//svc:hunter2@internal.test/v1?token=s3cret");
-    expect(error.toJSON().url).toBe("/v1");
-    expect(JSON.stringify(error)).not.toContain("hunter2");
-    expect(JSON.stringify(error)).not.toContain("s3cret");
-  });
+  // The caller-side half of this claim — a relative request url reaching the
+  // branch — is pinned in `response-loop-pass-cost.spec.ts`, which states both
+  // halves of the reachability argument in its own comments.
 
   test("a server cannot reach it: a relative Location still leaves response.url absolute", async () => {
     const server = http.createServer((request, response) => {

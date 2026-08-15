@@ -57,21 +57,10 @@ describe("uncovered format controls", () => {
     expect(channelsContaining(error, character)).toEqual([]);
   });
 
-  test("control: preserves joiners and variation selectors", () => {
-    const zwnj = "\u200c";
-    const zwj = "\u200d";
-    const variationSelector = "\ufe0f";
-    const error = new UnknownHttpError(
-      responseWithStatusText(`before${zwnj}mid${zwj}👩${variationSelector}after`),
-    );
-
-    for (const [channel, rendered] of Object.entries(publicChannels(error))) {
-      if (channel === "5 Object.keys") continue;
-      expect(rendered, `${channel} lost ZWNJ`).toContain(zwnj);
-      expect(rendered, `${channel} lost ZWJ`).toContain(zwj);
-      expect(rendered, `${channel} lost variation selector`).toContain(variationSelector);
-    }
-  });
+  // The control in the other direction — a legitimate joiner or variation
+  // selector SURVIVES every public channel — is the same loop over the same
+  // three characters, and it is owned by
+  // `response-format-controls-and-custody.spec.ts`.
 });
 
 describe("acceptance, retries, and wrapper custody", () => {

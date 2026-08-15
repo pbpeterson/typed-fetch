@@ -740,30 +740,10 @@ describe("the loop ends, and the relative branch stays the caller's", () => {
     expect(rebuilds).toBeGreaterThan(urls.length);
   });
 
-  test("the relative branch costs one resolution per authority the CALLER spelled", () => {
-    const resolutions = (url: string): number => {
-      const native = globalThis.URL;
-      let parses = 0;
-      class Watched extends native {
-        constructor(argument: string | URL, base?: string | URL) {
-          super(argument, base);
-          if (base !== undefined) parses += 1;
-        }
-      }
-      globalThis.URL = Watched as unknown as typeof URL;
-      try {
-        redactUrl(url);
-      } finally {
-        globalThis.URL = native;
-      }
-      return parses;
-    };
-
-    expect([8, 16, 32].map((groups) => resolutions(`${"//a".repeat(groups)}/x`))).toEqual([
-      8, 16, 32,
-    ]);
-    expect(redactUrl(`${"//a".repeat(8)}/x`)).toBe("/x");
-  });
+  // The relative branch's own arithmetic — one resolution per authority the
+  // caller spelled — is the same measurement over the same corpus in
+  // `tests/response/response-crossing-budget-cost.spec.ts`, which records the
+  // pre-fix differential beside it.
 
   test("a server cannot reach it: a relative Location leaves response.url absolute", async () => {
     const server = http.createServer((request, response) => {

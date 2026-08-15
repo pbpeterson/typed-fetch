@@ -1,6 +1,4 @@
 import { describe, expect, test } from "vitest";
-import { NotFoundError } from "../../src/errors/not-found-error";
-import { UnknownHttpError } from "../../src/errors/unknown-http-error";
 import { typedFetch } from "../../src/index";
 
 describe("public API probes", () => {
@@ -41,63 +39,14 @@ describe("public API probes", () => {
     expect({ ...(receivedInit as object) }).not.toHaveProperty("fetch");
   });
 
-  test("rejects a clone branch that is not a Response", async () => {
-    const response = new Response("payload", { status: 404 });
-    const fakeBranch = {
-      status: 404,
-      statusText: "Not Found",
-      url: "https://fake.invalid/branch",
-      headers: new Headers(),
-      body: null,
-      bodyUsed: false,
-    };
-    Object.defineProperty(response, "clone", {
-      configurable: true,
-      value: () => fakeBranch,
-    });
-
-    const error = new NotFoundError(response);
-    let copy: NotFoundError | undefined;
-    try {
-      expect(() => {
-        copy = error.clone();
-      }).toThrow(TypeError);
-    } finally {
-      await error.cancel();
-      if (copy) await copy.cancel();
-    }
-  });
-
-  test("rejects a clone branch that is the original Response", async () => {
-    const response = new Response("payload", { status: 404 });
-    Object.defineProperty(response, "clone", {
-      configurable: true,
-      value: () => response,
-    });
-
-    const error = new NotFoundError(response);
-    let copy: NotFoundError | undefined;
-    try {
-      expect(() => {
-        copy = error.clone();
-      }).toThrow(TypeError);
-    } finally {
-      await error.cancel();
-      if (copy) await copy.cancel();
-    }
-  });
-
-  test("filters deprecated invisible formatting controls from HTTP identity", async () => {
-    const response = new Response(null, { status: 599 });
-    Object.defineProperty(response, "statusText", {
-      configurable: true,
-      value: "pre\u206Avisible\u206Fpost",
-    });
-
-    const error = new UnknownHttpError(response);
-    expect(error.statusText).toBe("previsiblepost");
-    await error.cancel();
-  });
+  // The two clone-branch refusals this file used to drive \u2014 a branch that is
+  // not a Response, and a branch that IS the original \u2014 are owned by
+  // `tests/response/response-clone-branch-refusal.spec.ts` and
+  // `tests/response/response-foreign-clone-custody.spec.ts`, which assert the
+  // library's own refusal message and that the original stays readable.
+  // The U+206A/U+206F identity filter is owned by
+  // `tests/redaction/redaction-deprecated-format-controls.spec.ts`, which asks
+  // all five public channels rather than `statusText` alone.
 
   test("keeps a native Request usable when global Request is replaced after import", async () => {
     const request = new Request("data:text/plain,request-ok");

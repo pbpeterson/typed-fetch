@@ -1,5 +1,4 @@
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
 import { inspect } from "node:util";
 import { describe, test, expect } from "vitest";
 import {
@@ -419,13 +418,7 @@ describe.skipIf(!distExists)("every copy carries the same stamps", () => {
     }
   });
 
-  test("the declaration files still differ only in the specifier they import", () => {
-    const esm = readFileSync(new URL("../../dist/index.d.mts", import.meta.url), "utf8");
-    const cjs = readFileSync(new URL("../../dist/index.d.ts", import.meta.url), "utf8");
-
-    expect(esm.replaceAll("./errors/index.mjs", "./errors/index.js")).toBe(cjs);
-    expect(readFileSync(new URL("../../dist/errors/index.d.mts", import.meta.url), "utf8")).toBe(
-      readFileSync(new URL("../../dist/errors/index.d.ts", import.meta.url), "utf8"),
-    );
-  });
+  // That the two declaration files differ only in the specifier they import is
+  // asserted once, in `surface-cause-channels.spec.ts`, which carries the
+  // reason the comparison exists.
 });
