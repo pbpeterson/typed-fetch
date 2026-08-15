@@ -69,10 +69,11 @@ limit found in the source against the rule above.
   which is what this library returns them as. Do not copy `error.cause` into
   a log line. Do not pass an error to `structuredClone` or `postMessage`
   without removing `cause` first.
-- **A secret in a URL PATH SEGMENT survives in `error.url`.** The redactor
-  drops userinfo, the query, and the fragment, and keeps the origin and path.
-  Dropping the path would leave `url` unable to tell concurrent failures
-  apart. An embedded url inside that path is not a path segment.
+- **A secret in a URL PATH SEGMENT survives in `toJSON().url` and in every
+  message this library writes.** The redactor drops userinfo, the query, and
+  the fragment, and keeps the origin and path. Dropping the path would leave
+  `url` unable to tell concurrent failures apart. An embedded url inside that
+  path is not a path segment.
 
   A region opens where the URL Standard opens an authority: at two or more
   solidi under any scheme, at a SPECIAL scheme (`http`, `https`, `ws`, `wss`,
@@ -297,7 +298,22 @@ limit found in the source against the rule above.
   reports nowhere, and the spill is what takes it out of the record.
 
 - **`error.url` and `error.headers` hold the raw values.** They are the escape
-  hatches, non-enumerable so no structured logger reaches them by accident.
+  hatches, and both are non-enumerable, so a structured logger that walks own
+  ENUMERABLE properties does not record them.
+
+  Non-enumerable is not hidden. A reader that walks own property NAMES reaches
+  both slots, and it prints the raw `error.url` with its userinfo, its query,
+  and its fragment. Three such readers ship in ordinary tooling. The first is
+  `util.inspect(error, { customInspect: false, showHidden: true })`:
+  `customInspect: false` disables this library's hook, and `showHidden: true`
+  adds the non-enumerable slots, so the full href prints. The second is any
+  serializer that bypasses the hook the same way. The third is a test runner's
+  diff printer: vitest reads own property names, including the non-enumerable
+  ones, and it renders an error before its custom-inspect branch, so a failed
+  assertion on an error object can put the raw url in the report. Do not pass
+  an error to a serializer that reads a non-enumerable own property. Do not
+  publish a test report that renders an error from a real request.
+
 - **A forged brand passes a type guard.** The guards answer "does this claim to
   be one of ours?", which is what makes them work across package copies. See
   `docs/adr/0003-the-untrusted-fetch-conformance-boundary.md`.

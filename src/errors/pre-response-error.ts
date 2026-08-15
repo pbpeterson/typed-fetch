@@ -209,8 +209,10 @@ export function preResponseRecord(error: {
  * ONE call, for the reason `installInspect` gives for stamping its own three
  * hooks together: a class that receives one stamp and not the other is a class
  * whose channels disagree. `toJSON` covers `JSON.stringify`; the hooks cover
- * `console.log` and `util.inspect`, Node's fatal-exception printer, which prints
- * `cause` whatever its enumerability, and `String(error)`. The brand is what
+ * `console.log`, `util.inspect`, and `String(error)`. No hook covers Node's
+ * fatal-exception printer, which disables every one of them and prints `cause`
+ * whatever its enumerability. That printer is a residual `SECURITY.md` records,
+ * and property enumerability is the only control over it. The brand is what
  * makes the matching guard answer across package copies. See `./brand` and
  * `./inspect`.
  */
