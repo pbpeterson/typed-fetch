@@ -292,6 +292,8 @@ if (error instanceof NotFoundError) {
 
 Its `status` and `statusText` are not literal types. They reflect the values that the server sent.
 
+NOTE: `statusText` reports whatever the runtime exposes as the reason phrase, and Deno exposes none. Measured against an origin that answers `HTTP/1.1 599 Weird Status`: Node and Bun report `"Weird Status"`, Deno reports `""`. That is `Response.statusText` under a bare `fetch`, before this library sees it, so nothing here can restore it. Read `error.status` when the value must hold across runtimes.
+
 ```typescript
 import { typedFetch, isHttpError, UnknownHttpError } from "@pbpeterson/typed-fetch";
 
@@ -1005,7 +1007,7 @@ Instance properties:
 
 `statusText` does not copy the reason phrase from the server. The reason phrase, when the server sends one, occurs in `error.message`.
 
-This holds for the 40 dedicated classes. `UnknownHttpError` has no canonical label to give, so its `statusText` is the reason phrase the server sent, filtered and bounded. See [Handle an unknown status](#handle-an-unknown-status).
+This holds for the 40 dedicated classes. `UnknownHttpError` has no canonical label to give, so its `statusText` is the reason phrase the server sent, filtered and bounded — as far as the runtime exposes one, which Deno does not. See [Handle an unknown status](#handle-an-unknown-status).
 
 `headers` is a copy, not the `Headers` object of the response. A write through `error.headers` never reaches the response. The copy keeps every header, including a repeated `set-cookie`.
 
