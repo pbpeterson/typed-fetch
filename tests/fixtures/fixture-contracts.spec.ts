@@ -1,6 +1,6 @@
 import http from "node:http";
 import { describe, expect, test, vi } from "vitest";
-import { warnWhenDistMissing } from "../../fixtures/built-package";
+import { importBuilt, requireBuilt, warnWhenDistMissing } from "../../fixtures/built-package";
 import { everyChannel, leakingChannels, PASSWORD } from "../../fixtures/channels";
 import { useTestServer } from "../../fixtures/http-server";
 import { HOSTILE_SCENARIOS, URL_UNDER_TEST } from "../../fixtures/hostile-fetch";
@@ -323,6 +323,51 @@ describe("`warnWhenDistMissing` reports a missing dist by where it is running", 
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// built-package.ts — a built entry that will not load.
+//
+// `distExists` is probed ONCE, when a worker imports the fixture. An entry that
+// fails to load after that was there at the probe and is not there now, and the
+// platform's `Cannot find module …/dist/errors/index.mjs` names neither the
+// window nor what opened it.
+//
+// What opens it, measured: `tsup.config.ts` sets `clean: true`, so `pnpm build`
+// DELETES dist/ before rewriting it. Running a build against this working tree
+// while the suite runs removed six entries for 204 ms and the four declaration
+// files for 1.2 s, and two dist-gated specs imported inside that hole and failed
+// with the bare platform message. Both loaders therefore name the cause.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("a built entry that will not load names the window that swallowed it", () => {
+  const ABSENT = "dist/round24-entry-that-was-never-built.mjs";
+
+  test("the ESM loader names the concurrent build and keeps the platform error", async () => {
+    const raised = await importBuilt(ABSENT).then(
+      () => null,
+      (error: unknown) => error as Error,
+    );
+
+    expect(raised?.message).toContain(ABSENT);
+    expect(raised?.message).toContain("clean: true");
+    expect(raised?.message).toContain("WHILE the suite was running");
+    // The platform's own answer is kept, never replaced.
+    expect(String((raised?.cause as Error | undefined)?.message)).toContain("Cannot find module");
+  });
+
+  test("the CJS loader answers the same way", () => {
+    let raised: Error | null = null;
+    try {
+      requireBuilt(ABSENT);
+    } catch (error) {
+      raised = error as Error;
+    }
+
+    expect(raised?.message).toContain(ABSENT);
+    expect(raised?.message).toContain("clean: true");
+    expect((raised?.cause as Error | undefined)?.message).toBeDefined();
   });
 });
 
