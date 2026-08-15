@@ -406,7 +406,7 @@ function releasingLocalGates() {
  * A two-job workflow whose `downstream` job carries `keys` above its `runs-on:`.
  *
  * The job names here are the fixture's own, and deliberately not a real job's:
- * `scripts/round19-h4-gate.spec.mjs` reads every spec that names a job of
+ * `scripts/gate-mutation-ignore-ranges.spec.mjs` reads every spec that names a job of
  * `ci.yml`, so a fixture that borrowed a real name would answer that read.
  */
 const workflowWith = (...keys) =>
@@ -449,7 +449,7 @@ const DISABLING_SPELLINGS = [
 ];
 
 describe("the workflow readers, at every spelling YAML accepts", () => {
-  // R23-H4-01 and R23-H4-02. `scripts/round23-h4-gate.spec.mjs` drives both
+  // R23-H4-01 and R23-H4-02. `scripts/gate-mutation-yaml-spellings.spec.mjs` drives both
   // through mutated copies of the real workflows, and that is the proof that
   // matters. These rows name the spelling itself, so a reader that loses one
   // fails here with the spelling in the message instead of as an exit code.
@@ -735,7 +735,7 @@ describe("the runtime jobs the coverage exclusion list rests on", () => {
 // percent threshold the release gate enforces, so a range that states no
 // condition takes a wholly untested `if` from 75 percent statements and 50
 // percent branches to 100 on all four axes, with `pnpm coverage` exiting 0.
-// `scripts/round19-h4-gate.spec.mjs` drives that in a throwaway project.
+// `scripts/gate-mutation-ignore-ranges.spec.mjs` drives that in a throwaway project.
 //
 // Item 4 requires every remaining range to carry a written justification, and
 // until R19-H4-03 no spec, no gate script and no workflow step read a range at
@@ -905,7 +905,7 @@ describe("every `v8 ignore` range acceptance item 4 covers", () => {
   });
 
   test("BREAKING IT: the bare range that buys a false 100 percent is refused", () => {
-    // The mutation, in the exact shape `scripts/round19-h4-gate.spec.mjs` runs
+    // The mutation, in the exact shape `scripts/gate-mutation-ignore-ranges.spec.mjs` runs
     // through a project carrying this repository's own four thresholds: the
     // untested arm reports 100/100/100/100 and the coverage gate exits 0.
     const bare = [
@@ -994,7 +994,7 @@ describe("every `v8 ignore` range acceptance item 4 covers", () => {
 // `[Unreleased]`, which the same gate has just required to be empty.
 //
 // Both rows below run the refusal in this process. The end-to-end proof is
-// `scripts/round22-h4-gate.spec.mjs`, which drives the gate as a subprocess
+// `scripts/gate-mutation-skipped-jobs.spec.mjs`, which drives the gate as a subprocess
 // inside a scratch git repository, and no subprocess reaches the v8 instrument.
 // ---------------------------------------------------------------------------
 

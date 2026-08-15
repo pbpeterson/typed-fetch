@@ -53,7 +53,7 @@ limit found in the source against the rule above.
   reads as a path segment behind the embedded authority, which the path-segment
   residual below already records: 1,266 rows of a 140,640-url population keep
   such a segment, and on none of them does the platform report a credential.
-  `round18-h3-disclosure.spec.ts` and `round18-h2-response.spec.ts` pin the
+  `redaction-empty-userinfo.spec.ts` and `redaction-host-port-suppression.spec.ts` pin the
   closure, and turn red if it reopens.
 
 - **A credential can reach a crash dump through `error.cause`.** A platform
@@ -232,7 +232,7 @@ limit found in the source against the rule above.
   the same characters in the same order, and its base64 credential must go.
   Ending a region at the authority the parser reads keeps 2,425 further
   planted credentials of 4,375 in the emitted url, up from 750.
-  `tests/redaction/round16-h3-disclosure.spec.ts` pins the answer, so a change
+  `tests/redaction/redaction-invented-host-judge.spec.ts` pins the answer, so a change
   in either direction fails.
 
 - **A percent-encoded delimiter is not a delimiter, for a scheme colon and
@@ -279,7 +279,7 @@ limit found in the source against the rule above.
   `file:///C:/c/mail@example.com/x` keep every byte, and a colon in any
   later segment is not read at all:
   `file:///a/b:c/mail@example.com/x` is a fixed point.
-  `tests/redaction/round20-h3-disclosure.spec.ts` pins both sides.
+  `tests/redaction/redaction-raw-head-scan.spec.ts` pins both sides.
 
   THE COLON IS ASKED ONLY WHERE NOTHING SPILLED, and that is the wider
   half of this limit. Where the caller's own authority ran into the path —

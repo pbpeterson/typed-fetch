@@ -347,7 +347,7 @@ HTTP-error arm makes `error.text()` reject with `Body is unusable`, while
 differently after the handoff reaches this path, which is item 3 exactly. The
 release stays unconditional, because a skipped release strands a stream.
 
-`tests/request/round16-h1-request.spec.ts` pins both arms, and it pins the
+`tests/request/request-refusal-aftermath.spec.ts` pins both arms, and it pins the
 other side too: a value that no earlier call handed out is still released on a
 refusal.
 

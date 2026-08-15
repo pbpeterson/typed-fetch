@@ -357,7 +357,7 @@ function isSpecialScheme(text: string, colon: number): boolean {
  * colon, whatever the first one said. Round 20 gave the colon a second reader:
  * {@link nextSchemeAuthority} seeks the bound of a region over the same colons
  * {@link nextAuthority} opens on, and doubling seventeen characters per colon
- * put `//@h.test:1` repeated over the linear bound `round20-h2-response.spec.ts`
+ * put `//@h.test:1` repeated over the linear bound `redaction-embedded-mark-cost.spec.ts`
  * states. Compared in place the walk stops at the first character that differs,
  * which for a path segment is the first one.
  *
@@ -864,7 +864,7 @@ function seamUserinfoEnd(path: string, from: number, spilled: boolean): number {
   // spilled — which keeps the Windows drive letter exactly where round 13 put
   // it, since `file:///Users/alice@corp/report.pdf` has an EMPTY host and no
   // spill at all. Widening the colon question instead is the edit
-  // `round23-h3-disclosure.spec.ts` names as the fifth revert: it eats that
+  // `redaction-double-reverse-solidus.spec.ts` names as the fifth revert: it eats that
   // path's head and emits `file:///corp/report.pdf`.
   const folded = spilled || spellsCredentialHead(path, from, term) ? path.lastIndexOf("@") : -1;
   return folded > from ? folded : -1;
@@ -1111,7 +1111,7 @@ function schemeWroteTheMark(text: string, region: number): boolean {
  * {@link looksLikeUserinfo} then removes the same `@` on the next whole-string
  * rebuild because it has become the text's last one. 1,000 units took 1,001
  * rebuilds and 499,500 parses against 2 and 0, on a path a redirect chooses.
- * `round19-h2-response.spec.ts` reads both counts.
+ * `redaction-solidus-spelling-cost.spec.ts` reads both counts.
  *
  * TWO WALKS OVER ONE RUN, and the disjointness {@link beforeSolidi} argues for
  * is what pays for it: the runs two regions hang off are disjoint, so walking

@@ -1791,6 +1791,86 @@ number in this ledger can find the file it names.
 | `round14-h4-surface.spec.ts`          | `surface-raw-url-claim.spec.ts`                 | 14    |
 | `round15-h4-surface.spec.ts`          | `surface-message-guarantee.spec.ts`             | 15    |
 
+The fix rounds that followed the audit (rounds 1–6 of the public-API probes)
+and the second audit (rounds 16–23) closed the same way. The table below maps
+those names. Two files also moved: the six root-level `roundN-agent4-api`
+probes went into `tests/envelope/` and `tests/surface/`, and the H2 files from
+round 18 on went into `tests/redaction/`, because they test the redactor and
+use the response phase only as a delivery vehicle. One file was deleted:
+`tests/redaction/round3-agent3.spec.ts` repeated the assertions of
+`round3-agent4-api.spec.ts`, and the copy that survived is
+`tests/envelope/reentrant-construction-and-inherited-signal.spec.ts`.
+
+| Old name                          | New name                                                             | Round |
+| --------------------------------- | -------------------------------------------------------------------- | ----- |
+| `round1-agent1-signal.spec.ts`    | `request-late-option-mutation.spec.ts`                               | 1     |
+| `round2-agent1.spec.ts`           | `request-polyfilled-request-global.spec.ts`                          | 2     |
+| `round3-agent1.spec.ts`           | `request-prototype-pollution.spec.ts`                                | 3     |
+| `round4-agent1.spec.ts`           | `request-prototype-repair-lease.spec.ts`                             | 4     |
+| `round5-agent1.probe.ts`          | `request-descriptor-restoration.spec.ts`                             | 5     |
+| `round6-agent1.spec.ts`           | `request-signal-pin-during-init-snapshot.spec.ts`                    | 6     |
+| `agent2-round1.spec.ts`           | `response-clone-branch-refusal.spec.ts`                              | 1     |
+| `round2-agent2.spec.ts`           | `response-foreign-clone-custody.spec.ts`                             | 2     |
+| `round3-agent2.spec.ts`           | `response-shadowed-body-accessors.spec.ts`                           | 3     |
+| `round4-agent2.spec.ts`           | `response-release-intrinsics.spec.ts`                                | 4     |
+| `round5-agent2.spec.ts`           | `response-wrapper-custody-races.spec.ts`                             | 5     |
+| `round6-agent2.spec.ts`           | `response-foreign-body-destroy-fallback.spec.ts`                     | 6     |
+| `round1-agent3-security.spec.ts`  | `redaction-deprecated-format-controls.spec.ts`                       | 1     |
+| `round2-agent3.spec.ts`           | `redaction-bidi-controls.spec.ts`                                    | 2     |
+| `round3-agent3.spec.ts`           | deleted — see the paragraph above                                    | 3     |
+| `round4-agent3.spec.ts`           | `response-format-controls-and-custody.spec.ts`                       | 4     |
+| `round5-agent3.spec.ts`           | `response-identity-retry-custody.spec.ts`                            | 5     |
+| `round6-agent3.spec.ts`           | `response-format-control-coverage.spec.ts`                           | 6     |
+| `round1-agent4-api.spec.ts`       | `tests/envelope/late-option-mutation-and-clone-branch.spec.ts`       | 1     |
+| `round2-agent4-api.spec.ts`       | `tests/envelope/error-body-custody.spec.ts`                          | 2     |
+| `round3-agent4-api.spec.ts`       | `tests/envelope/reentrant-construction-and-inherited-signal.spec.ts` | 3     |
+| `round4-agent4-api.spec.ts`       | `tests/envelope/hostile-transport-and-body-races.spec.ts`            | 4     |
+| `round5-agent4-api.spec.ts`       | `tests/surface/surface-package-consumer.spec.ts`                     | 5     |
+| `round6-agent4-api.spec.ts`       | `tests/surface/surface-built-entry-behaviour.spec.ts`                | 6     |
+| `round16-h1-request.spec.ts`      | `request-refusal-aftermath.spec.ts`                                  | 16    |
+| `round17-h1-request.spec.ts`      | `request-built-package-differential.spec.ts`                         | 17    |
+| `round18-h1-request.spec.ts`      | `request-init-branch-parity.spec.ts`                                 | 18    |
+| `round19-h1-request.spec.ts`      | `request-signal-spread-custody.spec.ts`                              | 19    |
+| `round20-h1-request.spec.ts`      | `request-signal-spread-enumerability.spec.ts`                        | 20    |
+| `round21-h1-request.spec.ts`      | `request-init-fresh-target.spec.ts`                                  | 21    |
+| `round22-h1-request.spec.ts`      | `request-init-read-consistency.spec.ts`                              | 22    |
+| `round23-h1-request.spec.ts`      | `request-options-shape-corpus.spec.ts`                               | 23    |
+| `round16-h2-response.spec.ts`     | `response-loop-pass-cost.spec.ts`                                    | 16    |
+| `round17-h2-response.spec.ts`     | `response-crossing-budget-cost.spec.ts`                              | 17    |
+| `round18-h2-response.spec.ts`     | `tests/redaction/redaction-host-port-suppression.spec.ts`            | 18    |
+| `round19-h2-response.spec.ts`     | `tests/redaction/redaction-solidus-spelling-cost.spec.ts`            | 19    |
+| `round20-h2-response.spec.ts`     | `tests/redaction/redaction-embedded-mark-cost.spec.ts`               | 20    |
+| `round21-h2-response.spec.ts`     | `tests/redaction/redaction-message-needle-span.spec.ts`              | 21    |
+| `round22-h2-response.spec.ts`     | `tests/redaction/redaction-message-route-cost.spec.ts`               | 22    |
+| `round23-h2-response.spec.ts`     | `tests/redaction/redaction-span-needle-derivation.spec.ts`           | 23    |
+| `round16-h3-disclosure.spec.ts`   | `redaction-invented-host-judge.spec.ts`                              | 16    |
+| `round17-h3-disclosure.spec.ts`   | `redaction-embedded-authority-port.spec.ts`                          | 17    |
+| `round18-h3-disclosure.spec.ts`   | `redaction-empty-userinfo.spec.ts`                                   | 18    |
+| `round19-h3-disclosure.spec.ts`   | `redaction-respelled-password.spec.ts`                               | 19    |
+| `round20-h3-disclosure.spec.ts`   | `redaction-raw-head-scan.spec.ts`                                    | 20    |
+| `round20-orch-disclosure.spec.ts` | `redaction-non-special-scheme-backslash.spec.ts`                     | 20    |
+| `round21-h3-disclosure.spec.ts`   | `redaction-needle-filler.spec.ts`                                    | 21    |
+| `round22-h3-disclosure.spec.ts`   | `redaction-sentinel-ledger.spec.ts`                                  | 22    |
+| `round23-h3-disclosure.spec.ts`   | `redaction-double-reverse-solidus.spec.ts`                           | 23    |
+| `round16-h4-surface.spec.ts`      | `surface-coverage-config-pins.spec.ts`                               | 16    |
+| `round17-h4-surface.spec.ts`      | `surface-gate-script-exports.spec.ts`                                | 17    |
+| `round18-h4-surface.spec.ts`      | `surface-release-gate-roster.spec.ts`                                | 18    |
+| `round19-h4-surface.spec.ts`      | `surface-changelog-direction-witnesses.spec.ts`                      | 19    |
+| `round20-h4-surface.spec.ts`      | `surface-password-residual-claims.spec.ts`                           | 20    |
+| `round21-h4-surface.spec.ts`      | `surface-runtime-smoke-commands.spec.ts`                             | 21    |
+| `round22-h4-surface.spec.ts`      | `surface-bun-smoke-exclusion-reason.spec.ts`                         | 22    |
+| `round23-h4-surface.spec.ts`      | `surface-release-direction-obligation.spec.ts`                       | 23    |
+| `round16-h4-fixtures.spec.ts`     | `fixture-contracts.spec.ts`                                          | 16    |
+| `round16-consumer-entry.spec.mjs` | `check-consumer-entry.spec.mjs`                                      | 16    |
+| `round16-docs-entry.spec.mjs`     | `check-docs-entry.spec.mjs`                                          | 16    |
+| `round16-release-entry.spec.mjs`  | `release-gate-entry.spec.mjs`                                        | 16    |
+| `round16-smoke-entry.spec.mjs`    | `smoke-entry.spec.mjs`                                               | 16    |
+| `round19-h4-gate.spec.mjs`        | `gate-mutation-ignore-ranges.spec.mjs`                               | 19    |
+| `round20-h4-gate.spec.mjs`        | `gate-mutation-unanchored-readers.spec.mjs`                          | 20    |
+| `round21-h4-gate.spec.mjs`        | `gate-mutation-disabled-steps.spec.mjs`                              | 21    |
+| `round22-h4-gate.spec.mjs`        | `gate-mutation-skipped-jobs.spec.mjs`                                | 22    |
+| `round23-h4-gate.spec.mjs`        | `gate-mutation-yaml-spellings.spec.mjs`                              | 23    |
+
 ## Adjudicated closed
 
 Correct about the code. Not defects.

@@ -64,7 +64,7 @@ mode.
 
 Run `pnpm smoke:bun` locally when Bun is installed. The `bun-smoke` job's own
 step is the only place in `.github/workflows/ci.yml` that runs a Bun binary.
-`tests/surface/round21-h4-surface.spec.ts` runs that file under Bun wherever a
+`tests/surface/surface-runtime-smoke-commands.spec.ts` runs that file under Bun wherever a
 Bun binary and a built `dist/` both exist, and the v8 instrument measures no
 child process, which is why `vitest.config.ts` drops it from the coverage
 threshold.

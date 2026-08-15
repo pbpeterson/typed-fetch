@@ -52,7 +52,7 @@ attestation.
   opens `src/` or `dist/` and cannot see the previous version, so it proves the
   dated section names a direction from that closed vocabulary. It does not
   prove the direction it names is the direction the code took. The differential
-  that measures the move is `tests/surface/round19-h4-surface.spec.ts`, and it
+  that measures the move is `tests/surface/surface-changelog-direction-witnesses.spec.ts`, and it
   reads `[Unreleased]`.
 
 - The package job uses a GitHub-hosted runner, Node `22.23.1`, pnpm from the

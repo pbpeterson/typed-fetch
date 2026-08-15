@@ -569,7 +569,7 @@ function withoutMalformedUserinfo(path: string, tail: string, seam: Span | null)
  * `b.test/svc:hunter2@`, so `svc:hunter2@` was no needle at all — the record
  * clean, the password in `…; the upstream svc:hunter2@i.test was refused` and in
  * every render of it, on 48 of the 100 forwarding rows
- * `round23-h2-response.spec.ts` crosses. Neither reading alone is the answer;
+ * `redaction-span-needle-derivation.spec.ts` crosses. Neither reading alone is the answer;
  * the union of the two is.
  *
  * RE-READ, NOT REFUSED, and the difference is a credential. Refusing the needle
@@ -908,7 +908,7 @@ function userinfosOf(url: string): string[] {
   // non-special scheme spelling `//` reaches the authority state too, and
   // `git://svc:hun\ter2@api.test/v1` is a userinfo the parser READS — the head
   // is the only place the caller's spelling of that password is a needle, and
-  // the qualifier grid in `round21-h3-disclosure.spec.ts` measures 2,550 rows of
+  // the qualifier grid in `redaction-needle-filler.spec.ts` measures 2,550 rows of
   // it. `file:` keeps its answer under any solidus count, because the file state
   // serializes an empty host and writes the solidi anyway; that is R20-H3-01's
   // row, and it is why this is not `parsed.host !== ""` either.

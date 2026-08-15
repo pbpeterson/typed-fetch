@@ -52,7 +52,7 @@ const SEMVER =
  * An HTML comment, because RELEASING.md step 1 copies the pending block into
  * the dated section VERBATIM, so the declaration survives that copy without
  * rendering. The spelling and the vocabulary are round 20's, shared with the
- * `[Unreleased]` reader in `tests/surface/round19-h4-surface.spec.ts`: one
+ * `[Unreleased]` reader in `tests/surface/surface-changelog-direction-witnesses.spec.ts`: one
  * declaration, one vocabulary, two readers.
  */
 const DIRECTION_DECLARATION = /<!--\s*redaction-directions:\s*([^>]*?)\s*-->/g;
@@ -205,7 +205,7 @@ export function validateRelease(candidate) {
   // `src/`, `dist/`, or the previous version, so it proves the section names a
   // direction from the closed vocabulary — not that the direction it names is
   // the direction the code took. The differential that measures that is
-  // `tests/surface/round19-h4-surface.spec.ts`, and it reads `[Unreleased]`.
+  // `tests/surface/surface-changelog-direction-witnesses.spec.ts`, and it reads `[Unreleased]`.
   const declarations = [...releasedProse.matchAll(DIRECTION_DECLARATION)];
   if (declarations.length !== 1) {
     throw new Error(
