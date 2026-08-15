@@ -1312,7 +1312,7 @@ consumer through logging, `clone()`, or a custom Fetch implementation.
   Write `...(token ? { Authorization: token } : {})`.
 
 The migration table is in
-[CHANGELOG.md](https://github.com/pbpeterson/typed-fetch/blob/main/CHANGELOG.md#200---2026-07-26).
+[CHANGELOG.md](https://github.com/pbpeterson/typed-fetch/blob/main/CHANGELOG.md#200---2026-07-30).
 Read the `1.1.0` section too. That version was never published. A consumer
 therefore upgrades from `1.0.0` to `2.0.0` through both change sets.
 
