@@ -75,27 +75,39 @@ function hasRequestTag(value: unknown): boolean {
 }
 
 /**
- * A `Request` the AMBIENT `fetch` will take as a request rather than convert.
+ * The constructor the setup phase recognizes as a `Request`.
  *
  * `RequestInfo` is a WebIDL union, and the platform resolves it with its OWN
  * brand check — realm-bound, exactly like `instanceof`. Everything the check
  * refuses becomes a `USVString`, which calls the value's own `toString`.
  * {@link hasRequestTag} is deliberately wider: a tag is enough for it. The gap
  * between the two is where the setup phase used to send the request to one URL
- * and file the error against another.
+ * and file the error against another. The current global is retained as a
+ * compatibility path for a caller-installed Request polyfill, but it is not
+ * evidence that the captured native fetch will accept the value as a Request.
  */
-function isPlatformRequest(value: unknown): value is Request {
+function requestConstructorFor(value: unknown): typeof Request | undefined {
   try {
-    return typeof Request !== "undefined" && value instanceof Request;
+    if (nativeRequestConstructor !== undefined && value instanceof nativeRequestConstructor) {
+      return nativeRequestConstructor;
+    }
   } catch {
-    return false;
+    // Try the current global below. A caller may have installed a compatible
+    // polyfill after this module loaded.
   }
+
+  try {
+    if (typeof Request !== "undefined" && value instanceof Request) return Request;
+  } catch {
+    // A hostile prototype walk is still just a non-platform input.
+  }
+  return undefined;
 }
 
 /**
  * Will the transport that is about to run take this input as a request?
  *
- * The ambient `fetch` answers with {@link isPlatformRequest}. Caller code
+ * The ambient `fetch` answers with {@link requestConstructorFor}. Caller code
  * running AS the transport writes its own rule this module cannot read, so it
  * keeps the wider tag check — which is also what a duplicated runtime needs,
  * since only the caller can pair its `Request` with the copy of `fetch` that
@@ -111,7 +123,11 @@ function transportTakesRequest(input: RequestInputFacts, callerTransport: boolea
 }
 
 /**
- * The platform's own `fetch`, captured before a caller can replace it.
+ * The platform intrinsics captured before caller code can replace their global
+ * bindings. A Request created by `nativeRequestConstructor` is what
+ * `nativeFetch`'s WebIDL brand check accepts; a current global constructor is
+ * checked by {@link requestConstructorFor} only for compatible caller
+ * transports.
  *
  * The transport phase's abort window applies only when the transport that runs
  * is the PLATFORM's. Two things look like "no override" and are not: an own
@@ -124,7 +140,185 @@ function transportTakesRequest(input: RequestInputFacts, callerTransport: boolea
  * instead, and gets the ambient treatment. That is the same trade every
  * captured intrinsic in this package makes.
  */
-const nativeFetch: typeof fetch | undefined = typeof fetch === "function" ? fetch : undefined;
+const nativeFetch: typeof fetch | undefined = typeof fetch === "function" ? fetch : undefined,
+  nativeRequestConstructor: typeof Request | undefined =
+    typeof Request === "function" ? Request : undefined,
+  nativeRequestPrototype = nativeRequestConstructor?.prototype,
+  nativeRequestUrlDescriptor =
+    nativeRequestPrototype === undefined
+      ? undefined
+      : Object.getOwnPropertyDescriptor(nativeRequestPrototype, "url"),
+  nativeRequestSignalDescriptor =
+    nativeRequestPrototype === undefined
+      ? undefined
+      : Object.getOwnPropertyDescriptor(nativeRequestPrototype, "signal"),
+  nativeRequestUrlGetter = nativeRequestUrlDescriptor?.get,
+  nativeRequestSignalGetter = nativeRequestSignalDescriptor?.get;
+
+function samePropertyDescriptor(
+  current: PropertyDescriptor | undefined,
+  captured: PropertyDescriptor | undefined,
+): boolean {
+  if (current === undefined || captured === undefined) return current === captured;
+  if (current.configurable !== captured.configurable) return false;
+  if (current.enumerable !== captured.enumerable) return false;
+  if ("value" in captured || "value" in current) {
+    return (
+      "value" in current &&
+      "value" in captured &&
+      current.value === captured.value &&
+      current.writable === captured.writable
+    );
+  }
+  return current.get === captured.get && current.set === captured.set;
+}
+
+function setCapturedProperty(
+  target: object,
+  property: PropertyKey,
+  descriptor: PropertyDescriptor | undefined,
+): void {
+  if (descriptor === undefined) {
+    // The descriptor was absent before this module's temporary lease. The
+    // lease itself was defined from a configurable captured descriptor, so
+    // this delete cannot fail while restoring a property this function owns.
+    Reflect.deleteProperty(target, property);
+    return;
+  }
+  Object.defineProperty(target, property, descriptor);
+}
+
+/**
+ * A polyfill Request may inherit Object.prototype's default stringifier or
+ * provide a real one of its own. The two cases intentionally have different
+ * correlation rules when both stringify to `[object Object]`: the former has
+ * no usable transport representation, so its declared `.url` remains useful;
+ * the latter did produce the string the platform received, so that exact
+ * string is the request URL.
+ */
+function hasExplicitStringifier(value: object): boolean {
+  try {
+    let current: object | null = value;
+    while (current !== null) {
+      const primitive = Object.getOwnPropertyDescriptor(current, Symbol.toPrimitive);
+      if (primitive !== undefined) {
+        return "value" in primitive ? typeof primitive.value === "function" : true;
+      }
+
+      const toString = Object.getOwnPropertyDescriptor(current, "toString");
+      if (toString !== undefined) {
+        return "value" in toString ? toString.value !== Object.prototype.toString : true;
+      }
+
+      current = Object.getPrototypeOf(current) as object | null;
+    }
+  } catch {
+    // The actual String(input) call already supplied the only transport value.
+    // If descriptor inspection is hostile, retain the conservative `.url`
+    // fallback used for a polyfill with no observable serializer.
+  }
+
+  return false;
+}
+
+/**
+ * Native fetch implementations may normalize a Request through its public
+ * prototype. If that prototype was patched after import, briefly restore the
+ * captured descriptors while the synchronous normalization runs. The promise
+ * returned by fetch no longer needs the prototype; the caller's mutation is
+ * restored before control returns to it.
+ */
+function fetchWithCapturedRequestPrototype(
+  transport: typeof fetch,
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  if (
+    nativeFetch === undefined ||
+    nativeRequestPrototype === undefined ||
+    nativeRequestUrlDescriptor === undefined ||
+    nativeRequestSignalDescriptor === undefined
+  ) {
+    return transport(input, init);
+  }
+
+  const current = [
+    ["url", Object.getOwnPropertyDescriptor(nativeRequestPrototype, "url")],
+    ["signal", Object.getOwnPropertyDescriptor(nativeRequestPrototype, "signal")],
+  ] as const;
+  const captured = [
+    ["url", nativeRequestUrlDescriptor],
+    ["signal", nativeRequestSignalDescriptor],
+  ] as const;
+  const changed: Array<
+    readonly [
+      property: string,
+      previous: PropertyDescriptor | undefined,
+      captured: PropertyDescriptor,
+    ]
+  > = [];
+
+  const restoreChangedProperties = (): void => {
+    for (let index = changed.length - 1; index >= 0; index -= 1) {
+      const [property, previous, capturedDescriptor] = changed[index]!;
+      try {
+        // The native descriptor is a temporary lease. If code running inside
+        // fetch changed the property, that code now owns the descriptor and
+        // restoring `previous` would erase caller state. Restore only while
+        // the lease is still exactly what we installed; this check also runs
+        // when native fetch throws.
+        const currentDescriptor = Object.getOwnPropertyDescriptor(nativeRequestPrototype, property);
+        if (samePropertyDescriptor(currentDescriptor, capturedDescriptor)) {
+          setCapturedProperty(nativeRequestPrototype, property, previous);
+        }
+      } catch {
+        // Best-effort restoration must not hide the transport's own result.
+      }
+    }
+  };
+
+  try {
+    for (let index = 0; index < captured.length; index += 1) {
+      const [property, descriptor] = captured[index]!;
+      const currentDescriptor = current[index]![1];
+      if (!samePropertyDescriptor(currentDescriptor, descriptor)) {
+        setCapturedProperty(nativeRequestPrototype, property, descriptor);
+        changed.push([property, currentDescriptor, descriptor]);
+      }
+    }
+  } catch {
+    restoreChangedProperties();
+    return transport(input, init);
+  }
+
+  try {
+    return transport(input, init);
+  } finally {
+    restoreChangedProperties();
+  }
+}
+
+function nativeRequestPrototypeWasModified(): boolean {
+  if (nativeRequestPrototype === undefined) return false;
+
+  try {
+    return (
+      !samePropertyDescriptor(
+        Object.getOwnPropertyDescriptor(nativeRequestPrototype, "url"),
+        nativeRequestUrlDescriptor,
+      ) ||
+      !samePropertyDescriptor(
+        Object.getOwnPropertyDescriptor(nativeRequestPrototype, "signal"),
+        nativeRequestSignalDescriptor,
+      )
+    );
+  } catch {
+    // If the descriptor surface cannot be inspected, do not trust the current
+    // prototype with a native Request. The fetch wrapper will make the same
+    // best-effort repair before handing the value over.
+    return true;
+  }
+}
 
 type FetchParams = Parameters<typeof fetch>;
 
@@ -200,7 +394,12 @@ function snapshotRequestInit(
   // rule ADR 0003 row H-26 states for the request input, applied to the
   // options object: a caller-controlled fact read twice can answer differently
   // each time.
-  if (!removeFetchOverride && signal === undefined) {
+  // The signal read can add this library's extension after transport selection.
+  // Recheck own-ness at materialization time before taking the cheap branch;
+  // otherwise the proxy would expose that late key through every reflection
+  // surface when there is no signal value to carry.
+  const hasFetchOverrideAtMaterialization = removeFetchOverride || Object.hasOwn(options, "fetch");
+  if (!hasFetchOverrideAtMaterialization && signal === undefined) {
     // Nothing has to be hidden and nothing has to be added, so the original
     // object can remain the proxy target. This preserves reflection and avoids
     // inspecting every descriptor on a potentially exotic RequestInit. The trap
@@ -216,11 +415,14 @@ function snapshotRequestInit(
   }
 
   const descriptors = Object.getOwnPropertyDescriptors(options);
-  // Only the caller's OWN extension is stripped, and only on the branch that
-  // read it. An inherited `fetch` is neither used nor stripped — the decision
-  // `planRequest` states at the `Object.hasOwn` that selects the transport —
-  // and this path is now reached with that read answering `false` too.
-  if (removeFetchOverride) delete descriptors.fetch;
+  // Strip an own extension present when the init is materialized as well as
+  // the one that selected the transport. A `signal` getter can add `fetch`
+  // after selection; it is still this library's extension, not a WebIDL
+  // member. An inherited `fetch` is absent from these descriptors and remains
+  // available through the proxy, as documented above.
+  const stripFetchOverride =
+    hasFetchOverrideAtMaterialization || Object.hasOwn(descriptors, "fetch");
+  if (stripFetchOverride) delete descriptors.fetch;
 
   // A WebIDL dictionary is normally read by the transport. `typedFetch` also
   // needs the signal to classify a rejection, so letting the getter run once
@@ -266,12 +468,22 @@ function snapshotRequestInit(
   // stands in for.
   const ownSignal = Object.hasOwn(descriptors, "signal") ? descriptors.signal : undefined;
   if (ownSignal !== undefined || signal !== undefined) {
-    descriptors.signal = {
-      value: signal,
+    // `descriptors` is an ordinary object. Assigning its `signal` member is
+    // therefore a prototype-sensitive write: an inherited setter on
+    // `Object.prototype` can swallow the descriptor before `Object.create`
+    // sees it. Define the bag member directly so pollution cannot make the
+    // signal disappear from the init or reattach a Request's own signal.
+    Object.defineProperty(descriptors, "signal", {
+      value: {
+        value: signal,
+        writable: true,
+        enumerable: ownSignal?.enumerable === true || signal !== undefined,
+        configurable: true,
+      },
       writable: true,
-      enumerable: ownSignal?.enumerable === true || signal !== undefined,
+      enumerable: true,
       configurable: true,
-    };
+    });
   }
   const sanitizedTarget = Object.create(Object.getPrototypeOf(options), descriptors) as RequestInit;
 
@@ -287,11 +499,37 @@ function snapshotRequestInit(
   return new Proxy(sanitizedTarget, {
     get(_target, property) {
       if (property === "signal") return signal;
-      if (removeFetchOverride && property === "fetch") return undefined;
+      if (stripFetchOverride && property === "fetch") return undefined;
       return Reflect.get(options, property, options);
     },
     has(_target, property) {
-      return removeFetchOverride && property === "fetch" ? false : Reflect.has(options, property);
+      return stripFetchOverride && property === "fetch" ? false : Reflect.has(options, property);
+    },
+  });
+}
+
+/** Pin a native Request's captured signal after a materialization-time mutation. */
+function pinRequestSignal(init: RequestInit, signal: AbortSignal): RequestInit {
+  const descriptors = Object.getOwnPropertyDescriptors(init);
+  Object.defineProperty(descriptors, "signal", {
+    value: {
+      value: signal,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    },
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  const target = Object.create(Object.getPrototypeOf(init), descriptors) as RequestInit;
+  return new Proxy(target, {
+    get(_target, property) {
+      if (property === "signal") return signal;
+      return Reflect.get(init, property, init);
+    },
+    has(_target, property) {
+      return property === "signal" || Reflect.has(init, property);
     },
   });
 }
@@ -365,6 +603,8 @@ function snapshotRequestInit(
 interface RequestInputFacts {
   /** The ambient `fetch` will take this as a request, not convert it. */
   readonly platformRequest: boolean;
+  /** The constructor whose prototype describes the recognized Request. */
+  readonly requestConstructor: typeof Request | undefined;
   /** Some transport might: it is a platform `Request` or carries the tag. */
   readonly taggedRequest: boolean;
   /** A tagged input's own `url`, already absolute. `""` for everything else. */
@@ -372,9 +612,13 @@ interface RequestInputFacts {
 }
 
 function classifyRequestInput(input: FetchInput): RequestInputFacts {
-  const platformRequest = isPlatformRequest(input);
-  const taggedRequest = platformRequest || hasRequestTag(input);
-  if (!taggedRequest) return { platformRequest, taggedRequest, requestUrl: "" };
+  const requestConstructor = requestConstructorFor(input);
+  const platformRequest =
+    requestConstructor !== undefined && requestConstructor === nativeRequestConstructor;
+  const taggedRequest = requestConstructor !== undefined || hasRequestTag(input);
+  if (!taggedRequest) {
+    return { platformRequest, requestConstructor, taggedRequest, requestUrl: "" };
+  }
 
   let raw: unknown;
   try {
@@ -392,7 +636,7 @@ function classifyRequestInput(input: FetchInput): RequestInputFacts {
     // may still be able to send.
     raw = undefined;
   }
-  return { platformRequest, taggedRequest, requestUrl: textOf(raw) };
+  return { platformRequest, requestConstructor, taggedRequest, requestUrl: textOf(raw) };
 }
 
 /**
@@ -402,7 +646,7 @@ function classifyRequestInput(input: FetchInput): RequestInputFacts {
  * where `url` is a data property still answers correctly.
  */
 function nativeRequestUrl(request: Request): unknown {
-  const getter = Object.getOwnPropertyDescriptor(Request.prototype, "url")?.get;
+  const getter = nativeRequestUrlGetter;
   return typeof getter === "function" ? Reflect.apply(getter, request, []) : request.url;
 }
 
@@ -438,13 +682,25 @@ function nativeRequestUrl(request: Request): unknown {
  * `Request` global at all falls through to the plain read instead of needing a
  * guard that no test can take the other arm of.
  */
-function handedOverSignal(request: Request | null): AbortSignal | null | undefined {
+function handedOverSignal(
+  request: Request | null,
+  requestConstructor: typeof Request | undefined,
+): AbortSignal | null | undefined {
   // Nothing was handed over — the plan serialized the input instead — so
   // nothing contributes a signal.
   if (request === null) return undefined;
 
   try {
-    const getter = Object.getOwnPropertyDescriptor(Request.prototype, "signal")?.get;
+    const requestPrototype =
+      requestConstructor !== undefined && requestConstructor === nativeRequestConstructor
+        ? nativeRequestPrototype
+        : requestConstructor?.prototype;
+    const getter =
+      requestConstructor === nativeRequestConstructor
+        ? nativeRequestSignalGetter
+        : requestPrototype === undefined
+          ? undefined
+          : Object.getOwnPropertyDescriptor(requestPrototype, "signal")?.get;
     if (typeof getter === "function") {
       return Reflect.apply(getter, request, []) as AbortSignal | null;
     }
@@ -589,7 +845,21 @@ export function planRequest(input: FetchInput, options: TypedFetchOptions): Requ
     } else {
       serialized ??= String(input);
       transportInput = serialized;
-      requestUrl = serialized;
+      // A current-global Request polyfill is not a native Request to the
+      // captured fetch, so the transport receives the one serialization above.
+      // When that polyfill has no serializer of its own, the platform's
+      // default object spelling is not a useful requested URL; retain the
+      // already-read `.url` for correlation while still handing over the exact
+      // serialized value. A polyfill with a real `toString()` keeps the exact
+      // serialization as its URL.
+      requestUrl =
+        facts.requestConstructor !== undefined &&
+        !facts.platformRequest &&
+        serialized === "[object Object]" &&
+        facts.requestUrl !== "" &&
+        !hasExplicitStringifier(input as object)
+          ? facts.requestUrl
+          : serialized;
     }
 
     // The AbortSignal can arrive via EITHER slot: the `options`/`init` (its
@@ -637,7 +907,7 @@ export function planRequest(input: FetchInput, options: TypedFetchOptions): Requ
       // AND aborts on it, over a platform `Request` whose slot signal is not
       // aborted. It resolves to `NetworkError`, the safe direction the
       // transport phase documents for an untrustworthy signal.
-      signal = handedOverSignal(requestInput) ?? undefined;
+      signal = handedOverSignal(requestInput, facts.requestConstructor) ?? undefined;
     }
 
     // Fetch reads RequestInit as a WebIDL dictionary, so inherited properties
@@ -651,9 +921,34 @@ export function planRequest(input: FetchInput, options: TypedFetchOptions): Requ
     // the platform's message; the message is library-authored now, so the
     // transport is the only reader of that slot and its getter runs exactly
     // once, as it does under a bare `fetch`.
-    const init = snapshotRequestInit(options, initSignal, hasFetchOverride);
+    // A patched native Request prototype can change what a caller transport
+    // sees when it forwards the Request. Carry the captured slot in that case
+    // (unless `signal: null` explicitly detached it), and use the same
+    // captured descriptors around the ambient fetch's synchronous
+    // normalization.
+    const initialInit = snapshotRequestInit(options, initSignal, hasFetchOverride);
+    const init =
+      facts.platformRequest &&
+      requestInput !== null &&
+      initSignal === undefined &&
+      signal !== undefined &&
+      nativeRequestPrototypeWasModified()
+        ? pinRequestSignal(initialInit, signal)
+        : initialInit;
+    const executionTransport =
+      requestInput !== null && nativeRequestPrototypeWasModified()
+        ? (transportInputForCall: RequestInfo | URL, transportInit?: RequestInit) =>
+            fetchWithCapturedRequestPrototype(transport, transportInputForCall, transportInit)
+        : transport;
 
-    return { transportInput, init, signal, requestUrl, transport, ambientTransport };
+    return {
+      transportInput,
+      init,
+      signal,
+      requestUrl,
+      transport: executionTransport,
+      ambientTransport,
+    };
   } catch (cause) {
     throw new RequestPlanRefusal(cause, requestUrl);
   }
