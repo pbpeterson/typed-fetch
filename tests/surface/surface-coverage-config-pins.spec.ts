@@ -475,9 +475,23 @@ describe("the coverage configuration", () => {
    * Reading the array itself is what makes the pin able to fail. Any entry,
    * named or not, appears in the answer.
    */
+  /**
+   * Scoped to the COVERAGE block. The config carries more than one `exclude:`
+   * array — the project split has its own — and a reader that takes the first
+   * match in the file answers about whichever array is written higher up, then
+   * reports it as a coverage exclusion. That is R16-ORCH-01 again: a check whose
+   * assertion reads something other than what it guards.
+   */
+  const coverageBlock = (): string => {
+    const text = config();
+    const at = text.indexOf("coverage: {");
+    expect(at, "vitest.config.ts declares no coverage block").toBeGreaterThan(-1);
+    return text.slice(at);
+  };
+
   const stringsOf = (field: "include" | "exclude"): string[] => {
-    const block = new RegExp(`${field}:\\s*\\[([^\\]]*)\\]`).exec(config());
-    expect(block, `vitest.config.ts declares no ${field} array`).not.toBeNull();
+    const block = new RegExp(`${field}:\\s*\\[([^\\]]*)\\]`).exec(coverageBlock());
+    expect(block, `vitest.config.ts declares no coverage ${field} array`).not.toBeNull();
     return [...(block?.[1] ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1] ?? "").toSorted();
   };
 

@@ -574,9 +574,20 @@ describe("the gate roster reaches CI", () => {
 // and no gate read either list.
 // ---------------------------------------------------------------------------
 
-/** The paths `vitest.config.ts` drops from the coverage threshold. */
+/**
+ * The paths `vitest.config.ts` drops from the coverage threshold.
+ *
+ * Read out of the COVERAGE block, not out of the file. The config carries more
+ * than one `exclude:` array — the project split has its own — and a reader that
+ * takes the first match answers about whichever array is written higher up. It
+ * then reports a coverage exclusion that is not one, which is the R16-ORCH-01
+ * shape: a check whose assertion reads something other than what it guards.
+ */
 function coverageExclusions() {
-  const list = /exclude:\s*\[([^\]]*)\]/.exec(readRepoFile("vitest.config.ts"));
+  const config = readRepoFile("vitest.config.ts");
+  const coverageAt = config.indexOf("coverage: {");
+  expect(coverageAt, "vitest.config.ts must keep a `coverage` block").toBeGreaterThan(-1);
+  const list = /exclude:\s*\[([^\]]*)\]/.exec(config.slice(coverageAt));
   expect(list, "vitest.config.ts must keep a coverage `exclude` list").not.toBe(null);
   return [...list[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
 }

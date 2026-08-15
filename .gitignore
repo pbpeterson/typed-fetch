@@ -72,3 +72,4 @@ temp/
 
 #docs
 generate-docs-html.js
+test-results/

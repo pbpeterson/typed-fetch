@@ -48,11 +48,30 @@ jobs:
       # (public API surface snapshots, cross-copy guard tests) that hard-fail in
       # CI when dist/ is absent. Do not reorder build/test.
       - run: pnpm test
+        # A full record of the run, kept. The default reporter prints to a
+        # terminal and keeps nothing, so a red run used to leave a summary line
+        # with no test name, no duration, and no stack — round 24 lost an
+        # intermittent failure that way and never identified it. The upload step
+        # below runs on failure too, so the next occurrence is diagnosable.
+        env:
+          VITEST_JSON_REPORT: test-results/test.json
       # Enforce the 100 percent statements/branches/functions/lines thresholds
       # over src, scripts, and fixtures. Runs the whole suite again under v8
       # coverage instrumentation, so it needs the built dist/ the same as the
       # gates below it.
       - run: pnpm coverage
+        # A separate file: this run is the same suite under instrumentation, and
+        # overwriting the first record would lose the faster of the two.
+        env:
+          VITEST_JSON_REPORT: test-results/coverage.json
+      # ALWAYS, because the record is worth most when the run is red.
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-node-${{ matrix.node-version }}
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 14
       # Typecheck every fenced TS block in the docs against the BUILT package
       # (dist/). Must run AFTER build — dist/ is the compile target, and the
       # guard fails loudly if it is absent. Catches doc examples that no longer
