@@ -309,6 +309,19 @@ function safeReasonPhrase(phrase: string): string {
       // C0, DEL, and C1.
       code <= 0x1f ||
       (code >= 0x7f && code <= 0x9f) ||
+      // SOFT HYPHEN, an invisible formatting control.
+      code === 0x00ad ||
+      // MONGOLIAN VOWEL SEPARATOR and the interlinear annotation controls.
+      code === 0x180e ||
+      (code >= 0xfff9 && code <= 0xfffb) ||
+      // COMBINING GRAPHEME JOINER, shorthand format controls, and language
+      // tags. These are default-ignorable format characters that can change
+      // how a log line is rendered without contributing visible text. Keep
+      // variation selectors out of this deny list: they are meaningful parts
+      // of emoji and other standardized variants.
+      code === 0x034f ||
+      (code >= 0x1bca0 && code <= 0x1bca3) ||
+      (code >= 0xe0001 && code <= 0xe007f) ||
       // ALM, the zero-width SPACE, and the left/right-to-right marks.
       //
       // Named individually rather than as the `0x200b-0x200f` range, because
@@ -318,6 +331,17 @@ function safeReasonPhrase(phrase: string): string {
       // Arabic, and the Indic scripts, and ZWJ is what holds a multi-person
       // emoji together. Removing them respelled words and split sequences.
       code === 0x061c ||
+      // Arabic signs, marks, and end-of-ayah controls.
+      (code >= 0x0600 && code <= 0x0605) ||
+      code === 0x06dd ||
+      code === 0x070f ||
+      (code >= 0x0890 && code <= 0x0891) ||
+      code === 0x08e2 ||
+      // Additional historic format controls.
+      code === 0x110bd ||
+      code === 0x110cd ||
+      (code >= 0x13430 && code <= 0x1343f) ||
+      (code >= 0x1d173 && code <= 0x1d17a) ||
       code === 0x200b ||
       code === 0x200e ||
       code === 0x200f ||
@@ -325,9 +349,12 @@ function safeReasonPhrase(phrase: string): string {
       (code >= 0x202a && code <= 0x202e) ||
       code === 0x2028 ||
       code === 0x2029 ||
-      // The invisible operators and the bidi isolates.
+      // The invisible operators, bidi isolates, and deprecated formatting
+      // controls.
       (code >= 0x2060 && code <= 0x2064) ||
+      code === 0x2065 ||
       (code >= 0x2066 && code <= 0x2069) ||
+      (code >= 0x206a && code <= 0x206f) ||
       // BOM / zero-width no-break space.
       code === 0xfeff;
     if (rewritesALine) continue;
