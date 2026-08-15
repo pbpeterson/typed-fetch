@@ -617,7 +617,13 @@ const loadReleaseGate = async (): Promise<ReleaseGate> =>
     /* @vite-ignore */ new URL("../../scripts/validate-release.mjs", import.meta.url).href
   )) as ReleaseGate;
 
-/** A changelog with the pending block already moved into `## [version]`. */
+/**
+ * A changelog with the pending block already moved into `## [version]`.
+ *
+ * The compare base is `v2.0.0`, the newest tag that exists. `2.0.1` was cut in
+ * this repository and never published, so no `v2.0.1` tag exists for a footer
+ * link to end at, and `package.json` carries `2.0.1` without a release.
+ */
 const changelogCutAt = (version: string): string =>
   [
     "# Changelog",
@@ -633,7 +639,7 @@ const changelogCutAt = (version: string): string =>
     "- The redacted url moved.",
     "",
     `[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v${version}...HEAD`,
-    `[${version}]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.1...v${version}`,
+    `[${version}]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.0...v${version}`,
     "",
   ].join("\n");
 

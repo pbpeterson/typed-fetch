@@ -2,13 +2,13 @@
 
 ## [Unreleased]
 
-Every released version at or below `2.0.1` carries at least one of the
-defects this section fixes. A URL that carries userinfo can reach
-`error.message` and `toJSON()` with a credential intact. The same is true
-when the userinfo sits inside an embedded URL: a path segment, a
-protocol-relative reference, or a bare `//` with no scheme. Upgrade past
-this release to close every shape below. `SECURITY.md` lists what remains
-open after the fixes land.
+Every published version carries at least one of the defects this section
+fixes. `2.0.1` carries them too, and `2.0.1` was cut in this repository and
+never published. A URL that carries userinfo can reach `error.message` and
+`toJSON()` with a credential intact. The same is true when the userinfo sits
+inside an embedded URL: a path segment, a protocol-relative reference, or a
+bare `//` with no scheme. Upgrade past this release to close every shape
+below. `SECURITY.md` lists what remains open after the fixes land.
 
 <!-- redaction-directions: removes-more -->
 
@@ -105,9 +105,10 @@ open after the fixes land.
   it names, and `https://api.test//media.test:8443/img/@alice` emitted
   `https://api.test//alice`, a record that names a handle taken from a later
   path segment in place of the host the reference named. The redactor leaves
-  both urls unchanged now. The published `2.0.1` leaves both unchanged too, so
-  an upgrade from it sees no move on this shape; the other answer came from a
-  build inside this unreleased window. `SECURITY.md` recorded this limit and
+  both urls unchanged now. The `2.0.1` tree leaves both unchanged too, so the
+  record for this shape is the same at both ends of this unreleased window.
+  The other answer came from a build inside the window, and `2.0.1` was never
+  published, so no consumer received it. `SECURITY.md` recorded this limit and
   now carries it struck through, with the correction.
 - **A password whose raw spelling differs from the spelling the URL parser
   writes no longer survives in `error.message`.** The message pass removes the
@@ -204,6 +205,55 @@ open after the fixes land.
   passes and 1,997 parses. `response.url` after a redirect is text the server
   chose, so the shape of that text is a remote party's to pick.
 
+### Fixed
+
+- **A native `Request` reaches the transport whole, even when caller code
+  replaces the global `Request` after this module loads.** The setup phase
+  recognized a `Request` with an `instanceof` test against the current
+  global. A replaced or patched global therefore sent the request to one URL
+  and filed the error against another, and a patched `url` or `signal` getter
+  on `Request.prototype` changed what the transport read. This module now
+  captures the `Request` constructor and its `url` and `signal` descriptors at
+  import, and it recognizes a native `Request` with the captured constructor.
+  The current global remains a compatibility path for a polyfill that a
+  caller installs later. This module leases the captured descriptors around
+  the ambient `fetch` call and restores the caller's own descriptor after it.
+  A late `fetch` key that a `signal` getter adds no longer reaches the
+  transport through the init proxy, and a polluted `Object.prototype` setter
+  no longer swallows the signal snapshot.
+- **`clone()` refuses a branch that is not an independent `Response`.** The
+  response's own `clone()` is an untrusted seam, and it could answer with an
+  object-like partial double, with the original response, or with a branch
+  that reuses the original body stream. Each answer passed the object-like
+  test and reached the error constructor. A partial double became an
+  `UnknownHttpError` with a `NaN` status, and a returned original made the
+  release step cancel the body of the error that is still in use. `clone()`
+  now reads the whole operational contract of the branch: the platform slots
+  or the `Response` tag, the visible fields, the `Response` and `Headers`
+  methods, and a body that is `null` or a real stream. It also asks whether
+  the branch is the original response and whether the branch owns an
+  independent stream, and it rejects the branch with a `TypeError` when
+  either answer is wrong. A rejected original releases nothing, because
+  there is no branch to release.
+- **This library keeps custody of the first body a response shows.** A
+  foreign response can answer `body` with a different stream on each read.
+  Cleanup then canceled a stream that nobody owned while the live one stayed
+  open. A hostile `bodyUsed` or `locked` getter could also re-enter and
+  release the same stream a second time, or make a nested refusal release a
+  body that an outer classification still owned. This library now records the
+  first body read for each response, and validation, read, cancel, and
+  cleanup all use that record. It reads `bodyUsed` from the native slot, so a
+  shadow property cannot reopen a used body. It observes a cancel result
+  through the captured `Promise.prototype.then`, so a hostile thenable cannot
+  turn cleanup into an unhandled rejection. Release and classification refuse
+  re-entry, and the body release goes to the classification that owns it.
+- **A re-entrant read of `status`, `statusText`, `url`, or `headers` throws a
+  `TypeError`.** An injected getter can call back into classification before
+  its own first read gives a value. The read then started a second time and
+  recorded an answer that the nested call produced. Each response now carries
+  the set of identity reads in progress. No identity value is safe to give
+  back before the first read is complete, so the second read is refused.
+
 ### Changed
 
 - **`redactUrl`'s output moved for an ordinary input, not only for an
@@ -211,16 +261,16 @@ open after the fixes land.
   now removed where it used to survive — see the region rules above. A
   `file:` path segment that a build inside this unreleased window deleted
   is kept again, because `file:` opens no region under fewer than two
-  solidi; no released package deleted it, so an upgrade from 2.0.1 sees
-  no move on that shape. See the `file:` bullet above. A path segment
+  solidi; the `2.0.1` tree keeps it too, so only a build inside this
+  window deleted it. See the `file:` bullet above. A path segment
   behind a bare `//` authority is kept again for the same kind of reason:
   the region there ends at the authority the parser reads, so the segment
   behind it was never a credential to remove. Over the 140,640-url
   population the disclosure suite draws, 1,266 rows keep such a segment
   that a build inside this window removed, and on none of them does the
-  platform report a credential. No released package removed them either:
-  over that same population, the record this release emits is never longer
-  than the published 2.0.1's, on any row. A credential-free
+  platform report a credential. The `2.0.1` tree did not remove them
+  either: over that same population, the record this release emits is
+  never longer than the `2.0.1` tree's, on any row. A credential-free
   proxy url shows the
   direction an ordinary input actually took: `redactUrl` turns
   `https://api.test/relay/https://media.test/photos/mia@example.com/pic.png`
@@ -232,7 +282,25 @@ open after the fixes land.
   upgrade. That is true even for a url that carried no credential at all
   before this release.
 
-## [2.0.1] - 2026-08-03
+## [2.0.1] - 2026-08-03 — NEVER PUBLISHED
+
+WARNING: `2.0.1` is not on npm, and no `v2.0.1` git tag exists. It was prepared,
+dated, and cut in this repository, and nothing was published. The published
+versions end at `2.0.0`. Do not try to install `2.0.1`, and do not follow a
+`v2.0.1` compare link.
+
+Your upgrade path is `2.0.0` → the next published version. Everything in this
+section is still unpublished, so the real migration delta is the union of this
+section and the `[Unreleased]` one above. Read both.
+
+This section keeps its own heading and its own date, and it carries no footer
+link, because there is no tag for one to name.
+[`RELEASING.md`](https://github.com/pbpeterson/typed-fetch/blob/main/RELEASING.md)
+requires every publication to be reconstructable from an immutable tag, so a
+dated heading on its own reads as a publication. Folding this section into
+`[2.0.0]` would hide a version number that `package.json` carries and that this
+file records. Leaving it dated and unmarked would let it claim a publication
+that never happened.
 
 ### Security
 
@@ -1618,7 +1686,6 @@ header input from `TypedFetchOptions["headers"]` instead of importing
 
 See the [commit history](https://github.com/pbpeterson/typed-fetch/commits/main).
 
-[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.1...HEAD
-[2.0.1]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.0...v2.0.1
+[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.0...HEAD
 [2.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v0.8.1...v1.0.0

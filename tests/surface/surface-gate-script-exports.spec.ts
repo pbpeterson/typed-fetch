@@ -702,7 +702,7 @@ describe("the coverage gate's reach", () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe("the pending release", () => {
-  test("the tree carries an uncut `[Unreleased]` block over the published 2.0.1", () => {
+  test("the tree carries an uncut `[Unreleased]` block over the never-published 2.0.1", () => {
     const changelog = repoText("CHANGELOG.md");
     const unreleased = changelog.split("## [Unreleased]")[1]?.split("\n## [")[0] ?? "";
 
@@ -711,8 +711,9 @@ describe("the pending release", () => {
       unreleasedHasSecurityFixes: unreleased.includes("### Security"),
       unreleasedHasChanged: unreleased.includes("### Changed"),
     }).toEqual({
-      // Unmoved since the last publish, so no version has been cut for the
-      // block below it. Rule 8 forbids 2.0.2 for it.
+      // Unmoved since the 2.0.1 cut — which itself never published, so the
+      // consumer baseline is 2.0.0. No version has been cut for the block
+      // below it, and rule 8 forbids a patch number for it.
       version: "2.0.1",
       unreleasedHasSecurityFixes: true,
       unreleasedHasChanged: true,

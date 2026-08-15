@@ -89,6 +89,10 @@ function pendingBlock(changelog: string): string {
  * its way into the dated section. The footer moves with it, exactly as the
  * numbered rules under `## Semver policy` require: `[Unreleased]` compares from
  * the new tag, and the new version compares from the previous one.
+ *
+ * The previous one is `v2.0.0`. `2.0.1` was cut in this repository and never
+ * published: no `v2.0.1` tag exists, so no link may end at one, and the footer
+ * this reads is the corrected footer the changelog now carries.
  */
 function afterStepOne(edit: (block: string) => string = (block) => block): string {
   const changelog = repoText("CHANGELOG.md");
@@ -99,9 +103,9 @@ function afterStepOne(edit: (block: string) => string = (block) => block): strin
       `## [Unreleased]\n\n## [${RELEASE_VERSION}] - ${RELEASE_DATE}\n${edit(block)}`,
     )
     .replace(
-      `[Unreleased]: ${COMPARE}/v2.0.1...HEAD`,
+      `[Unreleased]: ${COMPARE}/v2.0.0...HEAD`,
       `[Unreleased]: ${COMPARE}/v${RELEASE_VERSION}...HEAD\n` +
-        `[${RELEASE_VERSION}]: ${COMPARE}/v2.0.1...v${RELEASE_VERSION}`,
+        `[${RELEASE_VERSION}]: ${COMPARE}/v2.0.0...v${RELEASE_VERSION}`,
     );
 }
 

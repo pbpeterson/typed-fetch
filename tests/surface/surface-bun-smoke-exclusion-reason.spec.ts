@@ -274,9 +274,13 @@ describe("CONTRIBUTING's `only the v8 ignore spelling is permitted here`", () =>
 // and is left to round 19's rebuilt-2.0.1 differential". Round 19's
 // differential reads directions and pins three `file:` urls. Two urls the block
 // names are in neither list: the bullet round 20 added says of them that "the
-// published `2.0.1` leaves both unchanged too, so an upgrade from it sees no
-// move on this shape". That is a claim about the released package, and this is
-// the round that asserts it.
+// `2.0.1` tree leaves both unchanged too, so the record for this shape is the
+// same at both ends of this unreleased window". That is a claim about the tree
+// this repository rebuilds below, and this is the round that asserts it.
+//
+// The claim used to name "the published `2.0.1`". `2.0.1` was cut in this
+// repository and never published, so the sentence and this pin both name the
+// TREE the rebuild produces, which is the thing either one can measure.
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** The esbuild binary pnpm installed for `tsup`, or null when it is absent. */
@@ -348,14 +352,15 @@ async function publishedEmitter(): Promise<{
   };
 }
 
-describe.skipIf(!distExists || ESBUILD === null)("the block's claims about published 2.0.1", () => {
+describe.skipIf(!distExists || ESBUILD === null)("the block's claims about the 2.0.1 tree", () => {
   test("EVIDENCE: the two urls the bare-`//` bullet names are unchanged in both trees", async () => {
     const record = await recorder();
     const { emit: published, cleanup } = await publishedEmitter();
     try {
       const block = unwrapped(repoText("CHANGELOG.md"));
       expect(block).toContain(
-        "The published `2.0.1` leaves both unchanged too, so an upgrade from it sees no move on this shape",
+        "The `2.0.1` tree leaves both unchanged too, so the record for this shape is the same " +
+          "at both ends of this unreleased window",
       );
       for (const url of [
         "https://api.test/go/https://media.test:8443/img/@alice",
@@ -370,10 +375,10 @@ describe.skipIf(!distExists || ESBUILD === null)("the block's claims about publi
     }
   }, 120_000);
 
-  test("EVIDENCE: this tree's record is never longer than the published one's", async () => {
-    // The direction bullet's other claim about the released package: "over that
-    // same population, the record this release emits is never longer than the
-    // published 2.0.1's, on any row". Asserted over the corpus round 19's
+  test("EVIDENCE: this tree's record is never longer than the 2.0.1 tree's", async () => {
+    // The direction bullet's other claim about the 2.0.1 tree: "over that same
+    // population, the record this release emits is never longer than the
+    // `2.0.1` tree's, on any row". Asserted over the corpus round 19's
     // differential draws, which is the population this repository can rebuild.
     const record = await recorder();
     const { emit: published, cleanup } = await publishedEmitter();

@@ -128,8 +128,9 @@ function git(...argv: string[]): string {
 }
 
 /**
- * The commit that published 2.0.1: the OLDEST commit touching `package.json`
- * whose manifest reads `2.0.1`.
+ * The commit that CUT 2.0.1: the OLDEST commit touching `package.json` whose
+ * manifest reads `2.0.1`. `2.0.1` was never published, so this commit is the
+ * only record of that tree, and rebuilding it is the only way to measure it.
  *
  * The newest such commit is not it — `src/` moved several times afterwards
  * while the version stayed put — and that is the trap this helper exists to
@@ -147,8 +148,8 @@ function releaseCommitOf(version: string): string {
 const ESBUILD = esbuildBinary();
 
 /**
- * The published 2.0.1 error cluster, bundled into one module, plus the emitter
- * that answers what its `toJSON()` wrote.
+ * The 2.0.1 error cluster, bundled into one module, plus the emitter that
+ * answers what its `toJSON()` wrote.
  */
 async function publishedEmitter(): Promise<{ emit: (url: string) => string; cleanup: () => void }> {
   const root = mkdtempSync(join(tmpdir(), "tf-round19-h4-201-"));
@@ -224,7 +225,7 @@ function redactionCorpus(): string[] {
 describe.skipIf(!distExists || ESBUILD === null)(
   "the `[Unreleased]` block against the tree it claims to move away from",
   () => {
-    /** Every url whose record differs between published 2.0.1 and HEAD. */
+    /** Every url whose record differs between the 2.0.1 tree and HEAD. */
     async function differential(): Promise<{
       removesMore: string[];
       keepsMore: string[];
@@ -314,28 +315,26 @@ describe.skipIf(!distExists || ESBUILD === null)(
       // OTHER bullet of the block. Closing that means pinning the whole block.
       const DIRECTION_VOCABULARY = ["removes-more", "keeps-more", "none"] as const;
       const DIRECTION_BULLET =
-        "- **`redactUrl`'s output moved for an ordinary input, not only for an attack " +
-        "shape.** An embedded credential in an ordinary path segment is now removed where " +
-        "it used to survive — see the region rules above. A `file:` path segment that a " +
-        "build inside this unreleased window deleted is kept again, because `file:` opens " +
-        "no region under fewer than two solidi; no released package deleted it, so an " +
-        "upgrade from 2.0.1 sees no move on that shape. See the `file:` bullet above. A " +
-        "path segment behind a bare `//` authority is kept again for the same kind of " +
-        "reason: the region there ends at the authority the parser reads, so the segment " +
-        "behind it was never a credential to remove. Over the 140,640-url population the " +
-        "disclosure suite draws, 1,266 rows keep such a segment that a build inside this " +
-        "window removed, and on none of them does the platform report a credential. No " +
-        "released package removed them either: over that same population, the record this " +
-        "release emits is never longer than the published 2.0.1's, on any row. A " +
+        "- **`redactUrl`'s output moved for an ordinary input, not only for an attack shape.** " +
+        "An embedded credential in an ordinary path segment is now removed where it used to " +
+        "survive — see the region rules above. A `file:` path segment that a build inside this " +
+        "unreleased window deleted is kept again, because `file:` opens no region under fewer " +
+        "than two solidi; the `2.0.1` tree keeps it too, so only a build inside this window " +
+        "deleted it. See the `file:` bullet above. A path segment behind a bare `//` authority " +
+        "is kept again for the same kind of reason: the region there ends at the authority the " +
+        "parser reads, so the segment behind it was never a credential to remove. Over the " +
+        "140,640-url population the disclosure suite draws, 1,266 rows keep such a segment that " +
+        "a build inside this window removed, and on none of them does the platform report a " +
+        "credential. The `2.0.1` tree did not remove them either: over that same population, the " +
+        "record this release emits is never longer than the `2.0.1` tree's, on any row. A " +
         "credential-free proxy url shows the direction an ordinary input actually took: " +
         "`redactUrl` turns " +
         "`https://api.test/relay/https://media.test/photos/mia@example.com/pic.png` into " +
-        "`https://api.test/relay/https://example.com/pic.png`. The record drops " +
-        "`media.test`, the host the request contacted, and names `example.com`, a host it " +
-        "never reached. See `SECURITY.md` for the residual this shape leaves open. Anything " +
-        "that greps or alerts on `error.message` or `toJSON().url` sees a different string " +
-        "after this upgrade. That is true even for a url that carried no credential at all " +
-        "before this release.";
+        "`https://api.test/relay/https://example.com/pic.png`. The record drops `media.test`, " +
+        "the host the request contacted, and names `example.com`, a host it never reached. See " +
+        "`SECURITY.md` for the residual this shape leaves open. Anything that greps or alerts on " +
+        "`error.message` or `toJSON().url` sees a different string after this upgrade. That is " +
+        "true even for a url that carried no credential at all before this release.";
 
       const rawBlock = unreleasedBlock();
       const block = unwrapped(rawBlock);
@@ -391,7 +390,7 @@ describe.skipIf(!distExists || ESBUILD === null)(
           `The \`[Unreleased]\` block may name a direction only when some input took it, ` +
             `and must name every direction that moved. Over ${redactionCorpus().length} ` +
             `urls spanning every shape the block discusses, ${removesMore.length} records ` +
-            `removed MORE than the published 2.0.1 tree did and ${keepsMore.length} kept ` +
+            `removed MORE than the rebuilt 2.0.1 tree did and ${keepsMore.length} kept ` +
             `more. RELEASING.md step 1 copies this block verbatim into the published ` +
             `section, so a direction with no witness outlives the round that wrote it`,
         ).toEqual({ claimedWithNoWitness: [], witnessedWithNoClaim: [] });
