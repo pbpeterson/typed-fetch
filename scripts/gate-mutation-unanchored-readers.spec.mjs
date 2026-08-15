@@ -507,11 +507,20 @@ describe("R20-H4-06 — the direction test reads four phrases, not the block", (
     "- **`redactUrl`'s output moved for an ordinary input, not only for an\n  attack shape.** ";
 
   test("EVIDENCE: the mutated block states a direction and holds none of the four phrases", () => {
+    // The block this reads is the DATED section, not `[Unreleased]`. Step 1 of
+    // the release checklist moved it there, and `[Unreleased]` is empty by
+    // construction from that moment on — a reader still anchored on the pending
+    // heading slices nothing and every assertion below passes vacuously.
+    const version = JSON.parse(repoText("package.json")).version;
     const mutated = edit(repoText(CHANGELOG), ANCHOR, ANCHOR + UNWITNESSED);
-    const block = mutated.slice(mutated.indexOf("## [Unreleased]")).replaceAll(/\s+/g, " ");
+    const start = mutated.indexOf(`## [${version}]`);
+    expect(start, `CHANGELOG.md must carry a dated \`## [${version}]\` section`).not.toBe(-1);
+    const rest = mutated.slice(start);
+    const next = rest.slice(1).search(/\n## \[/);
+    const block = rest.slice(0, next === -1 ? undefined : next + 1).replaceAll(/\s+/g, " ");
     expect(block).toContain(UNWITNESSED.trim());
     for (const phrase of ["kept where it used to be deleted", "moved in both directions"]) {
-      expect(block.slice(0, block.indexOf("## [2."))).not.toContain(phrase);
+      expect(block).not.toContain(phrase);
     }
   });
 

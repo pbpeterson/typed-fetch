@@ -311,16 +311,27 @@ function git(root, ...argv) {
   return result.stdout.trim();
 }
 
+/**
+ * The version the scratch world releases: this repository's own, read from the
+ * manifest the harness copies in. Hard-coding it made the harness a second
+ * source of truth for the version, and it went dead the moment a release was
+ * cut — `validate-release` compares the tag against `package.json`, so a fixed
+ * tag and a moved manifest disagree and every row below reads a tag mismatch
+ * instead of the defect it was written for.
+ */
+const RELEASE_VERSION = JSON.parse(repoText("package.json")).version;
+
 /** The footer of every changelog fixture below. */
 const FOOTER = [
-  "[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.1...HEAD",
-  "[2.0.1]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.0...v2.0.1",
+  `[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v${RELEASE_VERSION}...HEAD`,
+  `[${RELEASE_VERSION}]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.0...v${RELEASE_VERSION}`,
 ].join("\n");
 
 /**
  * The exit code `node scripts/validate-release.mjs` answers for `changelog`,
- * inside a scratch repository whose `v2.0.1` tag, `HEAD` and `origin/main` all
- * name one commit. `package.json` is this repository's own, unedited.
+ * inside a scratch repository whose `v<RELEASE_VERSION>` tag, `HEAD` and
+ * `origin/main` all name one commit. `package.json` is this repository's own,
+ * unedited.
  */
 function validateReleaseExit(changelog) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "tf-round22-h4-vr-")));
@@ -337,13 +348,18 @@ function validateReleaseExit(changelog) {
     git(root, "init", "-q", "-b", "main");
     git(root, "add", "-A");
     git(root, "-c", "user.email=a@b.test", "-c", "user.name=a", "commit", "-qm", "release");
-    git(root, "tag", "v2.0.1");
+    git(root, "tag", `v${RELEASE_VERSION}`);
     git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
 
     const child = spawnSync(process.execPath, ["scripts/validate-release.mjs"], {
       cwd: root,
       encoding: "utf8",
-      env: { ...process.env, GITHUB_REF_NAME: "v2.0.1", GITHUB_REF_TYPE: "tag", GITHUB_OUTPUT: "" },
+      env: {
+        ...process.env,
+        GITHUB_REF_NAME: `v${RELEASE_VERSION}`,
+        GITHUB_REF_TYPE: "tag",
+        GITHUB_OUTPUT: "",
+      },
     });
     return { status: child.status ?? 1, out: `${child.stdout}${child.stderr}` };
   } finally {
@@ -363,11 +379,19 @@ const RELEASED_SECTION = [
   "",
 ].join("\n");
 
-/** A changelog whose 2.0.1 section holds `body`. */
+/** A changelog whose dated release section holds `body`. */
 const changelogWith = (body) =>
-  ["# Changelog", "", "## [Unreleased]", "", "## [2.0.1] - 2026-08-11", "", body, FOOTER, ""].join(
-    "\n",
-  );
+  [
+    "# Changelog",
+    "",
+    "## [Unreleased]",
+    "",
+    `## [${RELEASE_VERSION}] - 2026-08-11`,
+    "",
+    body,
+    FOOTER,
+    "",
+  ].join("\n");
 
 describe("R22-H4-03 — the gate between a tag and `npm publish`, driven", () => {
   test("EVIDENCE: the harness is a live world — a well-formed release passes", () => {
@@ -378,7 +402,7 @@ describe("R22-H4-03 — the gate between a tag and `npm publish`, driven", () =>
 
   test("CONTROL: a footer link that does not end at the tag is refused", () => {
     const run = validateReleaseExit(
-      changelogWith(RELEASED_SECTION).replace("v2.0.0...v2.0.1", "v2.0.0...v2.0.0"),
+      changelogWith(RELEASED_SECTION).replace(`v2.0.0...v${RELEASE_VERSION}`, "v2.0.0...v2.0.0"),
     );
     expect(run.out).toContain("✖ validate-release");
     expect(run.status).toBe(1);
@@ -388,7 +412,8 @@ describe("R22-H4-03 — the gate between a tag and `npm publish`, driven", () =>
     const run = validateReleaseExit(changelogWith(""));
     expect(
       run.status,
-      "the changelog names `## [2.0.1] - 2026-08-11` and puts nothing under it. RELEASING.md " +
+      `the changelog names \`## [${RELEASE_VERSION}] - 2026-08-11\` and puts nothing under it. ` +
+        "RELEASING.md " +
         "step 1 says to MOVE the pending entries into that section and leave `[Unreleased]` " +
         "empty; scripts/validate-release.mjs enforces the source half and asks the destination " +
         "only for a dated heading, so a release that deleted the block instead of moving it " +

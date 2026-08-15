@@ -126,8 +126,23 @@ async function unknownHttpErrorFor(url: string, statusText: string): Promise<Htt
 // `RELEASING.md` step 1 makes immutable.
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("the `[Unreleased]` block, which step 1 moves verbatim into a dated section", () => {
-  const unreleased = (): string => sectionOf(documentText("CHANGELOG.md"), "## [Unreleased]");
+describe("the release block, which step 1 moved verbatim into a dated section", () => {
+  // Step 1 has run: the entries are under `## [<version>] - <date>` and
+  // `[Unreleased]` is empty, which `scripts/validate-release.mjs` requires it to
+  // stay. Reading the pending heading here would slice the empty string and let
+  // all three pins below pass without reading a word of the block they guard.
+  const version = (JSON.parse(documentText("package.json")) as { version: string }).version;
+  /** The dated heading line itself — `sectionOf` matches a whole line. */
+  const releasedHeading = (changelog: string): string => {
+    const line = changelog.split("\n").find((row) => row.startsWith(`## [${version}] - `));
+    if (line === undefined)
+      throw new Error(`CHANGELOG.md carries no dated ## [${version}] heading`);
+    return line;
+  };
+  const unreleased = (): string => {
+    const changelog = documentText("CHANGELOG.md");
+    return sectionOf(changelog, releasedHeading(changelog));
+  };
 
   test("PIN (a): it states the split-point seam rule, not round 12's believed-parse rule", () => {
     const text = unwrapped(unreleased());

@@ -207,10 +207,15 @@ describe.skipIf(!distExists)("the `[Unreleased]` account of the seam", () => {
 
   test("`CHANGELOG.md` must not state the superseded believed-parse rule as current", () => {
     const changelog = documentText("CHANGELOG.md");
+    // The DATED section, not `[Unreleased]`: step 1 moved the entries there and
+    // left the pending heading empty, so reading it would compare two `false`s
+    // against a section with no sentences in it at all.
+    const version = (JSON.parse(documentText("package.json")) as { version: string }).version;
+    const open = `## [${version}]`;
     const unreleased = unwrapped(
       changelog.slice(
-        changelog.indexOf("## [Unreleased]"),
-        changelog.indexOf("## [", changelog.indexOf("## [Unreleased]") + 1),
+        changelog.indexOf(open),
+        changelog.indexOf("## [", changelog.indexOf(open) + 1),
       ),
     );
 

@@ -701,22 +701,26 @@ describe("the coverage gate's reach", () => {
 // round 16's semver rule 8 decides what number it may carry.
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe("the pending release", () => {
-  test("the tree carries an uncut `[Unreleased]` block over the never-published 2.0.1", () => {
+describe("the cut release", () => {
+  test("the tree carries a dated 2.1.0 section over the never-published 2.0.1", () => {
     const changelog = repoText("CHANGELOG.md");
-    const unreleased = changelog.split("## [Unreleased]")[1]?.split("\n## [")[0] ?? "";
+    const version = (JSON.parse(repoText("package.json")) as { version: string }).version;
+    const released = changelog.split(`## [${version}]`)[1]?.split("\n## [")[0] ?? "";
+    const pending = changelog.split("## [Unreleased]")[1]?.split("\n## [")[0] ?? "";
 
     expect({
-      version: (JSON.parse(repoText("package.json")) as { version: string }).version,
-      unreleasedHasSecurityFixes: unreleased.includes("### Security"),
-      unreleasedHasChanged: unreleased.includes("### Changed"),
+      version,
+      releasedHasSecurityFixes: released.includes("### Security"),
+      releasedHasChanged: released.includes("### Changed"),
+      pendingIsEmpty: pending.trim() === "",
     }).toEqual({
-      // Unmoved since the 2.0.1 cut — which itself never published, so the
-      // consumer baseline is 2.0.0. No version has been cut for the block
-      // below it, and rule 8 forbids a patch number for it.
-      version: "2.0.1",
-      unreleasedHasSecurityFixes: true,
-      unreleasedHasChanged: true,
+      // 2.0.1 was cut here and never published, so the consumer baseline is
+      // 2.0.0 and rule 8 forbade a patch number for this block. 2.1.0 is the
+      // lowest number it permits, and step 1 moved the block under it.
+      version: "2.1.0",
+      releasedHasSecurityFixes: true,
+      releasedHasChanged: true,
+      pendingIsEmpty: true,
     });
   });
 });

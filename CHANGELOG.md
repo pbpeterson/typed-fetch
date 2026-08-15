@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-15
+
 Every published version carries at least one of the defects this section
 fixes. `2.0.1` carries them too, and `2.0.1` was cut in this repository and
 never published. A URL that carries userinfo can reach `error.message` and
@@ -289,9 +291,9 @@ dated, and cut in this repository, and nothing was published. The published
 versions end at `2.0.0`. Do not try to install `2.0.1`, and do not follow a
 `v2.0.1` compare link.
 
-Your upgrade path is `2.0.0` → the next published version. Everything in this
-section is still unpublished, so the real migration delta is the union of this
-section and the `[Unreleased]` one above. Read both.
+Your upgrade path is `2.0.0` → `2.1.0`. Nothing in this section was ever
+published on its own, so the real migration delta is the union of this section
+and the `[2.1.0]` one above. Read both.
 
 This section keeps its own heading and its own date, and it carries no footer
 link, because there is no tag for one to name.
@@ -1686,6 +1688,7 @@ header input from `TypedFetchOptions["headers"]` instead of importing
 
 See the [commit history](https://github.com/pbpeterson/typed-fetch/commits/main).
 
-[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/pbpeterson/typed-fetch/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/pbpeterson/typed-fetch/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/pbpeterson/typed-fetch/compare/v0.8.1...v1.0.0

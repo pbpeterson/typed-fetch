@@ -419,11 +419,18 @@ describe("the gate roster the release documents carry", () => {
 
 // ── The `[Unreleased]` block, against semver rule 8 ──────────────────────
 
-/** The text of the `[Unreleased]` section, up to the first dated heading. */
+/**
+ * The text of the DATED release section, up to the next `## [` heading.
+ *
+ * Step 1 moved the block out of `[Unreleased]` and into this section, and
+ * `scripts/validate-release.mjs` requires the pending heading to stay empty
+ * from now on — so this reads where the sentences ARE, not where they were.
+ */
 function unreleasedBlock(): string {
   const changelog = repoText("CHANGELOG.md");
-  const start = changelog.indexOf("\n## [Unreleased]");
-  expect(start, "CHANGELOG.md must keep an [Unreleased] heading").not.toBe(-1);
+  const version = (JSON.parse(repoText("package.json")) as { version: string }).version;
+  const start = changelog.indexOf(`\n## [${version}]`);
+  expect(start, `CHANGELOG.md must keep a dated [${version}] heading`).not.toBe(-1);
   const rest = changelog.slice(start + 1);
   const end = rest.indexOf("\n## [");
   return end === -1 ? rest : rest.slice(0, end);
@@ -644,17 +651,23 @@ const changelogCutAt = (version: string): string =>
   ].join("\n");
 
 describe("the version this tree can cut", () => {
-  test("VERIFIED: nothing has been cut, and the uncut block blocks every tag", () => {
+  test("VERIFIED: 2.1.0 is cut, and the emptied pending block no longer blocks the tag", () => {
     const manifest = JSON.parse(repoText("package.json")) as { version: string };
     const block = unreleasedBlock();
 
-    expect(manifest.version).toBe("2.0.1");
+    expect(manifest.version).toBe("2.1.0");
     expect(block).toContain("### Security");
     expect(block).toContain("### Changed");
-    // The gate that stops a tag today, named from its own source.
+    // The gate that used to stop a tag here, named from its own source. It is
+    // still the rule; the tree now satisfies it instead of failing it.
     expect(repoText("scripts/validate-release.mjs")).toContain(
       "The CHANGELOG [Unreleased] section must be empty before publishing.",
     );
+    const changelog = repoText("CHANGELOG.md");
+    const pending = changelog.slice(changelog.indexOf("## [Unreleased]"));
+    expect(
+      pending.slice(0, pending.indexOf("\n## [", 1)).replace("## [Unreleased]", "").trim(),
+    ).toBe("");
   });
 
   test("EVIDENCE: 2.1.0 is reachable, and so is the 2.0.2 the policy forbids", async () => {

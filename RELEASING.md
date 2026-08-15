@@ -53,7 +53,10 @@ attestation.
   dated section names a direction from that closed vocabulary. It does not
   prove the direction it names is the direction the code took. The differential
   that measures the move is `tests/surface/surface-changelog-direction-witnesses.spec.ts`, and it
-  reads `[Unreleased]`.
+  reads the DATED section — the same one this gate reads. It read `[Unreleased]`
+  until a release was cut, which is where the entries were until step 1 moved
+  them; a reader left on the pending heading slices an empty section and passes
+  without measuring anything.
 
 - The package job uses a GitHub-hosted runner, Node `22.23.1`, pnpm from the
   exact `packageManager` field, and npm `11.18.0`. Release dependencies are not
@@ -171,8 +174,9 @@ Run every step, in order, for every release:
    `scripts/validate-release.mjs` requires exactly one declaration THERE, and
    every comma-separated value in it must read `removes-more`, `keeps-more`, or
    `none`. This is semver rule 8's direction obligation, and the dated section
-   is the only place a release can still carry it: every other reader of the
-   declaration reads `[Unreleased]`, which this same step has just emptied. A
+   is the only place a release can still carry it: this same step has just
+   emptied `[Unreleased]`, so every reader of the declaration must read the
+   dated section too, and moving a reader there is part of the release commit. A
    release that moves `toJSON().url` in no direction declares `none`.
 
    Then update the reference definitions at the FOOTER of `CHANGELOG.md`:

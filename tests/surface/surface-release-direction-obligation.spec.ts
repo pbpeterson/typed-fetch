@@ -70,8 +70,7 @@ function accepts(version: string, changelog: string): boolean {
 // patch for this release — the pending block declares the redacted url moved —
 // so the version is 2.1.0, the lowest number the rule permits.
 
-const RELEASE_VERSION = "2.1.0";
-const RELEASE_DATE = "2026-08-11";
+const RELEASE_VERSION = (JSON.parse(repoText("package.json")) as { version: string }).version;
 
 /** The text of the `## [Unreleased]` section, up to the next released heading. */
 function pendingBlock(changelog: string): string {
@@ -84,42 +83,56 @@ function pendingBlock(changelog: string): string {
   return rest.slice(0, end);
 }
 
+/** The text of the DATED release section, up to the next `## [` heading. */
+function releasedBlock(changelog: string): string {
+  const open = `## [${RELEASE_VERSION}]`;
+  const start = changelog.indexOf(open);
+  expect(start, `CHANGELOG.md must carry a dated \`${open}\` section`).not.toBe(-1);
+  const rest = changelog.slice(start + open.length);
+  const end = rest.search(/\n## \[/);
+  expect(end, "CHANGELOG.md must carry a section under the released one").not.toBe(-1);
+  return rest.slice(0, end);
+}
+
 /**
- * The repository's changelog after step 1, with `edit` applied to the block on
- * its way into the dated section. The footer moves with it, exactly as the
- * numbered rules under `## Semver policy` require: `[Unreleased]` compares from
- * the new tag, and the new version compares from the previous one.
+ * The repository's changelog as step 1 left it, with `edit` applied to the
+ * dated block.
  *
- * The previous one is `v2.0.0`. `2.0.1` was cut in this repository and never
- * published: no `v2.0.1` tag exists, so no link may end at one, and the footer
- * this reads is the corrected footer the changelog now carries.
+ * This used to SIMULATE step 1 against an uncut tree: it moved the pending
+ * block into a dated heading and rewrote the two footer links itself. Step 1
+ * has since run for real, so the simulation would now be a second source of
+ * truth for a shape the file already carries — and its footer rewrite silently
+ * became a no-op the moment the real footer was corrected. The identity edit
+ * therefore answers the repository's own file, and each `edit` below is applied
+ * where rule 8's obligation actually lives.
+ *
+ * The footer the file carries is the one the numbered rules under
+ * `## Semver policy` require: `[Unreleased]` compares from the new tag, and the
+ * new version compares from `v2.0.0`. The previous published version IS
+ * `2.0.0` — `2.0.1` was cut in this repository and never published, no `v2.0.1`
+ * tag exists, so no link may end at one.
  */
 function afterStepOne(edit: (block: string) => string = (block) => block): string {
   const changelog = repoText("CHANGELOG.md");
-  const block = pendingBlock(changelog);
-  return changelog
-    .replace(
-      `## [Unreleased]\n${block}`,
-      `## [Unreleased]\n\n## [${RELEASE_VERSION}] - ${RELEASE_DATE}\n${edit(block)}`,
-    )
-    .replace(
-      `[Unreleased]: ${COMPARE}/v2.0.0...HEAD`,
-      `[Unreleased]: ${COMPARE}/v${RELEASE_VERSION}...HEAD\n` +
-        `[${RELEASE_VERSION}]: ${COMPARE}/v2.0.0...v${RELEASE_VERSION}`,
-    );
+  const block = releasedBlock(changelog);
+  return changelog.replace(block, () => edit(block));
 }
 
 /** The declaration line the direction obligation is carried by. */
 const DECLARATION = /^<!--\s*redaction-directions:[^>]*-->\n/m;
 
 describe("R23-H4-03 — the direction obligation at the release boundary", () => {
-  test("EVIDENCE: the pending block carries exactly one direction declaration today", () => {
+  test("EVIDENCE: the released block carries exactly one direction declaration today", () => {
+    // Read where step 1 put it. The pending block is empty from here on, and a
+    // reader still anchored there collects zero declarations and reports the
+    // obligation unmet on a tree that meets it.
     const declarations = [
-      ...pendingBlock(repoText("CHANGELOG.md")).matchAll(
+      ...releasedBlock(repoText("CHANGELOG.md")).matchAll(
         /<!--\s*redaction-directions:\s*([^>]*?)\s*-->/g,
       ),
     ];
     expect(declarations.map((match) => match[1])).toEqual(["removes-more"]);
+    expect(pendingBlock(repoText("CHANGELOG.md")).trim()).toBe("");
   });
 
   test("the release gate reads that declaration out of the DATED section", () => {
@@ -132,13 +145,14 @@ describe("R23-H4-03 — the direction obligation at the release boundary", () =>
     // pre-fix state stays as this prose. Seventh instrument in this audit that
     // could not survive its fix, and the first that forbade it outright.
     //
-    // The two PENDING-section readers are unchanged and stay pinned as text, so
-    // pointing either of them at the released section is still a reviewable
+    // The round-19 reader is pinned as TEXT so that moving it is a reviewable
     // diff rather than a silent widening — the discipline `IGNORE_SITES`
-    // imposes. What changed is that a third reader now exists, in the one place
-    // that runs between a git tag and `npm publish`.
+    // imposes. Cutting the release moved it, and this pin is the review: it now
+    // reads the DATED section, which is where step 1 leaves the obligation and
+    // the only section that still carries it once `[Unreleased]` is emptied.
     const reader = repoText("tests/surface/surface-changelog-direction-witnesses.spec.ts");
-    expect(reader).toContain('const start = changelog.indexOf("## [Unreleased]");');
+    expect(reader).toContain("const open = `## [${RELEASE_VERSION}]`;");
+    expect(reader).not.toContain('const start = changelog.indexOf("## [Unreleased]");');
     expect(reader).toContain(
       "const declarations = [...rawBlock.matchAll(/<!--\\s*redaction-directions:\\s*([^>]*?)\\s*-->/g)];",
     );

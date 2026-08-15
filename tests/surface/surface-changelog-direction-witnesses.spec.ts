@@ -7,17 +7,24 @@ import { describe, expect, test } from "vitest";
 import { builtEntryUrl, distExists, warnWhenDistMissing } from "../../fixtures/built-package";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ROUND 19, LANE H4 — the release the audit still cannot cut, and the
-// documents it has written since round 16.
+// ROUND 19, LANE H4 — the release the audit could not cut, and the documents
+// it has written since round 16.
+//
+// The release IS cut now: 2.1.0, dated, with the block moved under it. The
+// three readiness rows below were written as pins on the BLOCKED state so that
+// cutting turned them red; they now read the same three facts from the other
+// side of release-checklist step 1, and every block reader in this file reads
+// the DATED section rather than `[Unreleased]`, which step 1 emptied.
 //
 // Three subjects, in this order:
 //
-//  1. RELEASE READINESS, false since round 15, with each recorded reason turned
-//     into an assertion against the files — and one reason the audit has never
-//     asserted: semver rule 8 requires `CHANGELOG.md` to state EACH DIRECTION
-//     the output moved, and the block names a direction no input took. That is
-//     measured against a REBUILT 2.0.1 tree, because "used to be deleted" is a
-//     claim about the released package and no document can answer it.
+//  1. RELEASE READINESS, false from round 15 until this cut, with each recorded
+//     reason turned into an assertion against the files — and one reason the
+//     audit has never asserted: semver rule 8 requires `CHANGELOG.md` to state
+//     EACH DIRECTION the output moved, and the block names a direction no input
+//     took. That is measured against a REBUILT 2.0.1 tree, because "used to be
+//     deleted" is a claim about the released package and no document can answer
+//     it.
 //  2. The CI job roster CONTRIBUTING.md gives a contributor, against the jobs
 //     `.github/workflows/ci.yml` actually declares.
 //  3. The three sentences `.audit-state.json` still lists as OWED, each one
@@ -55,45 +62,75 @@ async function headEmitter(): Promise<(url: string) => string> {
 // 1. RELEASE READINESS, AND THE DIRECTION RULE 8 ASKS FOR.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** The text of the `## [Unreleased]` section, up to the next released heading. */
-function unreleasedBlock(): string {
+/** The version this tree cut, read from the manifest rather than pinned here. */
+const RELEASE_VERSION = (JSON.parse(repoText("package.json")) as { version: string }).version;
+
+/**
+ * The text of the DATED release section, up to the next `## [` heading.
+ *
+ * Until the release was cut this read `## [Unreleased]`, because that is where
+ * the entries were. Release-checklist step 1 moved them into
+ * `## [<RELEASE_VERSION>] - <date>` and left `[Unreleased]` empty, and
+ * `scripts/validate-release.mjs` requires it to STAY empty — so a reader still
+ * anchored on the pending heading slices the empty string and every assertion
+ * over it passes for the wrong reason. The gate reads the dated section for
+ * exactly this reason, and so does this file.
+ */
+function releasedBlock(): string {
   const changelog = repoText("CHANGELOG.md");
-  const start = changelog.indexOf("## [Unreleased]");
-  expect(start, "CHANGELOG.md must carry an `## [Unreleased]` section").not.toBe(-1);
-  const rest = changelog.slice(start + "## [Unreleased]".length);
-  const end = rest.search(/\n## \[\d/);
+  const open = `## [${RELEASE_VERSION}]`;
+  const start = changelog.indexOf(open);
+  expect(start, `CHANGELOG.md must carry a dated \`${open}\` section`).not.toBe(-1);
+  const rest = changelog.slice(start + open.length);
+  const end = rest.search(/\n## \[/);
   return (end === -1 ? rest : rest.slice(0, end)).trim();
 }
 
 describe("release readiness, as assertions against the files", () => {
-  // The three reasons `.audit-state.json` records. Each is a PIN: it states the
-  // blocked state so that cutting the release turns it red, and the round that
-  // cuts it must answer all three in one commit.
-  test("PIN: the manifest still carries the published version, so nothing is cut", () => {
+  // These three rows used to be PINS on the BLOCKED state: `package.json` at
+  // 2.0.1, a non-empty `[Unreleased]`, and rule 8 forbidding the patch that
+  // version implied. They were written to turn red the moment the release was
+  // cut, so that the round doing the cutting had to answer all three in one
+  // commit. This is that commit, and they now assert the CUT state instead:
+  // same three facts, read from the other side of step 1.
+  test("the manifest carries the cut version, and the changelog dates it", () => {
     const manifest = JSON.parse(repoText("package.json")) as { version: string };
-    expect(manifest.version).toBe("2.0.1");
-  });
-
-  test("PIN: the `[Unreleased]` block is not empty, which validate-release refuses", () => {
-    expect(unreleasedBlock()).not.toBe("");
-    expect(unwrapped(repoText("RELEASING.md"))).toContain(
-      "the `[Unreleased]` changelog section is empty;",
+    expect(manifest.version).toBe("2.1.0");
+    expect(repoText("CHANGELOG.md")).toMatch(
+      new RegExp(`^## \\[${manifest.version}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m"),
     );
   });
 
-  test("PIN: rule 8 forbids the patch the current version implies", () => {
-    // `package.json` is 2.0.1 and the block declares the redacted url moved, so
-    // the next number is 2.1.0 at the lowest. RELEASING.md states the rule and
-    // nothing enforces it, which is why it is written down here as well.
+  test("the `[Unreleased]` block is empty, which is what validate-release requires", () => {
+    const changelog = repoText("CHANGELOG.md");
+    const pending = "## [Unreleased]";
+    const at = changelog.indexOf(pending);
+    const tail = changelog.slice(at + pending.length);
+    const stop = tail.search(/\n## \[/);
+    expect((stop === -1 ? tail : tail.slice(0, stop)).trim()).toBe("");
+    expect(unwrapped(repoText("RELEASING.md"))).toContain(
+      "the `[Unreleased]` changelog section is empty;",
+    );
+    // The entries did not vanish: step 1 MOVED them, and the gate refuses a
+    // dated section that describes nothing.
+    expect(releasedBlock()).not.toBe("");
+  });
+
+  test("rule 8's minor was taken, not the patch it forbids", () => {
+    // 2.0.1 was cut in this repository and never published, and the block
+    // declares the redacted url moved, so 2.1.0 is the lowest number rule 8
+    // permits. RELEASING.md states the rule and no gate enforces it, which is
+    // why it is written down here as well.
     const rule8 = unwrapped(repoText("RELEASING.md"));
     expect(rule8).toContain("A change in what `toJSON().url` emits is a `minor` at least.");
     expect(rule8).toContain(
       "`CHANGELOG.md` states each direction the output moved, and names one ordinary input per direction.",
     );
+    expect(RELEASE_VERSION).toBe("2.1.0");
     // The quote is the block's declaration that the output moved, which is what
-    // forces the minor. R19-H4-01 requalified the sentence, so the pin reads the
+    // forced the minor. R19-H4-01 requalified the sentence, so the pin reads the
     // requalified wording; it must never read a direction the block only claims.
-    expect(unwrapped(unreleasedBlock())).toContain(
+    expect(unwrapped(releasedBlock())).toContain(
       "`redactUrl`'s output moved for an ordinary input, not only for an attack shape.",
     );
   });
@@ -191,7 +228,7 @@ async function publishedEmitter(): Promise<{ emit: (url: string) => string; clea
   };
 }
 
-/** A structured corpus over the shapes the `[Unreleased]` block talks about. */
+/** A structured corpus over the shapes the released block talks about. */
 function redactionCorpus(): string[] {
   const heads = [
     "https://api.test/go/",
@@ -223,7 +260,7 @@ function redactionCorpus(): string[] {
 }
 
 describe.skipIf(!distExists || ESBUILD === null)(
-  "the `[Unreleased]` block against the tree it claims to move away from",
+  "the released block against the tree it claims to move away from",
   () => {
     /** Every url whose record differs between the 2.0.1 tree and HEAD. */
     async function differential(): Promise<{
@@ -266,7 +303,7 @@ describe.skipIf(!distExists || ESBUILD === null)(
           "/go/file:/Users/alice@corp/report.pdf",
           "file:///c:/Users/alice@corp/x",
         ]) {
-          expect(unwrapped(unreleasedBlock())).toContain(url.replace("https://api.test", ""));
+          expect(unwrapped(releasedBlock())).toContain(url.replace("https://api.test", ""));
           expect(published(url)).toBe(url);
           expect(head(url)).toBe(url);
         }
@@ -336,7 +373,7 @@ describe.skipIf(!distExists || ESBUILD === null)(
         "`error.message` or `toJSON().url` sees a different string after this upgrade. That is " +
         "true even for a url that carried no credential at all before this release.";
 
-      const rawBlock = unreleasedBlock();
+      const rawBlock = releasedBlock();
       const block = unwrapped(rawBlock);
 
       // R21-H4-05. `matchAll`, and EXACTLY ONE declaration. The first reading
@@ -348,7 +385,7 @@ describe.skipIf(!distExists || ESBUILD === null)(
       const declarations = [...rawBlock.matchAll(/<!--\s*redaction-directions:\s*([^>]*?)\s*-->/g)];
       expect(
         declarations.length,
-        "the `[Unreleased]` block must declare which directions it claims EXACTLY ONCE, as " +
+        "the released block must declare which directions it claims EXACTLY ONCE, as " +
           "`<!-- redaction-directions: … -->`, so this test reads a closed vocabulary " +
           "rather than guessing at prose. No declaration leaves the block unread; a second " +
           "one states a claim the first answers for, and RELEASING.md step 1 copies every " +
