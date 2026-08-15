@@ -20,13 +20,13 @@ import {
 // Four questions, in the order they matter:
 //
 //  1. WHAT STATE OUTLIVES A CALL, and can one call observe another's? The
-//     module holds exactly two module-scoped bindings — `nativeFetch`, captured
-//     at load, and `validatedResponseStructures`, a `WeakSet` keyed by an
-//     accepted response. Section 1 pins that the WeakSet is not a validation
-//     CACHE: an acceptance never lets a later call skip a check. It also pins
-//     the structural reason no race is possible at all — phases 1 and 3 contain
-//     no `await`, so two calls cannot interleave inside either of them. That
-//     test is what breaks if a later refactor puts an `await` in one.
+//     module holds the captured `nativeFetch` plus two response-phase WeakSets:
+//     `validatedResponseStructures` and the active-classification guard.
+//     Section 1 pins that the validation WeakSet is not a CACHE: an acceptance
+//     never lets a later call skip a check. It also pins the structural reason
+//     no race is possible at all — phases 1 and 3 contain no `await`, so two
+//     calls cannot interleave inside either of them. That test is what breaks if
+//     a later refactor puts an `await` in one.
 //  2. TWO CALLS, ONE `AbortController`. Section 2. The signal is caller state
 //     shared across calls by design, and the question is whether anything else
 //     travels with it.
@@ -125,8 +125,11 @@ describe("round 15 / H1 — what one call leaves behind for the next", () => {
         "FOREIGN_RESPONSE_BODY_METHODS",
         "FOREIGN_RESPONSE_HEADERS_METHODS",
         "FOREIGN_RESPONSE_TYPES",
-        // One mutable table — the whole of the request path's cross-call state.
+        // The accepted-value table and the active-classification guard are the
+        // response phase's two mutable tables. The latter prevents a nested
+        // refusal from releasing the body owned by an outer classification.
         "validatedResponseStructures",
+        "responsesBeingClassified",
       ],
     });
   });

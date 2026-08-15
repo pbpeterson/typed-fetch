@@ -120,9 +120,71 @@ export interface ErrorBody {
  * getter or value. Its native prototype getter still owns the internal stream.
  */
 type ReleasableBody = {
-  cancel?: () => unknown;
+  locked?: boolean;
+  cancel?: (reason?: unknown) => unknown;
   destroy?: () => unknown;
 };
+
+type ResponseBody = ReleasableBody | null | undefined;
+
+type BodyLifecycle = {
+  cancelled: boolean;
+  readStarted: boolean;
+  cancelling: Promise<void> | undefined;
+  bodyObserved: boolean;
+  observedBody: ResponseBody;
+};
+
+/**
+ * The first body observed for a response is the body this module owns.
+ *
+ * A foreign `Response` is allowed to answer `body` with a different stream on
+ * every read. Keeping the first answer makes cleanup and the public body handle
+ * agree about custody. `response-verdict` can also file the body while it is
+ * validating a value, before this module gets the error-body handle.
+ */
+const responseBodies = new WeakMap<object, ResponseBody>();
+const bodyLifecycles = new WeakMap<object, BodyLifecycle>();
+
+/**
+ * Only file a body that can participate in cleanup. A structurally refused
+ * response may briefly expose `{ locked: 1 }` or another non-stream value; if
+ * that refusal poisoned the table, a later honest presentation of the same
+ * mutable object would inherit the bogus lock forever.
+ */
+function isRememberableBody(body: unknown): body is ResponseBody {
+  if (body === null) return true;
+  if (!isObjectLike(body)) return false;
+  try {
+    return typeof Reflect.get(body, "locked", body) === "boolean";
+  } catch {
+    return false;
+  }
+}
+
+/** Remember a body without widening the package's public surface. */
+export function rememberResponseBody(response: Response, body: unknown): ResponseBody {
+  if (!isObjectLike(response)) return undefined;
+  if (responseBodies.has(response)) return responseBodies.get(response);
+  const candidate = nativeBodyForSnapshot(response, body);
+  if (!isRememberableBody(candidate)) return undefined;
+  responseBodies.set(response, candidate);
+  return responseBodies.get(response);
+}
+
+/** Forget a body after a refused presentation has released it. */
+export function forgetResponseBody(response: Response, expected?: ResponseBody): void {
+  if (!isObjectLike(response)) return;
+  if (expected === undefined || responseBodies.get(response) === expected) {
+    responseBodies.delete(response);
+  }
+}
+
+/** Return the body filed by an earlier response-phase observation, if any. */
+export function responseBodySnapshot(response: Response): ResponseBody | undefined {
+  if (!isObjectLike(response)) return undefined;
+  return responseBodies.get(response);
+}
 
 /**
  * Platform operations captured before an injected response can shadow them.
@@ -136,6 +198,14 @@ const nativeResponseBodyGetter =
   typeof Response === "undefined"
     ? undefined
     : Object.getOwnPropertyDescriptor(Response.prototype, "body")?.get;
+const nativeResponseBodyUsedGetter = (() => {
+  const responseConstructor =
+    typeof Response === "undefined" ? undefined : (Response as typeof globalThis.Response);
+  const prototype = responseConstructor?.prototype;
+  return prototype === undefined || prototype === null
+    ? undefined
+    : Object.getOwnPropertyDescriptor(prototype, "bodyUsed")?.get;
+})();
 const nativeResponsePrototype = typeof Response === "undefined" ? undefined : Response.prototype;
 const nativeReadableStreamCancel =
   typeof ReadableStream === "undefined" ? undefined : ReadableStream.prototype.cancel;
@@ -144,10 +214,172 @@ const nativeReadableStreamLockedGetter =
     ? undefined
     : Object.getOwnPropertyDescriptor(ReadableStream.prototype, "locked")?.get;
 
-function bodyForRelease(response: Response): ReleasableBody | null | undefined {
+/** Promise operations whose prototype/static slots may be shadowed by input. */
+const nativePromiseConstructor = Promise;
+const nativePromiseResolve = Promise.resolve;
+const nativePromiseThen = Promise.prototype.then;
+
+const ignoreRejection = (): undefined => undefined;
+
+function resolveWithNativePromise(value: unknown): Promise<unknown> {
+  return Reflect.apply(nativePromiseResolve, nativePromiseConstructor, [value]) as Promise<unknown>;
+}
+
+/**
+ * A few older Fetch doubles expose only `catch()` rather than a thenable. Keep
+ * that compatibility fallback, but never use a replaceable `catch` on an
+ * actual Promise: native `then` is the only operation trusted for promises.
+ */
+function legacyCatchOnly(value: unknown, normalized: Promise<unknown>): unknown {
+  if (!isObjectLike(value) || normalized === value) return undefined;
+
+  try {
+    const then = Reflect.get(value, "then", value);
+    if (typeof then === "function") return undefined;
+    const catchMethod = Reflect.get(value, "catch", value);
+    if (typeof catchMethod !== "function") return undefined;
+    return Reflect.apply(catchMethod, value, [ignoreRejection]);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Attach a rejection handler through captured Promise intrinsics. */
+function observePending(pending: unknown): Promise<unknown> {
+  let normalized: Promise<unknown>;
+  try {
+    normalized = resolveWithNativePromise(pending);
+  } catch {
+    return resolveWithNativePromise(undefined);
+  }
+
+  let observed: Promise<unknown>;
+  try {
+    observed = Reflect.apply(nativePromiseThen, normalized, [
+      undefined,
+      ignoreRejection,
+    ]) as Promise<unknown>;
+  } catch {
+    return resolveWithNativePromise(undefined);
+  }
+
+  const legacy = legacyCatchOnly(pending, normalized);
+  if (legacy === undefined) return observed;
+
+  try {
+    const legacyPromise = resolveWithNativePromise(legacy);
+    return Reflect.apply(nativePromiseThen, legacyPromise, [
+      undefined,
+      ignoreRejection,
+    ]) as Promise<unknown>;
+  } catch {
+    return observed;
+  }
+}
+
+/**
+ * Read a captured Response slot without accepting a shadowing own property.
+ *
+ * The ordinary path needs no prototype mutation: Web IDL accessors read the
+ * native internal slots even when a consumer installed an own `body` or
+ * `bodyUsed`. The repair path mirrors `bodyForRelease` for a native Response
+ * whose prototype chain was replaced after construction.
+ */
+function nativeResponseValue<T>(getter: unknown, response: Response): T | undefined {
+  if (typeof getter !== "function") return undefined;
+
+  try {
+    return Reflect.apply(getter, response, []) as T;
+  } catch {
+    if (nativeResponsePrototype === undefined) return undefined;
+
+    try {
+      const originalPrototype = Object.getPrototypeOf(response) as object | null;
+      Object.setPrototypeOf(response, nativeResponsePrototype);
+      try {
+        return Reflect.apply(getter, response, []) as T;
+      } finally {
+        Object.setPrototypeOf(response, originalPrototype);
+      }
+    } catch {
+      // Foreign values and unrepairable proxies use their visible surface.
+      return undefined;
+    }
+  }
+}
+
+/** Prefer native body slots over an own `body` shadow on a real Response. */
+function nativeBodyForSnapshot(response: Response, visible: unknown): unknown {
+  const native = nativeResponseValue<ResponseBody>(nativeResponseBodyGetter, response);
+  return native === undefined ? visible : native;
+}
+
+/**
+ * Preserve an explicit accessor override used by a Fetch runtime or subclass
+ * to model its body-used semantics (for example, Bun reports a reader lock as
+ * used). Data-property shadows are not overrides: those are untrusted values
+ * and the native slot below wins over them.
+ */
+function responseBodyUsedOverride(response: Response): boolean | undefined {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(response, "bodyUsed");
+    if (descriptor && ("get" in descriptor || "set" in descriptor)) {
+      const value = response.bodyUsed;
+      return typeof value === "boolean" ? value : undefined;
+    }
+
+    if (nativeResponsePrototype === undefined) return undefined;
+
+    let prototype = Object.getPrototypeOf(response) as object | null;
+    while (prototype && prototype !== nativeResponsePrototype) {
+      const inherited = Object.getOwnPropertyDescriptor(prototype, "bodyUsed");
+      if (
+        inherited &&
+        (typeof inherited.get === "function" || typeof inherited.set === "function")
+      ) {
+        const value = response.bodyUsed;
+        return typeof value === "boolean" ? value : undefined;
+      }
+      prototype = Object.getPrototypeOf(prototype) as object | null;
+    }
+  } catch {
+    // Native slots remain authoritative when an own or inherited accessor is
+    // hostile. Foreign values are treated as unavailable below.
+  }
+
+  return undefined;
+}
+
+/** Read body-used state from native slots, falling back for foreign Responses. */
+function responseBodyUsed(response: Response): boolean {
+  // A native consumed slot cannot be reopened by an accessor that lies false.
+  // Return before consulting that accessor at all when the intrinsic already
+  // knows the body is used.
+  const native = nativeResponseValue<boolean>(nativeResponseBodyUsedGetter, response);
+  if (native === true) return true;
+
+  const override = responseBodyUsedOverride(response);
+  if (override === true) return true;
+  if (native === false) return false;
+
+  try {
+    const visible = response.bodyUsed;
+    return typeof visible === "boolean" ? visible : true;
+  } catch {
+    // An unknown foreign body state must not reopen a stream for a read.
+    return true;
+  }
+}
+
+function bodyForRelease(response: Response): ResponseBody {
+  if (!isObjectLike(response)) return undefined;
+  if (responseBodies.has(response)) return responseBodies.get(response);
+
+  let body: ResponseBody;
   if (typeof nativeResponseBodyGetter === "function") {
     try {
-      return Reflect.apply(nativeResponseBodyGetter, response, []) as ReleasableBody | null;
+      body = Reflect.apply(nativeResponseBodyGetter, response, []) as ReleasableBody | null;
+      return body;
     } catch {
       // Node's WebIDL brand check also requires Response.prototype in the
       // chain. A native object can keep its slots after that chain is replaced,
@@ -165,7 +397,8 @@ function bodyForRelease(response: Response): ReleasableBody | null | undefined {
           const originalPrototype = Object.getPrototypeOf(response) as object | null;
           Object.setPrototypeOf(response, nativeResponsePrototype);
           try {
-            return Reflect.apply(nativeResponseBodyGetter, response, []) as ReleasableBody | null;
+            body = Reflect.apply(nativeResponseBodyGetter, response, []) as ReleasableBody | null;
+            return body;
           } finally {
             Object.setPrototypeOf(response, originalPrototype);
           }
@@ -180,7 +413,8 @@ function bodyForRelease(response: Response): ReleasableBody | null | undefined {
   // several inherited body getters, this is the same nearest getter validation
   // inspected. A cleanup walk must not silently switch to an ancestor's body.
   try {
-    return response.body;
+    body = response.body;
+    return body;
   } catch {
     // The visible getter is hostile. Search behind it for a usable fallback.
   }
@@ -193,7 +427,8 @@ function bodyForRelease(response: Response): ReleasableBody | null | undefined {
       const descriptor = Object.getOwnPropertyDescriptor(prototype, "body");
       if (typeof descriptor?.get === "function") {
         try {
-          return Reflect.apply(descriptor.get, response, []) as ReleasableBody | null;
+          body = Reflect.apply(descriptor.get, response, []) as ReleasableBody | null;
+          return body;
         } catch {
           // This getter is also hostile. Try the next ancestor.
         }
@@ -207,29 +442,75 @@ function bodyForRelease(response: Response): ReleasableBody | null | undefined {
   return undefined;
 }
 
+/**
+ * Read a stream's lock state from its intrinsic slot when it is native.
+ * Foreign streams retain their visible `locked` member, including a getter
+ * that may call back into this body; callers establish their re-entrancy guard
+ * before reaching this helper.
+ */
+function bodyLocked(body: ReleasableBody | null | undefined): boolean | undefined {
+  if (!body) return undefined;
+
+  if (typeof nativeReadableStreamLockedGetter === "function") {
+    try {
+      return Reflect.apply(nativeReadableStreamLockedGetter, body, []) as boolean;
+    } catch {
+      // A foreign stream fails the native brand check; inspect its surface.
+    }
+  }
+
+  return body.locked;
+}
+
 /** Start one cancellation and silence a rejection without retrying the call. */
-function tryCancelBody(body: ReleasableBody, cancelMethod: unknown): boolean {
-  if (typeof cancelMethod !== "function") return false;
+function tryCancelBody(body: ReleasableBody, cancelMethod: unknown): Promise<unknown> | undefined {
+  if (typeof cancelMethod !== "function") return undefined;
 
   let pending: unknown;
   try {
     pending = Reflect.apply(cancelMethod, body, []) as unknown;
   } catch {
-    return false;
+    return undefined;
   }
 
+  // Cancellation already started. Cleanup must not call it twice merely
+  // because a hostile Promise hid its replaceable rejection handler.
+  return observePending(pending);
+}
+
+/** Cancel a body, falling back to a Node-style destroy operation when needed. */
+function releaseBodyWithFallback(body: ReleasableBody, reason?: unknown): Promise<unknown> {
+  let started = false;
+  let pending: unknown;
+
   try {
-    if (isObjectLike(pending)) {
-      const catchMethod = Reflect.get(pending, "catch", pending) as unknown;
-      if (typeof catchMethod === "function") {
-        void Reflect.apply(catchMethod, pending, [() => {}]);
+    if (isNativeReadableStream(body) && typeof nativeReadableStreamCancel === "function") {
+      pending = Reflect.apply(nativeReadableStreamCancel, body, [reason]);
+      started = true;
+    } else {
+      const cancelMethod = body.cancel;
+      if (typeof cancelMethod === "function") {
+        pending = Reflect.apply(cancelMethod, body, [reason]);
+        started = true;
       }
     }
   } catch {
-    // Cancellation already started. Cleanup must not call it twice merely
-    // because a hostile thenable hid its rejection handler.
+    // A missing or throwing cancel method may still have a destroy fallback.
   }
-  return true;
+
+  if (!started) {
+    try {
+      const destroyMethod = body.destroy;
+      if (typeof destroyMethod === "function") {
+        pending = Reflect.apply(destroyMethod, body, []);
+        started = true;
+      }
+    } catch {
+      // The body is not usable enough to release.
+    }
+  }
+
+  return observePending(started ? pending : undefined);
 }
 
 /** Whether this runtime's ReadableStream intrinsics accept the body. */
@@ -251,52 +532,99 @@ function isNativeReadableStream(body: ReleasableBody): boolean {
  *
  * @internal
  */
+const responsesBeingReleased = new WeakSet<object>();
+const bodiesBeingReleased = new WeakSet<object>();
+
 export function releaseResponseBody(response: Response): void {
-  const body = bodyForRelease(response);
-  if (!body) return;
-
-  // Prefer the captured operation for a confirmed native stream. An own
-  // callable can be just as broken as a missing one: it can throw after a side
-  // effect or return without releasing anything.
-  if (isNativeReadableStream(body) && tryCancelBody(body, nativeReadableStreamCancel)) {
-    return;
-  }
-
-  let visibleCancel: unknown;
-  try {
-    visibleCancel = body.cancel;
-  } catch {
-    // A foreign body can hide its release method. Try destroy() below.
-  }
-  if (tryCancelBody(body, visibleCancel)) return;
+  if (!isObjectLike(response) || responsesBeingReleased.has(response)) return;
+  responsesBeingReleased.add(response);
 
   try {
-    const destroyMethod = body.destroy;
-    if (typeof destroyMethod === "function") Reflect.apply(destroyMethod, body, []);
-  } catch {
-    // The response or stream is not usable enough to release.
+    const body = bodyForRelease(response);
+    if (!body || !isObjectLike(body) || bodiesBeingReleased.has(body)) return;
+    bodiesBeingReleased.add(body);
+
+    let pendingRelease: Promise<unknown> | undefined;
+    try {
+      // Prefer the captured operation for a confirmed native stream. An own
+      // callable can be just as broken as a missing one: it can throw after a
+      // side effect or return without releasing anything.
+      if (isNativeReadableStream(body)) {
+        try {
+          pendingRelease = observePending(
+            Reflect.apply(
+              nativeReadableStreamCancel as (...args: unknown[]) => unknown,
+              body,
+              [],
+            ) as unknown,
+          );
+          return;
+        } catch {
+          // A native stream whose intrinsic cancel throws still gets the
+          // visible/destroy fallback below.
+        }
+      }
+
+      let visibleCancel: unknown;
+      try {
+        visibleCancel = body.cancel;
+      } catch {
+        // A foreign body can hide its release method. Try destroy() below.
+      }
+      pendingRelease = tryCancelBody(body, visibleCancel);
+      if (pendingRelease !== undefined) return;
+
+      try {
+        const destroyMethod = body.destroy;
+        if (typeof destroyMethod === "function") {
+          pendingRelease = observePending(Reflect.apply(destroyMethod, body, []));
+        }
+      } catch {
+        // The response or stream is not usable enough to release.
+      }
+    } finally {
+      if (pendingRelease === undefined) {
+        bodiesBeingReleased.delete(body);
+      } else {
+        const releaseComplete = (): void => {
+          bodiesBeingReleased.delete(body);
+        };
+        void Reflect.apply(nativePromiseThen, pendingRelease, [releaseComplete, releaseComplete]);
+      }
+    }
+  } finally {
+    responsesBeingReleased.delete(response);
   }
 }
 
 export function errorBodyOf(response: Response): ErrorBody {
-  /** Set by {@link ErrorBody.cancel}. */
-  let cancelled = false;
+  const key = isObjectLike(response) ? response : undefined;
+  const state: BodyLifecycle =
+    key === undefined
+      ? {
+          cancelled: false,
+          readStarted: false,
+          cancelling: undefined,
+          bodyObserved: false,
+          observedBody: undefined,
+        }
+      : (bodyLifecycles.get(key) ?? {
+          cancelled: false,
+          readStarted: false,
+          cancelling: undefined,
+          bodyObserved: false,
+          observedBody: undefined,
+        });
+  if (key !== undefined) bodyLifecycles.set(key, state);
 
-  /**
-   * Set by this library's own body readers. Tracked separately from
-   * `response.bodyUsed` because that flag is runtime-specific: Bun reports it
-   * as soon as `getReader()` locks the stream, while Node, Deno, and workerd
-   * keep it `false` until the stream is disturbed. Keying "we already consumed
-   * this" on `bodyUsed` therefore misreads an EXTERNAL reader as our own.
-   */
-  let readStarted = false;
-
-  /**
-   * The in-flight `cancel()`, so a repeated call settles WITH the first one
-   * instead of reporting success while the first is still waiting. Cleared
-   * once it settles; `canceled` then carries the state.
-   */
-  let cancelling: Promise<void> | undefined;
+  function ownedBody(): ResponseBody {
+    if (responseBodies.has(response)) return responseBodies.get(response);
+    if (!state.bodyObserved) {
+      state.observedBody = bodyForRelease(response);
+      state.bodyObserved = true;
+    }
+    return state.observedBody;
+  }
 
   /**
    * Is the body still ours to take?
@@ -314,7 +642,16 @@ export function errorBodyOf(response: Response): ErrorBody {
    * what "unusable" means.
    */
   function claimable(): boolean {
-    return !(cancelled || readStarted || response.bodyUsed || response.body?.locked);
+    if (state.cancelled || state.readStarted || state.cancelling) return false;
+
+    const stream = ownedBody();
+    const used = responseBodyUsed(response);
+    const locked = bodyLocked(stream);
+    // A hostile getter may start cancellation or another read while the
+    // predicate is running. Re-check custody after every untrusted read before
+    // handing the body to the caller.
+    if (state.cancelled || state.readStarted || state.cancelling) return false;
+    return !(used || locked);
   }
 
   /** Take the body for a read, or refuse with the reader-flavoured message. */
@@ -326,7 +663,7 @@ export function errorBodyOf(response: Response): ErrorBody {
           "the first read to read it more than once.",
       );
     }
-    readStarted = true;
+    state.readStarted = true;
   }
 
   /**
@@ -348,7 +685,7 @@ export function errorBodyOf(response: Response): ErrorBody {
     try {
       return run();
     } catch (cause) {
-      readStarted = false;
+      state.readStarted = false;
       throw cause;
     }
   }
@@ -357,90 +694,82 @@ export function errorBodyOf(response: Response): ErrorBody {
     // 1. A repeated cancel settles WITH the in-flight one. Returning early
     //    here would report success while the first call is still waiting for
     //    a teed sibling branch.
-    if (cancelling) return cancelling;
-    if (cancelled) return;
+    if (state.cancelling) return state.cancelling;
+    if (state.cancelled) return;
 
-    // 2. This library already started the read, so the body is no longer available.
-    //    Checked before the lock test because a completed read leaves the
-    //    stream locked on some runtimes.
-    if (readStarted) {
-      cancelled = true;
-      return;
-    }
-
-    const stream = response.body;
-
-    // 3. An EXTERNAL reader holds the stream and has read nothing through it.
-    //    Not ours to release.
-    //
-    //    `bodyUsed` is what separates this from a body the consumer already
-    //    READ (step 4). Measured on Node 20/24, Bun 1.3, and Deno: a completed
-    //    external `text()` leaves the stream `locked` AND `bodyUsed`, exactly
-    //    like a bare `getReader()` does on Bun. So a `locked`-only test would
-    //    reject on a body that is simply gone — the common case whenever a
-    //    consumer holds the `Response` through an injected `fetch`.
-    //
-    //    DOCUMENTED DIVERGENCE: on a runtime that reports `bodyUsed` for a mere
-    //    reader lock (Bun today), the two states are indistinguishable, and
-    //    this call resolves via step 4 instead of rejecting. Resolving on the
-    //    runtime that says the body is used beats rejecting on every runtime
-    //    for a case that is far more common.
-    if (stream?.locked && !response.bodyUsed) {
-      throw new TypeError(
-        "Cannot cancel this error's body: its stream is locked by a reader. " +
-          "Release the reader with reader.releaseLock(), or cancel the reader itself.",
-      );
-    }
-
-    // 4. Nothing to release: no body, or it was consumed elsewhere.
-    if (!stream || response.bodyUsed) {
-      cancelled = true;
-      return;
-    }
-
-    // 5. Release it. The body is claimed from here on, whatever the stream does
-    //    next: this await lasts as long as a teed sibling is held, and a reader
-    //    admitted during that window would take a stream already going away.
-    cancelled = true;
-
-    // Publish the in-flight cancellation BEFORE the stream can run any of it.
-    // `ReadableStreamCancel` invokes the underlying source's cancel algorithm
-    // SYNCHRONOUSLY, inside the `stream.cancel(reason)` call below. For a
-    // consumer-constructed `ReadableStream` that algorithm is consumer code,
-    // and it can call back in here. Assigning `cancelling` only after
-    // `stream.cancel()` RETURNED left that re-entrant call looking at
-    // `cancelled = true` and `cancelling = undefined`: it took step 2 and
-    // reported success while this call was still waiting for the real release
-    // — precisely what step 1 exists to prevent.
-    //
-    // A separate deferred, not the stream's own promise, because the stream's
-    // promise does not exist yet at the moment it must already be observable.
-    // It only ever resolves, so `return cancelling` cannot produce a rejection
-    // for anyone to leave unhandled.
+    // Publish the guard BEFORE reading body/bodyUsed/locked/cancel. Every one
+    // of those members belongs to an injected response or stream and can call
+    // back into this body synchronously. Publishing after the preflight let a
+    // re-entrant call start a second cancellation against the same stream.
     let settleCancelling!: () => void;
-    cancelling = new Promise<void>((resolve) => {
+    let rejectCancelling!: (cause: unknown) => void;
+    let preflightFailed = false;
+    const inFlight = new Promise<void>((resolve, reject) => {
       settleCancelling = resolve;
+      rejectCancelling = reject;
     });
+    // The owner receives the thrown preflight error directly. This handler
+    // keeps the internal promise used by re-entrant callers from becoming an
+    // unrelated unhandled rejection when there is no such caller.
+    void Reflect.apply(nativePromiseThen, inFlight, [undefined, ignoreRejection]);
+    state.cancelling = inFlight;
 
     try {
+      // 2. This library already started the read, so the body is no longer available.
+      //    Checked before the lock test because a completed read leaves the
+      //    stream locked on some runtimes.
+      if (state.readStarted) {
+        state.cancelled = true;
+        return;
+      }
+
+      // Read through the same captured/native-aware helper used by unreachable
+      // response cleanup. A consumer or injected response may shadow `body` with
+      // null even though a native Response still owns a live internal stream.
+      // Foreign responses fall through to their visible body getter in
+      // `bodyForRelease`, so this does not require native Response branding.
+      const stream = ownedBody();
+      const used = responseBodyUsed(response);
+      const locked = bodyLocked(stream);
+
+      // 3. An EXTERNAL reader holds the stream and has read nothing through it.
+      //    Not ours to release.
+      //
+      //    `bodyUsed` is what separates this from a body the consumer already
+      //    READ (step 4). Measured on Node 20/24, Bun 1.3, and Deno: a completed
+      //    external `text()` leaves the stream `locked` AND `bodyUsed`, exactly
+      //    like a bare `getReader()` does on Bun. So a `locked`-only test would
+      //    reject on a body that is simply gone — the common case whenever a
+      //    consumer holds the `Response` through an injected `fetch`.
+      //
+      //    DOCUMENTED DIVERGENCE: on a runtime that reports `bodyUsed` for a mere
+      //    reader lock (Bun today), the two states are indistinguishable, and
+      //    this call resolves via step 4 instead of rejecting. Resolving on the
+      //    runtime that says the body is used beats rejecting on every runtime
+      //    for a case that is far more common.
+      if (locked && !used) {
+        throw new TypeError(
+          "Cannot cancel this error's body: its stream is locked by a reader. " +
+            "Release the reader with reader.releaseLock(), or cancel the reader itself.",
+        );
+      }
+
+      // 4. Nothing to release: no body, or it was consumed elsewhere.
+      if (!stream || used) {
+        state.cancelled = true;
+        return;
+      }
+
+      // 5. Release it. The body is claimed from here on, whatever the stream does
+      //    next: this await lasts as long as a teed sibling is held, and a reader
+      //    admitted during that window would take a stream already going away.
+      state.cancelled = true;
+
       // Reach the stream the way {@link releaseResponseBody} does, for the same
       // reason: the visible `cancel` is not necessarily the platform's. An own
       // callable can be a no-op that returns a resolved promise, and this call
       // would then report a released body while the source is still open —
       // the connection leak this module exists to prevent, reported as success.
-      let pending: unknown;
-      try {
-        pending =
-          isNativeReadableStream(stream as unknown as ReleasableBody) &&
-          typeof nativeReadableStreamCancel === "function"
-            ? Reflect.apply(nativeReadableStreamCancel, stream, [reason])
-            : stream.cancel(reason);
-      } catch {
-        // The call itself failed, synchronously. There is no promise to await,
-        // and a body whose own release method throws is one this library cannot
-        // release — the same dead end `releaseResponseBody` accepts.
-      }
-
       // Swallow a stream-level failure, the same as `tee().release()` below. A
       // truncated response or a connection reset mid-body errors the body
       // stream, and `stream.cancel()` then rejects with that stored error. The
@@ -455,18 +784,22 @@ export function errorBodyOf(response: Response): ErrorBody {
       // Under Node's default `--unhandled-rejections=throw`, one dropped
       // cleanup call then ends the process.
       //
-      // `Promise.resolve(pending)`, never `pending.catch(…)`: a `cancel` that
-      // answers with a non-thenable used to make THIS function reject with a
-      // `TypeError` about reading `catch` of undefined — turning the swallow
-      // into the very unhandled rejection the paragraph above describes.
-      await Promise.resolve(pending).catch(() => {});
+      // `observePending` normalizes the result and attaches a rejection handler
+      // through the captured intrinsic `Promise.prototype.then`. A cancel that
+      // answers with a non-thenable therefore still resolves instead of
+      // turning cleanup into an unhandled rejection.
+      await releaseBodyWithFallback(stream, reason);
+    } catch (cause) {
+      preflightFailed = true;
+      rejectCancelling(cause);
+      throw cause;
     } finally {
       // `cancelling` names the IN-FLIGHT cancellation; a settled one is
       // `cancelled`. Clear it before releasing the waiters, so a waiter that
       // resumes and calls `cancel()` again takes step 2 rather than awaiting a
       // promise that has already settled.
-      cancelling = undefined;
-      settleCancelling();
+      state.cancelling = undefined;
+      if (!preflightFailed) settleCancelling();
     }
   }
 
@@ -482,7 +815,26 @@ export function errorBodyOf(response: Response): ErrorBody {
     // takes from here must release the branch it is about to drop, or
     // `cancel()` on this body would wait forever for an owner that never
     // existed.
+    const hadResponseSnapshot = responseBodies.has(response);
+    const sourceBody = ownedBody();
     const branch = response.clone();
+    const refreshedOriginalBody =
+      isNativeReadableStream(sourceBody as ReleasableBody) && nativeResponseBodyGetter !== undefined
+        ? (nativeResponseValue<ResponseBody>(nativeResponseBodyGetter, response) ?? sourceBody)
+        : sourceBody;
+
+    // Native `Response.clone()` replaces the stream exposed by the original
+    // response with a new tee branch. A snapshot from validation therefore
+    // describes the pre-clone stream and must be refreshed for the original;
+    // otherwise canceling the original would inspect the now-locked source.
+    if (hadResponseSnapshot) {
+      responseBodies.delete(response);
+      rememberResponseBody(response, refreshedOriginalBody);
+    } else {
+      state.observedBody = refreshedOriginalBody;
+      state.bodyObserved = true;
+    }
+
     return {
       branch,
       release() {

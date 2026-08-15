@@ -8,7 +8,24 @@ import {
   statusOf,
 } from "./errors/response-identity";
 import { isObjectLike } from "./errors/untrusted-read";
-import { releaseResponseBody } from "./errors/error-body";
+import {
+  forgetResponseBody,
+  releaseResponseBody,
+  rememberResponseBody,
+  responseBodySnapshot,
+} from "./errors/error-body";
+
+type ClassificationContext = {
+  readonly response: object;
+  body: object | undefined;
+  bodyWasAlreadyActive: boolean;
+};
+
+type ClassificationState = WeakSet<object> & {
+  readonly bodyCounts: WeakMap<object, number>;
+  readonly contexts: ClassificationContext[];
+  readonly acceptedBodies: WeakMap<object, object>;
+};
 
 /**
  * The response phase: what a resolved value becomes.
@@ -104,13 +121,49 @@ const FOREIGN_RESPONSE_TYPES = new Set([
 /** Values whose full operational baseline `isResponse` already checked. */
 const validatedResponseStructures = new WeakSet<object>();
 
+/**
+ * Responses whose verdict is currently being computed.
+ *
+ * A hostile identity or body getter can call `classifyResolvedValue` again
+ * before the outer call has finished. The inner call has no independent body
+ * custody: refusing it must not release the response that the outer call is
+ * still validating. The outer call remains responsible for the one genuine
+ * release if it later refuses.
+ */
+/** Synchronous classification state used while structural getters are read. */
+const responsesBeingClassified = Object.assign(new WeakSet<object>(), {
+  bodyCounts: new WeakMap<object, number>(),
+  contexts: [] as ClassificationContext[],
+  acceptedBodies: new WeakMap<object, object>(),
+}) as ClassificationState;
+
 function hasCallableMethods(value: unknown, methods: readonly PropertyKey[]): boolean {
   if (!isObjectLike(value)) return false;
   return methods.every((method) => typeof Reflect.get(value, method, value) === "function");
 }
 
 function hasCompatibleForeignBody(value: object): boolean {
+  // Validation must inspect the current visible body on every presentation.
+  // The snapshot is for cleanup after this read; using it as a validation cache
+  // would let an accepted response hide a later-invalid body.
   const body = Reflect.get(value, "body", value) as unknown;
+  // The first body read is the one cleanup must use. A foreign response is
+  // allowed to answer a later read differently, but that later answer cannot
+  // move custody to another stream.
+  rememberResponseBody(value as Response, body as Parameters<typeof rememberResponseBody>[1]);
+  if (isObjectLike(body)) {
+    // This helper is only reached from `isResponse`, while the current object
+    // classification has already pushed its context. Keeping the assignment
+    // direct avoids a branch for a state this module cannot produce: a second
+    // call for the same response is rejected before `isResponse`, and a nested
+    // call has its own context at the top of the stack.
+    const context =
+      responsesBeingClassified.contexts[responsesBeingClassified.contexts.length - 1]!;
+    const count = bodyClassificationCount(body);
+    context.body = body;
+    context.bodyWasAlreadyActive = count > 0;
+    responsesBeingClassified.bodyCounts.set(body, count + 1);
+  }
   if (body === null) return true;
   return (
     isObjectLike(body) &&
@@ -148,11 +201,22 @@ function hasCompatibleSuccessSurface(response: Response): boolean {
   if (!hasCompatibleForeignHeaders(headersOf(response))) return false;
   if (!hasTypedResponseIdentityScalars(response)) return false;
 
-  return (
+  if (
     typeof Reflect.get(response, "ok", response) === "boolean" &&
     typeof Reflect.get(response, "redirected", response) === "boolean" &&
     FOREIGN_RESPONSE_TYPES.has(Reflect.get(response, "type", response) as string)
-  );
+  ) {
+    const currentBody = Reflect.get(response, "body", response) as unknown;
+    const rememberedBody = responseBodySnapshot(response);
+    if (currentBody !== rememberedBody) return false;
+    return (
+      currentBody === null ||
+      (isObjectLike(currentBody) &&
+        typeof Reflect.get(currentBody, "locked", currentBody) === "boolean" &&
+        hasCallableMethods(currentBody, FOREIGN_RESPONSE_BODY_METHODS))
+    );
+  }
+  return false;
 }
 
 /**
@@ -199,8 +263,11 @@ function isResponse(value: unknown): value is Response {
   // The rule the recording implements is "the first successful read fixes A
   // RESPONSE's identity". A value that is not a response has no identity to
   // fix, so nothing may be filed against it.
-  if (!hasCallableMethods(value, FOREIGN_RESPONSE_METHODS)) return false;
   if (!hasCompatibleForeignBody(value)) return false;
+  // Read the body before the rest of the callable surface. Besides recording
+  // the body used for cleanup, this lets a nested wrapper that fails a later
+  // structural check still be recognized as sharing an active stream.
+  if (!hasCallableMethods(value, FOREIGN_RESPONSE_METHODS)) return false;
   // `bodyUsed` drives body ownership on both success and error paths. Let its
   // getter's own exception reach the envelope instead of replacing that cause
   // with the generic incompatible-Response error.
@@ -239,6 +306,41 @@ function isResponse(value: unknown): value is Response {
   return true;
 }
 
+function bodyClassificationCount(body: object): number {
+  return responsesBeingClassified.bodyCounts.get(body) ?? 0;
+}
+
+function endBodyClassification(body: object | undefined): void {
+  if (body === undefined) return;
+  const count = bodyClassificationCount(body);
+  if (count <= 1) {
+    responsesBeingClassified.bodyCounts.delete(body);
+  } else {
+    responsesBeingClassified.bodyCounts.set(body, count - 1);
+  }
+}
+
+/**
+ * A refusal releases its own body, but never a body another active wrapper is
+ * still classifying. The current classification is included in the count, so
+ * an owner that registered first releases at count one; a nested owner does
+ * not release at count two. A structurally refused wrapper registers nothing
+ * and therefore skips release whenever an outer owner is active.
+ */
+function bodyReleaseBelongsToThisClassification(
+  body: object | undefined,
+  registered: boolean,
+  wasAlreadyActive: boolean,
+  response: object | undefined,
+): boolean {
+  if (body === undefined) return true;
+  const acceptedBy = responsesBeingClassified.acceptedBodies.get(body);
+  if (acceptedBy !== undefined && acceptedBy !== response) return false;
+  const count = bodyClassificationCount(body);
+  if (!registered) return count === 0;
+  return !wasAlreadyActive && count <= 1;
+}
+
 /** What a resolved value is. Exactly one of three things. */
 export type ResponseVerdict =
   | {
@@ -266,82 +368,136 @@ export type ResponseVerdict =
  * @returns The verdict. Never throws.
  */
 export function classifyResolvedValue(value: unknown): ResponseVerdict {
-  // The first successful `status` read is recorded per response by `statusOf`.
-  // The constructor and `UnknownHttpError` reuse that value, so the status that
-  // selects the class also reaches `error.status`, `error.message`, and
-  // `toJSON()`. A getter that throws can be retried. A successful getter cannot
-  // later select a different class.
-  // STAGED across the WHOLE structural verdict, not only across `isResponse`.
-  //
-  // ADR 0003 row H-14 — "A value refused once has no identity filed against it"
-  // — is a statement about refusal, and `isResponse` is not the last place this
-  // library refuses. `hasCompatibleSuccessSurface` reads `ok`, `redirected`,
-  // and `type` WITHOUT the identity cache, so they are the only three reads
-  // here a value can answer differently on a second presentation — while
-  // `status`, `statusText`, `url`, and `headers` stay filed from the call that
-  // was refused. A double refused on `type` and re-presented as an honest 404
-  // was then answered with the FILED status: a success for a failed request,
-  // which is the one outcome the envelope exists to prevent.
-  //
-  // Every refusal rolls back, including the one inside the error constructor.
-  // What does NOT roll back is an ACCEPTANCE: those records are the accepted
-  // response's identity, and `typed-fetch.spec.ts` pins that a later read
-  // cannot change them.
-  //
-  // The flag starts TRUE, and only the two acceptances clear it. Marking each
-  // refusal instead was the same class of defect one layer down: a refusal
-  // point that RETURNS `false` was marked, and a read inside
-  // `hasCompatibleSuccessSurface` that THROWS was not, so it kept its records
-  // and a 404 came back as a success. Written this way, a refusal added later
-  // is covered by omission and only an acceptance has to be remembered.
-  const rollbackRefusal = stageIdentity(value as Response);
-  let refusedTheValue = true;
+  const responseKey = isObjectLike(value) ? value : undefined;
+  if (responseKey !== undefined) {
+    if (responsesBeingClassified.has(responseKey)) {
+      return {
+        kind: "refused",
+        cause: new TypeError("The response classification was re-entered before it completed."),
+      };
+    }
+    responsesBeingClassified.add(responseKey);
+  }
+
+  const classificationContext =
+    responseKey === undefined
+      ? undefined
+      : {
+          response: responseKey,
+          body: undefined as object | undefined,
+          bodyWasAlreadyActive: false,
+        };
+  if (classificationContext !== undefined) {
+    responsesBeingClassified.contexts.push(classificationContext);
+  }
+
   try {
-    if (!isResponse(value)) {
-      throw new TypeError("The fetch implementation resolved a value that is not a Response.");
-    }
-    const status = statusOf(value);
-    if (status >= 400) {
-      const ErrorClass = statusCodeErrorMap.get(status);
-      // The CONSTRUCTION is a refusal point too. `new Headers(identity.headers)`
-      // refuses a recorded value that was readable but is not a valid
-      // `HeadersInit` — `[["a"]]` reads fine and throws there — and the caller
-      // gets a `NetworkError`. Without the rollback the bad `headers` and the
-      // `status` beside it stayed filed, so the same object presented later as
-      // a healthy 200 with real `Headers` was answered with that same
-      // `NetworkError` for as long as it lived.
-      const error = ErrorClass ? new ErrorClass(value) : new UnknownHttpError(value);
-      refusedTheValue = false;
-      return { kind: "http", error };
-    }
-    if (!hasCompatibleSuccessSurface(value)) {
-      throw new TypeError(
-        "The fetch implementation resolved a Response with an incompatible public surface.",
-      );
-    }
-    refusedTheValue = false;
-    // The success path releases nothing. This value IS the returned response,
-    // and the caller owns its body.
-    return { kind: "success", response: value };
-  } catch (cause) {
-    // UNREACHABLE else: `refusedTheValue` starts true and is cleared on the two
-    // lines that immediately precede an exit from the `try`, with nothing
-    // between the clear and the exit that can throw. This catch is only ever
-    // entered while the flag is still true. The `if` stays because the flag's
-    // whole design is that a refusal path added LATER is covered by omission.
-    /* v8 ignore start */
-    if (refusedTheValue) rollbackRefusal();
-    /* v8 ignore stop */
-    // The reads above (`status`, and `statusText`, `url`, and `headers` inside
-    // the error class) can each throw for an injected implementation. The
-    // caller gets `response: null` and never gets a handle to the body the
-    // network already opened. Release it here, or it stays open with no owner.
+    // The first successful `status` read is recorded per response by `statusOf`.
+    // The constructor and `UnknownHttpError` reuse that value, so the status that
+    // selects the class also reaches `error.status`, `error.message`, and
+    // `toJSON()`. A getter that throws can be retried. A successful getter cannot
+    // later select a different class.
+    // STAGED across the WHOLE structural verdict, not only across `isResponse`.
+    //
+    // ADR 0003 row H-14 — "A value refused once has no identity filed against it"
+    // — is a statement about refusal, and `isResponse` is not the last place this
+    // library refuses. `hasCompatibleSuccessSurface` reads `ok`, `redirected`,
+    // and `type` WITHOUT the identity cache, so they are the only three reads
+    // here a value can answer differently on a second presentation — while
+    // `status`, `statusText`, `url`, and `headers` stay filed from the call that
+    // was refused. A double refused on `type` and re-presented as an honest 404
+    // was then answered with the FILED status: a success for a failed request,
+    // which is the one outcome the envelope exists to prevent.
+    //
+    // Every refusal rolls back, including the one inside the error constructor.
+    // What does NOT roll back is an ACCEPTANCE: those records are the accepted
+    // response's identity, and `typed-fetch.spec.ts` pins that a later read
+    // cannot change them.
+    //
+    // The flag starts TRUE, and only the two acceptances clear it. Marking each
+    // refusal instead was the same class of defect one layer down: a refusal
+    // point that RETURNS `false` was marked, and a read inside
+    // `hasCompatibleSuccessSurface` that THROWS was not, so it kept its records
+    // and a 404 came back as a success. Written this way, a refusal added later
+    // is covered by omission and only an acceptance has to be remembered.
+    const rollbackRefusal = stageIdentity(value as Response);
+    let refusedTheValue = true;
     try {
-      releaseResponseBody(value as Response);
-    } catch {
-      // A response too broken to release must not replace the real cause with
-      // the release failure.
+      const responseIsValid = isResponse(value);
+      if (!responseIsValid) {
+        throw new TypeError("The fetch implementation resolved a value that is not a Response.");
+      }
+      const status = statusOf(value);
+      if (status >= 400) {
+        const ErrorClass = statusCodeErrorMap.get(status);
+        // The CONSTRUCTION is a refusal point too. `new Headers(identity.headers)`
+        // refuses a recorded value that was readable but is not a valid
+        // `HeadersInit` — `[["a"]]` reads fine and throws there — and the caller
+        // gets a `NetworkError`. Without the rollback the bad `headers` and the
+        // `status` beside it stayed filed, so the same object presented later as
+        // a healthy 200 with real `Headers` was answered with that same
+        // `NetworkError` for as long as it lived.
+        const error = ErrorClass ? new ErrorClass(value) : new UnknownHttpError(value);
+        if (classificationContext?.body !== undefined && responseKey !== undefined) {
+          responsesBeingClassified.acceptedBodies.set(classificationContext.body, responseKey);
+        }
+        refusedTheValue = false;
+        return { kind: "http", error };
+      }
+      if (!hasCompatibleSuccessSurface(value)) {
+        throw new TypeError(
+          "The fetch implementation resolved a Response with an incompatible public surface.",
+        );
+      }
+      refusedTheValue = false;
+      if (classificationContext?.body !== undefined && responseKey !== undefined) {
+        responsesBeingClassified.acceptedBodies.set(classificationContext.body, responseKey);
+      }
+      // The success path releases nothing. This value IS the returned response,
+      // and the caller owns its body.
+      return { kind: "success", response: value };
+    } catch (cause) {
+      // UNREACHABLE else: `refusedTheValue` starts true and is cleared on the two
+      // lines that immediately precede an exit from the `try`, with nothing
+      // between the clear and the exit that can throw. This catch is only ever
+      // entered while the flag is still true. The `if` stays because the flag's
+      // whole design is that a refusal path added LATER is covered by omission.
+      /* v8 ignore start */
+      if (refusedTheValue) rollbackRefusal();
+      /* v8 ignore stop */
+      // The reads above (`status`, and `statusText`, `url`, and `headers` inside
+      // the error class) can each throw for an injected implementation. The
+      // caller gets `response: null` and never gets a handle to the body the
+      // network already opened. Release it here, or it stays open with no owner.
+      const rememberedBody =
+        responseKey === undefined ? undefined : responseBodySnapshot(responseKey as Response);
+      const body =
+        classificationContext?.body ?? (isObjectLike(rememberedBody) ? rememberedBody : undefined);
+      if (
+        bodyReleaseBelongsToThisClassification(
+          body,
+          classificationContext?.body !== undefined,
+          classificationContext?.bodyWasAlreadyActive ?? false,
+          responseKey,
+        )
+      ) {
+        try {
+          releaseResponseBody(value as Response);
+        } catch {
+          // A response too broken to release must not replace the real cause with
+          // the release failure.
+        }
+        if (responseKey !== undefined) {
+          forgetResponseBody(responseKey as Response, body);
+        }
+      }
+      return { kind: "refused", cause };
     }
-    return { kind: "refused", cause };
+  } finally {
+    endBodyClassification(classificationContext?.body);
+    if (classificationContext !== undefined) {
+      responsesBeingClassified.contexts.pop();
+    }
+    if (responseKey !== undefined) responsesBeingClassified.delete(responseKey);
   }
 }

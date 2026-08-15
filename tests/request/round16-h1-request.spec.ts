@@ -198,24 +198,29 @@ describe("round 16 / H1 — a refusal downstream of the structural acceptance", 
     expect(accepted.error).toBe(null);
     expect(accepted.response).toBe(value as unknown as typeof accepted.response);
 
-    // Every member the refused call read, the accepted call read again — each
-    // one exactly once more. The four identity fields are in that list because
-    // the refusal rolled their records back; the eleven structural ones are in
-    // it because membership of the set decides nothing.
+    // Every member the refused call read, the accepted call read again. The
+    // body is read twice on the accepted path: once to establish custody and
+    // once at the handoff to ensure a mutable response did not replace it while
+    // the other structural getters ran. The four identity fields are in that
+    // list because the refusal rolled their records back; the other structural
+    // members are in it because membership of the set decides nothing.
     const secondCall = Object.fromEntries(
       STRUCTURAL_MEMBERS.map((member) => [
         member,
         (reads[member] ?? 0) - (afterRefusal[member] ?? 0),
       ]),
     );
-    expect(secondCall).toEqual(Object.fromEntries(STRUCTURAL_MEMBERS.map((m) => [m, 1])));
+    expect(secondCall).toEqual(
+      Object.fromEntries(STRUCTURAL_MEMBERS.map((m) => [m, m === "body" ? 2 : 1])),
+    );
 
-    // Non-vacuity for the refused call itself: it read every member too, and it
-    // read `body` twice — once to validate the shape, once to release it.
+    // Non-vacuity for the refused call itself: it read every member too. The
+    // first body observation is now handed to cleanup through the internal
+    // custody snapshot, so release must not invoke a mutable body getter again.
     for (const member of STRUCTURAL_MEMBERS) {
       expect(afterRefusal[member]).toBeGreaterThanOrEqual(1);
     }
-    expect(afterRefusal["body"]).toBe(2);
+    expect(afterRefusal["body"]).toBe(1);
   });
 });
 
