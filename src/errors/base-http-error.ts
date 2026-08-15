@@ -10,6 +10,117 @@ import { redactUrl } from "./redact-url";
 import { identityOf, lendIdentity, type ResponseIdentity } from "./response-identity";
 import { isObjectLike } from "./untrusted-read";
 
+/** The visible fields a foreign or cross-realm `Response` must expose. */
+const CLONE_RESPONSE_FIELDS = [
+  "body",
+  "bodyUsed",
+  "headers",
+  "ok",
+  "redirected",
+  "status",
+  "statusText",
+  "type",
+  "url",
+] as const;
+
+/** The methods promised by the public `Response` surface. */
+const CLONE_RESPONSE_METHODS = [
+  "arrayBuffer",
+  "blob",
+  "clone",
+  "formData",
+  "json",
+  "text",
+] as const;
+
+/** The methods a non-null foreign body must provide. */
+const CLONE_RESPONSE_BODY_METHODS = [
+  "cancel",
+  "getReader",
+  "pipeThrough",
+  "pipeTo",
+  "tee",
+] as const;
+
+/** The methods the public `Headers` surface promises on an accepted response. */
+const CLONE_RESPONSE_HEADERS_METHODS = [
+  "append",
+  "delete",
+  "entries",
+  "forEach",
+  "get",
+  "has",
+  "keys",
+  "set",
+  "values",
+] as const;
+
+/** Capture the native brand probe before a consumer can replace `Response`. */
+const nativeResponseStatusGetter =
+  typeof Response === "undefined"
+    ? undefined
+    : Object.getOwnPropertyDescriptor(Response.prototype, "status")?.get;
+
+function hasCallableMembers(value: object, members: readonly PropertyKey[]): boolean {
+  try {
+    return members.every((member) => typeof Reflect.get(value, member, value) === "function");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validate the branch before handing it to a constructor.
+ *
+ * `instanceof Response` rejects foreign realms and compatible polyfills, while
+ * an object-like check accepts partial doubles. This is the same structural
+ * baseline used by the response phase: native slots when available, otherwise
+ * the Response tag, followed by the complete operational surface needed by an
+ * error body. The check intentionally does not use the identity cache: the
+ * following `lendIdentity()` call must still be able to hand the original
+ * error's identity to a legitimate custom branch.
+ */
+function isCloneResponse(value: unknown): value is Response {
+  if (!isObjectLike(value)) return false;
+
+  const response = value as Response;
+  try {
+    let hasPlatformSlots = false;
+    if (typeof nativeResponseStatusGetter === "function") {
+      try {
+        Reflect.apply(nativeResponseStatusGetter, response, []);
+        hasPlatformSlots = true;
+      } catch {
+        // A foreign response uses the structural arm below.
+      }
+    }
+
+    if (!hasPlatformSlots && Object.prototype.toString.call(value) !== "[object Response]") {
+      return false;
+    }
+    if (!CLONE_RESPONSE_FIELDS.every((field) => field in value)) return false;
+    if (!hasCallableMembers(value, CLONE_RESPONSE_METHODS)) return false;
+
+    const body = Reflect.get(value, "body", value) as unknown;
+    if (body !== null) {
+      if (!isObjectLike(body)) return false;
+      if (typeof Reflect.get(body, "locked", body) !== "boolean") return false;
+      if (!hasCallableMembers(body, CLONE_RESPONSE_BODY_METHODS)) return false;
+    }
+
+    if (typeof Reflect.get(value, "bodyUsed", value) !== "boolean") return false;
+
+    const headers = Reflect.get(value, "headers", value) as unknown;
+    if (!isObjectLike(headers)) return false;
+    if (!hasCallableMembers(headers, CLONE_RESPONSE_HEADERS_METHODS)) return false;
+    if (typeof Reflect.get(headers, Symbol.iterator, headers) !== "function") return false;
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Per-instance body custody, held OUTSIDE the class.
  *
@@ -516,19 +627,25 @@ export abstract class BaseHttpError extends Error {
     // in that `finally`. So the BRANCH has to be a `Response` before anything is
     // built from it.
     //
-    // `teed.branch` is whatever `response.clone()` answered with, and an
-    // injected implementation can answer with a primitive. Nothing downstream
-    // refuses one: `lendIdentity` declines a non-object key silently, so
-    // `identityOf(42)` takes the unkeyed path and `Number((42).status)` is
-    // `NaN`, and `owns(42)` is `42 === 42`, so `adopt` accepts. The result was
-    // an `UnknownHttpError` with `status: NaN`, `message: "HTTP NaN"`, and no
-    // url. `clone: () => null` WAS refused, because `statusOf(null)` throws, so
-    // every other primitive was refused by accident and by nothing else.
-    //
-    // Release and throw, the policy ADR 0002 sets for a refused clone. Nothing
-    // is stranded — a primitive branch means nothing was really teed — but the
-    // release keeps that true whatever the implementation did.
-    if (!isObjectLike(teed.branch)) {
+    // The response's clone() is an untrusted seam. An object-like partial
+    // double used to pass this point and reach the constructor, while a
+    // foreign compatible Response must remain supported. Validate the complete
+    // operational contract structurally, never with `instanceof`.
+    if (teed.isOriginal()) {
+      refuseClone(
+        teed,
+        this,
+        "the response's clone() returned the original Response instead of an independent branch.",
+      );
+    }
+    if (!teed.isIndependent()) {
+      refuseClone(
+        teed,
+        this,
+        "the response's clone() reused the original body instead of creating an independent branch.",
+      );
+    }
+    if (!isCloneResponse(teed.branch)) {
       refuseClone(
         teed,
         this,

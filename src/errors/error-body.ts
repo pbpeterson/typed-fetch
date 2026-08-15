@@ -41,6 +41,16 @@ export interface TeedErrorBody {
    */
   readonly branch: Response;
   /**
+   * Whether {@link branch} is the original response rather than an independent
+   * branch. A custom `clone()` that returns its receiver did not tee anything;
+   * the caller must refuse it before throwing. In that case {@link release} is
+   * deliberately a no-op: there is no independent branch to release, and
+   * canceling the returned value would cancel the original response.
+   */
+  isOriginal(): boolean;
+  /** Whether the clone produced an independent body stream. */
+  isIndependent(): boolean;
+  /**
    * Release a branch nobody took. The platform frees the teed source only once
    * EVERY branch is read or canceled, so a dropped branch leaves `cancel()`
    * on the surviving side waiting forever for an owner that never existed.
@@ -818,6 +828,10 @@ export function errorBodyOf(response: Response): ErrorBody {
     const hadResponseSnapshot = responseBodies.has(response);
     const sourceBody = ownedBody();
     const branch = response.clone();
+    const branchBody = bodyForRelease(branch);
+    const independent =
+      branch !== response &&
+      ((sourceBody === null && branchBody === null) || branchBody !== sourceBody);
     const refreshedOriginalBody =
       isNativeReadableStream(sourceBody as ReleasableBody) && nativeResponseBodyGetter !== undefined
         ? (nativeResponseValue<ResponseBody>(nativeResponseBodyGetter, response) ?? sourceBody)
@@ -837,9 +851,18 @@ export function errorBodyOf(response: Response): ErrorBody {
 
     return {
       branch,
+      isOriginal() {
+        return branch === response;
+      },
+      isIndependent() {
+        return independent;
+      },
       release() {
         // Nobody can await this: the caller is receiving an exception, not a
-        // copy. Cleanup is total and swallows a stream rejection.
+        // copy. A clone implementation that returned the original did not
+        // create a branch; releasing it must not cancel the original body.
+        if (branch === response) return;
+        // Otherwise cleanup is total and swallows a stream rejection.
         releaseResponseBody(branch);
       },
       adopt(sibling) {
