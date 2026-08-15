@@ -164,6 +164,13 @@ export interface ResponseIdentity {
 const statusByResponse = new WeakMap<object, number>();
 
 /**
+ * Status getters may call back into response classification before their first
+ * read has returned. There is no status value a reentrant caller can safely
+ * receive, so it must be refused instead of reading the getter a second time.
+ */
+const statusReadsInProgress = new WeakSet<object>();
+
+/**
  * Whether each normalized identity field originally had the scalar type the
  * public success response promises. HTTP errors deliberately use the normalized
  * values, while successes consult these facts before escaping.
@@ -184,6 +191,15 @@ const stringStatusTextByResponse = new WeakMap<object, boolean>();
 const urlByResponse = new WeakMap<object, string>();
 const stringUrlByResponse = new WeakMap<object, boolean>();
 const headersByResponse = new WeakMap<object, Headers>();
+
+/**
+ * Identity getters may call back into classification before their first read
+ * has returned. There is no field value a reentrant caller can safely receive,
+ * so it must be refused instead of invoking the getter a second time.
+ */
+const statusTextReadsInProgress = new WeakSet<object>();
+const urlReadsInProgress = new WeakSet<object>();
+const headersReadsInProgress = new WeakSet<object>();
 
 /** Has any successful identity read already claimed this response? */
 function hasRecordedIdentityField(response: object): boolean {
@@ -216,11 +232,26 @@ function hasRecordedIdentityField(response: object): boolean {
 const lentByResponse = new WeakMap<object, ResponseIdentity>();
 
 /** Read and record one field only after its getter and normalization succeed. */
-function recordedField<T>(table: WeakMap<object, T>, key: object, read: () => T): T {
+function recordedField<T>(
+  table: WeakMap<object, T>,
+  key: object,
+  read: () => T,
+  readsInProgress: WeakSet<object>,
+  field: string,
+): T {
   if (table.has(key)) return table.get(key) as T;
-  const value = read();
-  table.set(key, value);
-  return value;
+  if (readsInProgress.has(key)) {
+    throw new TypeError(`The response ${field} read was re-entered before it completed.`);
+  }
+
+  readsInProgress.add(key);
+  try {
+    const value = read();
+    table.set(key, value);
+    return value;
+  } finally {
+    readsInProgress.delete(key);
+  }
 }
 
 /**
@@ -246,11 +277,20 @@ export function statusOf(response: Response): number {
   const recorded = statusByResponse.get(response);
   if (recorded !== undefined) return recorded;
 
-  const rawStatus = response.status as unknown;
-  const status = Number(rawStatus);
-  numericStatusByResponse.set(response, typeof rawStatus === "number");
-  statusByResponse.set(response, status);
-  return status;
+  if (statusReadsInProgress.has(response)) {
+    throw new TypeError("The response status read was re-entered before it completed.");
+  }
+
+  statusReadsInProgress.add(response);
+  try {
+    const rawStatus = response.status as unknown;
+    const status = Number(rawStatus);
+    numericStatusByResponse.set(response, typeof rawStatus === "number");
+    statusByResponse.set(response, status);
+    return status;
+  } finally {
+    statusReadsInProgress.delete(response);
+  }
 }
 
 /**
@@ -367,25 +407,37 @@ function safeReasonPhrase(phrase: string): string {
 /** Read and record `statusText`, including its original scalar type. */
 function statusTextOf(response: Response, key: object | undefined): string {
   if (key === undefined) return safeReasonPhrase(textOf(response.statusText));
-  return recordedField(statusTextByResponse, key, () => {
-    const rawStatusText = response.statusText as unknown;
-    stringStatusTextByResponse.set(key, typeof rawStatusText === "string");
-    // FILTERED here, at the one place the value is recorded, so every reader
-    // gets the safe form. `UnknownHttpError` publishes this as a public field
-    // and the inherited `toJSON()` emits it, so a filter applied only where
-    // the message is composed left the other half of the same value raw.
-    return safeReasonPhrase(textOf(rawStatusText));
-  });
+  return recordedField(
+    statusTextByResponse,
+    key,
+    () => {
+      const rawStatusText = response.statusText as unknown;
+      stringStatusTextByResponse.set(key, typeof rawStatusText === "string");
+      // FILTERED here, at the one place the value is recorded, so every reader
+      // gets the safe form. `UnknownHttpError` publishes this as a public field
+      // and the inherited `toJSON()` emits it, so a filter applied only where
+      // the message is composed left the other half of the same value raw.
+      return safeReasonPhrase(textOf(rawStatusText));
+    },
+    statusTextReadsInProgress,
+    "statusText",
+  );
 }
 
 /** Read and record `url`, including its original scalar type. */
 function urlOf(response: Response, key: object | undefined): string {
   if (key === undefined) return textOf(response.url);
-  return recordedField(urlByResponse, key, () => {
-    const rawUrl = response.url as unknown;
-    stringUrlByResponse.set(key, typeof rawUrl === "string");
-    return textOf(rawUrl);
-  });
+  return recordedField(
+    urlByResponse,
+    key,
+    () => {
+      const rawUrl = response.url as unknown;
+      stringUrlByResponse.set(key, typeof rawUrl === "string");
+      return textOf(rawUrl);
+    },
+    urlReadsInProgress,
+    "url",
+  );
 }
 
 /**
@@ -399,7 +451,13 @@ function urlOf(response: Response, key: object | undefined): string {
  */
 export function headersOf(response: Response): Headers {
   if (!isObjectLike(response)) return (response as Response).headers;
-  return recordedField(headersByResponse, response, () => response.headers);
+  return recordedField(
+    headersByResponse,
+    response,
+    () => response.headers,
+    headersReadsInProgress,
+    "headers",
+  );
 }
 
 /**
