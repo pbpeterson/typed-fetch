@@ -127,6 +127,17 @@ function pathOf(unit: string, bytes: number): string {
   return `/x//${unit.repeat(Math.floor(bytes / unit.length))}`;
 }
 
+/**
+ * How much more the subject may cost than its control, at the SAME input size.
+ *
+ * One pass per group answers about 1 — the two calls differ only in where an
+ * `@` sits inside each group, and both pay the same loopback round trip. The
+ * regression this bounds cost 204 ms against 0.6 ms. The bound sits far from
+ * both so that a stalled runner cannot reach it and a restored quadratic
+ * cannot hide under it.
+ */
+const SAME_SIZE_COST_BOUND = 20;
+
 describe("round 15 / H2 — the redaction loop's pass count is a url the server chooses", () => {
   let server: http.Server;
   let origin: string;
@@ -170,8 +181,18 @@ describe("round 15 / H2 — the redaction loop's pass count is a url the server 
     // Warm the whole path once, so neither measurement pays for the first
     // parse, the first connection, or the first optimisation tier.
     await costOf(pathOf("@./", 64));
-    const measuredControl = await costOf(control);
-    const measured = await costOf(subject);
+    // The FASTEST of three calls each. A round trip over loopback can stall on
+    // a scheduler, GC, or a busy runner, and every one of those only ADDS time
+    // — so the minimum carries none of them into the verdict while a single
+    // sample carries all of them.
+    let measuredControl = await costOf(control);
+    let measured = await costOf(subject);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const nextControl = await costOf(control);
+      const nextSubject = await costOf(subject);
+      if (nextControl.ms < measuredControl.ms) measuredControl = nextControl;
+      if (nextSubject.ms < measured.ms) measured = nextSubject;
+    }
 
     // NON-VACUITY. The url is the SERVER's, both calls reached the response
     // phase, and the two answers are byte-identical — so the passes bought
@@ -187,7 +208,15 @@ describe("round 15 / H2 — the redaction loop's pass count is a url the server 
     // ledger records it separating a subject from a differently-shaped control:
     // there is one shape here and one code path, and what differs is the number
     // of times it runs.
-    expect(measured.ms - measuredControl.ms).toBeLessThan(100);
+    //
+    // Round 24 made it a RATIO. `measured.ms - measuredControl.ms < 100` is a
+    // number of milliseconds however it is spelled, and `release.yml` runs this
+    // suite under coverage on a shared runner, where 100 ms of scheduler noise
+    // is an ordinary event and not a defect. Both calls make the same loopback
+    // round trip, so the ratio sits near 1 when the pass count matches; the
+    // regression this row was written for cost 204 ms against 0.6 ms, a factor
+    // of roughly 340.
+    expect(measured.ms / measuredControl.ms).toBeLessThan(SAME_SIZE_COST_BOUND);
   }, 60_000);
 });
 

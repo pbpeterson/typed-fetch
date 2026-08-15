@@ -1,4 +1,5 @@
 import { describe, test, expect } from "vitest";
+import { growthAcross16x, LINEAR_GROWTH_BOUND } from "../../fixtures/growth";
 import { redactUrl, redactUrlInMessage } from "../../src/errors/redact-url";
 import { AbortedError, NetworkError, NotFoundError, TimeoutError } from "../../src/errors";
 
@@ -156,27 +157,20 @@ describe("redactUrl — structure is kept, every value slot is dropped", () => {
   // `toBeLessThan(100)`, and it failed once in four `pnpm coverage` runs at
   // 314 ms under v8 instrumentation while passing the other three. A release
   // gate that goes red on contention tests the runner, and `CONTRIBUTING.md`
-  // forbids a bare time figure as evidence. It is a RATIO across a size sweep
-  // now, which is how R20-H2-01, R22-H2-02 and R23-H2-02 were each written:
-  // quadratic growth doubles the ratio per doubling and linear growth does
-  // not, whatever the machine costs per unit.
+  // forbids a bare time figure as evidence. It became a RATIO across a size
+  // sweep, which is how R20-H2-01, R22-H2-02 and R23-H2-02 were each written.
+  //
+  // ORCHESTRATOR, round 24: the ratio was flaky too. A 4x step puts linear at
+  // 4 and quadratic at 16, and the bound of 9 sat in the middle of that narrow
+  // gap — full-suite contention alone carried a single 8 KB sample to a factor
+  // of 19.98 on an unmodified tree, twice in five runs across two machines.
+  // `fixtures/growth.ts` widens the step to 16x, which separates the two
+  // answers by an order of magnitude, and reads the FASTEST of five attempts,
+  // because noise only ever adds time.
   test("the scan stays linear on an input of repeated `://` marks", () => {
-    const timed = (marks: number): number => {
-      const hostile = "://".repeat(marks);
-      const started = performance.now();
-      redactUrl(hostile);
-      return Math.max(performance.now() - started, 0.05);
-    };
+    const factor = growthAcross16x((marks) => "://".repeat(marks), redactUrl, 2_000);
 
-    // Warm the path so the first reading does not pay for compilation.
-    timed(1_000);
-    const small = timed(8_000);
-    const large = timed(32_000);
-
-    // Four times the input. Linear answers about 4, quadratic about 16; the
-    // bound sits between them so neither the machine nor the instrument
-    // decides the verdict.
-    expect(large / small).toBeLessThan(9);
+    expect(factor).toBeLessThan(LINEAR_GROWTH_BOUND);
   });
 
   // Removing the userinfo must not make an invalid URL resolvable: these are
@@ -1489,15 +1483,18 @@ describe("R9 residual — a scheme colon and its solidi open an authority", () =
   // shared region end per mark, or slicing each candidate out to test it, is
   // the same quadratic the backward scan had. Measured before the cursor:
   // 3924 ms for the first input below, 1499 ms for the second.
+  //
+  // Round 24 replaced the 100 ms budget with the 16x growth factor. The budget
+  // was a wall clock on the publish path — `release.yml` runs this suite under
+  // coverage on a shared runner — so it measured the runner, not the cursor.
   test.each([
-    ["repeated `:/` marks", ":/".repeat(32_000)],
-    ["repeated `:/x/` marks ending in an `@`", ":/x/".repeat(20_000) + "@h"],
-  ])("the scan stays linear on %s", (_label, hostile) => {
-    const started = performance.now();
-
-    redactUrl(hostile);
-
-    expect(performance.now() - started).toBeLessThan(100);
+    ["repeated `:/` marks", (units: number): string => ":/".repeat(units)],
+    [
+      "repeated `:/x/` marks ending in an `@`",
+      (units: number): string => `${":/x/".repeat(units)}@h`,
+    ],
+  ])("the scan stays linear on %s", (_label, build) => {
+    expect(growthAcross16x(build, redactUrl, 2_000)).toBeLessThan(LINEAR_GROWTH_BOUND);
   });
 
   test("a message quoting the single-solidus form loses the credential too", () => {
@@ -1628,16 +1625,12 @@ describe("R11 — every `@` in a region is its own question", () => {
   // candidate set, and at most three answers come back before a region is spent.
   // Measured on the committed tree in the same shape as the round-10 rows above.
   test.each([
-    ["a run of 60,000 @", `://${"@".repeat(60_000)}`],
-    ["an @ per segment", `://h${"/x/@".repeat(20_000)}`],
-    ["a mark and an @ per region", "://x@".repeat(20_000)],
-    ["a credential per region", `://${"u:p@".repeat(20_000)}h`],
-  ])("the scan stays linear on %s", (_label, hostile) => {
-    const started = performance.now();
-
-    redactUrl(hostile);
-
-    expect(performance.now() - started).toBeLessThan(100);
+    ["a run of @", (units: number): string => `://${"@".repeat(units)}`],
+    ["an @ per segment", (units: number): string => `://h${"/x/@".repeat(units)}`],
+    ["a mark and an @ per region", (units: number): string => "://x@".repeat(units)],
+    ["a credential per region", (units: number): string => `://${"u:p@".repeat(units)}h`],
+  ])("the scan stays linear on %s", (_label, build) => {
+    expect(growthAcross16x(build, redactUrl, 2_000)).toBeLessThan(LINEAR_GROWTH_BOUND);
   });
 });
 

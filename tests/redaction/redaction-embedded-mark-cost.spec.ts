@@ -69,6 +69,17 @@ import { isHttpError, typedFetch } from "../../src/index";
 const ORIGIN = "https://api.test";
 
 /**
+ * How much more the subject may cost than its control, measured in the same run.
+ *
+ * The control is spelled with two solidi, so it is a thousand characters LONGER
+ * than the subject and names the same embedded url. A linear reader therefore
+ * answers at or below 1, and the regression this bounds was a quadratic. The
+ * bound sits far above 1 so a stalled runner cannot reach it, and far below a
+ * restored quadratic so nothing can hide under it.
+ */
+const CONTROL_COST_BOUND = 20;
+
+/**
  * One `redactUrl`, with six numbers read off the platform.
  *
  * THE FIRST FOUR ARE THE INSTRUMENTS THE AUDIT ALREADY HAS — round 16's
@@ -260,8 +271,17 @@ describe("one embedded mark, three spellings, two costs", () => {
       expect(control.length).toBeGreaterThan(subject.length);
 
       await costOf(forwardPath("https:/", 8)); // warm the socket and the tiers
-      const measuredControl = await costOf(control);
-      const measured = await costOf(subject);
+      // The FASTEST of three calls each. Contention, GC, and a busy scheduler
+      // only ever ADD time, so a minimum carries none of them into the verdict
+      // while a single sample carries all of them.
+      let measuredControl = await costOf(control);
+      let measured = await costOf(subject);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const nextControl = await costOf(control);
+        const nextSubject = await costOf(subject);
+        if (nextControl.construction < measuredControl.construction) measuredControl = nextControl;
+        if (nextSubject.construction < measured.construction) measured = nextSubject;
+      }
 
       // NON-VACUITY. The url is the SERVER's, it arrived unchanged — `https:/@`
       // spells no dot segment, so the platform's own redirect resolution
@@ -274,9 +294,15 @@ describe("one embedded mark, three spellings, two costs", () => {
       // function, at the same shape and a LARGER size — never a budget against
       // the clock. Both halves are asserted, because `toJSON()` re-runs
       // `redactUrl` and a logger calls it once per line.
+      //
+      // Round 24 made both halves RATIOS. `a - b < 100` is a number of
+      // milliseconds however it is spelled, and `release.yml` runs this suite
+      // under coverage on a shared runner, where 100 ms of scheduler noise is
+      // an ordinary event and not a defect. The control is the LARGER input, so
+      // a linear reader answers at or below 1.
       expect({
-        construction: measured.construction - measuredControl.construction < 100,
-        serialization: measured.serialization - measuredControl.serialization < 100,
+        construction: measured.construction / measuredControl.construction < CONTROL_COST_BOUND,
+        serialization: measured.serialization / measuredControl.serialization < CONTROL_COST_BOUND,
       }).toEqual({ construction: true, serialization: true });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
