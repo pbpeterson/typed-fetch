@@ -341,7 +341,9 @@ This gate (zero deps, plain Node, runs **after `pnpm build`**):
 
 It cleans up all temp dirs and exits non-zero with a per-assertion report.
 
-**`KNOWN_FAILING` (currently empty).** The script keeps a `KNOWN_FAILING` set at
+**`KNOWN_FAILING` (currently two entries).** Both are the CJS class-identity
+divergence: `classidentity:cjs-constructor-name` and
+`classidentity:cjs-accessor-subclass`. The script keeps a `KNOWN_FAILING` set at
 the top for staging a fix: when an assertion encodes a contract the artifact
 does not yet satisfy (e.g. cross-entry `instanceof` under a dual-bundle build),
 put its id there and it is reported but does not fail CI, so the gate can land

@@ -154,7 +154,17 @@ describe("R19-H4-03 — the `v8 ignore` justifications acceptance item 4 require
 
     expect(carriers.length).toBeGreaterThan(0);
     // And every one of them is inside a tree the coverage `include` names.
-    const include = /include:\s*\[([^\]]*)\]/.exec(repoText("vitest.config.ts"));
+    //
+    // Read out of the COVERAGE block. The config carries more than one
+    // `include:` — the project split has its own — and taking the first match in
+    // the file means answering about whichever array is written higher up. It
+    // happens to still be the coverage one today, because the project writes a
+    // reference rather than an array literal; inlining that list would silently
+    // point this reader at the wrong thing.
+    const config = repoText("vitest.config.ts");
+    const coverageAt = config.indexOf("coverage: {");
+    expect(coverageAt, "vitest.config.ts must keep a `coverage` block").toBeGreaterThan(-1);
+    const include = /include:\s*\[([^\]]*)\]/.exec(config.slice(coverageAt));
     expect(include).not.toBeNull();
     expect(include?.[1]).toContain("src/**");
     expect(include?.[1]).toContain("fixtures/**");

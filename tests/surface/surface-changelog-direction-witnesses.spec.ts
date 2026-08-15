@@ -78,10 +78,18 @@ const RELEASE_VERSION = (JSON.parse(repoText("package.json")) as { version: stri
  */
 function releasedBlock(): string {
   const changelog = repoText("CHANGELOG.md");
-  const open = `## [${RELEASE_VERSION}]`;
-  const start = changelog.indexOf(open);
-  expect(start, `CHANGELOG.md must carry a dated \`${open}\` section`).not.toBe(-1);
-  const rest = changelog.slice(start + open.length);
+  // The WHOLE heading line, date included. Slicing at `## [2.1.0]` alone leaves
+  // the ` - <date>` remainder inside the block, so an EMPTIED section still
+  // answers `"- 2026-08-15"` and every non-vacuity guard over it passes on a
+  // section with nothing in it.
+  const open = new RegExp(`^## \\[${RELEASE_VERSION}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m").exec(
+    changelog,
+  );
+  expect(
+    open,
+    `CHANGELOG.md must carry a dated \`## [${RELEASE_VERSION}]\` section`,
+  ).not.toBeNull();
+  const rest = changelog.slice((open?.index ?? 0) + (open?.[0].length ?? 0));
   const end = rest.search(/\n## \[/);
   return (end === -1 ? rest : rest.slice(0, end)).trim();
 }

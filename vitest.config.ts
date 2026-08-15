@@ -49,6 +49,27 @@ const SERIAL_SPECS = [
 ];
 
 /**
+ * The per-test budget, named once so the root and both projects cannot drift.
+ *
+ * Vitest defaults to 5000 ms, and this suite crossed it. Round 21 found ONE
+ * generator test 0.6 seconds under the line; round 23 measured eleven, in six
+ * files, failing under full-suite load and passing in isolation. They are
+ * generator suites drawing hundreds of thousands of urls, and v8 coverage
+ * instrumentation roughly doubles their wall clock — so `pnpm coverage`, a
+ * RELEASE gate, went red on contention rather than on a defect. A budget that
+ * fails on a slower runner tests the runner.
+ *
+ * This is a BUDGET, never an assertion. The cost findings this audit filed —
+ * R20-H2-01, R22-H2-02, R23-H2-02 — assert a RATIO across a size sweep, not a
+ * wall clock, precisely so they stay meaningful whatever this number is. A test
+ * that needs a tighter budget states its own.
+ *
+ * Round 24 did NOT raise it. Raising a budget hides contention; the projects
+ * below remove it.
+ */
+const TEST_TIMEOUT_MS = 30_000;
+
+/**
  * Where a full record of a run is written when one is asked for.
  *
  * A failure nobody can reproduce is diagnosable only from the run that produced
@@ -63,23 +84,17 @@ const jsonReport = process.env.VITEST_JSON_REPORT ?? (process.env.CI ? "test-res
 
 export default defineConfig({
   test: {
-    // Vitest defaults to 5000 ms, and this suite crossed it. Round 21 found ONE
-    // generator test 0.6 seconds under the line; round 23 measured eleven, in
-    // six files, failing under full-suite load and passing in isolation. They
-    // are generator suites drawing hundreds of thousands of urls, and v8
-    // coverage instrumentation roughly doubles their wall clock — so
-    // `pnpm coverage`, a RELEASE gate, went red on contention rather than on a
-    // defect. A budget that fails on a slower runner tests the runner.
-    //
-    // This is a BUDGET, never an assertion. The cost findings this audit filed
-    // — R20-H2-01, R22-H2-02, R23-H2-02 — assert a RATIO across a size sweep,
-    // not a wall clock, precisely so they stay meaningful whatever this number
-    // is. A test that needs a tighter budget states its own.
-    //
-    // Round 24 did NOT raise it again. Raising a budget hides contention; the
-    // projects below remove it.
-    testTimeout: 30_000,
+    // The root value governs a run with no project filter in play. Every
+    // project repeats it, for the reason stated above `projects` below.
+    testTimeout: TEST_TIMEOUT_MS,
     reporters: jsonReport ? ["default", ["json", { outputFile: jsonReport }]] : ["default"],
+    // REPEATED IN EVERY PROJECT, and it must be. Vitest does not propagate the
+    // root `test` options to an inline project, so a project that omits this
+    // silently runs on the built-in 5000 ms default — the value round 21 and
+    // round 23 both measured this suite crossing. A 7-second probe under the
+    // first version of this split failed with "Test timed out in 5000ms" while
+    // the config above still read 30_000, which is the whole safety net gone
+    // and nothing saying so. Add it to any project added later.
     projects: [
       {
         test: {
@@ -87,6 +102,7 @@ export default defineConfig({
           include: SERIAL_SPECS,
           maxWorkers: 3,
           sequence: { groupOrder: 0 },
+          testTimeout: TEST_TIMEOUT_MS,
         },
       },
       {
@@ -94,6 +110,7 @@ export default defineConfig({
           name: "parallel",
           exclude: ["**/node_modules/**", "**/dist/**", ...SERIAL_SPECS],
           sequence: { groupOrder: 1 },
+          testTimeout: TEST_TIMEOUT_MS,
         },
       },
     ],

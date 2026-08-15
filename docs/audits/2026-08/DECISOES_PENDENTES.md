@@ -1,8 +1,21 @@
 # Decisões pendentes
 
-Três itens da auditoria de pré-publicação precisam de uma decisão sua. Nenhum
-deles foi implementado. Cada um traz o estado atual, as opções com prós e
-contras, e uma recomendação.
+> **RESOLVIDO em 2026-08-15.** Os três itens foram decididos e implementados no
+> mesmo branch que criou este arquivo. O documento fica como registro do que foi
+> escolhido e por quê; ele não é mais uma lista de trabalho a fazer.
+>
+> | #   | Decisão                                                       | Onde ficou                                                   |
+> | --- | ------------------------------------------------------------- | ------------------------------------------------------------ |
+> | 1   | Opção A — documentar no JSDoc, com orientação de `bind`/arrow | `src/request-plan.ts`, commit `99bfb61`                      |
+> | 2   | Opção A — documentar como diferença de runtime                | `README.md`, commit `5dd5b3b`                                |
+> | 3   | Opção A + C — documentar e travar com gate                    | `README.md` e `scripts/check-consumer.mjs`, commit `b249524` |
+>
+> As referências `arquivo:linha` abaixo apontam para o estado ANTERIOR às
+> correções e não valem mais como localização — só como descrição do defeito.
+
+Três itens da auditoria de pré-publicação precisavam de uma decisão. Cada um
+traz o estado que tinha na época, as opções com prós e contras, e a
+recomendação que foi seguida.
 
 Contexto: os itens 1 e 2 são de documentação e não mudam código publicado. O
 item 3 é uma escolha de compatibilidade num pacote já publicado, e o
@@ -175,5 +188,5 @@ entrar num ciclo de release próprio.
 | 2   | `statusText` no Deno          | Documentar (nota igual à do Bun)      | `patch`        |
 | 3   | `constructor.name` CJS/ESM    | Documentar + gate no `check-consumer` | `patch`        |
 
-Nenhuma recomendação exige `minor` ou `major`. As três podem entrar num único
-ciclo de documentação depois que você decidir.
+Nenhuma recomendação exigiu `minor` ou `major`. As três entraram no mesmo ciclo
+de documentação, um commit cada, e estão no branch `fix/pre-publicacao`.

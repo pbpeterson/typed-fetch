@@ -381,8 +381,10 @@ export type TypedFetchOptions = NativeRequestOptions & {
    *
    * A class instance passed as `options` does NOT work: a method lives on the
    * prototype, so this slot never sees it. Reading the method out of the
-   * instance makes it own, but a plain read also drops `this`, so bind it or
-   * wrap it in an arrow.
+   * instance makes it own, but the value that arrives here is a plain function
+   * with no link back to the instance — the transport invokes it with a
+   * receiver of its own, so every field the method reads off `this` is missing.
+   * Bind it, or wrap it in an arrow.
    *
    * ```ts
    * import { typedFetch } from "@pbpeterson/typed-fetch";
@@ -390,18 +392,27 @@ export type TypedFetchOptions = NativeRequestOptions & {
    * declare const url: string;
    *
    * class HttpClient {
-   *   // On the PROTOTYPE, and it uses `this`.
+   *   constructor(private readonly base: string) {}
+   *
+   *   // On the PROTOTYPE, and it reads `this`.
    *   async fetch(...args: Parameters<typeof fetch>): ReturnType<typeof fetch> {
-   *     return globalThis.fetch(...args);
+   *     const [input, init] = args;
+   *     return globalThis.fetch(new URL(String(input), this.base), init);
    *   }
    * }
-   * const client = new HttpClient();
+   * const client = new HttpClient("https://api.test");
    *
    * await typedFetch(url, client); // IGNORED — inherited, so the global fetch runs
-   * await typedFetch(url, { fetch: client.fetch }); // own, but `this` is undefined
+   * await typedFetch(url, { fetch: client.fetch }); // own, but detached from `client`
    * await typedFetch(url, { fetch: client.fetch.bind(client) }); // correct
    * await typedFetch(url, { fetch: (...args) => client.fetch(...args) }); // correct
    * ```
+   *
+   * The second line fails inside the transport, and `typedFetch` answers with a
+   * `NetworkError` carrying the reason as its `cause`. A method that never
+   * reads `this` survives the plain read unharmed, so a passing call is not
+   * evidence that the binding is right — a later edit that adds one `this` read
+   * turns that same call into a failing one.
    */
   fetch?: typeof fetch | undefined;
 };

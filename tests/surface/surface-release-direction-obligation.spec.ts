@@ -83,12 +83,22 @@ function pendingBlock(changelog: string): string {
   return rest.slice(0, end);
 }
 
-/** The text of the DATED release section, up to the next `## [` heading. */
+/**
+ * The text of the DATED release section, up to the next `## [` heading.
+ *
+ * The WHOLE heading line, date included. Slicing at `## [2.1.0]` alone leaves
+ * the ` - <date>` remainder inside the block, so an EMPTIED section still
+ * answers a non-empty string and a guard over it can never go red.
+ */
 function releasedBlock(changelog: string): string {
-  const open = `## [${RELEASE_VERSION}]`;
-  const start = changelog.indexOf(open);
-  expect(start, `CHANGELOG.md must carry a dated \`${open}\` section`).not.toBe(-1);
-  const rest = changelog.slice(start + open.length);
+  const open = new RegExp(`^## \\[${RELEASE_VERSION}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m").exec(
+    changelog,
+  );
+  expect(
+    open,
+    `CHANGELOG.md must carry a dated \`## [${RELEASE_VERSION}]\` section`,
+  ).not.toBeNull();
+  const rest = changelog.slice((open?.index ?? 0) + (open?.[0].length ?? 0));
   const end = rest.search(/\n## \[/);
   expect(end, "CHANGELOG.md must carry a section under the released one").not.toBe(-1);
   return rest.slice(0, end);
@@ -151,7 +161,7 @@ describe("R23-H4-03 — the direction obligation at the release boundary", () =>
     // reads the DATED section, which is where step 1 leaves the obligation and
     // the only section that still carries it once `[Unreleased]` is emptied.
     const reader = repoText("tests/surface/surface-changelog-direction-witnesses.spec.ts");
-    expect(reader).toContain("const open = `## [${RELEASE_VERSION}]`;");
+    expect(reader).toContain("^## \\\\[${RELEASE_VERSION}\\\\] - \\\\d{4}-\\\\d{2}-\\\\d{2}$");
     expect(reader).not.toContain('const start = changelog.indexOf("## [Unreleased]");');
     expect(reader).toContain(
       "const declarations = [...rawBlock.matchAll(/<!--\\s*redaction-directions:\\s*([^>]*?)\\s*-->/g)];",

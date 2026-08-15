@@ -9,7 +9,7 @@ fixes. `2.0.1` carries them too, and `2.0.1` was cut in this repository and
 never published. A URL that carries userinfo can reach `error.message` and
 `toJSON()` with a credential intact. The same is true when the userinfo sits
 inside an embedded URL: a path segment, a protocol-relative reference, or a
-bare `//` with no scheme. Upgrade past this release to close every shape
+bare `//` with no scheme. Upgrade to this release to close every shape
 below. `SECURITY.md` lists what remains open after the fixes land.
 
 <!-- redaction-directions: removes-more -->
