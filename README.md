@@ -1268,6 +1268,11 @@ The cause can also carry a credential, and this is the one residual the library 
 
 - `instanceof` is reliable only inside one package copy. Use the type guards across a package or format boundary. The library does not solve `instanceof` for a specific subclass across copies.
 - The brand is not a security control. A forged brand passes a guard.
+- **Under `require()`, a class reports a mangled `Class.name`.** `NotFoundError.name` reads `"_class9"`, and `error.constructor.name` with it. The bundler downlevels class fields on the CJS side, and the inferred function name goes with them. The ESM build is unaffected.
+
+  Never branch on `constructor.name`. It is not a stable identifier in either format, and no rule in the [semantic version contract](#semantic-version-contract) binds it. This library exposes no `error.code` either. Narrow with `instanceof` inside one copy, with `isHttpError` / `isKnownHttpError` across a copy or format boundary, and read `error.name` or `error.status` when a value must be logged or compared. `error.name` is correct in **both** formats and is bound by the contract.
+
+- **Under `require()`, a consumer subclass that puts an accessor on `name`, `status`, or `statusText` throws.** The same downlevelling turns the base class's field initializers into assignments, and an assignment to an inherited getter throws `TypeError`. The identical subclass works under `import`. Declare those members as fields, as the [subclass examples](#clone-a-consumer-subclass) do, rather than as getters.
 - `error.json<T>()` and `response.json<T>()` are unchecked compile-time casts. They perform no runtime validation.
 - The `headers` and `method` types give autocomplete only. They validate no name and no value.
 - A status of `0` stays on the success branch. Check `response.ok` or `response.type` for an opaque response.

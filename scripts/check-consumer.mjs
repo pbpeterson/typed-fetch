@@ -78,9 +78,21 @@ export const defaultIo = {
 // returns — this is the one piece of module state a spec is allowed to touch.
 // ---------------------------------------------------------------------------
 export const KNOWN_FAILING = new Set([
-  // Empty: all three shipped-artifact bugs this gate was written to catch are
-  // now fixed in src/, and every assertion below passes strictly. History,
-  // for the record:
+  // The CJS class-identity divergence. `tsup.config.ts` sets `splitting: true`
+  // for cross-entry `instanceof`, and on the CJS side tsup converts the graph
+  // with Sucrase, which downlevels class fields unconditionally. Both rows
+  // below assert what a consumer SHOULD get, so this gate reports them as
+  // tracked failures now and reports this list as STALE the day the bundler
+  // stops mangling — either direction is a deliberate edit.
+  //
+  // Recorded in docs/audit-ledger.md and documented in README.md. The instance
+  // `error.name` is correct in BOTH formats, and that is the field semver
+  // rule 4 binds; `Class.name` is bound by no rule either way.
+  "classidentity:cjs-constructor-name",
+  "classidentity:cjs-accessor-subclass",
+  // All three shipped-artifact bugs this gate was written to catch are fixed in
+  // src/, and every other assertion below passes strictly. History, for the
+  // record:
   //
   //   Bug 1 (dual-package hazard) — tsup emitted `dist/index.*` and
   //   `dist/errors/index.*` as separate bundles (splitting:false), each with
@@ -288,6 +300,60 @@ try {
   srv.close();
 }
 console.log(JSON.stringify(out));
+`;
+
+// --- Class-identity probe: what each FORMAT calls its own classes -----------
+// `tsup.config.ts` sets `splitting: true`, which is what buys cross-entry
+// `instanceof` inside one format. On the CJS side tsup converts the graph with
+// Sucrase, which downlevels class fields unconditionally, and two things reach
+// a consumer who uses `require()`:
+//
+//   * `Class.name` and `error.constructor.name` come back mangled (`_class9`),
+//     because `class X extends Y { name = "…" }` becomes `(_class9 = class …)`
+//     and the inferred `Function.name` is lost with the binding.
+//   * A consumer subclass with an ACCESSOR on `name`, `status`, or `statusText`
+//     throws under `require()` and works under `import`, because the fields
+//     become `[[Set]]` rather than `[[Define]]`.
+//
+// The instance `error.name` is correct in both formats, and that is the field
+// semver rule 4 binds. `Class.name` is bound by no rule either way.
+//
+// Nothing saw this before: every root spec imports `src/`, the surface snapshot
+// compares export NAMES rather than what they are bound to, and this gate read
+// the instance `error.name` only. It is read here so the divergence cannot grow
+// in silence — the two CJS rows sit in KNOWN_FAILING, so the gate turns red if
+// they get WORSE and equally red if they get FIXED without the list and the
+// README note moving in the same commit.
+const PROBE_CLASSIDENTITY = `
+import { NotFoundError as EsmNotFound } from "${PKG_NAME}";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const { NotFoundError: CjsNotFound } = require("${PKG_NAME}");
+
+const response = () => new Response(null, { status: 404 });
+
+function read(Klass) {
+  const error = new Klass(response());
+  let accessorSubclassOk;
+  try {
+    class Tagged extends Klass {
+      get name() { return "Tagged"; }
+    }
+    new Tagged(response());
+    accessorSubclassOk = true;
+  } catch {
+    accessorSubclassOk = false;
+  }
+  return {
+    className: Klass.name,
+    constructorName: error.constructor.name,
+    instanceName: error.name,
+    status: error.status,
+    accessorSubclassOk,
+  };
+}
+
+console.log(JSON.stringify({ esm: read(EsmNotFound), cjs: read(CjsNotFound) }));
 `;
 
 // --- Cross-copy clone probe: the ownership query across the format seam -----
@@ -783,6 +849,63 @@ export function crossformatAssertions(r) {
 }
 
 /**
+ * Six assertions from the class-identity probe.
+ *
+ * Two are CONTRACTS and pass: the instance `error.name` is the class name in
+ * both formats — the field semver rule 4 binds — and `error.status` with it.
+ * Two are ESM pins and pass, so a bundler change that mangled the ESM side too
+ * turns this red instead of widening the divergence in silence.
+ *
+ * Two are the CJS divergence, and they sit in KNOWN_FAILING. They assert what a
+ * consumer SHOULD get, not what this artifact gives, so the gate reports them
+ * as tracked failures today and reports the list as STALE the day the bundler
+ * stops mangling. Either direction is a deliberate edit of this file, the
+ * README note, and the list, in one commit.
+ *
+ * @param {any} r parsed JSON line from probe-classidentity.mjs
+ * @returns {ProbeVerdict}
+ */
+export function classIdentityAssertions(r) {
+  const detail = (format, field, value) =>
+    `${format} NotFoundError ${field} = ${JSON.stringify(value)}`;
+  return {
+    results: [
+      assert(
+        "classidentity:esm-instance-name",
+        r.esm.instanceName === "NotFoundError",
+        `${detail("ESM", "error.name", r.esm.instanceName)} (must be "NotFoundError" — semver rule 4 binds this field)`,
+      ),
+      assert(
+        "classidentity:cjs-instance-name",
+        r.cjs.instanceName === "NotFoundError",
+        `${detail("CJS", "error.name", r.cjs.instanceName)} (must be "NotFoundError" — semver rule 4 binds this field, and it holds in BOTH formats)`,
+      ),
+      assert(
+        "classidentity:esm-constructor-name",
+        r.esm.constructorName === "NotFoundError",
+        `${detail("ESM", "error.constructor.name", r.esm.constructorName)} (must be "NotFoundError" — the ESM graph is not downlevelled)`,
+      ),
+      assert(
+        "classidentity:esm-accessor-subclass",
+        r.esm.accessorSubclassOk,
+        `ESM subclass with a getter on \`name\` constructs = ${r.esm.accessorSubclassOk} (must be true — it is the documented extension point)`,
+      ),
+      assert(
+        "classidentity:cjs-constructor-name",
+        r.cjs.constructorName === "NotFoundError",
+        `${detail("CJS", "error.constructor.name", r.cjs.constructorName)} (KNOWN: tsup downlevels class fields through Sucrase on the CJS side, so the inferred Function.name is lost. Read \`error.name\`, or narrow with \`instanceof\`/\`isHttpError\` — never \`constructor.name\`)`,
+      ),
+      assert(
+        "classidentity:cjs-accessor-subclass",
+        r.cjs.accessorSubclassOk,
+        `CJS subclass with a getter on \`name\` constructs = ${r.cjs.accessorSubclassOk} (KNOWN: downlevelled fields are [[Set]] rather than [[Define]], so the base assignment hits the getter and throws. Works under \`import\`)`,
+      ),
+    ],
+    notes: [],
+  };
+}
+
+/**
  * Three assertions from the cross-copy clone probe.
  *
  * The gate is ACCUMULATING, so this returns a verdict record rather than
@@ -1172,6 +1295,9 @@ export function main(io = defaultIo) {
   io.out("\n▸ Cross-format (CJS guard on ESM-minted error) probe …");
   try {
     emit(crossformatAssertions(runProbe(consumer, "probe-crossformat.mjs", PROBE_CROSSFORMAT)));
+    emit(
+      classIdentityAssertions(runProbe(consumer, "probe-classidentity.mjs", PROBE_CLASSIDENTITY)),
+    );
   } catch (err) {
     record(assert("crossformat:probe", false, `cross-format probe crashed: ${err.message}`));
   }
