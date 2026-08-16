@@ -6,6 +6,11 @@ import { useTestServer } from "../../fixtures/http-server";
 import { HOSTILE_SCENARIOS, URL_UNDER_TEST } from "../../fixtures/hostile-fetch";
 import { foreignResponses } from "../../fixtures/responses";
 import type { TypedFetchOptions } from "../../src/index";
+import {
+  CANDIDATE_INIT_MEMBERS,
+  platformInitReadOrder,
+  statusAccessorThrowsOn,
+} from "../../fixtures/platform-init-reads";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 16, COVERAGE SUB-LANE C4, BLOCK 1 — `fixtures/**`.
@@ -461,5 +466,29 @@ describe("the test server's `?echoHeader=` arm", () => {
     // The method echo is unconditional, which is what the other arm of line 52
     // promises every suite that asserts a method reached the server.
     expect(headers["x-echo-method"]).toBe("GET");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// platform-init-reads.ts — the probe both undici generations answer differently.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("the platform probes report what this runtime does", () => {
+  test("the status accessor throws for a foreign receiver and not for a real Response", () => {
+    // BOTH answers, on every runtime. Asked only of the Proxy wrapper, one of
+    // the two is dead per platform — undici 6 never throws, undici 7+ always
+    // does — so the pair is exercised here instead.
+    expect(statusAccessorThrowsOn(new Response(null, { status: 204 }))).toBe(false);
+    expect(statusAccessorThrowsOn(Object.create(null) as object)).toBe(true);
+  });
+
+  test("the init read order is a non-empty subset of the declared members", () => {
+    const order = platformInitReadOrder();
+    expect(order.length).toBeGreaterThan(12);
+    expect(order.every((m) => (CANDIDATE_INIT_MEMBERS as readonly string[]).includes(m))).toBe(
+      true,
+    );
+    // `method` before `signal` holds on every generation measured.
+    expect(order.indexOf("method")).toBeLessThan(order.indexOf("signal"));
   });
 });

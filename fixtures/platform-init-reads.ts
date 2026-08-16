@@ -62,6 +62,24 @@ export function platformInitReadOrder(): readonly string[] {
 }
 
 /**
+ * Whether applying the platform `status` accessor to `candidate` throws.
+ *
+ * Split out so BOTH answers are exercised on every runtime. Asked only of the
+ * real `Response` wrapper, one of the two paths is dead on any given platform —
+ * undici 6 never throws, undici 7+ always does — and a 100 percent threshold
+ * cannot hold for code whose reachable half depends on the runtime.
+ */
+export function statusAccessorThrowsOn(candidate: object): boolean {
+  const statusGetter = Object.getOwnPropertyDescriptor(Response.prototype, "status")?.get;
+  try {
+    Reflect.apply(statusGetter as () => number, candidate, []);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Whether this runtime keeps a `Response`'s internal state where a trapless
  * `Proxy` cannot forward it.
  *
@@ -75,12 +93,5 @@ export function platformInitReadOrder(): readonly string[] {
  * build and answer for themselves.
  */
 export function responseSlotsResistProxy(): boolean {
-  const statusGetter = Object.getOwnPropertyDescriptor(Response.prototype, "status")?.get;
-  const wrapper = new Proxy(new Response(null, { status: 204 }), {});
-  try {
-    Reflect.apply(statusGetter as () => number, wrapper, []);
-    return false;
-  } catch {
-    return true;
-  }
+  return statusAccessorThrowsOn(new Proxy(new Response(null, { status: 204 }), {}));
 }
