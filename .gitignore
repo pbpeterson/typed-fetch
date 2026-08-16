@@ -34,7 +34,12 @@ ehthumbs.db
 Thumbs.db
 
 # Test coverage
-coverage/
+# ANCHORED. Without the leading solidus this pattern matches a directory named
+# `coverage` at ANY depth, and it swallowed `tests/coverage/edge-branches.spec.ts`
+# — 12 tests that never entered the repository. Local runs read them off disk and
+# reported 100 percent; CI, which only ever sees what git tracks, reported 99.29
+# percent of lines the first time `pnpm coverage` reached the threshold there.
+/coverage/
 *.lcov
 
 # Logs
