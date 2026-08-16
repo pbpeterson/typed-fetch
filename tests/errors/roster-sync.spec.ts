@@ -483,6 +483,16 @@ describe("round 6 lane 3 — the roster table is still independent of src/", () 
     expect(body).not.toContain("=>");
     // The one import it may have is the class barrel.
     expect(code.slice(0, code.indexOf("export const"))).toContain('from "../src/errors";');
+    // And ONLY the barrel. Requiring the barrel line to exist does not forbid a
+    // second, direct import beside it — and that loophole is what carries the
+    // whole guard. A class registered in `httpErrors` but forgotten in
+    // `src/errors/index.ts` is caught here, and at `tsc`, only because this
+    // table reaches every class THROUGH the barrel. Import one straight from
+    // its module and the barrel stops being asked.
+    expect(
+      code,
+      "error-roster.ts must reach every class through the barrel, never a module path",
+    ).not.toContain('from "../src/errors/');
   });
 
   test("every status in the table is written as a numeric literal", () => {
