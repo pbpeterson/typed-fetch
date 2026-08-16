@@ -61,6 +61,16 @@ jobs:
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.x
+      # Bun, for the same reason and with the same pin as `bun-smoke` below.
+      #
+      # Several suites are gated on a Bun binary and SKIP without one, and a
+      # skipped suite still counts against the 100 percent coverage threshold —
+      # its lines are never executed. Run 31961787204 was the first time
+      # `pnpm coverage` reached the threshold in CI at all, and it reported
+      # 99.29 percent of lines with nine rows skipped for a missing runtime.
+      # The threshold has therefore never been enforced in CI: it held on a
+      # workstation that happens to have Bun, Deno, and esbuild.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm format:check
