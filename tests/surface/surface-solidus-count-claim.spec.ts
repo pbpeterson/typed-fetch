@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -301,8 +301,30 @@ console.log(Bun.inspect(error));`,
 // other suite, because every other suite imports the module directly.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const esbuildBinary = new URL("../../node_modules/.bin/esbuild", import.meta.url).pathname;
-const esbuildAvailable = existsSync(esbuildBinary);
+/**
+ * The esbuild binary pnpm installed for `tsup`, or null when it is absent.
+ *
+ * SCANNED OUT OF THE STORE, not read from `node_modules/.bin`. esbuild is a
+ * transitive dependency of tsup, and pnpm links only a direct dependency's
+ * binaries into `.bin` — so that path does not exist on a clean install, this
+ * suite skipped, and its lines counted against the 100 percent coverage
+ * threshold. It survived locally only because an older `node_modules` happened
+ * to carry the link. `surface-changelog-direction-witnesses.spec.ts` and
+ * `surface-bun-smoke-exclusion-reason.spec.ts` already resolve it this way.
+ */
+function findEsbuild(): string | null {
+  const store = fileURLToPath(new URL("../../node_modules/.pnpm", import.meta.url));
+  if (!existsSync(store)) return null;
+  for (const entry of readdirSync(store)) {
+    if (!entry.startsWith("esbuild@")) continue;
+    const binary = join(store, entry, "node_modules/esbuild/bin/esbuild");
+    if (existsSync(binary)) return binary;
+  }
+  return null;
+}
+
+const esbuildBinary = findEsbuild() ?? "";
+const esbuildAvailable = esbuildBinary !== "";
 
 describe.skipIf(!distExists || !esbuildAvailable)(
   "a tree-shaking bundler keeps every stamp",
