@@ -43,8 +43,8 @@ Before opening a PR, all of these must pass:
 pnpm lint            # oxlint
 pnpm format:check    # oxfmt --check
 pnpm check-doc-style # links, vocabulary, Terms table, Node floor (no build needed)
-pnpm typecheck       # tsc --noEmit -p tsconfig.test.json
 pnpm build           # tsup — confirm the package actually builds
+pnpm typecheck       # tsc --noEmit -p tsconfig.test.json (run AFTER build: two surface specs self-reference the package)
 pnpm test            # vitest run — includes checks against the built dist/
 pnpm coverage        # 100% on src/, scripts/ and fixtures/ — the threshold is enforced
 pnpm check-docs      # typecheck every fenced TS block in the docs (run AFTER build)

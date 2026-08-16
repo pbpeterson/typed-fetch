@@ -65,8 +65,8 @@ attestation.
   1. `pnpm lint`
   2. `pnpm format:check`
   3. `pnpm check-doc-style`
-  4. `pnpm typecheck`
-  5. `pnpm build`
+  4. `pnpm build`
+  5. `pnpm typecheck`
   6. `pnpm test`
   7. `pnpm coverage`
   8. `pnpm check-docs`
@@ -192,12 +192,13 @@ Run every step, in order, for every release:
    push in step 6. Read the footer against this step before you tag.
 
 2. **Run the exact package-job gates locally, in order:**
+
    ```bash
    pnpm lint
    pnpm format:check
    pnpm check-doc-style
-   pnpm typecheck
    pnpm build
+   pnpm typecheck
    pnpm test
    pnpm coverage
    pnpm check-docs
@@ -206,13 +207,26 @@ Run every step, in order, for every release:
    pnpm audit:prod
    pnpm run audit:ci
    ```
+
    `build` must precede every artifact gate because the tests, docs checker,
    tarball validator, and scratch consumer inspect `dist/`.
+
+   It must precede `typecheck` for a less obvious reason, and this list had the
+   two the wrong way round until run 31920651241 failed on all three Node
+   versions. `tests/surface/surface-built-entry-behaviour.spec.ts` and
+   `tests/surface/surface-package-consumer.spec.ts` name this package in a type
+   position — `typeof import("@pbpeterson/typed-fetch")` — and TypeScript
+   resolves that by SELF-REFERENCE, through this package's own `exports` map, to
+   `dist/*.d.ts`. With no `dist/` there is nothing to resolve and `tsc` answers
+   eight `TS2307`s. A workstation almost never sees it, because a previous build
+   leaves `dist/` in place; a clean checkout is the only place it shows.
    For local parity with the Deno CI job, run these commands after the build:
+
    ```bash
    pnpm check-deno-consumer
    pnpm smoke:deno
    ```
+
    The consumer gate requires Deno 2. It resolves the unpublished local tarball
    from `node_modules`. The tag workflow enforces all three validations.
    For parity with the `node-min-smoke` job, also run
@@ -221,6 +235,7 @@ Run every step, in order, for every release:
    default Node proves nothing about the `engines` floor.
    For parity with the `bun-smoke` job, also run `pnpm smoke:bun`, which needs a
    Bun binary.
+
 3. **Commit the release candidate and open a PR:**
    ```bash
    git commit -m "chore: release X.Y.Z"

@@ -49,14 +49,21 @@ jobs:
       - run: pnpm lint
       - run: pnpm format:check
       - run: pnpm check-doc-style
-      - run: pnpm typecheck
-      # Build explicitly BEFORE test and publish. The `prepublishOnly` hook
-      # verifies the artifact rather than building it, precisely so that the
-      # tarball npm uploads is the one every gate below inspected — a rebuild
-      # in the hook would run tsup with `clean: true` after the fact. Building
-      # here also means `dist/` exists when tests run, so the API-surface
-      # snapshot test (gated on dist existence) is exercised instead of skipped.
+      # Build explicitly BEFORE typecheck, test, and publish. The
+      # `prepublishOnly` hook verifies the artifact rather than building it,
+      # precisely so that the tarball npm uploads is the one every gate below
+      # inspected — a rebuild in the hook would run tsup with `clean: true`
+      # after the fact. Building here also means `dist/` exists when tests run,
+      # so the API-surface snapshot test (gated on dist existence) is exercised
+      # instead of skipped.
       - run: pnpm build
+      # Must run AFTER build, and it did not until run 31920651241 failed on all
+      # three Node versions with eight TS2307s. `surface-built-entry-behaviour`
+      # and `surface-package-consumer` name the package in a type position —
+      # `typeof import("@pbpeterson/typed-fetch")` — which TypeScript resolves by
+      # SELF-REFERENCE, through this package's own `exports` map, to
+      # `dist/*.d.ts`. With no dist/ there is nothing to resolve.
+      - run: pnpm typecheck
       - run: pnpm test
       # Enforce the 100 percent statements/branches/functions/lines thresholds
       # over src, scripts, and fixtures. Runs the whole suite again under v8

@@ -42,8 +42,16 @@ jobs:
       # and the README Terms table against docs/writing-standard.md. Needs no
       # dist/ and no tsc, so it runs BEFORE build and fails in milliseconds.
       - run: pnpm check-doc-style
-      - run: pnpm typecheck
       - run: pnpm build
+      # Must run AFTER build, and it did not until run 31920651241 failed on all
+      # three Node versions with eight TS2307s. `surface-built-entry-behaviour`
+      # and `surface-package-consumer` name the package in a type position —
+      # `typeof import("@pbpeterson/typed-fetch")` — which TypeScript resolves by
+      # SELF-REFERENCE, through this package's own `exports` map, to
+      # `dist/*.d.ts`. With no dist/ there is nothing to resolve. A workstation
+      # never sees it, because a previous build leaves dist/ lying there; a clean
+      # checkout is the only place the missing dependency shows.
+      - run: pnpm typecheck
       # Must run AFTER build: public-surface.spec.ts contains dist-gated suites
       # (public API surface snapshots, cross-copy guard tests) that hard-fail in
       # CI when dist/ is absent. Do not reorder build/test.
@@ -70,7 +78,18 @@ jobs:
         with:
           name: test-results-node-${{ matrix.node-version }}
           path: test-results/
-          if-no-files-found: warn
+          # ERROR, not warn. On a green run the suite ran, so an empty
+          # `test-results/` means the capture is wired wrong — the reporter did
+          # not fire, or `VITEST_JSON_REPORT` did not reach it. Run 31920651241
+          # uploaded zero artifacts and said so in a warning nobody had to read.
+          # The record exists to make the NEXT failure diagnosable, so it fails
+          # loudly the moment it stops being written rather than the moment it
+          # is needed.
+          #
+          # A job that dies BEFORE `pnpm test` uploads nothing and errors here
+          # too. That is accepted: the job is already red, and a second red step
+          # costs nothing next to a capture that quietly stopped working.
+          if-no-files-found: error
           retention-days: 14
       # Typecheck every fenced TS block in the docs against the BUILT package
       # (dist/). Must run AFTER build — dist/ is the compile target, and the

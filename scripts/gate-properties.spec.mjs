@@ -493,12 +493,20 @@ describe("the gate roster reaches CI", () => {
     // repository holds 100 percent on src, scripts and fixtures with a
     // threshold that enforces it, and no workflow ran that threshold, so a
     // commit that lowered coverage passed every check and published.
+    //
+    // `build` moved AHEAD of `typecheck` after run 31920651241 failed on all
+    // three Node versions with eight TS2307s. Two surface specs name the
+    // package in a type position, which TypeScript resolves by SELF-REFERENCE
+    // through this package's own `exports` map to `dist/*.d.ts`, so `typecheck`
+    // needs the build the roster used to run after it. This list is the
+    // canonical order the other rows in this describe read, so the four
+    // documents that carry the roster move with it, in one commit.
     expect(contributingGates()).toEqual([
       "pnpm lint",
       "pnpm format:check",
       "pnpm check-doc-style",
-      "pnpm typecheck",
       "pnpm build",
+      "pnpm typecheck",
       "pnpm test",
       "pnpm coverage",
       "pnpm check-docs",
