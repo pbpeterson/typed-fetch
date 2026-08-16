@@ -60,3 +60,27 @@ export function platformInitReadOrder(): readonly string[] {
   new Request("https://platform-probe.invalid/", init as RequestInit);
   return order;
 }
+
+/**
+ * Whether this runtime keeps a `Response`'s internal state where a trapless
+ * `Proxy` cannot forward it.
+ *
+ * undici 6 (Node 20, 22) keeps it in a symbol-keyed property, which a `Proxy`
+ * with no handler forwards — so the platform accessor answers for the wrapper
+ * exactly as it answers for the target, and the wrapper is indistinguishable
+ * AND fully usable. undici 7 and later moved it to a private field, which no
+ * `Proxy` carries, so the same accessor throws.
+ *
+ * Measured, never read off a version number: Bun and Deno ship neither undici
+ * build and answer for themselves.
+ */
+export function responseSlotsResistProxy(): boolean {
+  const statusGetter = Object.getOwnPropertyDescriptor(Response.prototype, "status")?.get;
+  const wrapper = new Proxy(new Response(null, { status: 204 }), {});
+  try {
+    Reflect.apply(statusGetter as () => number, wrapper, []);
+    return false;
+  } catch {
+    return true;
+  }
+}

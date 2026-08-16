@@ -9,6 +9,7 @@ import {
 import { planFailure, planRequest } from "../../src/request-plan";
 import type { RequestPlan, TypedFetchOptions } from "../../src/request-plan";
 import { recordingTransport } from "../../fixtures/recording-transport";
+import { responseSlotsResistProxy } from "../../fixtures/platform-init-reads";
 
 // Round 12, lane H1 — the setup phase's read inventory, stated as a PROPERTY
 // rather than as a list, and the transport seam's return value.
@@ -720,9 +721,23 @@ describe("what the transport resolves", () => {
 
     const { response, error } = await typedFetch(ABSOLUTE, { fetch: transport });
 
-    expect(response).toBe(null);
-    expect(isNetworkError(error)).toBe(true);
-    expect(isHttpError(error)).toBe(false);
+    // WHERE THE RUNTIME MAKES THE WRAPPER DETECTABLE, and only there. The
+    // refusal is the platform accessor throwing on a foreign receiver, so it
+    // depends on where the runtime keeps the state: a symbol-keyed property
+    // (undici 6, Node 20 and 22) is forwarded by a trapless `Proxy` and the
+    // wrapper is accepted — and on those runtimes it is also completely
+    // usable, so accepting it is right. A private field (undici 7+) is not
+    // forwarded and the wrapper is refused. See README, Limitations.
+    if (responseSlotsResistProxy()) {
+      expect(response).toBe(null);
+      expect(isNetworkError(error)).toBe(true);
+      expect(isHttpError(error)).toBe(false);
+    } else {
+      expect(error).toBe(null);
+      // `if (!error)` is what narrows the destructured union — a guard on the
+      // other member does not. README, "Limitations".
+      if (!error) expect(await response.text()).toBe("payload");
+    }
   });
 
   test("a resolution that arrives after the governing timeout fired is still that resolution", async () => {
