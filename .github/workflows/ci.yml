@@ -46,6 +46,21 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
+      # Deno, in the TEST job as well as in `deno-smoke`.
+      #
+      # `scripts/check-consumer-entry.spec.mjs` drives `check-deno-consumer`
+      # end to end — a real pack, install, and `deno check` — and without a Deno
+      # binary those rows fail rather than skip. Run 31961164576 reported three
+      # of them. The gate needs Deno, so the gate installs Deno: marking the
+      # rows skip-without-deno would hide a regression in the one consumer path
+      # that proves the published `.d.mts` declarations resolve.
+      #
+      # Same pin as `deno-smoke` below, and for the same reason: the major this
+      # release is validated against is a decision here, not an action default
+      # that can move under the gate.
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm format:check
