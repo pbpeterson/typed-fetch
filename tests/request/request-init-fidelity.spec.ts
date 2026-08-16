@@ -10,6 +10,7 @@ import {
 import type { TypedFetchOptions } from "../../src/index";
 import { planRequest } from "../../src/request-plan";
 import { recordingTransport } from "../../fixtures/recording-transport";
+import { CANDIDATE_INIT_MEMBERS } from "../../fixtures/platform-init-reads";
 
 // Round 14, lane H1.
 //
@@ -645,9 +646,31 @@ describe("round 14 / H1 — which init members the setup phase reads", () => {
     expect(plainResult.error).toBe(null);
     expect(strippedResult.error).toBe(null);
 
-    // Non-vacuity: the oracle really did read all fifteen members.
-    expect(Object.keys(bare.counts).sort()).toEqual([...REQUEST_INIT_MEMBERS].sort());
-    for (const member of REQUEST_INIT_MEMBERS) expect(bare.counts[member]).toBe(1);
+    // Non-vacuity: the oracle really did read every member THIS PLATFORM reads.
+    //
+    // Asked of the platform rather than pinned as a literal. The set moved
+    // between undici generations — 15 members without `priority` on undici 6
+    // (Node 20, 22), 16 with it on undici 7+ — and this row pinned undici 8's
+    // answer, so it failed on both LTS majors `engines` supports. The claim
+    // being made here is about THIS library reading what the platform reads,
+    // never about which members the platform chose.
+    // The set is the PLATFORM's, so it is read from the oracle rather than
+    // pinned. It moved between undici generations — 15 members without
+    // `priority` on undici 6 (Node 20, 22), 16 with it on undici 7+ — and this
+    // row pinned undici 8's answer, so it failed on both LTS majors `engines`
+    // supports. What this library owes is reading what the platform reads,
+    // never choosing which members the platform reads.
+    const oracleMembers = Object.keys(bare.counts);
+    expect(
+      oracleMembers.every((member) =>
+        (CANDIDATE_INIT_MEMBERS as readonly string[]).includes(member),
+      ),
+      "the oracle read a member no RequestInit declares",
+    ).toBe(true);
+    expect(oracleMembers.length, "the oracle must read a full init, not a handful").toBeGreaterThan(
+      12,
+    );
+    for (const member of oracleMembers) expect(bare.counts[member]).toBe(1);
 
     const { fetch: _strippedFetchReads, ...strippedMembers } = stripped.counts;
     expect(plain.counts).toEqual(bare.counts);

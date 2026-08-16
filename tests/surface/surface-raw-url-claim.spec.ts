@@ -6,6 +6,7 @@ import {
   loadRootEsm,
   warnWhenDistMissing,
 } from "../../fixtures/built-package";
+import { platformInitReadOrder } from "../../fixtures/platform-init-reads";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ROUND 14, LANE H4 — the sentences round 13's docs pass CORRECTED, executed
@@ -466,10 +467,14 @@ describe.skipIf(!distExists)("the read order the ledger records", () => {
     const order: string[] = [];
     new Request("https://api.test/v1", spyInit(order));
 
-    expect(order).toEqual(MEMBERS);
+    // ASKED OF THE PLATFORM, not pinned. Both the set and the order moved
+    // between the undici generations `engines` supports: 15 members in spec
+    // order on undici 6 (Node 20, 22), 16 in spec order on undici 7, 16
+    // lexicographic on undici 8. This row pinned undici 8's answer and went red
+    // on both LTS majors. The claim it exists to make — `method` is read before
+    // `signal` — holds on every one of them.
+    expect(order).toEqual(platformInitReadOrder().filter((member) => MEMBERS.includes(member)));
     expect(order.indexOf("method")).toBeLessThan(order.indexOf("signal"));
-    // Lexicographical, which is what "member order" means in WebIDL.
-    expect(order).toEqual([...order].sort());
   });
 
   test("`typedFetch` reads `signal` in the setup phase, before the transport", async () => {

@@ -3,6 +3,7 @@ import { isAbortError, isNetworkError, isTimeoutError, typedFetch } from "../../
 import type { TypedFetchOptions } from "../../src/index";
 import { useTestServer } from "../../fixtures/http-server";
 import { foreignResponses } from "../../fixtures/responses";
+import { platformInitReadOrder } from "../../fixtures/platform-init-reads";
 
 // ── ONLY THE TRANSPORT PHASE CAN PRODUCE AN ABORT OR A TIMEOUT ───────────
 //
@@ -109,9 +110,16 @@ const TIMED_OUT = (): DOMException =>
   new DOMException("The operation was aborted due to timeout", "TimeoutError");
 
 describe("an options read the TRANSPORT performs cannot claim an abort", () => {
+  // FILTERED BY THE PLATFORM. A getter on a member this platform never reads is
+  // never invoked, so it aborts nothing and the request succeeds — which is the
+  // correct outcome, not a defect. undici 6 (Node 20, 22) does not read
+  // `priority`; undici 7+ does. The row asserted undici 8's answer and went red
+  // on both LTS majors this package supports.
+  const drivenSlots = TRANSPORT_READ_SLOTS.filter((slot) => platformInitReadOrder().includes(slot));
+
   test.each(
     AMBIENT_SHAPES.flatMap(([shape, extra]) =>
-      TRANSPORT_READ_SLOTS.map((slot) => [slot, shape, extra] as const),
+      drivenSlots.map((slot) => [slot, shape, extra] as const),
     ),
   )("a throwing getter on options.%s, under %s, is a network failure", async (slot, _s, extra) => {
     const controller = new AbortController();

@@ -1268,6 +1268,12 @@ The cause can also carry a credential, and this is the one residual the library 
 
 - `instanceof` is reliable only inside one package copy. Use the type guards across a package or format boundary. The library does not solve `instanceof` for a specific subclass across copies.
 - The brand is not a security control. A forged brand passes a guard.
+- **A transport that resolves with an exotic wrapper around a real `Response` is refused only where the runtime makes the wrapper detectable.** `typedFetch` accepts a value by applying the platform's own `status` accessor to it, which answers for a genuine internal slot. Where the runtime keeps that slot in a symbol-keyed property, a `Proxy` with no traps forwards it and answers identically — so the wrapper is accepted, and on those runtimes it also works: `status`, `headers`, and `json()` all behave. Where the slot is a private field, the same accessor throws and the wrapper is refused.
+
+  Measured on `process.versions.undici`: 6.x, which ships with Node 20 and 22, forwards; 7 and later, which ship with Node 24 and above, refuse. Bun refuses through neither path and the wrapper's members throw when read.
+
+  No portable check closes this. A trapless `Proxy` is defined to forward every essential internal method, so on a runtime whose slot is an ordinary property, no ECMAScript operation separates the two — and `util.types.isProxy` is Node-only and would also refuse the forwarding wrappers that instrumentation libraries install legitimately. Do not rely on the refusal as a boundary; it is not one on every supported runtime.
+
 - **Under `require()`, a class reports a mangled `Class.name`.** `NotFoundError.name` reads `"_class9"`, and `error.constructor.name` with it. The bundler downlevels class fields on the CJS side, and the inferred function name goes with them. The ESM build is unaffected.
 
   Never branch on `constructor.name`. It is not a stable identifier in either format, and no rule in the [semantic version contract](#semantic-version-contract) binds it. This library exposes no `error.code` either. Narrow with `instanceof` inside one copy, with `isHttpError` / `isKnownHttpError` across a copy or format boundary, and read `error.name` or `error.status` when a value must be logged or compared. `error.name` is correct in **both** formats and is bound by the contract.
