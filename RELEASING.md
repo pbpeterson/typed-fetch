@@ -262,6 +262,28 @@ Run every step, in order, for every release:
 7. **Watch the Release workflow to completion.** If it fails, do not publish
    manually and do not move the tag. Fix the issue through a new reviewed
    release commit and version.
+
+   ONE EXCEPTION, and read the condition carefully. The rule above protects a
+   PUBLICATION: every version on npm must be reconstructable from the immutable
+   tag it was cut from. A tag whose run never reached the registry published
+   nothing, so there is nothing to reconstruct and nothing a consumer can have
+   installed. When the `publish` job is `skipped` — the workflow refused before
+   OIDC was ever granted — the tag may be deleted and reused on the corrected
+   commit:
+
+   ```bash
+   npm view @pbpeterson/typed-fetch versions   # the version MUST be absent
+   gh run view <run-id> --json jobs --jq '.jobs[] | select(.name=="publish") | .conclusion'
+   git push origin :refs/tags/vX.Y.Z
+   git tag -d vX.Y.Z
+   ```
+
+   Confirm BOTH before deleting: the registry does not carry the version, and
+   the `publish` job did not run. If either check fails, the tag stands and the
+   fix is a new version. Release `v2.1.0` took this path on 2026-08-17: the
+   `package` job died at `pnpm test` because this workflow installed neither
+   Deno nor Bun, `publish` was skipped, and npm still ended at `2.0.0`.
+
 8. **Verify the publication:** check the
    [npm package page](https://www.npmjs.com/package/@pbpeterson/typed-fetch)
    shows the correct version, `latest`/`next` dist-tag, provenance badge, source

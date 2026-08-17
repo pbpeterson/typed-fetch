@@ -45,6 +45,20 @@ jobs:
       # Trusted publishing requires npm >= 11.5. Pin it so an npm release
       # cannot silently change the publisher between review and execution.
       - run: npm install -g npm@11.18.0
+      # Deno and Bun, because this job runs `pnpm test` and `pnpm coverage`.
+      #
+      # `scripts/check-consumer-entry.spec.mjs` drives `check-deno-consumer`
+      # end to end and needs a Deno binary; several suites are gated on Bun and
+      # SKIP without one, and a skipped suite still counts against the 100
+      # percent coverage threshold. `ci.yml` installs both in its `test` job for
+      # exactly these reasons — and this job ran the same commands without
+      # them, so release run 32032956313 died here with
+      # `spawnSync deno ENOENT` and 12 skipped rows, after every `checks` job
+      # had passed. Same actions and same pins as `ci.yml`.
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm format:check
