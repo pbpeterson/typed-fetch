@@ -86,10 +86,10 @@
     "prepublishOnly": "node scripts/verify-pack.mjs"
   },
   "devDependencies": {
-    "@types/node": "^25.9.5",
+    "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "4.1.10",
-    "node-fetch": "2.7.0",
-    "oxfmt": "^0.54.0",
+    "node-fetch": "3.3.2",
+    "oxfmt": "^0.63.0",
     "oxlint": "^1.74.0",
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
